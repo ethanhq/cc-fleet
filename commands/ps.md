@@ -4,7 +4,7 @@ disable-model-invocation: true
 allowed-tools: Bash
 ---
 
-!`cc-fleet ps 2>&1 || echo "(cc-fleet not available — install it and ensure it is on PATH)"`
+!`cc-fleet ps --check 2>&1 || echo "(cc-fleet not available — install it and ensure it is on PATH)"`
 
 Summarize the status above for the user:
 - how many vendor teammates are running, and on which teams,
