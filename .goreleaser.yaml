@@ -1,0 +1,56 @@
+version: 2
+
+project_name: cc-fleet
+
+builds:
+  - id: cc-fleet
+    main: ./cmd/cc-fleet
+    binary: cc-fleet
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -buildvcs=false
+    ldflags:
+      - -s -w -X github.com/ethanhq/cc-fleet/internal/version.Version={{ .Version }}
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: cc-fleet
+    ids:
+      - cc-fleet
+    name_template: "cc-fleet-{{ .Os }}-{{ .Arch }}"
+    formats:
+      - tar.gz
+    # Extract into a cc-fleet-<os>-<arch>/ dir rather than dumping into cwd, so
+    # a manual `tar xzf` then `cd … && ./install.sh` is clean.
+    wrap_in_directory: true
+    # The copy-binary installer (release/install.sh) reads SKILL.md / references/
+    # from next to itself, so the binary, skill, and installer must sit together
+    # at the archive root.
+    files:
+      - src: skills/cc-fleet/SKILL.md
+        dst: SKILL.md
+      - src: skills/cc-fleet/references/*.md
+        dst: references
+      - src: release/install.sh
+        dst: install.sh
+      - src: release/README.md
+        dst: README.md
+
+checksum:
+  name_template: checksums.txt
+
+release:
+  github:
+    owner: ethanhq
+    name: cc-fleet
+  draft: false
+  prerelease: auto
+
+changelog:
+  use: github
