@@ -171,6 +171,17 @@ claude plugin marketplace add ethanhq/cc-fleet
 claude plugin install cc-fleet@ethanhq
 ```
 
+## 参与贡献
+
+非常欢迎 PR —— bug 修复、新 vendor 配方、文档、测试、功能都行。请先读
+**[贡献指南](CONTRIBUTING.md)**;几条基本规矩:
+
+- **界面改动和 bug 修复**需要在 PR 里**附截图或 GIF**。
+- **AI *辅助***的提交,在 commit message 的合作者里带上工具(`Co-Authored-By`)。
+- **完全由 AI *自动生成***的 PR,在 PR body 末尾加上自动化 PR 标注。
+
+开 PR 时会自动套用 [PR 模板](.github/pull_request_template.md)。
+
 ## 许可证
 
 [Apache-2.0](LICENSE)。

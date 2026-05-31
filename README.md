@@ -173,6 +173,17 @@ claude plugin marketplace add ethanhq/cc-fleet
 claude plugin install cc-fleet@ethanhq
 ```
 
+## Contributing
+
+PRs are very welcome — bug fixes, new vendor recipes, docs, tests, and features. Please read
+the **[contribution guide](CONTRIBUTING.md)** first; a few house rules:
+
+- **UI changes and bug fixes need a screenshot or GIF** in the PR.
+- **AI-*assisted*** commits credit the tool with a `Co-Authored-By` trailer.
+- **Fully AI-*authored*** PRs add an autonomous-PR marker at the bottom of the PR body.
+
+A [PR template](.github/pull_request_template.md) is applied automatically when you open one.
+
 ## License
 
 [Apache-2.0](LICENSE).
