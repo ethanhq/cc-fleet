@@ -105,17 +105,19 @@ skill reads your request and picks how to run the work — there are two executi
 
 ### Teammate mode — a long-lived vendor worker on your team
 
-Ask for something ongoing or iterative ("spawn a deepseek teammate to refactor the parser
-package, then report back") and the skill runs the vendor as a **real Claude Code agent-team
-teammate**. Claude calls its native `TeamCreate`, cc-fleet launches the vendor's own `claude`
-process in a tmux pane, and Claude then drives it with native `SendMessage` — exactly the way
-it drives a native teammate. You assign tasks, it works and reports back, and the same
-teammate stays alive across turns so you can keep handing it follow-ups. Run several at once
-to fan work out in parallel. This mode needs Claude Code's agent-teams enabled. Throughout,
-your main session keeps using its own Anthropic auth (OAuth or API key) — only the teammate
-pane bills the vendor key, fetched lazily via `apiKeyHelper`.
+> *"Spawn a deepseek teammate to refactor the parser package, then report back."*
 
-Start from inside a tmux session so the teammates can split into panes alongside your lead:
+Runs the vendor as a **real Claude Code agent-team teammate**:
+
+- Claude calls native `TeamCreate`; cc-fleet launches the vendor's own `claude` process in a tmux pane.
+- Claude drives it with native `SendMessage` — you assign tasks, it works and reports back.
+- The teammate **stays alive across turns**, so you keep handing it follow-ups. Run several in parallel.
+- Your main session keeps its own auth — only the teammate pane bills the vendor key (via `apiKeyHelper`).
+
+> [!NOTE]
+> Teammate mode needs Claude Code's agent-teams enabled — see [Requirements](#requirements).
+
+Start inside a tmux session so the teammates split into panes alongside your lead:
 
 ```bash
 tmux new-session -s cc-fleet
@@ -123,44 +125,38 @@ tmux new-session -s cc-fleet
 
 <p align="center"><img src="docs/assets/teammate-panes.png" alt="cc-fleet teammates — lead on the left, deepseek and glm teammate panes on the right" width="760" /></p>
 
-Above: your lead session on the left, with a `deepseek` and a `glm` vendor teammate running
-in their own panes on the right — each a real `claude` process, driven by `SendMessage` and
-reporting back exactly like native teammates.
+> Lead session on the left; a `deepseek` and a `glm` teammate in their own panes on the right —
+> each a real `claude` process, driven by `SendMessage` exactly like a native teammate.
 
-### Without tmux — the teammate runs detached in the background
-
-Not inside tmux? cc-fleet can't split your terminal, so it runs the teammate in a **detached
-background tmux server** (`cc-fleet-swarm-<team>`) instead. Everything else is identical — you
-still drive it through native `TeamCreate` / `SendMessage`; the pane just isn't on screen.
-Attach with `tmux -L cc-fleet-swarm-<team> attach` if you want to watch it.
+> [!TIP]
+> **Not in tmux?** cc-fleet runs the teammate in a detached `cc-fleet-swarm-<team>` server
+> instead — same `TeamCreate` / `SendMessage` flow, the pane just isn't on screen. Attach with
+> `tmux -L cc-fleet-swarm-<team> attach` to watch it.
 
 ### Subagent mode — a one-shot headless call
 
-For a single self-contained job ("use deepseek to summarize this 2,000-line log file"), the
-skill runs a **subagent** instead: `cc-fleet subagent <vendor>` invokes the vendor model
-headless and returns the result synchronously — **no pane, no team, and no agent-teams
-required**. It's the right tool for one-off research/analysis and for batch fan-out of many
-independent tasks. Long jobs can run with `--background` (polled via `cc-fleet
-subagent-status`), multi-turn work resumes with `--resume`, and `--max-budget-usd` /
-`--max-turns` bound the cost.
+> *"Use deepseek to summarize this 2,000-line log file."*
 
-You don't choose the mode by hand — Claude decides teammate vs subagent from the nature of
-the request, spawns the vendor worker, and coordinates it for you.
+`cc-fleet subagent <vendor>` runs the vendor model headless and returns the result
+synchronously — **no pane, no team, no agent-teams**. Ideal for one-off analysis and batch
+fan-out of independent tasks.
 
-### Example prompts
+| Flag | Use |
+|------|-----|
+| `--background` | run detached; poll with `cc-fleet subagent-status` |
+| `--resume <id>` | continue a previous subagent (multi-turn) |
+| `--max-budget-usd` / `--max-turns` | bound cost and runtime |
+
+> [!NOTE]
+> You never pick the mode by hand — Claude decides teammate vs subagent from the request,
+> spawns the vendor worker, and coordinates it for you.
+
+### More example prompts
 
 - *"Spawn a glm teammate and a deepseek teammate; have each summarize its model's strengths, then compare the two."*
 - *"Use deepseek to review the diff in `internal/spawn` and list any bugs you find."*
 - *"Fan out kimi, qwen, and glm subagents over these three files in parallel and collect the results."*
 - *"Spin up a deepseek teammate to port the test suite to table-driven form, then report back."*
-
-## How it works
-
-It captures Claude Code's own spawn template (a *fingerprint*), swaps in a vendor profile,
-and launches a real `claude` process in a tmux pane — same full tool stack, just a
-different model backend. The vendor key is fetched lazily through the profile's
-`apiKeyHelper` (`cc-fleet keyget`), so it never enters the environment, argv, or shell
-history. Your main session's auth is never touched; only the teammate panes bill the vendor.
 
 ## CLI & advanced usage
 
