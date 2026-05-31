@@ -2,7 +2,7 @@
 
 # cc-fleet
 
-<p align="center"><strong>spawn any vendor LLM — DeepSeek · GLM · Qwen · Kimi … — as real Claude Code teammates</strong></p>
+<p align="center"><strong>🤖 Spawn any vendor LLM — DeepSeek · GLM · Qwen · Kimi · MiniMax … — as real Claude Code teammates or ⚡ one-shot subagents 🚀</strong></p>
 
 <div align="center">
 
@@ -15,6 +15,8 @@
 <img src="https://github.com/user-attachments/assets/d6312861-7626-4ac5-a9b8-39a1f6a4be2d" alt="cc-fleet demo" width="760" />
 
 </div>
+
+---
 
 厂商 worker 就是**真正的 Claude Code teammate**——和原生 teammate 一样驱动——只是把 LLM
 后端换成任意提供 Anthropic 兼容 API 的厂商。你主会话自己的认证(OAuth 订阅或 API key)完全不受
@@ -29,9 +31,14 @@
 
 - **Claude Code**(`claude` CLI)在你的 PATH 上。
 - **tmux** —— 厂商 teammate 跑在 tmux pane 里。
-- **Linux 或 macOS**,amd64 或 arm64(不支持 Windows)。
-- **teammate** 模式需要 Claude Code 的 agent-teams 已启用(即 `SendMessage` / `TeamCreate`
-  工具);一次性 **subagent** 模式不需要 agent-teams。
+- **macOS 或 Linux**,amd64 或 arm64 —— 已测试平台。Windows 理论上可跑一次性 **subagent**
+  模式,但尚未测试。
+- **teammate** 模式需要 Claude Code 的 agent-teams 已启用。在全局 `~/.claude/settings.json`
+  里打开并重启 Claude Code(cc-fleet 首次运行也会提示你):
+  ```json
+  { "env": { "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1" } }
+  ```
+  一次性 **subagent** 模式不需要它。
 
 ## 快速安装
 

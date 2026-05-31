@@ -49,7 +49,7 @@ A *one-shot* version of any of these is **lane 2** (`cc-fleet subagent`), not a 
 
 Teammate mode is driven by Claude's **native `TeamCreate` / `SendMessage` tools**, which exist **only when this session has agent-teams enabled**. `cc-fleet spawn` is a plain binary: it will launch a vendor pane **even when those tools are absent** — and you'd then have no way to `SendMessage` it, leaving an **orphan pane billing the vendor with no work**. So before any lane-1 spawn:
 
-- **Check your own tool list for a `SendMessage` (or `TeamCreate`) tool.** Present → proceed with lane 1. Absent → **do NOT spawn**; drop to **lane 2** (`cc-fleet subagent`, needs no native team tools) and **tell the user agent-teams appears off**.
+- **Check your own tool list for a `SendMessage` (or `TeamCreate`) tool.** Present → proceed with lane 1. Absent → **do NOT spawn**; **tell the user agent-teams appears off** — they can enable it by setting `"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"` in `~/.claude/settings.json` (`env` block) and restarting Claude Code, **or** you can run this job now in **lane 2** (`cc-fleet subagent`, needs no native team tools). Offer both; default to lane 2 if they don't want to reconfigure.
 - This is the ONLY reliable signal, and **only you can see it.** Don't ask `cc-fleet` whether agent-teams is on — it's an external process and can't observe Claude's runtime state. `cc-fleet doctor` deliberately does not report it.
 
 ### Lane 3 — do NOT spawn (handle in the main session) when

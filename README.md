@@ -2,7 +2,7 @@
 
 # cc-fleet
 
-<p align="center"><strong>spawn any vendor LLM — DeepSeek · GLM · Qwen · Kimi … — as real Claude Code teammates</strong></p>
+<p align="center"><strong>🤖 Spawn any vendor LLM — DeepSeek · GLM · Qwen · Kimi · MiniMax … — as real Claude Code teammates or ⚡ one-shot subagents 🚀</strong></p>
 
 <div align="center">
 
@@ -15,6 +15,8 @@
 <img src="https://github.com/user-attachments/assets/d6312861-7626-4ac5-a9b8-39a1f6a4be2d" alt="cc-fleet demo" width="760" />
 
 </div>
+
+---
 
 Vendor workers are **real Claude Code teammates** — driven exactly like native ones — with
 the LLM backend swapped to any provider that exposes an Anthropic-compatible API. Your main
@@ -29,9 +31,14 @@ panes. The skill teaches Claude Code *when* to delegate work to those teammates.
 
 - **Claude Code** (the `claude` CLI) on your PATH.
 - **tmux** — vendor teammates run in tmux panes.
-- **Linux or macOS**, amd64 or arm64 (no Windows).
-- For **teammate** mode, Claude Code's agent-teams must be enabled (the `SendMessage` /
-  `TeamCreate` tools). The one-shot **subagent** mode needs no agent-teams.
+- **macOS or Linux**, amd64 or arm64 — the tested platforms. Windows can in theory run
+  the one-shot **subagent** mode, but it is untested.
+- **Teammate** mode needs Claude Code's agent-teams enabled. Turn it on in your global
+  `~/.claude/settings.json` and restart Claude Code (cc-fleet also nudges you on first run):
+  ```json
+  { "env": { "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1" } }
+  ```
+  The one-shot **subagent** mode works without it.
 
 ## Quick Install
 
