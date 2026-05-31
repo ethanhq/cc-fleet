@@ -10,6 +10,27 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/onboarding"
 )
 
+// TestMain gives the whole package a hermetic baseline: a throwaway HOME with
+// onboarding already acked, so NewModel() opens straight on the hub rather than
+// a first-run setup screen. Without it the model tests would read the real
+// user's HOME and pass or fail depending on whether agent-teams happens to be
+// configured there. The onboarding tests override HOME per-test via setupEnv(t)
+// to exercise the nudges.
+func TestMain(m *testing.M) {
+	home, err := os.MkdirTemp("", "cc-fleet-tui")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("HOME", home)
+	os.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	if err := (onboarding.State{TmuxAck: true, AgentTeamsAck: true}).Save(); err != nil {
+		panic(err)
+	}
+	code := m.Run()
+	os.RemoveAll(home)
+	os.Exit(code)
+}
+
 // setupEnv installs a hermetic HOME + XDG + clean CWD, clears any inherited
 // agent-teams env var, and puts a fake tmux on PATH (so tmux looks INSTALLED by
 // default — the common case). Tests that want tmux missing call noTmux(t).
