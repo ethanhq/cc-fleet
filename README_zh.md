@@ -2,7 +2,7 @@
 
 # cc-fleet
 
-<p align="center"><strong>🤖 Spawn any vendor LLM — DeepSeek · GLM · Qwen · Kimi · MiniMax … — as real Claude Code teammates or ⚡ one-shot subagents 🚀</strong></p>
+**🤖 Spawn any vendor LLM — DeepSeek · GLM · Qwen · Kimi · MiniMax … — as real Claude Code teammates or ⚡ one-shot subagents 🚀**
 
 <div align="center">
 
@@ -12,11 +12,15 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-1f6feb?style=for-the-badge)](LICENSE)
 [![Lang](https://img.shields.io/badge/Lang-English-d29922?style=for-the-badge)](README.md)
 
-<img src="https://github.com/user-attachments/assets/d6312861-7626-4ac5-a9b8-39a1f6a4be2d" alt="cc-fleet demo" width="760" />
-
 </div>
 
 ---
+
+<div align="center">
+
+<img src="https://github.com/user-attachments/assets/d6312861-7626-4ac5-a9b8-39a1f6a4be2d" alt="cc-fleet demo" width="760" />
+
+</div>
 
 厂商 worker 就是**真正的 Claude Code teammate**——和原生 teammate 一样驱动——只是把 LLM
 后端换成任意提供 Anthropic 兼容 API 的厂商。你主会话自己的认证(OAuth 订阅或 API key)完全不受
@@ -73,31 +77,71 @@ git clone https://github.com/ethanhq/cc-fleet.git && cd cc-fleet && make install
 
 ## 快速上手
 
+直接运行 `cc-fleet`(或别名 `ccf`),不带参数即可进入交互式 TUI:
+
 ```bash
-# 1. 在 ~/.config/cc-fleet/ 创建配置目录
-cc-fleet init
-
-# 2. 注册一个 vendor —— key 走 stdin,绝不进 argv / shell 历史
-printf '%s' "$DEEPSEEK_API_KEY" | cc-fleet add deepseek \
-  --base-url https://api.deepseek.com/anthropic \
-  --models-endpoint https://api.deepseek.com/v1/models \
-  --default-model deepseek-chat \
-  --secret-backend file --secret-ref deepseek.key --api-key-stdin
-
-# 3. 健康检查
-cc-fleet doctor
+cc-fleet
 ```
 
-然后直接用自然语言跟 Claude Code 说,skill 会自动路由:
+在 TUI 里注册一个 vendor —— 填名字、Anthropic 兼容的 base URL、models 端点、默认模型,并粘贴
+API key。key 会以 `0600` 写到 `~/.config/cc-fleet/secrets/` 下,**绝不**经过 argv 或 shell
+历史。
 
-> *"开一个 deepseek teammate 重构 parser 包,然后回报。"*
-> &nbsp;&nbsp;→ 一个长期存活的厂商 **teammate**(tmux pane)。
->
-> *"用 deepseek 总结这个 2000 行的日志文件。"*
-> &nbsp;&nbsp;→ 一次性 **subagent**,结果直接返回。
+<img src="docs/assets/tui-add-vendor.png" alt="cc-fleet TUI —— 添加 vendor 表单" width="720" />
 
-Claude 自己决定用 teammate 还是 subagent,拉起厂商 worker 并协调它——你的主会话全程用自己的
-Anthropic 认证。
+配置目录树在首次保存时自动创建,所以没有单独的 init 步骤。TUI 还会列出你的 vendor,可以编辑它们、
+给同一个 vendor 管理多把 key。
+
+<img src="docs/assets/tui-vendors.png" alt="cc-fleet TUI —— vendor 列表" width="720" />
+
+按 `tab` 可以切到 **Agent status** 看板 —— 它按 session → team 分组列出每个存活的 teammate,
+显示其 vendor、模型、pane、PID、健康状态、是否隐藏,还有一份 subagent 任务列表。在这里可以
+隐藏(`h`)/ 显示(`s`)teammate 的 pane,或刷新(`r`)。
+
+<img src="docs/assets/tui-agent-status.png" alt="cc-fleet TUI —— agent status 看板" width="900" />
+
+注册好至少一个 vendor 后,直接用自然语言跟 Claude Code 说就行。skill 会读你的请求、决定怎么
+执行 —— 一共两种执行模式。
+
+### Teammate 模式 —— 一个长期存活、在你团队里的厂商 worker
+
+当你要做持续、需要多轮迭代的事("开一个 deepseek teammate 重构 parser 包,然后回报"),skill
+就把这个厂商当作**真正的 Claude Code agent-team teammate** 来跑。Claude 调用原生 `TeamCreate`,
+cc-fleet 在一个 tmux pane 里拉起厂商自己的 `claude` 进程,然后 Claude 用原生 `SendMessage`
+驱动它 —— 和驱动一个原生 teammate 一模一样。你派任务,它干活并回报,而且这个 teammate 跨多轮
+一直存活,你可以不断给它派后续工作;同时开好几个还能把活并行铺开。这个模式需要 Claude Code 的
+agent-teams 已启用。全程你的主会话仍用它自己的 Anthropic 认证(OAuth 或 API key)—— 只有
+teammate pane 用厂商 key 计费,key 通过 `apiKeyHelper` 惰性取用。
+
+建议先进入一个 tmux 会话,这样 teammate 才能在你的 leader 旁边切分出 pane:
+
+```bash
+tmux new-session -s cc-fleet
+```
+
+<img src="docs/assets/teammate-panes.png" alt="cc-fleet teammate —— 左侧 leader,右侧 deepseek 与 glm teammate pane" width="900" />
+
+上图:左边是你的 leader 会话,右边各有一个 `deepseek` 和一个 `glm` 厂商 teammate 跑在自己的
+pane 里 —— 每个都是真正的 `claude` 进程,用 `SendMessage` 驱动、像原生 teammate 一样回报。
+
+### 没有 tmux 时 —— teammate 在后台以非前台方式运行
+
+如果你**不在** tmux 会话里,cc-fleet 没法切分你的终端,于是它会透明地建一个**后台 detached 的
+tmux server**(`cc-fleet-swarm-<team>`),把 teammate 跑在那里。这个 pane 永远不出现在你的前台
+—— worker 就静静活在那个后台 server 里。你依然完全通过原生 `TeamCreate` / `SendMessage` 来
+创建、派活、读结果,和在 tmux 里时没有任何区别,唯一不同是 pane 不在屏幕上。想看的话可以 attach
+进去(`tmux -L cc-fleet-swarm-<team> attach`),但完全不必。teammate 语义一样,只是不在前台。
+
+### Subagent 模式 —— 一次性、headless 调用
+
+对于一个自包含的单次任务("用 deepseek 总结这个 2000 行的日志文件"),skill 改用 **subagent**:
+`cc-fleet subagent <vendor>` 以 headless 方式调用厂商模型,同步返回结果 —— **没有 pane、没有
+team、也不需要 agent-teams**。它最适合一次性的调研/分析,以及把大量互不依赖的任务批量铺开。长任务
+可以用 `--background` 跑(用 `cc-fleet subagent-status` 轮询),多轮任务用 `--resume` 续接,
+`--max-budget-usd` / `--max-turns` 给成本封顶。
+
+你不用手动选模式 —— Claude 会根据请求的性质自己决定用 teammate 还是 subagent,拉起厂商 worker
+并替你协调好。
 
 ## 工作原理
 

@@ -2,7 +2,7 @@
 
 # cc-fleet
 
-<p align="center"><strong>🤖 Spawn any vendor LLM — DeepSeek · GLM · Qwen · Kimi · MiniMax … — as real Claude Code teammates or ⚡ one-shot subagents 🚀</strong></p>
+**🤖 Spawn any vendor LLM — DeepSeek · GLM · Qwen · Kimi · MiniMax … — as real Claude Code teammates or ⚡ one-shot subagents 🚀**
 
 <div align="center">
 
@@ -12,11 +12,15 @@
 [![License](https://img.shields.io/badge/license-Apache%202.0-1f6feb?style=for-the-badge)](LICENSE)
 [![Lang](https://img.shields.io/badge/Lang-中文-d29922?style=for-the-badge)](README_zh.md)
 
-<img src="https://github.com/user-attachments/assets/d6312861-7626-4ac5-a9b8-39a1f6a4be2d" alt="cc-fleet demo" width="760" />
-
 </div>
 
 ---
+
+<div align="center">
+
+<img src="https://github.com/user-attachments/assets/d6312861-7626-4ac5-a9b8-39a1f6a4be2d" alt="cc-fleet demo" width="760" />
+
+</div>
 
 Vendor workers are **real Claude Code teammates** — driven exactly like native ones — with
 the LLM backend swapped to any provider that exposes an Anthropic-compatible API. Your main
@@ -73,31 +77,78 @@ git clone https://github.com/ethanhq/cc-fleet.git && cd cc-fleet && make install
 
 ## Getting Started
 
+Run `cc-fleet` (or the `ccf` alias) with no arguments to open the interactive TUI:
+
 ```bash
-# 1. create the config tree at ~/.config/cc-fleet/
-cc-fleet init
-
-# 2. register a vendor — pipe the key on stdin so it never lands in argv / shell history
-printf '%s' "$DEEPSEEK_API_KEY" | cc-fleet add deepseek \
-  --base-url https://api.deepseek.com/anthropic \
-  --models-endpoint https://api.deepseek.com/v1/models \
-  --default-model deepseek-chat \
-  --secret-backend file --secret-ref deepseek.key --api-key-stdin
-
-# 3. health-check
-cc-fleet doctor
+cc-fleet
 ```
 
-Then just ask Claude Code in plain language — the skill routes the request:
+In the TUI you register a vendor — give it a name, its Anthropic-compatible base URL, a
+models endpoint, a default model, and paste the API key. The key is written `0600` under
+`~/.config/cc-fleet/secrets/` and is **never** passed via argv or shell history.
 
-> *"Spawn a deepseek teammate to refactor the parser package, then report back."*
-> &nbsp;&nbsp;→ a long-lived vendor **teammate** in a tmux pane.
->
-> *"Use deepseek to summarize this 2,000-line log file."*
-> &nbsp;&nbsp;→ a one-shot **subagent**, result returned inline.
+<img src="docs/assets/tui-add-vendor.png" alt="cc-fleet TUI — add vendor form" width="720" />
 
-Claude decides teammate vs subagent, spawns the vendor worker, and coordinates it —
-your main session keeps using its own Anthropic auth the whole time.
+The config tree is created automatically on first save, so there is no separate init step.
+The TUI also lists your vendors, lets you edit them, and manage multiple keys per vendor.
+
+<img src="docs/assets/tui-vendors.png" alt="cc-fleet TUI — vendor list" width="720" />
+
+Press `tab` to switch to the **Agent status** board — it shows every live teammate grouped by
+session → team, with its vendor, model, pane, PID, health, and hidden state, plus a list of
+subagent jobs. From here you can hide (`h`) / show (`s`) a teammate pane or refresh (`r`).
+
+<img src="docs/assets/tui-agent-status.png" alt="cc-fleet TUI — agent status board" width="900" />
+
+Once at least one vendor is registered, just talk to Claude Code in plain language. The
+skill reads your request and picks how to run the work — there are two execution modes.
+
+### Teammate mode — a long-lived vendor worker on your team
+
+Ask for something ongoing or iterative ("spawn a deepseek teammate to refactor the parser
+package, then report back") and the skill runs the vendor as a **real Claude Code agent-team
+teammate**. Claude calls its native `TeamCreate`, cc-fleet launches the vendor's own `claude`
+process in a tmux pane, and Claude then drives it with native `SendMessage` — exactly the way
+it drives a native teammate. You assign tasks, it works and reports back, and the same
+teammate stays alive across turns so you can keep handing it follow-ups. Run several at once
+to fan work out in parallel. This mode needs Claude Code's agent-teams enabled. Throughout,
+your main session keeps using its own Anthropic auth (OAuth or API key) — only the teammate
+pane bills the vendor key, fetched lazily via `apiKeyHelper`.
+
+Start from inside a tmux session so the teammates can split into panes alongside your lead:
+
+```bash
+tmux new-session -s cc-fleet
+```
+
+<img src="docs/assets/teammate-panes.png" alt="cc-fleet teammates — lead on the left, deepseek and glm teammate panes on the right" width="900" />
+
+Above: your lead session on the left, with a `deepseek` and a `glm` vendor teammate running
+in their own panes on the right — each a real `claude` process, driven by `SendMessage` and
+reporting back exactly like native teammates.
+
+### Without tmux — the teammate runs detached in the background
+
+If you're **not** inside a tmux session, cc-fleet can't split your terminal, so it
+transparently builds a **detached background tmux server** (`cc-fleet-swarm-<team>`) and runs
+the teammate there. The pane is never shown in your foreground — the worker simply lives in
+that background server. You still create, task, and read it entirely through native
+`TeamCreate` / `SendMessage`, identical to the in-tmux case; the only difference is the pane
+isn't on screen. If you want to watch it you can attach (`tmux -L cc-fleet-swarm-<team>
+attach`), but you never have to. Same teammate semantics, just not in the foreground.
+
+### Subagent mode — a one-shot headless call
+
+For a single self-contained job ("use deepseek to summarize this 2,000-line log file"), the
+skill runs a **subagent** instead: `cc-fleet subagent <vendor>` invokes the vendor model
+headless and returns the result synchronously — **no pane, no team, and no agent-teams
+required**. It's the right tool for one-off research/analysis and for batch fan-out of many
+independent tasks. Long jobs can run with `--background` (polled via `cc-fleet
+subagent-status`), multi-turn work resumes with `--resume`, and `--max-budget-usd` /
+`--max-turns` bound the cost.
+
+You don't choose the mode by hand — Claude decides teammate vs subagent from the nature of
+the request, spawns the vendor worker, and coordinates it for you.
 
 ## How it works
 
