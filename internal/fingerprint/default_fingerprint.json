@@ -1,0 +1,23 @@
+{
+  "cc_version": "2.1.150",
+  "binary_path": "",
+  "env": {
+    "CLAUDECODE": "1",
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "flags_template": [
+    "--agent-id",
+    "{name}@{team}",
+    "--agent-name",
+    "{name}",
+    "--team-name",
+    "{team}",
+    "--agent-color",
+    "{color}",
+    "--parent-session-id",
+    "{lead_session_id}",
+    "--agent-type",
+    "general-purpose",
+    "--dangerously-skip-permissions"
+  ]
+}
