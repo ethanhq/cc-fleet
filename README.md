@@ -1,16 +1,12 @@
 <div align="center">
 
-# cc-fleet
-
-### Spawn any vendor LLM — DeepSeek · GLM · Qwen · Kimi · MiniMax … — as real Claude Code teammates or one-shot subagents
+<img src="docs/assets/cc-fleet-banner.png" alt="cc-fleet — spawn any vendor LLM (DeepSeek · GLM · Qwen · Kimi …) as real Claude Code teammates" width="100%" />
 
 [![Release](https://img.shields.io/github/v/release/ethanhq/cc-fleet?color=blue&label=version)](https://github.com/ethanhq/cc-fleet/releases)
 [![npm](https://img.shields.io/npm/v/cc-fleet)](https://www.npmjs.com/package/cc-fleet)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey.svg)](https://github.com/ethanhq/cc-fleet/releases)
 [![Downloads](https://img.shields.io/github/downloads/ethanhq/cc-fleet/total)](https://github.com/ethanhq/cc-fleet/releases/latest)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-
-<img src="https://github.com/user-attachments/assets/d6312861-7626-4ac5-a9b8-39a1f6a4be2d" alt="cc-fleet demo" width="760" />
 
 English | [中文](README_zh.md)
 
@@ -25,6 +21,12 @@ vendor API key via `apiKeyHelper`, and the key never enters env, argv, or shell 
 profiles, dispatches API keys via `apiKeyHelper`, and spawns teammate sessions in tmux
 panes. The skill teaches Claude Code *when* to delegate work to those teammates.
 
+<div align="center">
+
+<img src="https://github.com/user-attachments/assets/d6312861-7626-4ac5-a9b8-39a1f6a4be2d" alt="cc-fleet demo" width="760" />
+
+</div>
+
 ## Requirements
 
 - **Claude Code** (the `claude` CLI) on your PATH.
@@ -33,7 +35,7 @@ panes. The skill teaches Claude Code *when* to delegate work to those teammates.
 - For **teammate** mode, Claude Code's agent-teams must be enabled (the `SendMessage` /
   `TeamCreate` tools). The one-shot **subagent** mode needs no agent-teams.
 
-## Install
+## Quick Install
 
 **One-line (recommended)**
 ```bash
@@ -64,7 +66,7 @@ tar -xzf cc-fleet-*.tar.gz && cd cc-fleet-*/ && ./install.sh
 git clone https://github.com/ethanhq/cc-fleet.git && cd cc-fleet && make install
 ```
 
-## Quick start
+## Getting Started
 
 ```bash
 # 1. create the config tree at ~/.config/cc-fleet/
