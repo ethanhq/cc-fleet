@@ -7,6 +7,8 @@
 /bin/
 /dist/
 /build/
+# npm package: the platform binary fetched by postinstall (never committed)
+/npm/bin/cc-fleet
 
 # Test binaries & coverage
 *.test

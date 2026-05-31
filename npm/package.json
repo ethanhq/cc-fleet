@@ -1,0 +1,50 @@
+{
+  "name": "cc-fleet",
+  "version": "0.1.0",
+  "description": "Spawn any third-party LLM provider with an Anthropic-compatible API as real Claude Code agent-team teammates or one-shot subagents. The main session's own auth (OAuth or API key) is untouched.",
+  "bin": {
+    "cc-fleet": "bin/launcher.js",
+    "ccf": "bin/launcher.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "bin/launcher.js",
+    "install.js",
+    "README.md"
+  ],
+  "os": [
+    "linux",
+    "darwin"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "claude-code",
+    "vendor",
+    "teammates",
+    "subagent",
+    "tmux",
+    "deepseek",
+    "glm",
+    "kimi",
+    "qwen",
+    "minimax"
+  ],
+  "license": "Apache-2.0",
+  "author": "Ethan Guo <ethanguo.dev@gmail.com>",
+  "homepage": "https://github.com/ethanhq/cc-fleet",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ethanhq/cc-fleet.git"
+  },
+  "bugs": {
+    "url": "https://github.com/ethanhq/cc-fleet/issues"
+  }
+}
