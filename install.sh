@@ -209,7 +209,7 @@ cat <<EOF
 
 ==> Next steps
 
-   cc-fleet init        # create config at ~/.config/cc-fleet/
-   cc-fleet add <vendor> ...    # register a vendor
-   cc-fleet doctor      # health-check
+   cc-fleet             # launch the interactive TUI — register a vendor and get started
+                        #   (config is auto-created on first save; no init needed)
+   cc-fleet doctor      # optional: run the health checks
 EOF
