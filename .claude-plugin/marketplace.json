@@ -9,7 +9,7 @@
     {
       "name": "cc-fleet",
       "source": "./",
-      "description": "Spawn third-party LLM vendors as real Claude Code teammates or one-shot subagents via the cc-fleet CLI — subscription stays on OAuth, vendor workers bill the vendor key."
+      "description": "Spawn any third-party LLM vendor with an Anthropic-compatible API as real Claude Code agent-team teammates or one-shot subagents via the cc-fleet CLI — driven just like native teammates; your main session's own auth (OAuth or API key) is untouched, vendor workers bill the vendor key."
     }
   ]
 }

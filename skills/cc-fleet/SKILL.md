@@ -1,13 +1,13 @@
 ---
 name: cc-fleet
-description: Delegate work to third-party LLM teammates (DeepSeek / Kimi / GLM / Qwen / MiniMax) via cc-fleet, while the main Claude Code session keeps its OAuth subscription. Use when the user asks to spawn a vendor teammate, when bulk / parallel / specialized work warrants offloading from subscription quota, or when a `cc-fleet` command needs to be invoked.
+description: Delegate work to any third-party LLM provider with an Anthropic-compatible API (e.g. DeepSeek, GLM, Kimi, Qwen, MiniMax) as real Claude Code agent-team teammates or one-shot subagents via cc-fleet — driven exactly like native teammates, and your main session's own auth (OAuth or API key) stays untouched. Use when the user asks to spawn a vendor teammate or subagent, when bulk / parallel / specialized work warrants offloading from the main session, or when a `cc-fleet` command needs to be invoked.
 ---
 
 # cc-fleet
 
-This skill teaches you to use the `cc-fleet` CLI to run third-party LLM models (DeepSeek, Kimi, GLM, Qwen, MiniMax, …) as **real Claude Code workers** — full tool stack, native team coordination, just with the LLM backend swapped to a vendor with an Anthropic-compatible endpoint.
+This skill teaches you to use the `cc-fleet` CLI to run any third-party LLM with an Anthropic-compatible endpoint (e.g. DeepSeek, GLM, Kimi, Qwen, MiniMax) as **real Claude Code agent-team teammates** — same full tool stack and native team coordination as a native teammate, just with the LLM backend swapped to a vendor model. You drive them exactly like a native `Agent` teammate.
 
-**The main session stays on its OAuth subscription.** Vendor workers bill the vendor API; the subscription is untouched. Native `Agent({model: 'sonnet|opus|haiku'})` cannot accept `--settings <path>` or vendor model ids — that's exactly the gap cc-fleet fills.
+**Your main session's own auth is untouched** — whether it logs in with an OAuth subscription or an API key. Vendor workers bill the vendor API; your main session is unaffected. Native `Agent({model: 'sonnet|opus|haiku'})` cannot accept `--settings <path>` or vendor model ids — that's exactly the gap cc-fleet fills.
 
 This file is the router + the common path. Depth lives in `references/` — read the one a step points you to.
 
@@ -40,7 +40,7 @@ Overrides, in priority order:
 1. **The user explicitly asks for a teammate / workers** ("spawn a kimi worker", "N teammates on N files, use the cheapest").
 2. **Parallel batch work** — >10 file edits / >5 independent units concurrent (bulk refactor, batch translation, per-file analysis).
 3. **Model specialization** on a sustained task: `deepseek-reasoner` (math/logic/debug) · `kimi-k2`/`kimi-latest` (Chinese / 200k+ context) · `glm-4.6` (domain Chinese) · `qwen` (Chinese + tools / cost).
-4. **Subscription quota at risk** — long session, heavy tool use, user mentions limits.
+4. **Main-session quota at risk** — long session, heavy tool use, user mentions limits.
 5. **Data residency** — traffic must stay in-region (Chinese vendor for Chinese data).
 
 A *one-shot* version of any of these is **lane 2** (`cc-fleet subagent`), not a teammate.
@@ -55,7 +55,7 @@ Teammate mode is driven by Claude's **native `TeamCreate` / `SendMessage` tools*
 ### Lane 3 — do NOT spawn (handle in the main session) when
 - No vendor named *and* it's a single-file edit / one-off question (overhead > benefit).
 - The work is interactive / needs main-session context not written to disk.
-- The task needs a tool only the subscription model is good at, with no parallel dimension.
+- The task needs a tool only the main-session model is good at, with no parallel dimension.
 
 If `cc-fleet list --json` returns an empty `vendors` array, neither lane is possible — tell the user to `cc-fleet add <vendor>` first.
 
