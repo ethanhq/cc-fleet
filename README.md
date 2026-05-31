@@ -58,12 +58,14 @@ skill via the Claude Code plugin. Flags (after `| sh -s --`): `--skill plugin|gl
 ```bash
 npm install -g @ethanhq/cc-fleet      # or run once: npx @ethanhq/cc-fleet
 ```
+*Binary only — also install the skill (see [The skill](#the-skill)) so Claude Code can use it.*
 
 **go install**
 ```bash
 go install github.com/ethanhq/cc-fleet/cmd/cc-fleet@latest
 ln -sf "$(go env GOPATH)/bin/cc-fleet" "$(go env GOPATH)/bin/ccf"   # optional ccf alias
 ```
+*Binary only — also install the skill (see [The skill](#the-skill)) so Claude Code can use it.*
 
 **Prebuilt tarball** — download from [Releases](https://github.com/ethanhq/cc-fleet/releases):
 ```bash
@@ -74,6 +76,11 @@ tar -xzf cc-fleet-*.tar.gz && cd cc-fleet-*/ && ./install.sh
 ```bash
 git clone https://github.com/ethanhq/cc-fleet.git && cd cc-fleet && make install
 ```
+
+> [!NOTE]
+> cc-fleet is a **binary + a skill**. The one-line installer and tarball set up both;
+> **npm, go install, and source install the binary only** — add the skill via the
+> [plugin](#the-skill) so Claude Code knows when to delegate to it.
 
 ## Getting Started
 
