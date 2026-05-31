@@ -1,14 +1,18 @@
+![cc-fleet — 把任意厂商 LLM(DeepSeek · GLM · Qwen · Kimi …)当作真正的 Claude Code teammate](docs/assets/cc-fleet-banner.png)
+
+# cc-fleet
+
+**spawn any vendor LLM — DeepSeek · GLM · Qwen · Kimi … — as real Claude Code teammates**
+
+---
+
 <div align="center">
 
-<img src="docs/assets/cc-fleet-banner.png" alt="cc-fleet — 把任意厂商 LLM(DeepSeek · GLM · Qwen · Kimi …)当作真正的 Claude Code teammate" width="100%" />
-
-[![Release](https://img.shields.io/github/v/release/ethanhq/cc-fleet?color=blue&label=version)](https://github.com/ethanhq/cc-fleet/releases)
-[![npm](https://img.shields.io/npm/v/cc-fleet)](https://www.npmjs.com/package/cc-fleet)
-[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey.svg)](https://github.com/ethanhq/cc-fleet/releases)
-[![Downloads](https://img.shields.io/github/downloads/ethanhq/cc-fleet/total)](https://github.com/ethanhq/cc-fleet/releases/latest)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-
-[English](README.md) | 中文
+[![Release](https://img.shields.io/github/v/release/ethanhq/cc-fleet?style=for-the-badge&color=2ea043&label=release)](https://github.com/ethanhq/cc-fleet/releases)
+[![npm](https://img.shields.io/npm/v/cc-fleet?style=for-the-badge&color=cb3837)](https://www.npmjs.com/package/cc-fleet)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-8957e5?style=for-the-badge)](https://github.com/ethanhq/cc-fleet/releases)
+[![License](https://img.shields.io/badge/license-Apache%202.0-1f6feb?style=for-the-badge)](LICENSE)
+[![Lang](https://img.shields.io/badge/Lang-English-d29922?style=for-the-badge)](README.md)
 
 </div>
 
@@ -21,11 +25,7 @@
 `apiKeyHelper` 派发 API key、在 tmux pane 里拉起 teammate 会话;skill 则教 Claude Code
 **何时**把活委派给这些 teammate。
 
-<div align="center">
-
 <img src="https://github.com/user-attachments/assets/d6312861-7626-4ac5-a9b8-39a1f6a4be2d" alt="cc-fleet demo" width="760" />
-
-</div>
 
 ## 环境要求
 
