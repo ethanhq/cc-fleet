@@ -89,6 +89,12 @@ async function main() {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
   console.log(`cc-fleet: installed v${version} (${PLATFORM}/${ARCH})`);
+  console.log(
+    "cc-fleet: this installs the BINARY only. To let Claude Code use it, also install the skill:\n" +
+      "            claude plugin marketplace add ethanhq/cc-fleet\n" +
+      "            claude plugin install cc-fleet@ethanhq\n" +
+      "          Then run `cc-fleet` to register a vendor."
+  );
 }
 
 main().catch((err) => {

@@ -58,12 +58,14 @@ curl -fsSL https://raw.githubusercontent.com/ethanhq/cc-fleet/main/install.sh | 
 ```bash
 npm install -g @ethanhq/cc-fleet      # 或一次性运行：npx @ethanhq/cc-fleet
 ```
+*只装二进制 —— 还需安装 skill(见 [skill](#skill)),Claude Code 才能用它。*
 
 **go install**
 ```bash
 go install github.com/ethanhq/cc-fleet/cmd/cc-fleet@latest
 ln -sf "$(go env GOPATH)/bin/cc-fleet" "$(go env GOPATH)/bin/ccf"   # 可选 ccf 别名
 ```
+*只装二进制 —— 还需安装 skill(见 [skill](#skill)),Claude Code 才能用它。*
 
 **预编译 tarball** —— 从 [Releases](https://github.com/ethanhq/cc-fleet/releases) 下载：
 ```bash
@@ -74,6 +76,11 @@ tar -xzf cc-fleet-*.tar.gz && cd cc-fleet-*/ && ./install.sh
 ```bash
 git clone https://github.com/ethanhq/cc-fleet.git && cd cc-fleet && make install
 ```
+
+> [!NOTE]
+> cc-fleet 由**二进制 + skill 两半**组成。一行安装器和 tarball 会把两半都装好;
+> **npm、go install、源码构建只装二进制** —— 还需通过 [插件](#skill) 装上 skill,
+> Claude Code 才知道何时把活委派给它。
 
 ## 快速上手
 
