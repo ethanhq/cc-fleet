@@ -12,6 +12,8 @@
 
 <img src="https://github.com/user-attachments/assets/d6312861-7626-4ac5-a9b8-39a1f6a4be2d" alt="cc-fleet demo" width="760" />
 
+English | [中文](README_zh.md)
+
 </div>
 
 Vendor workers are **real Claude Code teammates** — driven exactly like native ones — with
