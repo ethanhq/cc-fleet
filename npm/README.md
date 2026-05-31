@@ -8,9 +8,9 @@ subscription or API key) is untouched; vendor workers bill the vendor key.
 ## Install
 
 ```bash
-npm install -g cc-fleet
+npm install -g @ethanhq/cc-fleet
 # or run without installing:
-npx cc-fleet --help
+npx @ethanhq/cc-fleet --help
 ```
 
 `postinstall` downloads the prebuilt binary for your platform (linux/darwin ×

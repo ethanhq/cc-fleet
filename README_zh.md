@@ -7,7 +7,7 @@
 <div align="center">
 
 [![Release](https://img.shields.io/github/v/release/ethanhq/cc-fleet?style=for-the-badge&color=2ea043&label=release)](https://github.com/ethanhq/cc-fleet/releases)
-[![npm](https://img.shields.io/npm/v/cc-fleet?style=for-the-badge&color=cb3837)](https://www.npmjs.com/package/cc-fleet)
+[![npm](https://img.shields.io/npm/v/@ethanhq/cc-fleet?style=for-the-badge&color=cb3837)](https://www.npmjs.com/package/@ethanhq/cc-fleet)
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-8957e5?style=for-the-badge)](https://github.com/ethanhq/cc-fleet/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-1f6feb?style=for-the-badge)](LICENSE)
 [![Lang](https://img.shields.io/badge/Lang-English-d29922?style=for-the-badge)](README.md)
@@ -56,7 +56,7 @@ curl -fsSL https://raw.githubusercontent.com/ethanhq/cc-fleet/main/install.sh | 
 
 **npm**
 ```bash
-npm install -g cc-fleet      # 或一次性运行：npx cc-fleet
+npm install -g @ethanhq/cc-fleet      # 或一次性运行：npx @ethanhq/cc-fleet
 ```
 
 **go install**

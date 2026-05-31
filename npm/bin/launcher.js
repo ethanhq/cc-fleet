@@ -13,7 +13,7 @@ const bin = path.join(__dirname, "cc-fleet");
 if (!fs.existsSync(bin)) {
   console.error(
     "cc-fleet: the platform binary is missing — the postinstall download may " +
-      "have failed. Reinstall with `npm install -g cc-fleet`, or grab a release " +
+      "have failed. Reinstall with `npm install -g @ethanhq/cc-fleet`, or grab a release " +
       "from https://github.com/ethanhq/cc-fleet/releases."
   );
   process.exit(1);
