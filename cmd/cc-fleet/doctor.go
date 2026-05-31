@@ -32,7 +32,7 @@ func newDoctorCmd() *cobra.Command {
   [4/9] claude binary present; version known
   [5/9] at least one attached tmux session (warn — out-of-tmux swarm works without)
   [6/9] all configured vendors' keys reachable (probe /v1/models, 3s/vendor)
-  [7/9] skill installed at ~/.claude/skills/vendor-fleet/
+  [7/9] skill installed at ~/.claude/skills/cc-fleet/
   [8/9] fingerprint cached and matches current cc version
   [9/9] OAuth credentials.json exists (informational only)
 

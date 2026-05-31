@@ -384,7 +384,7 @@ func TestCheckVendorKeys_DisabledSkipped(t *testing.T) {
 
 func TestCheckSkillInstalled_OK(t *testing.T) {
 	home := setupHome(t)
-	skillDir := filepath.Join(home, ".claude", "skills", "vendor-fleet")
+	skillDir := filepath.Join(home, ".claude", "skills", "cc-fleet")
 	if err := os.MkdirAll(skillDir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -414,7 +414,7 @@ func TestCheckSkillInstalled_Missing(t *testing.T) {
 func TestCheckSkillInstalled_ViaPlugin(t *testing.T) {
 	home := setupHome(t)
 	pluginSkill := filepath.Join(home, ".claude", "plugins", "cache",
-		"ethanhq", "cc-fleet", "0.1.1", "skills", "vendor-fleet")
+		"ethanhq", "cc-fleet", "0.1.1", "skills", "cc-fleet")
 	if err := os.MkdirAll(pluginSkill, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}

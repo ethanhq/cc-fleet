@@ -45,7 +45,7 @@ note on stderr) so uninstall never yanks files from a live job; reap them
 later with ` + "`cc-fleet subagent-gc`" + ` once they finish (or just re-run uninstall).
 
 We deliberately do NOT touch:
-  ~/.claude/skills/vendor-fleet/   (owned by install machinery)
+  ~/.claude/skills/cc-fleet/   (owned by install machinery)
   ~/.claude/teams/                    (owned by Claude Code itself)
 
 Uninstall is idempotent — missing files are not an error. After uninstall

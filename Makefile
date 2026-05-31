@@ -6,14 +6,14 @@ PKG        := ./cmd/cc-fleet
 # Install destinations. Override on the command line if you want different
 # locations, e.g.  make install-bin PREFIX=/usr/local/bin
 PREFIX     ?= $(HOME)/.local/bin
-SKILL_DIR  ?= $(HOME)/.claude/skills/vendor-fleet
+SKILL_DIR  ?= $(HOME)/.claude/skills/cc-fleet
 
 # Cross-compile output
 DIST_DIR   := ./dist
 
 # Repo-local installed-skill copy (gitignored). `skill-sync` refreshes it from
 # the canonical source; `skill-drift-check` fails if they diverge.
-LOCAL_SKILL := .claude/skills/vendor-fleet/SKILL.md
+LOCAL_SKILL := .claude/skills/cc-fleet/SKILL.md
 
 .PHONY: build install install-bin install-skill skill-sync skill-drift-check uninstall test clean smoke cross-compile release-archive
 
@@ -34,17 +34,17 @@ install-bin: build
 
 install-skill:
 	install -d $(SKILL_DIR)/references
-	install -m 0644 skills/vendor-fleet/SKILL.md $(SKILL_DIR)/SKILL.md
-	install -m 0644 skills/vendor-fleet/references/*.md $(SKILL_DIR)/references/
+	install -m 0644 skills/cc-fleet/SKILL.md $(SKILL_DIR)/SKILL.md
+	install -m 0644 skills/cc-fleet/references/*.md $(SKILL_DIR)/references/
 	@echo "Installed skill (+ references) to $(SKILL_DIR)/"
 
 # Refresh the repo-local installed copy from the canonical source. The copy is
 # gitignored (a local Claude Code install copy), so this is a dev convenience.
 skill-sync:
 	@mkdir -p $(dir $(LOCAL_SKILL))references
-	@cp skills/vendor-fleet/SKILL.md $(LOCAL_SKILL)
-	@cp skills/vendor-fleet/references/*.md $(dir $(LOCAL_SKILL))references/
-	@echo "Synced $(LOCAL_SKILL) (+ references) from canonical skills/vendor-fleet/"
+	@cp skills/cc-fleet/SKILL.md $(LOCAL_SKILL)
+	@cp skills/cc-fleet/references/*.md $(dir $(LOCAL_SKILL))references/
+	@echo "Synced $(LOCAL_SKILL) (+ references) from canonical skills/cc-fleet/"
 
 # Fail if the repo-local installed copy has drifted from canonical. NOT a Go
 # unit test: $(LOCAL_SKILL) is gitignored, so a fresh clone / CI has no copy — a
@@ -55,8 +55,8 @@ skill-drift-check:
 	  echo "skill-drift-check: $(LOCAL_SKILL) absent (gitignored local copy) — run 'make skill-sync'"; \
 	  exit 1; \
 	fi
-	@diff -q skills/vendor-fleet/SKILL.md $(LOCAL_SKILL) \
-	  && diff -rq skills/vendor-fleet/references $(dir $(LOCAL_SKILL))references \
+	@diff -q skills/cc-fleet/SKILL.md $(LOCAL_SKILL) \
+	  && diff -rq skills/cc-fleet/references $(dir $(LOCAL_SKILL))references \
 	  && echo "skill-drift-check: installed copy (SKILL.md + references) matches canonical" \
 	  || { echo "skill-drift-check: DRIFT — run 'make skill-sync'"; exit 1; }
 
@@ -87,7 +87,7 @@ cross-compile:
 	@echo "Built 4 binaries in $(DIST_DIR)/"
 
 # Per-platform release tarballs for GitHub Releases: each cc-fleet-<os>-<arch>.tar.gz
-# bundles the prebuilt binary (renamed cc-fleet) + the vendor-fleet SKILL.md +
+# bundles the prebuilt binary (renamed cc-fleet) + the cc-fleet SKILL.md +
 # a copy-binary installer (release/install.sh — NO go build) + a short README.
 # Depends on cross-compile; the bare dist/cc-fleet-<os>-<arch> binaries stay as
 # dev artifacts. The staging tree lives under dist/release/ and is cleaned up.
@@ -100,9 +100,9 @@ release-archive: cross-compile
 	  mkdir -p "$$stage"; \
 	  cp "$(DIST_DIR)/$(BIN_NAME)-$$plat" "$$stage/$(BIN_NAME)"; \
 	  chmod +x "$$stage/$(BIN_NAME)"; \
-	  cp skills/vendor-fleet/SKILL.md "$$stage/SKILL.md"; \
+	  cp skills/cc-fleet/SKILL.md "$$stage/SKILL.md"; \
 	  mkdir -p "$$stage/references"; \
-	  cp skills/vendor-fleet/references/*.md "$$stage/references/"; \
+	  cp skills/cc-fleet/references/*.md "$$stage/references/"; \
 	  cp release/install.sh "$$stage/install.sh"; \
 	  chmod +x "$$stage/install.sh"; \
 	  cp release/README.md "$$stage/README.md"; \

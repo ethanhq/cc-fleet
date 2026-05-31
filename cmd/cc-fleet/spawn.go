@@ -35,7 +35,7 @@ func newSpawnCmd() *cobra.Command {
 		Short: "Spawn a vendor teammate as a tmux pane (Claude layer)",
 		Long: `Spawn a vendor teammate into a tmux pane using cc-fleet's cached
 fingerprint + the vendor's profile. Designed to be invoked by the
-vendor-fleet skill via Bash; the --json flag emits a machine-readable
+cc-fleet skill via Bash; the --json flag emits a machine-readable
 envelope that the skill switches on.
 
 The team is registered (or created with --auto-team), the agent's inbox

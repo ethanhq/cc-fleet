@@ -82,7 +82,7 @@ func TestInit_CreatesTreeOnce(t *testing.T) {
 		filepath.Join(home, ".config", "cc-fleet"),
 		filepath.Join(home, ".config", "cc-fleet", "secrets"),
 		filepath.Join(home, ".claude", "profiles"),
-		filepath.Join(home, ".claude", "skills", "vendor-fleet"),
+		filepath.Join(home, ".claude", "skills", "cc-fleet"),
 		filepath.Join(home, ".config", "cc-fleet", "vendors.toml"),
 	}
 	for _, p := range wantDirs {
@@ -800,7 +800,7 @@ func TestUninstall_WipeSecrets(t *testing.T) {
 }
 
 func TestUninstall_PreservesSkillAndTeamsDirs(t *testing.T) {
-	// Per spec: ~/.claude/skills/vendor-fleet/ and ~/.claude/teams/ must
+	// Per spec: ~/.claude/skills/cc-fleet/ and ~/.claude/teams/ must
 	// remain after Uninstall (those are owned by other components).
 	home := setupHome(t)
 	if _, err := Init(); err != nil {
@@ -810,7 +810,7 @@ func TestUninstall_PreservesSkillAndTeamsDirs(t *testing.T) {
 	if err := os.MkdirAll(teamsDir, 0o700); err != nil {
 		t.Fatalf("MkdirAll teams: %v", err)
 	}
-	skillDir := filepath.Join(home, ".claude", "skills", "vendor-fleet")
+	skillDir := filepath.Join(home, ".claude", "skills", "cc-fleet")
 	// Init already created this; touch a marker file to make sure Uninstall
 	// doesn't recursively delete the contents.
 	marker := filepath.Join(skillDir, "PLACEHOLDER.txt")

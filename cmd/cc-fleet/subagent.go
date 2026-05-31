@@ -39,7 +39,7 @@ third-party vendor model (via the vendor profile) and return the result
 synchronously. The analog of the native Agent/Task tool, but the model can be
 a vendor id. No tmux pane, no team, no locks.
 
-Designed to be invoked by the vendor-fleet skill via Bash with --json, which
+Designed to be invoked by the cc-fleet skill via Bash with --json, which
 emits one machine-readable subagent.Result envelope the skill switches on.
 
 For long-running or research tasks (web search, many turns — anything that may

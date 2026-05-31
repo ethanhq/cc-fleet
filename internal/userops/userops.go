@@ -125,7 +125,7 @@ func Init() (*InitResult, error) {
 	if home == "" {
 		return nil, opErr(CodeInitFailed, errors.New("HOME is not set"))
 	}
-	skillDir := filepath.Join(home, ".claude", "skills", "vendor-fleet")
+	skillDir := filepath.Join(home, ".claude", "skills", "cc-fleet")
 
 	dirs := []string{cfgDir, secretsDir, profilesDir, skillDir}
 	for _, d := range dirs {
@@ -773,7 +773,7 @@ type UninstallResult struct {
 // jobs under subagent-jobs/ (see subagent.PurgeJobs — finished job files are
 // removed even when other jobs are still running; the live ones, and the dir
 // itself, are kept and reported in Kept). The skill directory
-// (~/.claude/skills/vendor-fleet/) and ~/.claude/teams/ are explicitly
+// (~/.claude/skills/cc-fleet/) and ~/.claude/teams/ are explicitly
 // preserved — the former is owned by the install machinery, the latter is
 // Claude Code's own state.
 //
@@ -882,7 +882,7 @@ func Uninstall(req UninstallRequest) (*UninstallResult, error) {
 	// considered them. Skill dir is the install machinery's; teams/ is Claude Code's.
 	home := os.Getenv("HOME")
 	if home != "" {
-		skillDir := filepath.Join(home, ".claude", "skills", "vendor-fleet")
+		skillDir := filepath.Join(home, ".claude", "skills", "cc-fleet")
 		teamsDir := filepath.Join(home, ".claude", "teams")
 		if _, err := os.Stat(skillDir); err == nil {
 			res.Kept = append(res.Kept, skillDir)

@@ -35,7 +35,7 @@ func newInitCmd() *cobra.Command {
   ~/.config/cc-fleet/secrets/  (mode 0700)
   ~/.config/cc-fleet/vendors.toml (empty, mode 0600, schema version 1)
   ~/.claude/profiles/          (mode 0700)
-  ~/.claude/skills/vendor-fleet/  (mode 0700; contents installed separately)
+  ~/.claude/skills/cc-fleet/  (mode 0700; contents installed separately)
 
 In interactive mode (no --json), init asks whether to add a first vendor
 right away. Replying "y" drops you into the same prompts that ` + "`cc-fleet add`" + `

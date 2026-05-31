@@ -290,27 +290,27 @@ func CheckVendorKeys() CheckResult {
 	return r
 }
 
-// CheckSkillInstalled is check 7: the vendor-fleet skill is installed at
-// ~/.claude/skills/vendor-fleet/SKILL.md (the manual `make install-skill`
+// CheckSkillInstalled is check 7: the cc-fleet skill is installed at
+// ~/.claude/skills/cc-fleet/SKILL.md (the manual `make install-skill`
 // channel). We deliberately don't validate SKILL.md content; existence is enough.
 //
 // The skill ships through two channels and doctor checks BOTH:
-//  1. the manual `make install-skill` path ~/.claude/skills/vendor-fleet/SKILL.md, and
+//  1. the manual `make install-skill` path ~/.claude/skills/cc-fleet/SKILL.md, and
 //  2. the cc-fleet plugin, which Claude Code unpacks under
-//     ~/.claude/plugins/cache/<marketplace>/cc-fleet/<version>/skills/vendor-fleet/SKILL.md.
+//     ~/.claude/plugins/cache/<marketplace>/cc-fleet/<version>/skills/cc-fleet/SKILL.md.
 //
 // Either present → OK. A MISSING skill (neither channel) is only a WARN, not a
 // FAIL — doctor can't auto-install (the source lives in the cc-fleet repo), so
 // it surfaces a hint instead.
 func CheckSkillInstalled() CheckResult {
-	r := CheckResult{ID: 7, Title: "skill installed at ~/.claude/skills/vendor-fleet/ (or via plugin)"}
+	r := CheckResult{ID: 7, Title: "skill installed at ~/.claude/skills/cc-fleet/ (or via plugin)"}
 	cdir, err := claudeDir()
 	if err != nil {
 		r.Status = StatusFail
 		r.Detail = err.Error()
 		return r
 	}
-	path := filepath.Join(cdir, "skills", "vendor-fleet", "SKILL.md")
+	path := filepath.Join(cdir, "skills", "cc-fleet", "SKILL.md")
 	info, err := os.Stat(path)
 	if err == nil {
 		if info.IsDir() {
@@ -341,16 +341,16 @@ func CheckSkillInstalled() CheckResult {
 	return r
 }
 
-// pluginSkillPath returns the path to a vendor-fleet SKILL.md delivered by the
+// pluginSkillPath returns the path to a cc-fleet SKILL.md delivered by the
 // cc-fleet plugin, if one is installed, and ok=false otherwise. Claude Code
 // unpacks marketplace plugins under
 // ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/; the cc-fleet plugin
 // (plugin name "cc-fleet", fixed in .claude-plugin/plugin.json) ships
-// skills/vendor-fleet/SKILL.md. The glob spans any marketplace + version so a
+// skills/cc-fleet/SKILL.md. The glob spans any marketplace + version so a
 // fork or an upgrade still matches; a layout change just falls back to the WARN
 // (no worse than before).
 func pluginSkillPath(cdir string) (string, bool) {
-	pattern := filepath.Join(cdir, "plugins", "cache", "*", "cc-fleet", "*", "skills", "vendor-fleet", "SKILL.md")
+	pattern := filepath.Join(cdir, "plugins", "cache", "*", "cc-fleet", "*", "skills", "cc-fleet", "SKILL.md")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return "", false // only ErrBadPattern, impossible for this fixed pattern

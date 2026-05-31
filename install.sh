@@ -4,7 +4,7 @@
 # Default install prefix: ~/.local/bin (cargo / pyenv style).
 # Use --prefix to override (e.g. /usr/local/bin, /opt/cc-fleet/bin).
 #
-# This script only installs the binary. The vendor-fleet skill is installed
+# This script only installs the binary. The cc-fleet skill is installed
 # separately via `make install-skill` so users can opt in / opt out per machine.
 
 set -euo pipefail
@@ -142,7 +142,7 @@ cat <<EOF
    cc-fleet init                # create config at ~/.config/cc-fleet/
    cc-fleet add <vendor> ...    # register your first vendor
    cc-fleet doctor              # health-check
-   make install-skill           # (optional) install the vendor-fleet skill
+   make install-skill           # (optional) install the cc-fleet skill
 
    See README.md for the full quick-start.
 EOF
