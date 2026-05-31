@@ -28,7 +28,13 @@ jobs:
 
   npm-publish:
     needs: goreleaser
+    # OIDC trusted publishing (no stored token). Gated until cc-fleet's first
+    # publish is done manually and a trusted publisher is configured on npmjs.
+    if: vars.NPM_TRUSTED_PUBLISHING == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     defaults:
       run:
         working-directory: npm
@@ -36,12 +42,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
+      # Trusted publishing needs npm >= 11.5.1 (newer than the bundled npm).
+      - run: npm install -g npm@latest
       # Sync package.json to the tag (strip the leading v), then publish. The
-      # binary the package downloads at install time was just released by the
+      # binary the package downloads at install time was released by the
       # goreleaser job above (needs: goreleaser).
       - run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
       - run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
