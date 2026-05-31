@@ -1,0 +1,15 @@
+{
+  "name": "ethanhq",
+  "owner": {
+    "name": "Ethan Guo",
+    "email": "ethanguo.dev@gmail.com"
+  },
+  "description": "Ethan Guo's Claude Code plugins — currently cc-fleet (vendor LLM teammates / subagents).",
+  "plugins": [
+    {
+      "name": "cc-fleet",
+      "source": "./",
+      "description": "Spawn third-party LLM vendors as real Claude Code teammates or one-shot subagents via the cc-fleet CLI — subscription stays on OAuth, vendor workers bill the vendor key."
+    }
+  ]
+}

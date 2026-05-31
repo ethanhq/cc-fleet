@@ -1,0 +1,23 @@
+{
+  "name": "cc-fleet",
+  "description": "Spawn third-party LLM vendors (DeepSeek / Kimi / GLM / Qwen / MiniMax …) as real Claude Code teammates or one-shot subagents. The main session keeps its OAuth subscription; vendor workers bill the vendor API key via apiKeyHelper (the key never enters env/argv/history). Requires the `cc-fleet` binary on PATH, installed separately.",
+  "version": "0.1.1",
+  "author": {
+    "name": "Ethan Guo",
+    "email": "ethanguo.dev@gmail.com"
+  },
+  "homepage": "https://github.com/ethanhq/cc-fleet",
+  "repository": "https://github.com/ethanhq/cc-fleet",
+  "keywords": [
+    "claude-code",
+    "vendor",
+    "teammates",
+    "subagent",
+    "tmux",
+    "deepseek",
+    "glm",
+    "kimi",
+    "qwen",
+    "minimax"
+  ]
+}
