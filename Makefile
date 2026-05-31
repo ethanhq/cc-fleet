@@ -86,11 +86,15 @@ cross-compile:
 	GOOS=darwin GOARCH=arm64 go build -o $(DIST_DIR)/$(BIN_NAME)-darwin-arm64 $(PKG)
 	@echo "Built 4 binaries in $(DIST_DIR)/"
 
-# Per-platform release tarballs for GitHub Releases: each cc-fleet-<os>-<arch>.tar.gz
-# bundles the prebuilt binary (renamed cc-fleet) + the cc-fleet SKILL.md +
-# a copy-binary installer (release/install.sh — NO go build) + a short README.
-# Depends on cross-compile; the bare dist/cc-fleet-<os>-<arch> binaries stay as
-# dev artifacts. The staging tree lives under dist/release/ and is cleaned up.
+# Local fallback for building release tarballs by hand. The canonical release
+# path is .goreleaser.yaml run by the release workflow on a tag; keep this for
+# offline / dev packaging only.
+#
+# Per-platform tarballs: each cc-fleet-<os>-<arch>.tar.gz bundles the prebuilt
+# binary (renamed cc-fleet) + the cc-fleet SKILL.md + a copy-binary installer
+# (release/install.sh — NO go build) + a short README. Depends on cross-compile;
+# the bare dist/cc-fleet-<os>-<arch> binaries stay as dev artifacts. The staging
+# tree lives under dist/release/ and is cleaned up.
 release-archive: cross-compile
 	@set -e; \
 	stage_root="$(DIST_DIR)/release"; \
