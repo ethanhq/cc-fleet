@@ -2,9 +2,7 @@
 
 # cc-fleet
 
-**spawn any vendor LLM — DeepSeek · GLM · Qwen · Kimi … — as real Claude Code teammates**
-
----
+<p align="center"><strong>spawn any vendor LLM — DeepSeek · GLM · Qwen · Kimi … — as real Claude Code teammates</strong></p>
 
 <div align="center">
 
@@ -13,6 +11,8 @@
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-8957e5?style=for-the-badge)](https://github.com/ethanhq/cc-fleet/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-1f6feb?style=for-the-badge)](LICENSE)
 [![Lang](https://img.shields.io/badge/Lang-中文-d29922?style=for-the-badge)](README_zh.md)
+
+<img src="https://github.com/user-attachments/assets/d6312861-7626-4ac5-a9b8-39a1f6a4be2d" alt="cc-fleet demo" width="760" />
 
 </div>
 
@@ -24,8 +24,6 @@ vendor API key via `apiKeyHelper`, and the key never enters env, argv, or shell 
 `cc-fleet` is a small Go CLI plus one Claude Code skill. The CLI manages per-vendor
 profiles, dispatches API keys via `apiKeyHelper`, and spawns teammate sessions in tmux
 panes. The skill teaches Claude Code *when* to delegate work to those teammates.
-
-<img src="https://github.com/user-attachments/assets/d6312861-7626-4ac5-a9b8-39a1f6a4be2d" alt="cc-fleet demo" width="760" />
 
 ## Requirements
 

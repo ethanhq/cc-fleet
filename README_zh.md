@@ -2,9 +2,7 @@
 
 # cc-fleet
 
-**spawn any vendor LLM — DeepSeek · GLM · Qwen · Kimi … — as real Claude Code teammates**
-
----
+<p align="center"><strong>spawn any vendor LLM — DeepSeek · GLM · Qwen · Kimi … — as real Claude Code teammates</strong></p>
 
 <div align="center">
 
@@ -13,6 +11,8 @@
 [![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-8957e5?style=for-the-badge)](https://github.com/ethanhq/cc-fleet/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-1f6feb?style=for-the-badge)](LICENSE)
 [![Lang](https://img.shields.io/badge/Lang-English-d29922?style=for-the-badge)](README.md)
+
+<img src="https://github.com/user-attachments/assets/d6312861-7626-4ac5-a9b8-39a1f6a4be2d" alt="cc-fleet demo" width="760" />
 
 </div>
 
@@ -24,8 +24,6 @@
 `cc-fleet` 是一个小巧的 Go CLI 加一个 Claude Code skill。CLI 负责管理各厂商的 profile、通过
 `apiKeyHelper` 派发 API key、在 tmux pane 里拉起 teammate 会话;skill 则教 Claude Code
 **何时**把活委派给这些 teammate。
-
-<img src="https://github.com/user-attachments/assets/d6312861-7626-4ac5-a9b8-39a1f6a4be2d" alt="cc-fleet demo" width="760" />
 
 ## 环境要求
 
