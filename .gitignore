@@ -1,32 +1,50 @@
-# If you prefer the allow list template instead of the deny list, see community template:
-# https://github.com/github/gitignore/blob/main/community/Golang/Go.AllowList.gitignore
-#
-# Binaries for programs and plugins
+# Binaries / build artifacts
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
+/bin/
+/dist/
+/build/
 
-# Test binary, built with `go test -c`
+# Test binaries & coverage
 *.test
-
-# Code coverage profiles and other test artifacts
 *.out
 coverage.*
 *.coverprofile
 profile.cov
 
-# Dependency directories (remove the comment below to include it)
-# vendor/
-
-# Go workspace file
+# Go workspace files
 go.work
 go.work.sum
 
-# env file
+# Local secrets — cc-fleet writes these at runtime; never commit
+/secrets/
+*.key
+*.keys.json
+*.rotation
 .env
+.env.local
 
-# Editor/IDE
-# .idea/
-# .vscode/
+# Test / scratch state
+/tmp/
+/scratch/
+*.log
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Other ecosystems' caches (if present)
+node_modules/
+__pycache__/
+*.pyc
+
+# Claude Code local state — settings + the repo-local skill install copy that
+# `make skill-sync` writes (the canonical skill is tracked at /skills/).
+/.claude/
