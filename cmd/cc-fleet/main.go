@@ -19,7 +19,7 @@ func newRootCmd() *cobra.Command {
 It generates ~/.claude/profiles/<vendor>.json files, dispatches API keys via
 pluggable secret backends, captures Claude Code settings fingerprints, and spawns
 teammate Claude Code sessions inside tmux windows.`,
-		Version:       version.Version,
+		Version:       version.Resolve(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		// A bare `cc-fleet` from an interactive terminal launches the TUI;
