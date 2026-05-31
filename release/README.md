@@ -6,7 +6,7 @@ needed — this archive ships a compiled binary for your platform.
 ## Install (3 steps)
 
 ```bash
-# 1. install the binary (+ ccf alias) and the skill
+# 1. install the binary (+ ccf alias) and the skill (skill via the plugin by default)
 ./install.sh --prefix ~/.local/bin
 
 # 2. first-time setup
@@ -23,17 +23,18 @@ printf '%s' "$DEEPSEEK_KEY" | cc-fleet add deepseek \
 
 Then `cc-fleet doctor` to health-check and `cc-fleet list` to see what's configured.
 
-> **Already using the cc-fleet plugin?** The plugin delivers the skill, so install
-> the binary only — `./install.sh --no-skill` — to avoid two copies. Pick **one**
-> skill channel (the plugin **or** this archive's `install.sh`), not both.
+> **Skill channel.** By default `install.sh` installs the skill via the Claude Code
+> plugin (`--skill plugin`). Use `--skill global` to copy the bundled `SKILL.md`
+> into `~/.claude/skills/cc-fleet/` instead (handy offline), or `--skill none` for
+> the binary only. Pick **one** channel so you don't end up with two copies.
 
 ## What's in this archive
 
 | File | Purpose |
 |---|---|
 | `cc-fleet` | The prebuilt binary for this platform. |
-| `install.sh` | Copy-binary installer (no build). Installs the skill by default; `--no-skill` skips it (for plugin users). For a from-source build, use the repo's top-level `install.sh`. |
-| `SKILL.md` | The `cc-fleet` skill, installed to `~/.claude/skills/cc-fleet/`. |
+| `install.sh` | Copy-binary installer (no build). Skill via the plugin by default; `--skill global` copies the bundled skill, `--skill none` skips it. For a from-source build, clone the repo and run `make install`. |
+| `SKILL.md` | The bundled `cc-fleet` skill — used by `--skill global` (the default install uses the plugin instead). |
 | `references/` | Skill reference docs (progressive disclosure), installed alongside `SKILL.md`. |
 
 Full documentation: https://github.com/ethanhq/cc-fleet

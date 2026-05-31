@@ -1,18 +1,23 @@
 #!/usr/bin/env bash
 # release/install.sh — install a PRE-BUILT cc-fleet from a release archive.
 #
-# This is the copy-binary installer shipped INSIDE each cc-fleet-<os>-<arch>.tar.gz.
-# It does NOT build from source (no Go toolchain needed): it copies the prebuilt
-# binary sitting next to it onto your PATH, creates the `ccf` alias, and installs
-# the cc-fleet skill. For a from-source build, use the repo's top-level
-# install.sh instead.
+# Shipped INSIDE each cc-fleet-<os>-<arch>.tar.gz. It copies the prebuilt binary
+# sitting next to it onto your PATH (no Go toolchain, no download), creates the
+# `ccf` alias, and installs the cc-fleet skill — by default via the Claude Code
+# plugin. For a from-source build, clone the repo and run `make install`.
 
 set -euo pipefail
 
+REPO="ethanhq/cc-fleet"      # GitHub owner/repo (plugin marketplace source)
+MARKETPLACE="ethanhq"        # claude plugin marketplace name
+PLUGIN="cc-fleet"            # claude plugin name
+SKILL_NAME="cc-fleet"        # skill dir under ~/.claude/skills/ (for --skill global)
+
 DEFAULT_PREFIX="${HOME}/.local/bin"
 PREFIX="${DEFAULT_PREFIX}"
-SKILL_DIR="${HOME}/.claude/skills/cc-fleet"
-INSTALL_SKILL=1
+SKILL_MODE="plugin"          # plugin | global | none
+SCOPE="user"                 # user | project | local (only for --skill plugin)
+SKILL_DIR="${HOME}/.claude/skills/${SKILL_NAME}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
@@ -21,16 +26,18 @@ usage() {
 install.sh — install prebuilt cc-fleet from this release archive.
 
 Usage:
-    ./install.sh [--prefix DIR] [--skill-dir DIR] [--no-skill] [--help]
+    ./install.sh [options]
 
 Options:
-    --prefix DIR      Install the binary into DIR/cc-fleet (+ ccf alias).
-                      Default: ${DEFAULT_PREFIX}
-    --skill-dir DIR   Install SKILL.md (+ references/) into DIR.
-                      Default: ${SKILL_DIR}
-    --no-skill        Install the binary only; skip the skill. Use this if you
-                      get the skill from the cc-fleet plugin (avoids a duplicate).
-    -h, --help        Show this help and exit.
+    --skill plugin|global|none  How to install the skill. Default: plugin.
+                                  plugin = via Claude Code plugin (also adds the
+                                           SessionStart hook + /ps //doctor commands).
+                                  global = copy the bundled SKILL.md into a skill dir.
+                                  none   = binary only.
+    --scope user|project|local  Plugin install scope (--skill plugin). Default: user.
+    --prefix DIR                Install the binary into DIR. Default: ${DEFAULT_PREFIX}.
+    --skill-dir DIR             Skill dir for --skill global. Default: ${SKILL_DIR}.
+    -h, --help                  Show this help and exit.
 EOF
 }
 
@@ -38,38 +45,15 @@ EOF
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --prefix)
-            if [[ $# -lt 2 ]]; then
-                echo "install.sh: --prefix requires a directory argument" >&2
-                exit 2
-            fi
-            PREFIX="$2"
-            shift 2
-            ;;
-        --prefix=*)
-            PREFIX="${1#--prefix=}"
-            shift
-            ;;
-        --skill-dir)
-            if [[ $# -lt 2 ]]; then
-                echo "install.sh: --skill-dir requires a directory argument" >&2
-                exit 2
-            fi
-            SKILL_DIR="$2"
-            shift 2
-            ;;
-        --skill-dir=*)
-            SKILL_DIR="${1#--skill-dir=}"
-            shift
-            ;;
-        --no-skill)
-            INSTALL_SKILL=0
-            shift
-            ;;
-        -h|--help)
-            usage
-            exit 0
-            ;;
+        --skill)     SKILL_MODE="${2:?--skill requires a value}"; shift 2 ;;
+        --skill=*)   SKILL_MODE="${1#--skill=}"; shift ;;
+        --scope)     SCOPE="${2:?--scope requires a value}"; shift 2 ;;
+        --scope=*)   SCOPE="${1#--scope=}"; shift ;;
+        --prefix)    PREFIX="${2:?--prefix requires a value}"; shift 2 ;;
+        --prefix=*)  PREFIX="${1#--prefix=}"; shift ;;
+        --skill-dir) SKILL_DIR="${2:?--skill-dir requires a value}"; shift 2 ;;
+        --skill-dir=*) SKILL_DIR="${1#--skill-dir=}"; shift ;;
+        -h|--help)   usage; exit 0 ;;
         *)
             echo "install.sh: unknown argument: $1" >&2
             echo "Run './install.sh --help' for usage." >&2
@@ -77,6 +61,9 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+case "$SKILL_MODE" in plugin|global|none) ;; *) echo "install.sh: --skill must be plugin|global|none" >&2; exit 2 ;; esac
+case "$SCOPE" in user|project|local) ;; *) echo "install.sh: --scope must be user|project|local" >&2; exit 2 ;; esac
 
 # --- Sanity check -------------------------------------------------------------
 
@@ -91,30 +78,51 @@ fi
 mkdir -p "${PREFIX}"
 cp "${SCRIPT_DIR}/cc-fleet" "${PREFIX}/cc-fleet"
 chmod +x "${PREFIX}/cc-fleet"
-# Relative symlink (same as `make install-bin` / top-level install.sh).
+# Relative symlink (same as `make install-bin` / the top-level installer).
 # os.Executable() resolves it, so a spawned teammate's apiKeyHelper still points
 # at the real cc-fleet path.
 ln -sf cc-fleet "${PREFIX}/ccf"
 echo "==> Installed: ${PREFIX}/cc-fleet (+ ccf alias)"
 
 # --- Skill --------------------------------------------------------------------
-# Installed by default. Plugin users should pass --no-skill (the plugin already
-# delivers the skill) so they don't end up with two copies. See README.md.
 
-if [[ "${INSTALL_SKILL}" -eq 1 ]]; then
-    if [[ -f "${SCRIPT_DIR}/SKILL.md" ]]; then
-        mkdir -p "${SKILL_DIR}"
-        cp "${SCRIPT_DIR}/SKILL.md" "${SKILL_DIR}/SKILL.md"
-        # Progressive-disclosure references travel with the skill.
-        if [[ -d "${SCRIPT_DIR}/references" ]]; then
-            mkdir -p "${SKILL_DIR}/references"
-            cp "${SCRIPT_DIR}/references/"*.md "${SKILL_DIR}/references/"
+case "$SKILL_MODE" in
+    plugin)
+        if command -v claude >/dev/null 2>&1; then
+            claude plugin marketplace add "${REPO}" --scope "${SCOPE}" >/dev/null 2>&1 || true
+            if claude plugin install "${PLUGIN}@${MARKETPLACE}" --scope "${SCOPE}"; then
+                echo "==> Installed the cc-fleet skill via plugin (scope: ${SCOPE})"
+                echo "    uninstall: claude plugin uninstall ${PLUGIN}@${MARKETPLACE}"
+            else
+                echo "==> Could not install the plugin automatically. To add the skill, run:" >&2
+                echo "    claude plugin marketplace add ${REPO} --scope ${SCOPE}" >&2
+                echo "    claude plugin install ${PLUGIN}@${MARKETPLACE} --scope ${SCOPE}" >&2
+            fi
+        else
+            echo "==> 'claude' not on PATH — skipped plugin install. To add the skill later:"
+            echo "    claude plugin marketplace add ${REPO} --scope ${SCOPE}"
+            echo "    claude plugin install ${PLUGIN}@${MARKETPLACE} --scope ${SCOPE}"
+            echo "    (or re-run with --skill global to copy the bundled skill instead)"
         fi
-        echo "==> Installed skill: ${SKILL_DIR}/SKILL.md"
-    fi
-else
-    echo "==> Skipped skill install (--no-skill); get the skill from the cc-fleet plugin."
-fi
+        ;;
+    global)
+        if [[ -f "${SCRIPT_DIR}/SKILL.md" ]]; then
+            mkdir -p "${SKILL_DIR}"
+            cp "${SCRIPT_DIR}/SKILL.md" "${SKILL_DIR}/SKILL.md"
+            if [[ -d "${SCRIPT_DIR}/references" ]]; then
+                mkdir -p "${SKILL_DIR}/references"
+                cp "${SCRIPT_DIR}/references/"*.md "${SKILL_DIR}/references/"
+            fi
+            echo "==> Installed the cc-fleet skill (global) to ${SKILL_DIR}/"
+        else
+            echo "install.sh: SKILL.md not found next to this script — cannot --skill global" >&2
+            exit 1
+        fi
+        ;;
+    none)
+        echo "==> Skipped skill install (--skill none)"
+        ;;
+esac
 
 # --- PATH check ---------------------------------------------------------------
 
