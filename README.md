@@ -1,8 +1,8 @@
 ![cc-fleet — spawn any vendor LLM (DeepSeek · GLM · Qwen · Kimi …) as real Claude Code teammates](docs/assets/cc-fleet-banner.png)
 
-# cc-fleet
+# 🚢 cc-fleet
 
-**🤖 Spawn any vendor LLM — DeepSeek · GLM · Qwen · Kimi · MiniMax … — as real Claude Code teammates or ⚡ one-shot subagents 🚀**
+<p align="center"><strong>🤖 Spawn any vendor LLM — DeepSeek · GLM · Qwen · Kimi · MiniMax … — as real Claude Code teammates or ⚡ one-shot subagents 🚀</strong></p>
 
 <div align="center">
 
@@ -87,18 +87,18 @@ In the TUI you register a vendor — give it a name, its Anthropic-compatible ba
 models endpoint, a default model, and paste the API key. The key is written `0600` under
 `~/.config/cc-fleet/secrets/` and is **never** passed via argv or shell history.
 
-<img src="docs/assets/tui-add-vendor.png" alt="cc-fleet TUI — add vendor form" width="720" />
+<p align="center"><img src="docs/assets/tui-add-vendor.png" alt="cc-fleet TUI — add vendor form" width="760" /></p>
 
 The config tree is created automatically on first save, so there is no separate init step.
 The TUI also lists your vendors, lets you edit them, and manage multiple keys per vendor.
 
-<img src="docs/assets/tui-vendors.png" alt="cc-fleet TUI — vendor list" width="720" />
+<p align="center"><img src="docs/assets/tui-vendors.png" alt="cc-fleet TUI — vendor list" width="760" /></p>
 
 Press `tab` to switch to the **Agent status** board — it shows every live teammate grouped by
 session → team, with its vendor, model, pane, PID, health, and hidden state, plus a list of
 subagent jobs. From here you can hide (`h`) / show (`s`) a teammate pane or refresh (`r`).
 
-<img src="docs/assets/tui-agent-status.png" alt="cc-fleet TUI — agent status board" width="900" />
+<p align="center"><img src="docs/assets/tui-agent-status.png" alt="cc-fleet TUI — agent status board" width="760" /></p>
 
 Once at least one vendor is registered, just talk to Claude Code in plain language. The
 skill reads your request and picks how to run the work — there are two execution modes.
@@ -121,7 +121,7 @@ Start from inside a tmux session so the teammates can split into panes alongside
 tmux new-session -s cc-fleet
 ```
 
-<img src="docs/assets/teammate-panes.png" alt="cc-fleet teammates — lead on the left, deepseek and glm teammate panes on the right" width="900" />
+<p align="center"><img src="docs/assets/teammate-panes.png" alt="cc-fleet teammates — lead on the left, deepseek and glm teammate panes on the right" width="760" /></p>
 
 Above: your lead session on the left, with a `deepseek` and a `glm` vendor teammate running
 in their own panes on the right — each a real `claude` process, driven by `SendMessage` and
@@ -129,13 +129,10 @@ reporting back exactly like native teammates.
 
 ### Without tmux — the teammate runs detached in the background
 
-If you're **not** inside a tmux session, cc-fleet can't split your terminal, so it
-transparently builds a **detached background tmux server** (`cc-fleet-swarm-<team>`) and runs
-the teammate there. The pane is never shown in your foreground — the worker simply lives in
-that background server. You still create, task, and read it entirely through native
-`TeamCreate` / `SendMessage`, identical to the in-tmux case; the only difference is the pane
-isn't on screen. If you want to watch it you can attach (`tmux -L cc-fleet-swarm-<team>
-attach`), but you never have to. Same teammate semantics, just not in the foreground.
+Not inside tmux? cc-fleet can't split your terminal, so it runs the teammate in a **detached
+background tmux server** (`cc-fleet-swarm-<team>`) instead. Everything else is identical — you
+still drive it through native `TeamCreate` / `SendMessage`; the pane just isn't on screen.
+Attach with `tmux -L cc-fleet-swarm-<team> attach` if you want to watch it.
 
 ### Subagent mode — a one-shot headless call
 
@@ -150,6 +147,13 @@ subagent-status`), multi-turn work resumes with `--resume`, and `--max-budget-us
 You don't choose the mode by hand — Claude decides teammate vs subagent from the nature of
 the request, spawns the vendor worker, and coordinates it for you.
 
+### Example prompts
+
+- *"Spawn a glm teammate and a deepseek teammate; have each summarize its model's strengths, then compare the two."*
+- *"Use deepseek to review the diff in `internal/spawn` and list any bugs you find."*
+- *"Fan out kimi, qwen, and glm subagents over these three files in parallel and collect the results."*
+- *"Spin up a deepseek teammate to port the test suite to table-driven form, then report back."*
+
 ## How it works
 
 It captures Claude Code's own spawn template (a *fingerprint*), swaps in a vendor profile,
@@ -157,6 +161,12 @@ and launches a real `claude` process in a tmux pane — same full tool stack, ju
 different model backend. The vendor key is fetched lazily through the profile's
 `apiKeyHelper` (`cc-fleet keyget`), so it never enters the environment, argv, or shell
 history. Your main session's auth is never touched; only the teammate panes bill the vendor.
+
+## CLI & advanced usage
+
+Claude drives the CLI for you, but every command also works by hand — multi-key rotation,
+`hide`/`show`, background/resumable subagents, secret backends, teardown order, and more.
+See **[CLI reference & advanced usage](docs/cli.md)**, or run `cc-fleet <cmd> --help`.
 
 ## The skill
 
