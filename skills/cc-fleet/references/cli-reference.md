@@ -148,8 +148,8 @@ Dispatch on `error_code` (see `references/troubleshooting.md`), never parse `err
 
 | | Native `Agent({model: 'sonnet'})` | cc-fleet vendor teammate |
 |---|---|---|
-| LLM backend | Anthropic | DeepSeek / Kimi / GLM / Qwen / MiniMax |
-| Billing | Main OAuth subscription quota | Vendor metered API |
+| LLM backend | Anthropic | Any Anthropic-compatible vendor (DeepSeek, GLM, …) |
+| Billing | Main session's own quota (OAuth or API key) | Vendor metered API |
 | Lifecycle | One-shot, exits when done | Long-lived in a tmux pane, multi-turn |
 | Tool stack | Full Claude Code | Full Claude Code (same harness) |
 | Rate limit | Shared with main session | Independent (vendor's quota) |
@@ -158,4 +158,4 @@ Dispatch on `error_code` (see `references/troubleshooting.md`), never parse `err
 | `--settings` injection | Not possible | Yes (vendor profile JSON) |
 | Vendor model id | Not possible (enum-locked) | Yes (`--model <vendor-id>`) |
 
-If you only need Anthropic and the work fits the subscription, native `Agent` is simpler. cc-fleet is for the cases where the four right-column properties matter.
+If you only need Anthropic and the work fits the main session, native `Agent` is simpler. cc-fleet is for the cases where the four right-column properties matter.

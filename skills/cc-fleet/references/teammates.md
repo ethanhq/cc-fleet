@@ -105,7 +105,7 @@ A teammate reports the way every teammate does — it calls **`SendMessage`** to
 
 **This is the one place vendor teammates genuinely differ from native `Agent` at runtime — read it before you "just wait for idle".**
 
-A native teammate runs on the subscription; if it errors it can still reason about the failure and message you or go idle. A **vendor teammate's brain *is* the vendor API.** When that API returns `429` / out-of-balance / `401`, the teammate's claude process retries in a loop and **never goes idle and never messages you** — doing either would need the very LLM that's down. The harness only auto-delivers *idle* notifications, so a lead that only waits blocks **forever**. Vendor teammates hit this far more than native ones: independent metered quota → `429` / `余额不足` / rate-limit are common, not rare. The error shows up **only in the teammate's tmux pane** — never in the inbox the lead reads. So you must poll.
+A native teammate runs on the main session's own auth; if it errors it can still reason about the failure and message you or go idle. A **vendor teammate's brain *is* the vendor API.** When that API returns `429` / out-of-balance / `401`, the teammate's claude process retries in a loop and **never goes idle and never messages you** — doing either would need the very LLM that's down. The harness only auto-delivers *idle* notifications, so a lead that only waits blocks **forever**. Vendor teammates hit this far more than native ones: independent metered quota → `429` / `余额不足` / rate-limit are common, not rare. The error shows up **only in the teammate's tmux pane** — never in the inbox the lead reads. So you must poll.
 
 ### The rule
 After `SendMessage` to a vendor teammate, do **not** wait open-endedly:
@@ -129,7 +129,7 @@ After `SendMessage` to a vendor teammate, do **not** wait open-endedly:
 ### Acting on a wedged teammate
 Tear down just the wedged worker (siblings keep running) by pane id: `cc-fleet teardown <pane_id> --json`. Or the whole team with `cc-fleet teardown <team> --json` (then `TeamDelete()` if you're done — teardown reclaims the vendor panes/procs, TeamDelete only removes native dirs). Then **fall back and tell the user**:
 - Switch vendor: `cc-fleet spawn <other-vendor> --as <name> --team <team> --json`, then re-`SendMessage` the task.
-- Or native subscription: `Agent({subagent_type: "general-purpose", model: "sonnet", prompt: "<task>"})`.
+- Or the native main-session model: `Agent({subagent_type: "general-purpose", model: "sonnet", prompt: "<task>"})`.
 - Always surface it, e.g. *"`glm` hit 429 / 余额不足 and was stuck, so I tore it down and switched to `deepseek`"*.
 
 Never leave a vendor teammate wedged and keep waiting — that is the exact failure this section exists to prevent.
