@@ -201,11 +201,18 @@ func TeardownTeam(team string) Result {
 				}
 			}
 		} else if loadErr != nil && !errors.Is(loadErr, spawn.ErrTeamNotFound) {
-			// A real load error (parse failure, permission) — record as a
-			// warning but proceed to RemoveAll: removing a broken team
-			// directory is usually exactly what the user wants.
+			// Config is unreadable, so we have no pane ids — but the swarm
+			// socket name is derivable from the team name and ghost processes
+			// carry <name>@<team>. Reap both before RemoveAll deletes the only
+			// record, or they leak with no way left to find them.
 			res.Warnings = append(res.Warnings,
 				fmt.Sprintf("load team config: %v", loadErr))
+			sock := spawn.SwarmSocketName(team)
+			if err := tmux.NewServer(sock).KillServer(); err != nil {
+				res.Warnings = append(res.Warnings,
+					fmt.Sprintf("kill swarm server %s: %v", sock, err))
+			}
+			reapIDs = append(reapIDs, discoverTeamAgentIDsFn(team)...)
 		}
 
 		// Remove the entire team dir. This is the failure path that matters:

@@ -282,6 +282,40 @@ func TestCmdlineAgentID(t *testing.T) {
 	}
 }
 
+// TestCmdlineTeamName covers the unambiguous --team-name match used by the
+// parse-fail teardown reap: it must read the explicit token, not split the
+// <name>@<team> agent id (team names may contain '@'), and must not confuse
+// "alpha" with "beta-alpha".
+func TestCmdlineTeamName(t *testing.T) {
+	cases := []struct {
+		argv []string
+		want string
+	}{
+		{argvOf("/path/claude --agent-id alice@alpha --team-name alpha"), "alpha"},
+		{argvOf("/path/claude --agent-id w@alpha@prod --team-name alpha@prod"), "alpha@prod"},
+		{argvOf("/path/claude --agent-id x@beta-alpha --team-name beta-alpha"), "beta-alpha"},
+		{argvOf("/path/claude --agent-id solo"), ""}, // no --team-name
+		{argvOf("claude --team-name"), ""},           // flag present but no value
+		{nil, ""},
+	}
+	for _, tc := range cases {
+		if got := cmdlineTeamName(tc.argv); got != tc.want {
+			t.Errorf("cmdlineTeamName(%v) = %q, want %q", tc.argv, got, tc.want)
+		}
+	}
+}
+
+// TestDiscoverTeamAgentIDs_EmptySafe: an empty team matches nothing, and a real
+// (unfaked) /proc scan for a unique team returns no ids and never our own work.
+func TestDiscoverTeamAgentIDs_EmptySafe(t *testing.T) {
+	if got := discoverTeamAgentIDs(""); got != nil {
+		t.Fatalf("discoverTeamAgentIDs(\"\") = %v, want nil", got)
+	}
+	if got := discoverTeamAgentIDs("no-such-team-9999"); len(got) != 0 {
+		t.Fatalf("discoverTeamAgentIDs(unique) = %v, want empty", got)
+	}
+}
+
 // TestDiscoverTeammatePIDs_EmptyAndSelfSafe exercises the real /proc scan
 // (no fake) for safety properties only: an empty id matches nothing, a unique
 // fake id matches no live process, and the scan never panics nor returns our

@@ -296,6 +296,51 @@ func discoverTeammatePIDs(agentID string) []int {
 	return pids
 }
 
+// cmdlineTeamName returns the value following --team-name in argv, or "" if
+// absent. Matching on this explicit token (rather than splitting the
+// <name>@<team> agent id) is unambiguous: team and member names may contain '@'.
+func cmdlineTeamName(argv []string) string {
+	for i := 0; i+1 < len(argv); i++ {
+		if argv[i] == "--team-name" {
+			return argv[i+1]
+		}
+	}
+	return ""
+}
+
+// discoverTeamAgentIDsFn is a test seam over discoverTeamAgentIDs so the
+// parse-fail teardown path can be exercised without faking the process table.
+var discoverTeamAgentIDsFn = discoverTeamAgentIDs
+
+// discoverTeamAgentIDs scans the process table for live teammate processes in
+// team, returning their distinct agent ids. The config-free counterpart to
+// discoverTeammatePIDs: used when a team's config can't be parsed, so ghosts
+// still get reaped by team name.
+func discoverTeamAgentIDs(team string) []string {
+	if team == "" {
+		return nil
+	}
+	procs, err := procintrospect.ProcessTable()
+	if err != nil {
+		return nil
+	}
+	self := os.Getpid()
+	seen := map[string]struct{}{}
+	var ids []string
+	for _, p := range procs {
+		if p.PID == self || !cmdlineLooksLikeTeammate(p.Argv) || cmdlineTeamName(p.Argv) != team {
+			continue
+		}
+		if id := cmdlineAgentID(p.Argv); id != "" {
+			if _, ok := seen[id]; !ok {
+				seen[id] = struct{}{}
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids
+}
+
 // parseTeammateCmdline extracts the structured Teammate fields from a /proc
 // cmdline argv slice. Missing fields are left empty rather than erroring —
 // ps's job is to display what's there.
