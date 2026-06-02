@@ -515,6 +515,92 @@ func TestModelPickerSkippedWhenNoEndpoint(t *testing.T) {
 	}
 }
 
+// pickerWith opens the model picker on the add form and loads the given models.
+func pickerWith(t *testing.T, ids ...string) Model {
+	t.Helper()
+	m := focusDefaultModel(t, addFormOnDeepseek(t))
+	m, _ = press(t, m, "enter") // open picker (loading)
+	list := make([]models.Model, len(ids))
+	for i, id := range ids {
+		list[i] = models.Model{ID: id, OwnedBy: "deepseek"}
+	}
+	m, _ = step(t, m, modelsMsg{models: list})
+	return m
+}
+
+func TestModelPickerFiltersByKeyword(t *testing.T) {
+	m := pickerWith(t, "deepseek-chat", "deepseek-reasoner", "deepseek-coder")
+	for _, r := range "reason" { // narrows to the single reasoner id
+		m, _ = press(t, m, string(r))
+	}
+	if got := m.filteredModels(); len(got) != 1 || got[0].ID != "deepseek-reasoner" {
+		t.Fatalf("filter %q → %+v, want [deepseek-reasoner]", m.modelFilter, got)
+	}
+	if m.modelCursor != 0 {
+		t.Fatalf("modelCursor = %d, want 0 (reset on filter)", m.modelCursor)
+	}
+	if out := m.View(); !strings.Contains(out, "deepseek-reasoner") || strings.Contains(out, "deepseek-coder") {
+		t.Fatalf("filtered view should show only the match, got %q", out)
+	}
+	m, _ = press(t, m, "enter")
+	if got := m.form.value("default_model"); got != "deepseek-reasoner" {
+		t.Fatalf("default_model = %q, want deepseek-reasoner", got)
+	}
+}
+
+func TestModelPickerFilterNoMatchDoesNotPick(t *testing.T) {
+	m := pickerWith(t, "deepseek-chat", "deepseek-reasoner")
+	for _, r := range "zzz" {
+		m, _ = press(t, m, string(r))
+	}
+	if got := m.filteredModels(); len(got) != 0 {
+		t.Fatalf("no-match filter → %+v, want empty", got)
+	}
+	if out := m.View(); !strings.Contains(out, "no model matches") {
+		t.Fatalf("no-match view should say so, got %q", out)
+	}
+	before := m.form.value("default_model")
+	m, _ = press(t, m, "enter") // must not silently pick the first item
+	if got := m.form.value("default_model"); got != before {
+		t.Fatalf("no-match enter changed default_model %q → %q", before, got)
+	}
+	if m.screen != screenForm {
+		t.Fatalf("enter returns to form; screen = %d, want screenForm", m.screen)
+	}
+}
+
+func TestModelPickerFilterBackspaceWidens(t *testing.T) {
+	m := pickerWith(t, "glm-4.5", "glm-4.5-air", "deepseek-chat")
+	for _, r := range "glm" {
+		m, _ = press(t, m, string(r))
+	}
+	if got := len(m.filteredModels()); got != 2 {
+		t.Fatalf("filter glm → %d, want 2", got)
+	}
+	m, _ = step(t, m, tea.KeyMsg{Type: tea.KeyCtrlH}) // terminals that report Backspace as Ctrl-H
+	m, _ = step(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
+	m, _ = step(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
+	if m.modelFilter != "" {
+		t.Fatalf("modelFilter = %q, want empty after backspacing past the start", m.modelFilter)
+	}
+	if got := len(m.filteredModels()); got != 3 {
+		t.Fatalf("empty filter → %d, want the full 3", got)
+	}
+}
+
+func TestModelPickerFilterResetsOnReopen(t *testing.T) {
+	m := pickerWith(t, "deepseek-chat")
+	m, _ = press(t, m, "c")
+	if m.modelFilter == "" {
+		t.Fatal("filter should be set after typing")
+	}
+	m, _ = press(t, m, "esc")   // back to the form (focus stays on default_model)
+	m, _ = press(t, m, "enter") // reopen the picker
+	if m.modelFilter != "" {
+		t.Fatalf("reopened picker: modelFilter = %q, want reset", m.modelFilter)
+	}
+}
+
 // boardModel enters the agent-status board with the given teammates + jobs
 // already loaded (screen=screenSpawn, boardEpoch=1, loading=false).
 func boardModel(t *testing.T, tms []teardown.Teammate, jobs []subagent.Result) Model {

@@ -545,12 +545,24 @@ func (m Model) viewModelPick() string {
 		b.WriteString(faintStyle.Render("vendor returned no models") + "\n")
 		b.WriteString(faintStyle.Render("press esc to type the model id manually") + "\n")
 	default:
-		start, end := windowBounds(m.modelCursor, len(m.modelList), maxVisibleModels)
+		filtered := m.filteredModels()
+		total := len(m.modelList)
+		if m.modelFilter == "" {
+			b.WriteString(faintStyle.Render(fmt.Sprintf("filter: type to narrow %d models", total)) + "\n\n")
+		} else {
+			b.WriteString("filter: " + m.modelFilter +
+				faintStyle.Render(fmt.Sprintf("  (%d/%d)", len(filtered), total)) + "\n\n")
+		}
+		if len(filtered) == 0 {
+			b.WriteString(faintStyle.Render("no model matches — backspace to widen, esc to type manually") + "\n")
+			break
+		}
+		start, end := windowBounds(m.modelCursor, len(filtered), maxVisibleModels)
 		if start > 0 {
 			b.WriteString(faintStyle.Render(fmt.Sprintf("    ↑ %d more", start)) + "\n")
 		}
 		for i := start; i < end; i++ {
-			mod := m.modelList[i]
+			mod := filtered[i]
 			cursor := "  "
 			id := mod.ID
 			if i == m.modelCursor {
@@ -562,11 +574,11 @@ func (m Model) viewModelPick() string {
 				b.WriteString(faintStyle.Render("    "+mod.OwnedBy) + "\n")
 			}
 		}
-		if end < len(m.modelList) {
-			b.WriteString(faintStyle.Render(fmt.Sprintf("    ↓ %d more", len(m.modelList)-end)) + "\n")
+		if end < len(filtered) {
+			b.WriteString(faintStyle.Render(fmt.Sprintf("    ↓ %d more", len(filtered)-end)) + "\n")
 		}
 	}
-	b.WriteString("\n" + footer("↑/↓ move · enter pick · esc manual entry"))
+	b.WriteString("\n" + footer("type to filter · ↑/↓ move · enter pick · esc manual entry"))
 	return b.String()
 }
 

@@ -93,10 +93,12 @@ type Model struct {
 
 	// Model picker: models fetched from the vendor's models_endpoint to fill the
 	// default_model field. While loading, modelList is nil and modelsErr is nil;
-	// the picker view branches on those.
+	// the picker view branches on those. modelFilter is the live type-to-narrow
+	// query; modelCursor indexes the FILTERED list, not modelList.
 	modelList   []models.Model
 	modelCursor int
 	modelsErr   error
+	modelFilter string
 
 	// Remove confirmation target.
 	removeName string
@@ -834,6 +836,7 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.modelList = nil
 		m.modelsErr = nil
 		m.modelCursor = 0
+		m.modelFilter = ""
 		return m, fetchModelsCmd(m.formMode, m.editName,
 			m.form.value("models_endpoint"), m.form.value("api_key"))
 	}
@@ -852,28 +855,59 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // updateModelPick drives the model picker. Enter accepts the highlighted model
 // id into the form's default_model field; esc (or an empty / failed fetch)
 // returns to the form so the user can type the id manually — the required
-// fallback when the vendor list is unavailable.
+// fallback when the vendor list is unavailable. Printable input narrows the
+// list (type-to-filter), so vim j/k no longer navigate — letters are filter
+// input and the arrow keys move the cursor.
 func (m Model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	filtered := m.filteredModels()
 	switch msg.String() {
 	case "esc":
 		m.screen = screenForm
 		return m, textinput.Blink
-	case "up", "k":
-		if m.modelCursor > 0 {
-			m.modelCursor--
-		}
-	case "down", "j":
-		if m.modelCursor < len(m.modelList)-1 {
-			m.modelCursor++
-		}
 	case "enter":
-		if len(m.modelList) > 0 {
-			m.form.setValue("default_model", m.modelList[m.modelCursor].ID)
+		if len(filtered) > 0 {
+			m.form.setValue("default_model", filtered[m.modelCursor].ID)
 		}
 		m.screen = screenForm
 		return m, textinput.Blink
+	case "up":
+		if m.modelCursor > 0 {
+			m.modelCursor--
+		}
+	case "down":
+		if m.modelCursor < len(filtered)-1 {
+			m.modelCursor++
+		}
+	case "backspace", "ctrl+h": // some terminals report Backspace as Ctrl-H
+		if m.modelFilter != "" {
+			r := []rune(m.modelFilter)
+			m.modelFilter = string(r[:len(r)-1])
+			m.modelCursor = 0
+		}
+	default:
+		if msg.Type == tea.KeyRunes && len(m.modelList) > 0 {
+			m.modelFilter += string(msg.Runes)
+			m.modelCursor = 0
+		}
 	}
 	return m, nil
+}
+
+// filteredModels returns the models whose id contains modelFilter
+// (case-insensitive substring — covers prefix, suffix, and infix). An empty
+// filter returns the full list. modelCursor indexes into this result.
+func (m Model) filteredModels() []models.Model {
+	if m.modelFilter == "" {
+		return m.modelList
+	}
+	q := strings.ToLower(m.modelFilter)
+	var out []models.Model
+	for _, mod := range m.modelList {
+		if strings.Contains(strings.ToLower(mod.ID), q) {
+			out = append(out, mod)
+		}
+	}
+	return out
 }
 
 func (m Model) updateRemoveConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
