@@ -150,3 +150,28 @@ func TestValidateID_RejectsWhitespace(t *testing.T) {
 		t.Errorf("ValidateTeamName(%q) = %v, want nil", "worker-1", err)
 	}
 }
+
+// TestValidateJobID_RejectsPathTraversal: a subagent job id flows into the
+// jobs-dir path via filepath.Join, so every traversal form must fail (wrapping
+// ErrInvalidJobID so the subagent-status entry point can dispatch on it).
+func TestValidateJobID_RejectsPathTraversal(t *testing.T) {
+	for _, in := range []string{"", ".", "..", "../..", "../../etc/passwd", "a/b", `c\d`, "/abs", "./x", "x/..", "a\x00b", strings.Repeat("x", maxIDLen+1)} {
+		err := ValidateJobID(in)
+		if err == nil {
+			t.Fatalf("ValidateJobID(%q): want error, got nil", in)
+		}
+		if !errors.Is(err, ErrInvalidJobID) {
+			t.Fatalf("ValidateJobID(%q): err=%v, want ErrInvalidJobID", in, err)
+		}
+	}
+}
+
+// TestValidateJobID_AcceptsUUID: the only job ids cc-fleet ever generates are
+// uuid.NewString() values, which must keep passing.
+func TestValidateJobID_AcceptsUUID(t *testing.T) {
+	for _, in := range []string{"550e8400-e29b-41d4-a716-446655440000", "00000000-0000-0000-0000-000000000000"} {
+		if err := ValidateJobID(in); err != nil {
+			t.Errorf("ValidateJobID(%q): unexpected error %v", in, err)
+		}
+	}
+}

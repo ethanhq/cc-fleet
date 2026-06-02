@@ -18,6 +18,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ethanhq/cc-fleet/internal/config"
+	"github.com/ethanhq/cc-fleet/internal/ids"
 	"github.com/ethanhq/cc-fleet/internal/procintrospect"
 )
 
@@ -272,6 +273,12 @@ var killProcessGroup = func(pid int) {
 // SAME classifier as the sync path, caches the terminal Result to
 // <id>.result.json, and returns done/failed.
 func StatusFor(jobID string) Result {
+	// jobID flows straight into filepath.Join below; validate it before any
+	// path is built so a "../" arg can't read outside the jobs dir.
+	if err := ids.ValidateJobID(jobID); err != nil {
+		return fail(ErrCodeBadArgs, fmt.Sprintf("invalid job id %q", jobID), "",
+			"Check the job_id printed by the --background launch")
+	}
 	dir, err := jobsDir()
 	if err != nil {
 		return fail(ErrCodeFailed, fmt.Sprintf("resolve jobs dir: %v", err), "", "")

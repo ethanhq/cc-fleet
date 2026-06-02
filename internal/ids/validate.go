@@ -19,6 +19,10 @@ var ErrInvalidTeamName = errors.New("invalid team name")
 // ErrInvalidMemberName is the member-name analogue of ErrInvalidTeamName.
 var ErrInvalidMemberName = errors.New("invalid member name")
 
+// ErrInvalidJobID is returned by ValidateJobID for a subagent job id that fails
+// the path-safety rules. Use errors.Is for dispatch.
+var ErrInvalidJobID = errors.New("invalid job id")
+
 // maxIDLen caps identifier length: a defense-in-depth guard against
 // pathologically long argv tokens / paths, not a tmux/fs limit.
 const maxIDLen = 128
@@ -53,6 +57,17 @@ func ValidateTeamName(s string) error {
 func ValidateMemberName(s string) error {
 	if err := validateID(s); err != nil {
 		return fmt.Errorf("%w %q: %s", ErrInvalidMemberName, s, err.Error())
+	}
+	return nil
+}
+
+// ValidateJobID is the same rule set as ValidateTeamName, used for subagent job
+// ids (always a uuid.NewString() in practice) that flow into the jobs-dir path
+// via filepath.Join. It guards the subagent-status entry point against reading
+// outside the jobs directory. Returns ErrInvalidJobID on failure.
+func ValidateJobID(s string) error {
+	if err := validateID(s); err != nil {
+		return fmt.Errorf("%w %q: %s", ErrInvalidJobID, s, err.Error())
 	}
 	return nil
 }
