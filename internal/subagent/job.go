@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ethanhq/cc-fleet/internal/childenv"
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/ids"
 	"github.com/ethanhq/cc-fleet/internal/procintrospect"
@@ -121,7 +122,7 @@ func launchBackground(req Request, binaryPath, profilePath, model string) Result
 	// Fresh exec.Command (no context) → no deadline; child outlives parent.
 	cmd := exec.Command(binaryPath)
 	cmd.Args = argv
-	cmd.Env = cleanEnv(os.Environ())
+	cmd.Env = childenv.Clean(os.Environ())
 	cmd.Stdout = outF
 	cmd.Stderr = errF
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

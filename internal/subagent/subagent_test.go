@@ -11,57 +11,6 @@ import (
 	"time"
 )
 
-// ----- cleanEnv (load-bearing: the env strip removes creds + nested-CC/teams markers) -----
-
-func TestCleanEnv_StripsTheLoadBearingVars(t *testing.T) {
-	in := []string{
-		"ANTHROPIC_API_KEY=sk-leak",
-		"ANTHROPIC_AUTH_TOKEN=tok-leak",
-		"CLAUDECODE=1",
-		"CLAUDE_CODE_ENTRYPOINT=cli",
-		"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1",
-		"PATH=/usr/bin",
-		"HOME=/root",
-		"NO_EQUALS_LINE",
-	}
-	out := cleanEnv(in)
-
-	// The four credential/nested-CC vars + the teams trigger must all be gone.
-	for _, banned := range []string{
-		"ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN",
-		"CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
-	} {
-		for _, kv := range out {
-			if strings.HasPrefix(kv, banned+"=") {
-				t.Fatalf("cleanEnv leaked %q: %q", banned, kv)
-			}
-		}
-	}
-	// Defense in depth: no CLAUDECODE / teams marker may appear anywhere.
-	joined := strings.Join(out, "\n")
-	for _, marker := range []string{"CLAUDECODE", "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "sk-leak", "tok-leak"} {
-		if strings.Contains(joined, marker) {
-			t.Fatalf("cleanEnv output still contains %q: %q", marker, joined)
-		}
-	}
-	// Unrelated vars (and the malformed no-'=' line) survive untouched.
-	if !containsLine(out, "PATH=/usr/bin") || !containsLine(out, "HOME=/root") {
-		t.Fatalf("cleanEnv dropped a keeper var: %v", out)
-	}
-	if !containsLine(out, "NO_EQUALS_LINE") {
-		t.Fatalf("cleanEnv dropped the malformed line: %v", out)
-	}
-}
-
-func containsLine(env []string, want string) bool {
-	for _, kv := range env {
-		if kv == want {
-			return true
-		}
-	}
-	return false
-}
-
 // ----- buildArgv -----
 
 func TestBuildArgv(t *testing.T) {

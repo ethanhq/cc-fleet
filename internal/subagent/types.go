@@ -14,7 +14,7 @@
 //     write is profile.WriteForVendor (already atomic + idempotent), so N
 //     concurrent subagents for one vendor are embarrassingly parallel.
 //   - The headless child's env strips the lead's creds AND the nested-CC /
-//     teams markers (see cleanEnv); fp.Env is deliberately NOT re-applied.
+//     teams markers (see childenv.Clean); fp.Env is deliberately NOT re-applied.
 package subagent
 
 import (

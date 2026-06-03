@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/ethanhq/cc-fleet/internal/childenv"
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 	"github.com/ethanhq/cc-fleet/internal/leadsession"
@@ -64,7 +65,7 @@ func Run(req Request) Result {
 
 	// 3. Resolve the spawn recipe (probed fingerprint if present, else bundled
 	//    default). Use ONLY the binary path, never fp.Env — it carries the
-	//    nested-CC / teams triggers that must be stripped, not re-applied (see cleanEnv).
+	//    nested-CC / teams triggers that must be stripped, not re-applied (see childenv.Clean).
 	fp, err := loadFP()
 	if err != nil {
 		// LoadOrBundled never returns ErrNotFound (it falls back to the bundled
@@ -133,7 +134,7 @@ func Run(req Request) Result {
 		timeout = defaultTimeout
 	}
 	argv := buildArgv(fp.BinaryPath, profilePath, model, req)
-	env := cleanEnv(os.Environ())
+	env := childenv.Clean(os.Environ())
 
 	// Register this run on the agent-status board so a sync subagent is visible
 	// WHILE it runs, then flip it to done/failed on return via a deferred
@@ -197,54 +198,6 @@ func buildArgv(binaryPath, profilePath, model string, req Request) []string {
 		argv = append(argv, "--max-budget-usd", strconv.FormatFloat(req.MaxBudgetUSD, 'f', -1, 64))
 	}
 	return argv
-}
-
-// envDropList is the set of variables cleanEnv removes from the inherited
-// environment before launching the headless claude child.
-var envDropList = map[string]bool{
-	// Key-safety: never let the lead's subscription creds reach the vendor call;
-	// vendor auth must come solely from the profile's apiKeyHelper.
-	"ANTHROPIC_API_KEY":    true,
-	"ANTHROPIC_AUTH_TOKEN": true,
-	// Nested-CC / teams markers. subagent is launched by the skill's Bash tool
-	// INSIDE the lead's session, so os.Environ() already carries these. Leaving
-	// CLAUDECODE=1 marks the child as "nested in CC" and alters/refuses the
-	// headless run. CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS is a teams trigger; a
-	// one-shot headless `-p` is NOT a teammate, so it must not ride along (and
-	// we deliberately do NOT re-apply fp.Env for the same reason).
-	"CLAUDECODE":                           true,
-	"CLAUDE_CODE_ENTRYPOINT":               true,
-	"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": true,
-}
-
-// cleanEnv returns environ with envDropList removed. It only ever removes; it
-// never injects (so no CLAUDECODE / teams trigger can leak in). This is
-// load-bearing — see envDropList for why each var must go.
-func cleanEnv(environ []string) []string {
-	out := make([]string, 0, len(environ))
-	for _, kv := range environ {
-		eq := indexByte(kv, '=')
-		if eq < 0 {
-			out = append(out, kv)
-			continue
-		}
-		if envDropList[kv[:eq]] {
-			continue
-		}
-		out = append(out, kv)
-	}
-	return out
-}
-
-// indexByte is strings.IndexByte without importing strings here (keeps this
-// file's imports tight; classify.go owns the strings dependency).
-func indexByte(s string, b byte) int {
-	for i := 0; i < len(s); i++ {
-		if s[i] == b {
-			return i
-		}
-	}
-	return -1
 }
 
 // runClaude execs the headless child with a process-group kill model so a
