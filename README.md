@@ -42,7 +42,7 @@ panes. The skill teaches Claude Code *when* to delegate work to those teammates.
   ```json
   { "env": { "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1" } }
   ```
-  The one-shot **subagent** mode works without it.
+  The one-shot **subagent** mode and the interactive **`cc-fleet run`** work without it.
 
 ## Quick Install
 
@@ -157,6 +157,22 @@ fan-out of independent tasks.
 > [!NOTE]
 > You never pick the mode by hand — Claude decides teammate vs subagent from the request,
 > spawns the vendor worker, and coordinates it for you.
+
+### Run a vendor in your own session
+
+> *Not delegation — this one is all you.*
+
+```bash
+cc-fleet run deepseek                          # an interactive claude, on DeepSeek
+cc-fleet run deepseek --dangerously-skip-permissions
+```
+
+`cc-fleet run <vendor>` drops you straight into an interactive Claude Code session with the LLM
+backend swapped to the vendor — the same `claude` you know, just on DeepSeek / GLM / Qwen / … and
+billing the vendor key. Reach for a cheaper or different-jurisdiction model for your own
+day-to-day coding, not only for delegated work. `--model` overrides the default; `--permission-mode`
+/ `--dangerously-skip-permissions` set the permission posture. **No tmux, no agent-teams** — just a
+terminal.
 
 ### More example prompts
 

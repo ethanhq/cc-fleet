@@ -19,6 +19,7 @@ drive it through plain language, but every command also works directly. Run `cc-
 | `keyget <vendor>` | Fetch a vendor API key — used internally by Claude's `apiKeyHelper`. |
 | `spawn <vendor>` | Spawn a vendor teammate as a tmux pane (Claude layer). |
 | `subagent <vendor>` | Run a one-shot headless vendor subagent. |
+| `run <vendor>` | Launch an interactive vendor-backed `claude` session (foreground; you drive it). |
 | `ps` | List live cc-fleet teammates (`--json`, `--check` for health). |
 | `hide` / `show` | Hide / restore a teammate's tmux pane without killing it. |
 | `teardown <team\|%pane>` | Kill teammate panes and clean up team state. |
@@ -52,6 +53,26 @@ cc-fleet subagent deepseek --model deepseek-chat --prompt "Summarize this log" -
 - `--timeout` / `--max-turns` / `--max-budget-usd` — bound runtime and cost.
 
 It needs no tmux and no agent-teams — pure stdout in, result out.
+
+## Interactive — a vendor-backed session you drive
+
+```bash
+cc-fleet run deepseek                              # interactive claude on deepseek
+cc-fleet run deepseek --model deepseek-reasoner
+cc-fleet run deepseek --dangerously-skip-permissions
+```
+
+`cc-fleet run <vendor>` replaces the current process with an interactive `claude` REPL whose LLM
+backend is the vendor (the profile pins the `apiKeyHelper` + base URL; the model is the vendor's
+`default_model` unless `--model` overrides). Unlike spawn/subagent, this is **you** using a
+vendor, not Claude delegating. No tmux, no agent-teams — just a terminal.
+
+- `--permission-mode <mode>` / `--dangerously-skip-permissions` — the session's permission posture
+  (mutually exclusive). It execs the binary directly, so a `claude` shell alias that adds such a
+  flag does not carry over — pass it here.
+- `-- <claude args>` — everything after `--` is forwarded to `claude`.
+
+Requires an interactive terminal; macOS / Linux only.
 
 ## Teammates — spawn, inspect, hide, tear down
 

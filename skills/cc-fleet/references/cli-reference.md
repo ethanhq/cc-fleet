@@ -34,13 +34,19 @@ cc-fleet uninstall [--wipe-secrets]      Remove config/profiles/models cache. Se
                                          them. Keeps the skill dir (owned by the plugin /
                                          make install-skill). (Removing the BINARY + ccf
                                          alias is `make uninstall`.)
+cc-fleet run <vendor>                    Launch an INTERACTIVE claude REPL on the vendor in
+                                         the foreground (execs into claude, takes over the
+                                         terminal). Flags: --model, --permission-mode <m> |
+                                         --dangerously-skip-permissions, -- <claude args>.
+                                         HUMAN-ONLY — never run it yourself (not a --json
+                                         command; it would block + replace your process).
 ```
 
 `ccf` is a short alias (symlink) for `cc-fleet` — every command works as `ccf …` too. (Install creates it; `make uninstall` removes it. The apiKeyHelper a spawn writes always points at the real `cc-fleet` path regardless.)
 
 **Multi-key + per-worker rotation:** a file-backend vendor can hold several API keys (managed in the interactive TUI: edit a vendor → "Manage API keys →" → add/edit/delete/enable-disable, keys shown masked `sk-…238`). With `--key-rotation round_robin` (or `random`) and ≥2 enabled keys, each spawned worker / subagent draws the next key via `keyget` — granularity is **per-worker** (Claude caches apiKeyHelper per process), so a fan-out of N workers spreads across the enabled keys to share vendor quota / rate limits. Default `off` = always the first enabled key. Disabled keys are never selected.
 
-**Tell the user to run `init` / `add` / `edit` / `remove` / `uninstall` themselves** — you do not run them on their behalf (they involve credentials).
+**Tell the user to run `init` / `add` / `edit` / `remove` / `uninstall` themselves** — you do not run them on their behalf (they involve credentials). Same for **`run`** — it's interactive and execs into `claude`, so it would block / replace you; the human runs it.
 
 ---
 

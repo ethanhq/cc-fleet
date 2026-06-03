@@ -18,6 +18,7 @@
 | `keyget <vendor>` | 取出 vendor API key —— 由 Claude 的 `apiKeyHelper` 内部调用。 |
 | `spawn <vendor>` | 将 vendor teammate 作为 tmux pane 拉起（Claude 层调用）。 |
 | `subagent <vendor>` | 运行一次性 headless 的 vendor subagent。 |
+| `run <vendor>` | 在前台拉起一个交互式、后端为该 vendor 的 `claude` 会话（你自己驱动）。 |
 | `ps` | 列出存活的 cc-fleet teammate（`--json`、`--check` 查看健康状态）。 |
 | `hide` / `show` | 隐藏 / 恢复某 teammate 的 tmux pane，不终止进程。 |
 | `teardown <team\|%pane>` | 杀掉 teammate pane 并清理 team 状态。 |
@@ -50,6 +51,24 @@ cc-fleet subagent deepseek --model deepseek-chat --prompt "总结这段日志" -
 - `--timeout` / `--max-turns` / `--max-budget-usd` —— 限制运行时长和费用上限。
 
 不需要 tmux，也不需要 agent-teams —— 纯 stdout 输入，结果输出。
+
+## Interactive —— 用第三方模型跑你自己的会话
+
+```bash
+cc-fleet run deepseek                              # 在 deepseek 上开交互式 claude
+cc-fleet run deepseek --model deepseek-reasoner
+cc-fleet run deepseek --dangerously-skip-permissions
+```
+
+`cc-fleet run <vendor>` 用一个交互式 `claude` 会话替换当前进程，后端 LLM 换成该 vendor（profile 钉住
+`apiKeyHelper` + base URL；模型取 vendor 的 `default_model`，`--model` 可覆盖）。和 spawn / subagent
+不同，这是**你自己**在用第三方模型，而非 Claude 委派。无需 tmux、无需 agent-teams，一个终端即可。
+
+- `--permission-mode <mode>` / `--dangerously-skip-permissions` —— 设定会话的权限模式（二者互斥）。
+  它直接 exec 二进制，所以你 `claude` 的 shell 别名里带的这类 flag 不会生效 —— 在这里传。
+- `-- <claude args>` —— `--` 之后的内容都转发给 `claude`。
+
+需要交互式终端；仅 macOS / Linux。
 
 ## Teammate —— spawn、查看、隐藏、清理
 
