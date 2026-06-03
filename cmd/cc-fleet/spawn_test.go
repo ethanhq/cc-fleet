@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ethanhq/cc-fleet/internal/permmode"
 	"github.com/ethanhq/cc-fleet/internal/spawn"
 )
 
@@ -20,7 +21,7 @@ func TestResolvePermissionOverride(t *testing.T) {
 		wantErr bool
 	}{
 		{"no flags → infer", "", false, "", false},
-		{"danger → bypass", "", true, spawn.PermModeBypassPermissions, false},
+		{"danger → bypass", "", true, permmode.BypassPermissions, false},
 		{"explicit acceptEdits", "acceptEdits", false, "acceptEdits", false},
 		{"explicit auto", "auto", false, "auto", false},
 		{"explicit plan", "plan", false, "plan", false},

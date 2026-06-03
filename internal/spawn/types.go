@@ -58,7 +58,7 @@ type Request struct {
 	Verify bool
 
 	// PermissionModeOverride forces the teammate's permission mode, bypassing
-	// the lead-session inheritance probe. One of the PermMode*
+	// the lead-session inheritance probe. One of the internal/permmode
 	// values (default / acceptEdits / plan / auto / bypassPermissions); empty
 	// means "infer from the lead session's startup flags". The CLI validates
 	// the value and rejects --permission-mode + --dangerously-skip-permissions

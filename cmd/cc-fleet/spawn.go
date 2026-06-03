@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/ethanhq/cc-fleet/internal/ids"
+	"github.com/ethanhq/cc-fleet/internal/permmode"
 	"github.com/ethanhq/cc-fleet/internal/spawn"
 )
 
@@ -141,27 +143,25 @@ profile that lazily fetches the vendor key.`,
 }
 
 // resolvePermissionOverride maps the two manual permission flags to a single
-// spawn.Request.PermissionModeOverride value. Empty result means "no override —
-// infer from the lead session". --dangerously-skip-permissions is sugar for
-// --permission-mode bypassPermissions; passing both is rejected (mutually
-// exclusive). An out-of-set --permission-mode value is rejected before any
-// spawn side effect runs.
+// permission-mode value (or "" = none). --dangerously-skip-permissions is sugar
+// for --permission-mode bypassPermissions; passing both is rejected (mutually
+// exclusive); an out-of-set --permission-mode is rejected before any side effect.
+// Callers interpret "" per their model: spawn infers from the lead session, run
+// adds no permission flag. Shared by the spawn and run commands.
 func resolvePermissionOverride(mode string, danger bool) (string, error) {
 	if danger && mode != "" {
 		return "", errors.New("--dangerously-skip-permissions and --permission-mode are mutually exclusive")
 	}
 	if danger {
-		return spawn.PermModeBypassPermissions, nil
+		return permmode.BypassPermissions, nil
 	}
-	switch mode {
-	case "":
+	if mode == "" {
 		return "", nil
-	case spawn.PermModeDefault, spawn.PermModeAcceptEdits, spawn.PermModePlan,
-		spawn.PermModeAuto, spawn.PermModeBypassPermissions:
-		return mode, nil
-	default:
-		return "", fmt.Errorf("invalid --permission-mode %q (want one of: default, acceptEdits, plan, auto, bypassPermissions)", mode)
 	}
+	if !permmode.IsValid(mode) {
+		return "", fmt.Errorf("invalid --permission-mode %q (want one of: %s)", mode, strings.Join(permmode.Modes, ", "))
+	}
+	return mode, nil
 }
 
 // reportSpawn writes the Result. In JSON mode it prints exactly one envelope

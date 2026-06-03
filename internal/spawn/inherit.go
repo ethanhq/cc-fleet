@@ -2,18 +2,8 @@ package spawn
 
 import (
 	"github.com/ethanhq/cc-fleet/internal/leadsession"
+	"github.com/ethanhq/cc-fleet/internal/permmode"
 	"github.com/ethanhq/cc-fleet/internal/procintrospect"
-)
-
-// Permission-mode enum values accepted by --permission-mode. The CLI validates
-// a manual override against this set; inheritPermissionFlags emits the matching
-// argv pair for `manual` / `lead-flag` sources.
-const (
-	PermModeDefault           = "default"
-	PermModeAcceptEdits       = "acceptEdits"
-	PermModePlan              = "plan"
-	PermModeAuto              = "auto"
-	PermModeBypassPermissions = "bypassPermissions"
 )
 
 // detectLeadPID, readLeadCmdline, and revalidateLead are swappable seams so
@@ -75,25 +65,6 @@ func flagValue(args []string, flag string) (string, bool) {
 	return "", false
 }
 
-// permModeToFlags maps a permission-mode enum to the CLI flag pair the spawn
-// should carry. Returns nil for default/plan (no flag — plan is intentionally
-// not inherited) and for unknown modes (the CLI rejects those before here).
-// Used by both the manual-override and lead-cmdline branches of
-// inheritPermissionFlags so they map identically.
-func permModeToFlags(mode string) []string {
-	switch mode {
-	case PermModeBypassPermissions:
-		return []string{"--dangerously-skip-permissions"}
-	case PermModeAcceptEdits:
-		return []string{"--permission-mode", PermModeAcceptEdits}
-	case PermModeAuto:
-		return []string{"--permission-mode", PermModeAuto}
-	case PermModeDefault, PermModePlan:
-		return nil
-	}
-	return nil
-}
-
 // inheritPermissionFlags computes the permission-related CLI flags the new
 // teammate spawn should carry, and the source label that explains where the
 // decision came from. Source is one of "manual" / "lead-flag" /
@@ -120,7 +91,7 @@ func permModeToFlags(mode string) []string {
 // claude's safe interactive default).
 func inheritPermissionFlags(manualOverride string) ([]string, string) {
 	if manualOverride != "" {
-		return permModeToFlags(manualOverride), "manual"
+		return permmode.ToFlags(manualOverride), "manual"
 	}
 	leadPID, leadStart := detectLeadPID()
 	if leadPID == 0 {
@@ -143,16 +114,11 @@ func inheritPermissionFlags(manualOverride string) ([]string, string) {
 	if !ok {
 		return nil, "lead-default"
 	}
-	switch mode {
-	case PermModeBypassPermissions:
-		return []string{"--dangerously-skip-permissions"}, "lead-flag"
-	case PermModeAcceptEdits:
-		return []string{"--permission-mode", PermModeAcceptEdits}, "lead-flag"
-	case PermModeAuto:
-		return []string{"--permission-mode", PermModeAuto}, "lead-flag"
-	}
-	// plan / default / unknown all collapse to lead-default (plan must NOT
+	// plan / default / unknown carry no flag → lead-default (plan must NOT
 	// inherit bypass).
+	if flags := permmode.ToFlags(mode); len(flags) > 0 {
+		return flags, "lead-flag"
+	}
 	return nil, "lead-default"
 }
 
