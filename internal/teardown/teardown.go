@@ -107,6 +107,20 @@ func reapTeammateProcess(agentID string) (killed []int, warnings []string) {
 	return killed, warnings
 }
 
+// configFreeReap kills team's deterministic swarm server and returns the agent
+// ids of any still-live teammate processes matched by --team-name — both
+// derivable from the team name alone, with no config. Shared by the two
+// config-less teardown paths (the dir is absent; or its config is unparseable),
+// so cleanup no longer depends on an on-disk record. The caller reaps the
+// returned ids after releasing the team lock.
+func configFreeReap(team string) (agentIDs []string, warnings []string) {
+	sock := spawn.SwarmSocketName(team)
+	if err := tmux.NewServer(sock).KillServer(); err != nil {
+		warnings = append(warnings, fmt.Sprintf("kill swarm server %s: %v", sock, err))
+	}
+	return discoverTeamAgentIDsFn(team), warnings
+}
+
 // TeardownTeam kills every tmux pane registered in team's config.json and
 // removes the entire ~/.claude/teams/<team>/ directory tree.
 //
@@ -114,8 +128,12 @@ func reapTeammateProcess(agentID string) (killed []int, warnings []string) {
 // OK with empty Panes/Members. tmux failures become warnings. Only a
 // filesystem failure on RemoveAll flips OK to false.
 //
-// The whole sequence runs under WithTeamLock so a concurrent spawn into
-// the same team waits for the kill+rm to finish before re-creating state.
+// Even when the team dir is already gone, a swarm server / vendor process can
+// still be alive under this team name (a prior teardown left it, or the dir was
+// deleted out of band). Both the swarm socket and the per-proc --team-name are
+// derivable from the team name alone, so recovery runs config-free — and under
+// WithTeamLock, so it serializes with a concurrent spawn into the same team
+// (the lock recreates the absent dir; RemoveAll cleans it back up).
 func TeardownTeam(team string) Result {
 	if team == "" {
 		return Result{
@@ -127,9 +145,6 @@ func TeardownTeam(team string) Result {
 
 	res := Result{OK: true, Target: team}
 
-	// First check: if the team dir doesn't even exist, this is a no-op and
-	// we should NOT acquire WithTeamLock (which would create the dir and
-	// lock file just to delete them again).
 	dir, dirErr := spawn.TeamDir(team)
 	if dirErr != nil {
 		res.OK = false
@@ -137,10 +152,15 @@ func TeardownTeam(team string) Result {
 		res.ErrorMsg = dirErr.Error()
 		return res
 	}
-	if _, statErr := os.Stat(dir); errors.Is(statErr, os.ErrNotExist) {
-		// Idempotent: nothing to clean. Caller's --json receives ok=true
-		// with empty slices.
-		return res
+	// Note whether a real team dir existed up front: a no-op teardown of a
+	// never-created team must not claim TeamRemoved (the lock below recreates
+	// then deletes the dir). We deliberately do NOT early-return on absence —
+	// leftovers can outlive a deleted dir, and recovery must run under the lock.
+	dirExisted := false
+	if _, statErr := os.Stat(dir); statErr == nil {
+		dirExisted = true
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		res.Warnings = append(res.Warnings, fmt.Sprintf("stat team dir: %v", statErr))
 	}
 
 	// Agent ids whose (possibly reparented) processes we reap after releasing
@@ -152,7 +172,8 @@ func TeardownTeam(team string) Result {
 		// rm -rf the team dir, which is the primary cleanup goal. We just
 		// won't know which pane ids to kill or member names to report.
 		tc, loadErr := spawn.LoadTeamConfig(team)
-		if loadErr == nil && tc != nil {
+		switch {
+		case loadErr == nil && tc != nil:
 			// Per-member socket — out-of-tmux teams keep their panes on a private
 			// swarm server (cc-fleet-swarm-<team>), and a team can mix in-tmux +
 			// swarm members. KillPane MUST target the right server, or a
@@ -200,28 +221,36 @@ func TeardownTeam(team string) Result {
 						fmt.Sprintf("kill swarm server %s: %v", sock, err))
 				}
 			}
-		} else if loadErr != nil && !errors.Is(loadErr, spawn.ErrTeamNotFound) {
-			// Config is unreadable, so we have no pane ids — but the swarm
-			// socket name is derivable from the team name and ghost processes
-			// carry <name>@<team>. Reap both before RemoveAll deletes the only
-			// record, or they leak with no way left to find them.
+		case loadErr != nil && !errors.Is(loadErr, spawn.ErrTeamNotFound):
+			// Config present but unparseable (parse error / permission): no pane
+			// ids to read, but the swarm socket + ghost --team-name are derivable
+			// from the team name. Recover before RemoveAll deletes the only record.
 			res.Warnings = append(res.Warnings,
 				fmt.Sprintf("load team config: %v", loadErr))
-			sock := spawn.SwarmSocketName(team)
-			if err := tmux.NewServer(sock).KillServer(); err != nil {
-				res.Warnings = append(res.Warnings,
-					fmt.Sprintf("kill swarm server %s: %v", sock, err))
-			}
-			reapIDs = append(reapIDs, discoverTeamAgentIDsFn(team)...)
+			ids, warns := configFreeReap(team)
+			res.Warnings = append(res.Warnings, warns...)
+			reapIDs = append(reapIDs, ids...)
+		default:
+			// ErrTeamNotFound: the dir was absent (recreated empty by the lock) or
+			// carries no config.json. A swarm server / vendor proc may still be
+			// alive under this team name with no record to find it — recover
+			// config-free, same as the parse-fail path but without a load warning.
+			ids, warns := configFreeReap(team)
+			res.Warnings = append(res.Warnings, warns...)
+			reapIDs = append(reapIDs, ids...)
 		}
 
 		// Remove the entire team dir. This is the failure path that matters:
 		// if we can't delete the directory, the user will see stale state on
-		// next spawn / ps.
+		// next spawn / ps. TeamRemoved reflects only a real team that existed
+		// before this call — a recovery sweep of an already-absent dir removes
+		// nothing the user can see.
 		if err := os.RemoveAll(dir); err != nil {
 			return fmt.Errorf("remove team dir: %w", err)
 		}
-		res.TeamRemoved = true
+		if dirExisted {
+			res.TeamRemoved = true
+		}
 		return nil
 	})
 
