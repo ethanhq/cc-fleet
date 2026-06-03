@@ -255,6 +255,8 @@ func suggestionFor(code string) string {
 		return "Retry once or switch vendor"
 	case ErrCodeFailed:
 		return "Inspect the error; retry or switch vendor"
+	case ErrCodeOutputTooLarge:
+		return "Narrow the task or cap it with --max-turns / --output-format json"
 	default:
 		return ""
 	}

@@ -31,6 +31,12 @@ const jobsDirName = "subagent-jobs"
 // defaultGCAge is the cutoff subagent-gc uses when --older-than is unset.
 const defaultGCAge = 24 * time.Hour
 
+// maxPromptBytes bounds a materialized --prompt-file / piped stdin. A task prompt
+// is far smaller; claude's own context window is the real ceiling. The cap only
+// stops an unbounded caller-supplied reader from OOMing the launch. Package var
+// so tests can shrink it.
+var maxPromptBytes = 10 << 20 // 10 MiB
+
 // jobMeta is the on-disk record written at --background launch (and a lighter
 // "running" record for a sync run, so the board can see it). It carries no
 // secret (prompt/answer are intentionally NOT persisted here) — just enough to
@@ -239,9 +245,15 @@ func materializePromptReader(r io.Reader, dst string) (f *os.File, err error) {
 		}
 	}()
 
-	data, err := io.ReadAll(r)
+	// Bounded read: a --prompt-file / piped stdin is caller-supplied and otherwise
+	// unbounded. LimitReader+1 distinguishes "exactly the cap" from "over"; an
+	// overflow fails here, BEFORE cmd.Start, so the child never gets a partial prompt.
+	data, err := io.ReadAll(io.LimitReader(r, int64(maxPromptBytes)+1))
 	if err != nil {
 		return nil, fmt.Errorf("read prompt: %w", err)
+	}
+	if len(data) > maxPromptBytes {
+		return nil, fmt.Errorf("prompt exceeds %d bytes", maxPromptBytes)
 	}
 	if err = os.WriteFile(dst, data, 0o600); err != nil {
 		return nil, fmt.Errorf("write prompt %s: %w", dst, err)

@@ -118,8 +118,9 @@ const (
 	ErrCodeVendorAPIError      = "VENDOR_API_ERROR"     // other is_error / 5xx / overloaded
 
 	// cc-fleet layer.
-	ErrCodeTimeout = "SUBAGENT_TIMEOUT" // --timeout deadline fired before claude returned
-	ErrCodeFailed  = "SUBAGENT_FAILED"  // non-zero exit with no parseable envelope / internal error
+	ErrCodeTimeout        = "SUBAGENT_TIMEOUT"          // --timeout deadline fired before claude returned
+	ErrCodeFailed         = "SUBAGENT_FAILED"           // non-zero exit with no parseable envelope / internal error
+	ErrCodeOutputTooLarge = "SUBAGENT_OUTPUT_TOO_LARGE" // child stdout/stderr exceeded the byte cap; group killed
 )
 
 // fail builds a failure Result, stamping vendor for context (mirrors spawn.fail).

@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -27,6 +28,48 @@ const defaultTimeout = 300 * time.Second
 // waitGrace is how long Go waits after context cancel (SIGTERM via cmd.Cancel)
 // before SIGKILLing the child. Package var so tests can shrink it.
 var waitGrace = 5 * time.Second
+
+// maxChildOutput bounds each captured child stream (stdout, stderr) on the SYNC
+// path. A `claude -p --output-format json` result is KB; the cap only stops a
+// runaway child from OOMing the in-memory capture (the --background path streams
+// to disk instead). Package var so tests can shrink it.
+var maxChildOutput = 32 << 20 // 32 MiB per stream
+
+// errOutputTooLarge is runClaude's sentinel when a captured stream overflowed
+// maxChildOutput and the process group was killed. Run maps it to
+// SUBAGENT_OUTPUT_TOO_LARGE rather than classifying a truncated body.
+var errOutputTooLarge = errors.New("subagent: child output exceeded cap")
+
+// cappedWriter buffers up to limit bytes; the first write that would exceed it
+// trips overflow and calls onOverflow (kills the process group), then silently
+// discards the rest so the os/exec copy goroutine drains to EOF without an
+// EPIPE-driven reclassification. Each instance is written by a single os/exec
+// copy goroutine and its fields are read only after cmd.Run() joins that
+// goroutine, so it needs no mutex; the shared onOverflow guards itself.
+type cappedWriter struct {
+	limit      int
+	buf        bytes.Buffer
+	overflow   bool
+	onOverflow func()
+}
+
+func (w *cappedWriter) Write(p []byte) (int, error) {
+	if w.overflow {
+		return len(p), nil // already over: discard, report success
+	}
+	rem := w.limit - w.buf.Len()
+	if len(p) <= rem {
+		return w.buf.Write(p)
+	}
+	if rem > 0 {
+		w.buf.Write(p[:rem])
+	}
+	w.overflow = true
+	if w.onOverflow != nil {
+		w.onOverflow()
+	}
+	return len(p), nil // consume the tail into the void
+}
 
 // loadFP is a seam so tests can inject a fake fingerprint without a real cache.
 // Production = LoadOrBundled: the user's probed cache if present, else the
@@ -148,8 +191,20 @@ func Run(req Request) Result {
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	stdout, stderr, exitCode, _ := runClaude(ctx, fp.BinaryPath, argv, env, req.PromptReader)
+	stdout, stderr, exitCode, runErr := runClaude(ctx, fp.BinaryPath, argv, env, req.PromptReader)
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
+
+	// A genuine deadline wins over an overflow that fired during the kill (the
+	// task ran too long is the dominant cause). Otherwise an over-cap child
+	// surfaces as SUBAGENT_OUTPUT_TOO_LARGE — never a misclassified truncation.
+	if !timedOut && errors.Is(runErr, errOutputTooLarge) {
+		res = fail(ErrCodeOutputTooLarge,
+			fmt.Sprintf("vendor %s child output exceeded %d bytes", req.Vendor, maxChildOutput),
+			req.Vendor, suggestionFor(ErrCodeOutputTooLarge))
+		res.LeadSessionID = req.LeadSessionID
+		res.ExitCode = exitCode
+		return res
+	}
 
 	// 8. Classify into the outer envelope, plus stash the raw passthrough.
 	innerJSON := req.JSON || req.OutputFormat == "json"
@@ -203,7 +258,8 @@ func buildArgv(binaryPath, profilePath, model string, req Request) []string {
 // runClaude execs the headless child with a process-group kill model so a
 // timeout reaps the WHOLE tree (claude forks Bash-tool grandchildren). It is a
 // standalone func so tests can drive it with a fake binary. It never streams to
-// the parent's stdio: stdout/stderr are captured to buffers.
+// the parent's stdio: stdout/stderr are captured to byte-capped buffers, and a
+// stream that overflows maxChildOutput kills the group and returns errOutputTooLarge.
 func runClaude(ctx context.Context, binaryPath string, argv, env []string, stdin io.Reader) (stdout, stderr []byte, exitCode int, err error) {
 	cmd := exec.CommandContext(ctx, binaryPath)
 	cmd.Args = argv // argv[0] == binaryPath by construction
@@ -211,9 +267,22 @@ func runClaude(ctx context.Context, binaryPath string, argv, env []string, stdin
 	if stdin != nil {
 		cmd.Stdin = stdin
 	}
-	var outBuf, errBuf bytes.Buffer
-	cmd.Stdout = &outBuf
-	cmd.Stderr = &errBuf
+	// Capture each stream through a byte cap so a runaway child can't OOM the
+	// parent. On overflow we SIGKILL the whole group (the over-cap output is
+	// already useless) and surface errOutputTooLarge — never a silent truncation,
+	// which would mis-parse into SUBAGENT_FAILED or echo a truncated answer.
+	var killOnce sync.Once
+	killGroup := func() {
+		killOnce.Do(func() {
+			if cmd.Process != nil {
+				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			}
+		})
+	}
+	outW := &cappedWriter{limit: maxChildOutput, onOverflow: killGroup}
+	errW := &cappedWriter{limit: maxChildOutput, onOverflow: killGroup}
+	cmd.Stdout = outW
+	cmd.Stderr = errW
 
 	// Setpgid makes the child its own group leader, so -Pid == the whole group.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -249,5 +318,8 @@ func runClaude(ctx context.Context, binaryPath string, argv, env []string, stdin
 			exitCode = -1
 		}
 	}
-	return outBuf.Bytes(), errBuf.Bytes(), exitCode, err
+	if outW.overflow || errW.overflow {
+		return outW.buf.Bytes(), errW.buf.Bytes(), exitCode, errOutputTooLarge
+	}
+	return outW.buf.Bytes(), errW.buf.Bytes(), exitCode, err
 }

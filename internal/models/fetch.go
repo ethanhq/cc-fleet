@@ -70,6 +70,12 @@ const fetchTimeout = 10 * time.Second
 // truncateBodyPreview to ensure callers never log unbounded vendor bytes.
 const bodySnippetMax = 200
 
+// maxModelsBody bounds how much of a /v1/models response we buffer in memory. A
+// model list is normally a few KB; the cap only stops a misconfigured or hostile
+// endpoint from OOMing add/refresh by streaming an unbounded body within
+// fetchTimeout (which caps time, not bytes). Package var so tests can shrink it.
+var maxModelsBody = 8 << 20 // 8 MiB
+
 // Fetch hits v.ModelsEndpoint and returns the parsed model list.
 //
 // It looks up the vendor's API key via the secrets package (so the caller
@@ -157,9 +163,13 @@ func FetchWithKey(ctx context.Context, endpoint string, key []byte) ([]Model, er
 	}
 	defer resp.Body.Close()
 
-	// Read body up-front so error paths can include a truncated snippet
-	// without burning the body before parsing.
-	body, readErr := io.ReadAll(resp.Body)
+	// Read body up-front so error paths can include a truncated snippet without
+	// burning the body before parsing — but BOUNDED: a misconfigured or hostile
+	// endpoint can stream gigabytes within fetchTimeout. LimitReader+1 lets us
+	// tell "exactly the cap" from "over the cap". Status classification below is
+	// unchanged (it doesn't need the whole body); only the 2xx parse path treats
+	// an overflow as an error, so an oversized 401/5xx still classifies normally.
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, int64(maxModelsBody)+1))
 	if readErr != nil {
 		return nil, fmt.Errorf("models: read body from %s (status %d): %w",
 			endpoint, resp.StatusCode, readErr)
@@ -177,6 +187,13 @@ func FetchWithKey(ctx context.Context, endpoint string, key []byte) ([]Model, er
 			// bearer key into the body cannot leak it even via the preview surface.
 			body: truncateBodyPreview(redact.MaskKeyLike(body)),
 		}
+	}
+
+	// Success path needs the whole body to parse — so an oversized response is a
+	// hard error here (size only, never body bytes: key-safe), not a silent
+	// truncation that would mis-parse into a confusing "neither data nor array".
+	if len(body) > maxModelsBody {
+		return nil, fmt.Errorf("models: response from %s exceeds %d bytes", endpoint, maxModelsBody)
 	}
 
 	out, err := parseModelsBody(body)
