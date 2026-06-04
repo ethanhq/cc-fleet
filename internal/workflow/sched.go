@@ -17,6 +17,12 @@ const maxLifetimeAgents = 1000
 // leaves; the effective default is min(this, cores-2), floored at 1.
 const maxConcurrencyCap = 16
 
+// maxFanoutElements bounds a single parallel/pipeline list — far above the lifetime cap
+// so a large list (the native "excess queues" case) is accepted, but finite so a
+// pathological list can't OOM the results slice. Live goroutines stay ~pool size
+// regardless (fanout acquires a slot before spawning each element).
+const maxFanoutElements = 100_000
+
 // maxThreadSteps caps Starlark bytecode steps PER THREAD (top-level and every
 // parallel/pipeline goroutine thread), so a pure-CPU runaway in script glue is
 // bounded even though `while` is disabled. Generous: real orchestration glue is

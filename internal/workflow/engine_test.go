@@ -22,6 +22,9 @@ type leafCall struct {
 	timeout                                    time.Duration
 	maxBudget                                  float64
 	maxTurns                                   int
+	persistIO                                  bool
+	ioPrompt                                   string
+	workingDir                                 string
 }
 
 type recorder struct {
@@ -61,6 +64,7 @@ func fakeLeaf(r *recorder, respond func(leafCall) subagent.Result) func(subagent
 		c := leafCall{
 			vendor: req.Vendor, prompt: prompt, runID: req.RunID, phase: req.Phase, label: req.Label,
 			model: req.Model, timeout: req.Timeout, maxBudget: req.MaxBudgetUSD, maxTurns: req.MaxTurns,
+			persistIO: req.PersistIO, ioPrompt: req.IOPrompt, workingDir: req.WorkingDir,
 		}
 		r.record(c)
 		res := respond(c)

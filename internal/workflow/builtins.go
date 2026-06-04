@@ -26,6 +26,23 @@ type engine struct {
 	startedAt    string
 	phases       []subagent.RunPhase
 	currentPhase string
+	// journal is the run's content-hash result cache (resume). Nil-safe: an engine
+	// built without one (the leaf unit tests) simply never caches. Read/written only
+	// under the GIL (lookup before a leaf's exec; append after runBlocking re-locks).
+	journal *journal
+	// events is the run's live-event channel (board live log / DAG). Nil-safe. Emitted
+	// only under the GIL — the seq counter needs no atomic and lines never interleave.
+	// One-way producer→board; never read back by the engine; never feeds journalKey.
+	events    *eventWriter
+	groupSeq  int    // monotonic id source for parallel/pipeline/workflow group brackets
+	persistIO bool   // persist each leaf's prompt+answer for board drill-in (default on; --no-persist-io off)
+	enginePID int    // os.Getpid() of the DETACHED engine — recorded so `workflow stop` can reap it
+	metaModel string // meta.model: default model for agents that omit model= (applied before journalKey)
+	whenToUse string // meta.whenToUse: display/board text
+	// Budget accounting (USD), GIL-protected. budgetTotal<=0 means uncapped. budgetSpent
+	// accumulates each completed leaf's CostUSD; agent() raises once spent>=total.
+	budgetTotal float64
+	budgetSpent float64
 }
 
 // builtins returns the predeclared environment exposed to a workflow script. It
@@ -38,6 +55,11 @@ func (e *engine) builtins(opts Options) starlark.StringDict {
 		"pipeline": starlark.NewBuiltin("pipeline", e.pipeline),
 		"phase":    starlark.NewBuiltin("phase", e.phase),
 		"log":      starlark.NewBuiltin("log", e.log),
+		// `wait` is cc-fleet's name for native's await() — Starlark RESERVES `await` as a
+		// keyword, so the script-facing builtin must use a legal identifier.
+		"wait":     starlark.NewBuiltin("wait", e.await),
+		"workflow": starlark.NewBuiltin("workflow", e.workflow),
+		"budget":   budgetValue{e: e},
 	}
 	if opts.ArgsJSON != "" {
 		// Decode --args-json into `args` on the not-yet-concurrent top-level thread.
@@ -60,15 +82,17 @@ func (e *engine) builtins(opts Options) starlark.StringDict {
 // released only for the blocking exec + slot wait (via runBlocking).
 func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var (
-		prompt     string
-		vendor     string
-		modelVal   starlark.Value
-		schemaVal  starlark.Value
-		labelVal   starlark.Value
-		phaseVal   starlark.Value
-		timeoutVal starlark.Value
-		budgetVal  starlark.Value
-		turnsVal   starlark.Value
+		prompt       string
+		vendor       string
+		modelVal     starlark.Value
+		schemaVal    starlark.Value
+		labelVal     starlark.Value
+		phaseVal     starlark.Value
+		timeoutVal   starlark.Value
+		budgetVal    starlark.Value
+		turnsVal     starlark.Value
+		bgVal        starlark.Value
+		isolationVal starlark.Value
 	)
 	// Every optional is unpacked as a Value so an explicit None (the documented
 	// "omitted" default) is accepted rather than rejected by Starlark's strict typing;
@@ -84,11 +108,24 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 		"timeout?", &timeoutVal,
 		"max_budget_usd?", &budgetVal,
 		"max_turns?", &turnsVal,
+		"run_in_background?", &bgVal,
+		"isolation?", &isolationVal,
 	); err != nil {
 		return nil, err
 	}
 	if vendor == "" {
 		return nil, fmt.Errorf("agent: vendor= is required")
+	}
+	runInBackground := bgVal != nil && bgVal != starlark.None && bool(bgVal.Truth())
+	isolation, err := optString(isolationVal, "isolation")
+	if err != nil {
+		return nil, err
+	}
+	if isolation != "" && isolation != "worktree" {
+		return nil, fmt.Errorf("agent: isolation must be 'worktree' (or omitted), got %q", isolation)
+	}
+	if isolation == "worktree" && runInBackground {
+		return nil, fmt.Errorf("agent: isolation='worktree' is not supported with run_in_background=True")
 	}
 	model, err := optString(modelVal, "model")
 	if err != nil {
@@ -121,27 +158,91 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 	if phaseTag == "" {
 		phaseTag = e.currentPhase
 	}
+	// meta.model is the default model for agents that omit model=. Apply it BEFORE the
+	// journal key so the key reflects the EFFECTIVE model the leaf will use.
+	if model == "" {
+		model = e.metaModel
+	}
 	var schemaJSON string
-	var requiredKeys []string
 	if schemaVal != nil && schemaVal != starlark.None {
-		sj, keys, serr := encodeSchema(thread, schemaVal)
+		sj, serr := encodeSchema(thread, schemaVal)
 		if serr != nil {
 			return nil, fmt.Errorf("agent: schema: %w", serr)
 		}
-		schemaJSON, requiredKeys = sj, keys
+		schemaJSON = sj
 	}
+	if runInBackground && schemaJSON != "" {
+		// A background leaf is one-shot (no in-process retry loop), so schema enforcement
+		// (which relies on retry) isn't offered for it.
+		return nil, fmt.Errorf("agent: schema= is not supported with run_in_background=True")
+	}
+
+	// Resume replay: a journaled leaf returns its cached result with NO vendor exec, NO
+	// slot, and NO lifetime-admit — a cache hit is free. The key spans the result's full
+	// determinant (vendor / model / base prompt / schema). A schema leaf re-decodes +
+	// re-validates the cached raw answer (deterministic: it passed validation before).
+	key := journalKey(vendor, model, prompt, schemaJSON, isolation)
+	if cached, ok := e.journal.lookup(key); ok {
+		if runInBackground {
+			// A resolved handle: await() returns the cached result without spawning.
+			return &bgHandle{resolved: true, cached: cached, key: key, vendor: vendor, model: model, phase: phaseTag, label: label}, nil
+		}
+		if schemaJSON == "" {
+			e.emitLeaf("cached", phaseTag, label, vendor, model)
+			return starlark.String(cached), nil
+		}
+		// A schema leaf re-decodes + re-validates its cached raw answer (deterministic:
+		// it passed before). If a corrupt/hand-edited journal entry fails to validate,
+		// fall through to re-run the leaf rather than abort the run.
+		if v, verr := decodeAndValidate(thread, cached, schemaVal); verr == nil {
+			e.emitLeaf("cached", phaseTag, label, vendor, model)
+			return v, nil
+		}
+	}
+
+	// Budget gate: a real exec is about to spend, so refuse once the cap is reached.
+	// Placed AFTER the journal lookup (a cache hit is free and never blocked) and BEFORE
+	// admit/slot. budgetTotal<=0 is uncapped. GIL-held → budgetSpent is exact.
+	if e.budgetTotal > 0 && e.budgetSpent >= e.budgetTotal {
+		return nil, fmt.Errorf("agent: budget exceeded ($%.4f of $%.2f spent)", e.budgetSpent, e.budgetTotal)
+	}
+
+	// Background leaf: launch detached, return a handle (NO live-pool slot; result is
+	// journaled at await time). launchBg does its own lifetime admit.
+	if runInBackground {
+		return e.launchBg(vendor, model, prompt, phaseTag, label, key, timeoutSec, maxBudget, maxTurns)
+	}
+
 	if !e.sched.admit() {
 		return nil, fmt.Errorf("agent: run exceeded the %d-leaf lifetime cap", maxLifetimeAgents)
 	}
 
 	// Acquire a pool slot with the GIL released, so waiting for a slot never pins the
-	// interpreter. Only register the slot-release defer AFTER a successful acquire.
+	// interpreter. The slot is held ONLY across this leaf's actual exec and released right
+	// after — never across nested parallel/pipeline/workflow inside an element — so nesting
+	// can't deadlock on a slot a parent branch is sitting on. Only register the release
+	// defer AFTER a successful acquire.
 	acquired := false
 	e.sched.runBlocking(func() { acquired = e.sched.acquireSlot() })
 	if !acquired {
 		return nil, fmt.Errorf("agent: run cancelled before launch")
 	}
 	defer e.sched.releaseSlot()
+
+	// Worktree isolation: run the leaf with cwd = a fresh git worktree (created once,
+	// reused across schema retries), torn down on return (success, failure, or panic).
+	// Created with the GIL RELEASED (it shells out to git); GIL re-held on return.
+	var workDir string
+	if isolation == "worktree" {
+		var cleanup func()
+		var werr error
+		e.sched.runBlocking(func() { workDir, cleanup, werr = createWorktreeFn(e.runID) })
+		if werr != nil {
+			e.emitLeaf("failed", phaseTag, label, vendor, model)
+			return nil, fmt.Errorf("agent: %w", werr)
+		}
+		defer cleanup()
+	}
 
 	attempts := 1
 	if schemaJSON != "" {
@@ -151,6 +252,7 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 	if schemaJSON != "" {
 		sendPrompt = prompt + jsonInstruction(schemaJSON)
 	}
+	e.emitLeaf("launch", phaseTag, label, vendor, model)
 	var lastErr error
 	for i := 0; i < attempts; i++ {
 		req := subagent.Request{
@@ -164,22 +266,33 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 			RunID:        e.runID,
 			Phase:        phaseTag,
 			Label:        label,
+			PersistIO:    e.persistIO,
+			IOPrompt:     sendPrompt, // persisted only when PersistIO (subagent gates)
+			WorkingDir:   workDir,    // empty unless isolation='worktree'
 		}
 		var res subagent.Result
 		e.sched.runBlocking(func() { res = runLeaf(req) })
 		if !res.OK {
+			e.emitLeaf("failed", phaseTag, label, vendor, model)
 			return nil, fmt.Errorf("agent(%s): %s: %s", vendor, res.ErrorCode, res.ErrorMsg)
 		}
+		// Accumulate every OK exec's cost (incl. each schema-retry attempt) under the GIL.
+		e.budgetSpent += res.CostUSD
 		if schemaJSON == "" {
+			e.journal.append(key, res.Result)
+			e.emitLeaf("done", phaseTag, label, vendor, model)
 			return starlark.String(res.Result), nil
 		}
-		v, verr := decodeAndValidate(thread, res.Result, requiredKeys)
+		v, verr := decodeAndValidate(thread, res.Result, schemaVal)
 		if verr == nil {
+			e.journal.append(key, res.Result)
+			e.emitLeaf("done", phaseTag, label, vendor, model)
 			return v, nil
 		}
 		lastErr = verr
 		sendPrompt = prompt + "\n\nYour previous reply was rejected: " + verr.Error() + jsonInstruction(schemaJSON)
 	}
+	e.emitLeaf("failed", phaseTag, label, vendor, model)
 	return nil, fmt.Errorf("agent(%s): schema not satisfied after %d attempts: %v", vendor, attempts, lastErr)
 }
 
@@ -239,10 +352,15 @@ func (e *engine) parallel(thread *starlark.Thread, b *starlark.Builtin, args sta
 	if err != nil {
 		return nil, err
 	}
+	// Bracket the fan-out with group-open/close events (GIL-held, before/after fanout) so
+	// the board reconstructs the DAG by seq-nesting — every leaf event lands between this
+	// group's open and close, without threading a group id through the hot fanout path.
+	gid := e.emitGroupOpen("parallel")
 	results := make([]starlark.Value, len(thunks))
-	e.fanout(len(thunks), func(i int, th *starlark.Thread) {
+	e.fanout(thread, len(thunks), func(i int, th *starlark.Thread) {
 		results[i] = e.callOrNone(th, thunks[i], nil)
 	})
+	e.emitGroupClose(gid)
 	return starlark.NewList(results), nil
 }
 
@@ -266,10 +384,12 @@ func (e *engine) pipeline(thread *starlark.Thread, b *starlark.Builtin, args sta
 		s.Freeze()
 		stages = append(stages, s)
 	}
+	gid := e.emitGroupOpen("pipeline")
 	results := make([]starlark.Value, len(items))
-	e.fanout(len(items), func(i int, th *starlark.Thread) {
+	e.fanout(thread, len(items), func(i int, th *starlark.Thread) {
 		results[i] = e.runPipelineItem(th, items[i], i, stages)
 	})
+	e.emitGroupClose(gid)
 	return starlark.NewList(results), nil
 }
 
@@ -297,7 +417,31 @@ func (e *engine) phase(thread *starlark.Thread, b *starlark.Builtin, args starla
 		e.phases = append(e.phases, subagent.RunPhase{Title: title, Detail: detail})
 	}
 	e.saveManifest("running", "")
+	e.events.emit(eventRecord{Kind: "phase", Phase: title, Msg: detail})
 	return starlark.None, nil
+}
+
+// emitLeaf records a leaf transition (launch/done/failed/cached) on the live-event
+// channel. GIL-held callers only; nil-safe via the writer.
+func (e *engine) emitLeaf(status, phase, label, vendor, model string) {
+	e.events.emit(eventRecord{Kind: "leaf", Status: status, Phase: phase, Label: label, Vendor: vendor, Model: model})
+}
+
+// emitGroupOpen records the start of a parallel/pipeline/workflow group and returns its
+// id; emitGroupClose records its end. The board reconstructs the DAG by seq-nesting:
+// every event between an open and its matching close belongs to that group, and nested
+// groups (e.g. a parallel inside a pipeline stage) nest by bracket order — so no group id
+// has to be threaded through fanout/callOrNone. GIL-held callers only (open before
+// fanout, close after it joins).
+func (e *engine) emitGroupOpen(groupType string) string {
+	e.groupSeq++
+	gid := fmt.Sprintf("g%d", e.groupSeq)
+	e.events.emit(eventRecord{Kind: "group-open", GroupID: gid, GroupTy: groupType, Phase: e.currentPhase})
+	return gid
+}
+
+func (e *engine) emitGroupClose(gid string) {
+	e.events.emit(eventRecord{Kind: "group-close", GroupID: gid})
 }
 
 // saveManifest overwrites the run manifest from the engine's authoritative in-memory
@@ -309,10 +453,13 @@ func (e *engine) saveManifest(status, errText string) {
 		RunID:       e.runID,
 		Name:        e.name,
 		Description: e.description,
+		WhenToUse:   e.whenToUse,
 		StartedAt:   e.startedAt,
+		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
 		Phases:      e.phases,
 		Status:      status,
 		Error:       errText,
+		EnginePID:   e.enginePID,
 	})
 }
 
@@ -326,6 +473,7 @@ func (e *engine) log(thread *starlark.Thread, b *starlark.Builtin, args starlark
 		return nil, err
 	}
 	fmt.Fprintln(os.Stderr, "[workflow] "+msg)
+	e.events.emit(eventRecord{Kind: "log", Msg: msg})
 	return starlark.None, nil
 }
 
@@ -334,7 +482,18 @@ func (e *engine) log(thread *starlark.Thread, b *starlark.Builtin, args starlark
 // (each goroutine acquires it for its starlark.Call) and stores its own result. The
 // GIL is released for the whole wait so the goroutines can acquire it; on return it is
 // re-acquired so the interpreter resumes single-threaded.
-func (e *engine) fanout(n int, work func(i int, th *starlark.Thread)) {
+func (e *engine) fanout(parent *starlark.Thread, n int, work func(i int, th *starlark.Thread)) {
+	// Propagate the nested-workflow marker to the goroutine threads so a workflow() call
+	// from a NESTED run's parallel/pipeline branch is still caught by the one-level guard.
+	nested := parent != nil && parent.Local(nestedLocalKey) != nil
+	// Each element gets its own goroutine; the pool SLOT is taken inside agent() for the
+	// actual (uncached) leaf exec and released right after — NOT held across the element's
+	// whole branch. That is what makes nesting deadlock-free: a parallel/pipeline/workflow
+	// INSIDE an element doesn't sit on a slot while its own leaves wait for one. Concurrent
+	// vendor execs are still pool-bounded (the slot); a large list just queues as cheap
+	// slot-blocked goroutines (frozenSlice's maxFanoutElements bounds the list). A
+	// branch-held permit (true acquire-then-go) was rejected: it deadlocks when both
+	// branches of a parallel nest another parallel that needs a slot the parents hold.
 	var wg sync.WaitGroup
 	e.sched.unlock()
 	for i := 0; i < n; i++ {
@@ -342,6 +501,9 @@ func (e *engine) fanout(n int, work func(i int, th *starlark.Thread)) {
 		go func(i int) {
 			defer wg.Done()
 			th := e.sched.newThread(fmt.Sprintf("workflow:%s:%d", e.runID, i))
+			if nested {
+				th.SetLocal(nestedLocalKey, true)
+			}
 			work(i, th)
 		}(i)
 	}
@@ -395,8 +557,9 @@ func (e *engine) runPipelineItem(th *starlark.Thread, item starlark.Value, index
 // each snapshotted thunk/item adds DETERMINISM — a thunk that (transitively, via a
 // captured cell) mutates shared state fails deterministically to a "cannot mutate
 // frozen" error → None, rather than producing an interleaved result. The element count
-// is capped at maxLifetimeAgents so a pathological list can't spawn an unbounded number
-// of goroutines in fanout (a list that large would exhaust the lifetime cap anyway).
+// is capped at maxFanoutElements only to bound the results slice against a pathological
+// list; concurrent vendor EXECS are bounded by the pool slot (held only inside agent()
+// across a leaf's exec), and the per-run lifetime cap is the real ceiling on leaf execs.
 func frozenSlice(v starlark.Value, fname string) ([]starlark.Value, error) {
 	it, ok := v.(starlark.Iterable)
 	if !ok {
@@ -407,8 +570,8 @@ func frozenSlice(v starlark.Value, fname string) ([]starlark.Value, error) {
 	var out []starlark.Value
 	var x starlark.Value
 	for iter.Next(&x) {
-		if len(out) >= maxLifetimeAgents {
-			return nil, fmt.Errorf("%s: more than %d elements — split the work into smaller batches", fname, maxLifetimeAgents)
+		if len(out) >= maxFanoutElements {
+			return nil, fmt.Errorf("%s: more than %d elements — split the work into smaller batches", fname, maxFanoutElements)
 		}
 		x.Freeze()
 		out = append(out, x)

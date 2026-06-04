@@ -13,7 +13,13 @@ import (
 type scriptMeta struct {
 	Name        string
 	Description string
-	Phases      []phaseDecl
+	// WhenToUse is optional display/board text (native's meta.whenToUse). Model is the
+	// optional DEFAULT model for agents that omit model= (native's meta.model); the engine
+	// applies it as the fallback BEFORE computing the journal key, so the key reflects the
+	// effective model consistently.
+	WhenToUse string
+	Model     string
+	Phases    []phaseDecl
 }
 
 type phaseDecl struct {
@@ -63,6 +69,12 @@ func extractMeta(opts *syntax.FileOptions, filename string, src interface{}) (sc
 		return scriptMeta{}, fmt.Errorf("workflow: meta.description is required (a non-empty string)")
 	}
 	out := scriptMeta{Name: name, Description: desc}
+	if wt, ok := m["whenToUse"].(string); ok {
+		out.WhenToUse = wt
+	}
+	if md, ok := m["model"].(string); ok {
+		out.Model = md
+	}
 	if praw, ok := m["phases"]; ok {
 		plist, ok := praw.([]interface{})
 		if !ok {

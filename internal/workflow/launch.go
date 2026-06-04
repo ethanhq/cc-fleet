@@ -30,6 +30,12 @@ func launchDetached(scriptPath, runID string, opts Options) error {
 	if opts.ArgsJSON != "" {
 		argv = append(argv, "--args-json", opts.ArgsJSON)
 	}
+	if opts.NoPersistIO {
+		argv = append(argv, "--no-persist-io")
+	}
+	if opts.BudgetUSD > 0 {
+		argv = append(argv, "--budget-usd", strconv.FormatFloat(opts.BudgetUSD, 'f', -1, 64))
+	}
 	devnull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
 		return fmt.Errorf("workflow: open %s: %w", os.DevNull, err)

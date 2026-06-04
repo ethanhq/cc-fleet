@@ -49,6 +49,20 @@ type Options struct {
 	RunID       string
 	Concurrency int    // 0 → defaultConcurrency()
 	ArgsJSON    string // optional; predeclared to the script as `args`
+	// Resume names an EXISTING run to re-execute against its journal (cross-invocation
+	// replay): Launch reuses this id instead of minting a fresh one, and the engine's
+	// unconditional journal load then serves the leaves that already completed. Empty =
+	// a fresh run. Used only at Launch — the detached child carries the id via RunID and
+	// resumes transparently (the journal load keys on the id, not this flag).
+	Resume string
+	// NoPersistIO opts OUT of board prompt/answer drill-in (persistence is DEFAULT ON).
+	// When set, leaves persist no <jobID>.prompt/.answer side files; the result cache is
+	// answer-stripped either way, so the board table is unaffected. Propagated to the
+	// detached child so the whole run honors it.
+	NoPersistIO bool
+	// BudgetUSD caps total vendor spend (sum of leaf CostUSD); agent() raises once the cap
+	// is reached. <=0 is uncapped. Propagated to the detached child.
+	BudgetUSD float64
 }
 
 // Prepare parses a script, extracts + validates its `meta` literal, and mints a run
@@ -69,7 +83,7 @@ func Prepare(scriptPath string) (subagent.WorkflowRun, error) {
 	for _, p := range meta.Phases {
 		phases = append(phases, subagent.RunPhase{Title: p.Title, Detail: p.Detail})
 	}
-	return subagent.NewRunWithMeta(meta.Name, meta.Description, phases)
+	return subagent.NewRunWithMeta(meta.Name, meta.Description, meta.WhenToUse, phases)
 }
 
 // Execute runs a prepared script's body to completion in the CURRENT process,
@@ -127,7 +141,39 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 	eng := &engine{
 		sched: newScheduler(ctx, concurrency), runID: runID,
 		name: meta.Name, description: meta.Description, startedAt: startedAt, phases: phases,
+		persistIO:   !opts.NoPersistIO, // board prompt/answer drill-in is default-on
+		enginePID:   detachedEnginePID(opts),
+		metaModel:   meta.Model, // default model for agents that omit model=
+		whenToUse:   meta.WhenToUse,
+		budgetTotal: opts.BudgetUSD,
 	}
+	// Load the run's content-hash journal (resume). The path is derived from the
+	// already-validated runID; a missing file (a fresh run) yields an empty cache that
+	// the first completed leaf creates. The load is unconditional, so a detached
+	// --run-id child resumes transparently with no extra flag.
+	//
+	// Concurrency note: two simultaneous resumes of the SAME run id are not serialized
+	// here — each loads the journal, runs un-cached leaves, and (atomically, O_APPEND
+	// per line) appends; the worst case is duplicated leaf work, not a corrupt journal
+	// or manifest. A per-run execution lock rides with P2's stop/restart liveness work;
+	// for now a caller must not launch concurrent resumes of one id.
+	if jp, jerr := subagent.RunJournalPath(runID); jerr == nil {
+		eng.journal = loadJournal(jp)
+	}
+	// Open the run's live-event channel (board live log / DAG). Best-effort: a path
+	// error leaves events nil → emits no-op. The file is TRUNCATED at the start of every
+	// invocation (incl. a resume), so the live stream + DAG always represent exactly the
+	// CURRENT invocation rather than a concatenation of per-invocation event streams (the
+	// board's DAG would otherwise double on resume). Safe because events are observability
+	// only — never read back by the engine, never journaled.
+	if ep, eerr := subagent.RunEventsPath(runID); eerr == nil {
+		_ = os.Remove(ep)
+		eng.events = newEventWriter(ep)
+	}
+	// Stamp the manifest once up front: records EnginePID (so `workflow stop` can reap
+	// this process), flips a resumed run to "running", and refreshes UpdatedAt from the
+	// start (GC recency) — before the first leaf, closing the mint→first-leaf window.
+	eng.saveManifest("running", "")
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -142,6 +188,17 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 
 	_, execErr := eng.run(scriptPath, src, opts)
 	return execErr
+}
+
+// detachedEnginePID is os.Getpid() for the DETACHED engine child (opts.RunID set by the
+// re-exec) and 0 for a foreground/inline run. `workflow stop` reaps only a recorded
+// (detached) engine pid; a foreground run is stopped in its own terminal (Ctrl-C), so it
+// records no pid rather than letting stop claim a kill it can't make.
+func detachedEnginePID(opts Options) int {
+	if opts.RunID != "" {
+		return os.Getpid()
+	}
+	return 0
 }
 
 // run executes a script body under the GIL and returns its module globals. The top
@@ -172,9 +229,42 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 	if opts.ArgsJSON != "" && !json.Valid([]byte(opts.ArgsJSON)) {
 		return "", fmt.Errorf("workflow: --args-json is not valid JSON")
 	}
-	run, err := Prepare(abs)
-	if err != nil {
-		return "", err
+	// Resume reuses an existing run id (validated + confirmed to exist) so the engine
+	// replays its journal; a fresh run mints a new manifest from the script's meta.
+	var run subagent.WorkflowRun
+	if opts.Resume != "" {
+		if verr := subagent.ValidateRunID(opts.Resume); verr != nil {
+			return "", fmt.Errorf("workflow: invalid resume id: %w", verr)
+		}
+		existing, rerr := subagent.ReadRun(opts.Resume)
+		if rerr != nil {
+			return "", fmt.Errorf("workflow: cannot resume: %w", rerr)
+		}
+		run = existing
+		// Restamp liveness + flip to running BEFORE detaching, so a concurrent GC can't
+		// prune this (possibly old) run's manifest + journal in the window before the
+		// resumed engine writes its first heartbeat (GC recency keys on the later of
+		// StartedAt / UpdatedAt). A stamp failure means the manifest is unwritable — the
+		// run can't be tracked or protected, so fail the resume rather than launch blind.
+		run.Status = "running"
+		run.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		if serr := subagent.SaveRun(run); serr != nil {
+			return "", fmt.Errorf("workflow: stamp resume liveness: %w", serr)
+		}
+	} else {
+		minted, perr := Prepare(abs)
+		if perr != nil {
+			return "", perr
+		}
+		run = minted
+	}
+	// Persist the script as runs/<id>.star (the saved-script slice of native save-script)
+	// so a stopped run can be restarted from the board (`workflow run --resume <id>`).
+	// Best-effort: a write hiccup just means restart needs the original path.
+	if data, rerr := os.ReadFile(abs); rerr == nil {
+		if sp, serr := subagent.RunScriptPath(run.RunID); serr == nil {
+			_ = os.WriteFile(sp, data, 0o600)
+		}
 	}
 	if foreground {
 		return run.RunID, Execute(ctx, abs, run.RunID, opts)
