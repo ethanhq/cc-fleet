@@ -23,6 +23,7 @@ type screenHandler struct {
 var handlers = map[screen]screenHandler{
 	screenList:           {update: Model.updateList, view: Model.viewList},
 	screenSpawn:          {update: Model.updateSpawn, view: Model.viewSpawn},
+	screenWorkflows:      {update: Model.updateWorkflows, view: Model.viewWorkflows},
 	screenPickTemplate:   {update: Model.updatePickTemplate, view: Model.viewPickTemplate},
 	screenForm:           {update: Model.updateForm, view: viewFormFooter},
 	screenModelPick:      {update: Model.updateModelPick, view: Model.viewModelPick},
@@ -47,6 +48,7 @@ func allScreens() []screen {
 	return []screen{
 		screenList,
 		screenSpawn,
+		screenWorkflows,
 		screenPickTemplate,
 		screenForm,
 		screenModelPick,

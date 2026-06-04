@@ -39,6 +39,8 @@ func (m Model) View() string {
 		return m.viewList()
 	case screenSpawn:
 		return m.viewSpawn()
+	case screenWorkflows:
+		return m.viewWorkflows()
 	case screenPickTemplate:
 		return m.viewPickTemplate()
 	case screenForm:
@@ -169,7 +171,7 @@ func (m Model) viewList() string {
 
 func (m Model) viewSpawn() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("cc-fleet · Agent status") + faintStyle.Render("    tab → Vendors") + "\n\n")
+	b.WriteString(titleStyle.Render("cc-fleet · Agent status") + faintStyle.Render("    tab → Workflows") + "\n\n")
 	switch {
 	case m.loading:
 		b.WriteString("discovering…\n")
@@ -188,8 +190,72 @@ func (m Model) viewSpawn() string {
 		}
 		b.WriteString("\n" + style.Render(m.boardStatus))
 	}
-	b.WriteString("\n" + footer("↑/↓ move · enter detail · h hide · s show · r refresh · tab vendors · q quit"))
+	b.WriteString("\n" + footer("↑/↓ move · enter detail · h hide · s show · r refresh · tab workflows · esc vendors · q quit"))
 	return b.String()
+}
+
+// viewWorkflows renders the read-only Workflows board: RunID-tagged subagent jobs
+// as a run→phase→agent tree. Like viewJobTable it shows ONLY status columns —
+// NEVER the job's answer text (Result.Result) — so no vendor reply can leak. The
+// run name, phase title, and agent label are opaque operator metadata that may
+// carry control bytes, so each is sanitized through sessiontitle.CleanTitle
+// before display.
+func (m Model) viewWorkflows() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("cc-fleet · Workflows") + faintStyle.Render("    tab → Vendors") + "\n\n")
+	switch {
+	case m.loading:
+		b.WriteString("loading…\n")
+	case m.workflowsErr != nil:
+		b.WriteString(errStyle.Render("error: "+m.workflowsErr.Error()) + "\n")
+	default:
+		groups := groupByRun(m.workflowJobs, m.workflowRuns)
+		if len(groups) == 0 {
+			b.WriteString(faintStyle.Render("  (no workflow runs)") + "\n")
+		} else {
+			b.WriteString(faintStyle.Render("    "+fmt.Sprintf("%-12s %-14s %-9s %-16s %-8s %-20s",
+				"PHASE", "AGENT", "VENDOR", "MODEL", "STATUS", "STARTED")) + "\n")
+			// No row windowing — render every row (same as viewTeammateTable /
+			// viewJobTable); the operator scrolls the terminal.
+			for _, g := range groups {
+				b.WriteString(sessionHdrStyle.Render("◆ run: "+m.runLabel(g)) + "\n")
+				for _, p := range g.phases {
+					b.WriteString("  " + teamHdrStyle.Render("▸ phase: "+sessiontitle.CleanTitle(p.title)) + "\n")
+					for _, j := range p.jobs {
+						b.WriteString("    " + fmt.Sprintf("%-12s %-14s %-9s %-16s %-8s %-20s",
+							trunc(sessiontitle.CleanTitle(j.Phase), 12),
+							trunc(sessiontitle.CleanTitle(j.Label), 14),
+							trunc(j.Vendor, 9), trunc(j.Model, 16),
+							trunc(j.Status, 8), trunc(j.StartedAt, 20)) + "\n")
+					}
+				}
+			}
+		}
+	}
+	b.WriteString("\n" + footer("r refresh · tab/esc vendors · q quit"))
+	return b.String()
+}
+
+// runLabel renders a run header label: its sanitized name plus the short run id,
+// or just the short id when the run has no name (manifest GC'd or never created).
+func (m Model) runLabel(g runGroup) string {
+	// The run id is opaque operator metadata: ids.ValidateJobID lets a
+	// non-whitespace control rune (e.g. an ANSI escape) through — it only blocks
+	// path-unsafe chars — so the id gets the same render-time CleanTitle scrub as
+	// the name/phase/label before it reaches the terminal.
+	short := shortRunID(sessiontitle.CleanTitle(g.runID))
+	if name := sessiontitle.CleanTitle(g.name); name != "" {
+		return trunc(name, 48) + " (" + short + ")"
+	}
+	return short
+}
+
+// shortRunID trims a run id to its first 8 chars for the run header.
+func shortRunID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
 }
 
 // viewTeammateTable renders the upper board table grouped by Claude session and
@@ -267,11 +333,19 @@ func (m Model) viewJobTable() string {
 	b.WriteString(faintStyle.Render("Subagent Jobs") + "\n")
 	b.WriteString(faintStyle.Render("  "+fmt.Sprintf("%-10s %-9s %-16s %-8s %-20s",
 		"JOB", "VENDOR", "MODEL", "STATUS", "STARTED")) + "\n")
-	if len(m.jobs) == 0 {
+	// RunID-tagged jobs belong to the Workflows board; show only ungrouped
+	// (RunID == "") jobs here so a workflow job never double-renders.
+	var jobs []subagent.Result
+	for _, j := range m.jobs {
+		if j.RunID == "" {
+			jobs = append(jobs, j)
+		}
+	}
+	if len(jobs) == 0 {
 		b.WriteString(faintStyle.Render("  (no subagent jobs)") + "\n")
 		return b.String()
 	}
-	for _, bucket := range groupedJobsBySession(m.jobs) {
+	for _, bucket := range groupedJobsBySession(jobs) {
 		b.WriteString(sessionHdrStyle.Render("◆ session: "+m.sessionLabel(bucket.leadSessionID)) + "\n")
 		for _, j := range bucket.jobs {
 			b.WriteString("  " + fmt.Sprintf("%-10s %-9s %-16s %-8s %-20s",
@@ -328,6 +402,113 @@ func groupedJobsBySession(jobs []subagent.Result) []jobBucket {
 		return a.firstIdx < b.firstIdx
 	})
 	return buckets
+}
+
+// runGroup is a workflow run with its jobs bucketed by phase, ready to render.
+type runGroup struct {
+	runID     string
+	name      string
+	status    string
+	startedAt string
+	phases    []runPhaseGroup
+}
+
+// runPhaseGroup is one phase of a run with the jobs observed in it.
+type runPhaseGroup struct {
+	title string
+	jobs  []subagent.Result
+}
+
+// groupByRun joins RunID-tagged jobs to their run manifests into a run→phase→job
+// tree. A run's manifest supplies its Name/Status/StartedAt and the declared
+// phase order; phases observed on a job but absent from the manifest are appended
+// in first-seen order. A run with no manifest (GC'd or never created) carries an
+// empty name and phases in first-seen order. Runs sort newest-first by StartedAt
+// (the manifest's, else the earliest job StartedAt), RFC3339 string compare —
+// same discipline as groupedJobsBySession.
+func groupByRun(jobs []subagent.Result, runs []subagent.WorkflowRun) []runGroup {
+	byRunID := map[string]subagent.WorkflowRun{}
+	for _, r := range runs {
+		byRunID[r.RunID] = r
+	}
+
+	// Assemble groups in first-seen order (manifest first, then jobs), so a run is
+	// created even when it has a manifest but zero jobs yet (phase skeleton).
+	order := []string{}
+	groups := map[string]*runGroup{}
+	phaseIdx := map[string]map[string]int{} // runID → phase title → index into phases
+
+	ensureRun := func(runID string) *runGroup {
+		g, ok := groups[runID]
+		if ok {
+			return g
+		}
+		g = &runGroup{runID: runID}
+		if r, ok := byRunID[runID]; ok {
+			g.name = r.Name
+			g.status = r.Status
+			g.startedAt = r.StartedAt
+		}
+		groups[runID] = g
+		phaseIdx[runID] = map[string]int{}
+		order = append(order, runID)
+		return g
+	}
+	ensurePhase := func(g *runGroup, title string) int {
+		idx := phaseIdx[g.runID]
+		if i, ok := idx[title]; ok {
+			return i
+		}
+		i := len(g.phases)
+		g.phases = append(g.phases, runPhaseGroup{title: title})
+		idx[title] = i
+		return i
+	}
+
+	// Manifest-declared runs first: this both seeds the manifest phase order and
+	// renders a freshly-created run's phase skeleton before any job lands.
+	for _, r := range runs {
+		g := ensureRun(r.RunID)
+		for _, p := range r.Phases {
+			ensurePhase(g, p.Title)
+		}
+	}
+
+	// Then the jobs: their run may have no manifest, and their phase may be a
+	// manifest-absent extra (appended after the declared phases).
+	for _, j := range jobs {
+		g := ensureRun(j.RunID)
+		i := ensurePhase(g, j.Phase)
+		g.phases[i].jobs = append(g.phases[i].jobs, j)
+		// For a run with no manifest, derive its sort key from the earliest job
+		// StartedAt. A manifested run already carries the manifest's StartedAt.
+		if _, hasManifest := byRunID[j.RunID]; !hasManifest && j.StartedAt != "" {
+			if g.startedAt == "" || j.StartedAt < g.startedAt {
+				g.startedAt = j.StartedAt
+			}
+		}
+	}
+
+	out := make([]runGroup, 0, len(order))
+	for _, id := range order {
+		out = append(out, *groups[id])
+	}
+	// Newest-first by StartedAt; empty StartedAt sorts last, first-seen order as
+	// the stable tiebreaker.
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i].startedAt, out[j].startedAt
+		if a != b {
+			if a == "" {
+				return false
+			}
+			if b == "" {
+				return true
+			}
+			return a > b
+		}
+		return false
+	})
+	return out
 }
 
 func (m Model) sessionLabel(id string) string {

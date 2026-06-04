@@ -34,6 +34,7 @@ type screen int
 const (
 	screenList screen = iota // the home/hub: Vendors list + inline "+ Add" row
 	screenSpawn
+	screenWorkflows // RunID-tagged subagent jobs as a live run→phase→agent tree
 	screenPickTemplate
 	screenForm
 	screenModelPick
@@ -85,6 +86,15 @@ type Model struct {
 	// boardStatusErr styles it as an error vs an ok confirmation.
 	boardStatus    string
 	boardStatusErr bool
+
+	// Workflows board (screenWorkflows): RunID-tagged subagent jobs grouped into a
+	// run→phase→agent tree. Read-only (no cursor — rows are status-only, like the
+	// job table). workflowsEpoch tags each auto-refresh tick chain so re-entering
+	// supersedes a stale chain (mirrors boardEpoch).
+	workflowJobs   []subagent.Result
+	workflowRuns   []subagent.WorkflowRun
+	workflowsErr   error
+	workflowsEpoch int
 
 	// Active add/edit form.
 	form     form
@@ -325,6 +335,52 @@ func groupByTeam(ts []teardown.Teammate) []teardown.Teammate {
 func boardTick(epoch int) tea.Cmd {
 	return tea.Tick(boardRefreshInterval, func(time.Time) tea.Msg {
 		return boardTickMsg{epoch: epoch}
+	})
+}
+
+// workflowsMsg carries one Workflows-board refresh: the RunID-tagged subagent
+// jobs and the run manifests. It opts into screenOwnedAsyncMsg (owningScreen →
+// screenWorkflows) AND carries the workflowsEpoch that scheduled it, so a stale
+// refresh from a prior visit is dropped on re-entry (epoch++) or leaving.
+type workflowsMsg struct {
+	jobs  []subagent.Result
+	runs  []subagent.WorkflowRun
+	epoch int
+	err   error
+}
+
+func (workflowsMsg) owningScreen() screen { return screenWorkflows }
+
+// workflowsTickMsg drives the Workflows board's auto-refresh; a tick whose epoch
+// != Model.workflowsEpoch is stale and dropped (mirror boardTickMsg).
+type workflowsTickMsg struct{ epoch int }
+
+// loadWorkflows returns a tea.Cmd that assembles a Workflows refresh tagged with
+// the caller's epoch: the RunID-tagged subagent jobs (RunID == "" jobs stay on
+// the agent-status board) plus the run manifests. It carries the first non-nil
+// error so a data-source failure surfaces instead of crashing the board.
+func loadWorkflows(epoch int) tea.Cmd {
+	return func() tea.Msg {
+		all, jErr := subagent.ListJobs()
+		var jobs []subagent.Result
+		for _, j := range all {
+			if j.RunID != "" {
+				jobs = append(jobs, j)
+			}
+		}
+		runs, rErr := subagent.ListRuns()
+		err := jErr
+		if err == nil {
+			err = rErr
+		}
+		return workflowsMsg{jobs: jobs, runs: runs, epoch: epoch, err: err}
+	}
+}
+
+// workflowsTick schedules the next Workflows auto-refresh tick for the epoch.
+func workflowsTick(epoch int) tea.Cmd {
+	return tea.Tick(boardRefreshInterval, func(time.Time) tea.Msg {
+		return workflowsTickMsg{epoch: epoch}
 	})
 }
 
@@ -575,6 +631,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case workflowsMsg:
+		// A stale refresh from a prior Workflows visit (msg.epoch < the bumped
+		// epoch) must not clobber the fresh visit's state — mirror boardMsg.
+		if msg.epoch != m.workflowsEpoch {
+			return m, nil
+		}
+		m.loading = false
+		m.workflowJobs = msg.jobs
+		m.workflowRuns = msg.runs
+		m.workflowsErr = msg.err
+		return m, nil
+
+	case workflowsTickMsg:
+		if m.screen == screenWorkflows && msg.epoch == m.workflowsEpoch {
+			return m, tea.Batch(loadWorkflows(msg.epoch), workflowsTick(msg.epoch))
+		}
+		return m, nil
+
 	case modelsMsg:
 		m.loading = false
 		m.modelList = msg.models
@@ -642,6 +716,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateList(msg)
 		case screenSpawn:
 			return m.updateSpawn(msg)
+		case screenWorkflows:
+			return m.updateWorkflows(msg)
 		case screenPickTemplate:
 			return m.updatePickTemplate(msg)
 		case screenForm:
@@ -762,6 +838,32 @@ func (m Model) updateSpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		m.loading = true
 		return m, loadBoard(m.boardEpoch)
+	case "tab":
+		// Advance the 3-way cycle: Agent status → Workflows. Bump the epoch so a
+		// tick still pending from a previous Workflows visit can't double the
+		// refresh rate, and start a fresh load + tick chain (mirror updateList→spawn).
+		m.screen = screenWorkflows
+		m.loading = true
+		m.workflowsEpoch++
+		return m, tea.Batch(loadWorkflows(m.workflowsEpoch), workflowsTick(m.workflowsEpoch))
+	case "esc":
+		return m.toList()
+	case "q":
+		m.quitting = true
+		return m, tea.Quit
+	}
+	return m, nil
+}
+
+// updateWorkflows drives the read-only Workflows board. r reloads; tab/esc return
+// to the Vendors list (closing the List → Agent status → Workflows → List cycle);
+// q/ctrl+c quit. ↑/↓ are no-ops (rows are status-only, no cursor). The
+// auto-refresh tick chain runs independently (see workflowsTickMsg).
+func (m Model) updateWorkflows(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "r":
+		m.loading = true
+		return m, loadWorkflows(m.workflowsEpoch)
 	case "tab", "esc":
 		return m.toList()
 	case "q":
