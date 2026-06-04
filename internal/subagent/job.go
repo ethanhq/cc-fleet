@@ -464,7 +464,73 @@ func GC(olderThan time.Duration) Result {
 		removeJob(dir, jobID)
 		removed++
 	}
+	gcRunManifests(dir, cutoff)
 	return Result{OK: true, Removed: removed}
+}
+
+// gcRunManifests prunes run manifests after the job sweep. A manifest is removed
+// iff (a) no surviving job meta still belongs to its run AND (b) the manifest is
+// itself older than the same cutoff — so a run with any live/recent member is
+// protected, and a freshly created (still-empty) manifest survives until it ages
+// out unused. Membership is read FRESH from the jobs dir here (after the job-removal
+// pass), not from a snapshot taken before it, so a member that launched mid-GC still
+// protects its manifest — closing the readdir-interleaving window where an old run
+// gaining a new member could lose its manifest. A manifest that can't be read or
+// parsed has no provable recency and (by the membership check) no surviving member,
+// so it is treated as an aged orphan and removed (symmetric with purgeRunManifests
+// and with the job side, where an unreadable meta is also reaped). Manifest pruning
+// is kept OUT of the Removed counter, which counts job groups, not runs.
+func gcRunManifests(jobsDir string, cutoff time.Time) {
+	dir := filepath.Join(jobsDir, runsDirName)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return // no runs dir → nothing to prune
+	}
+	live := survivingRunIDs(jobsDir)
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		runID := strings.TrimSuffix(name, ".json")
+		if live[runID] {
+			continue // a surviving member protects the manifest
+		}
+		// No surviving member. Keep only a manifest that PROVES it is still recent
+		// (a fresh, not-yet-populated run); an unreadable/unparseable manifest can't
+		// prove recency → treated as an aged orphan and removed below.
+		if data, rerr := os.ReadFile(filepath.Join(dir, name)); rerr == nil {
+			var run WorkflowRun
+			if json.Unmarshal(data, &run) == nil {
+				if started, perr := time.Parse(time.RFC3339, run.StartedAt); perr == nil && started.After(cutoff) {
+					continue // fresh empty manifest → keep
+				}
+			}
+		}
+		removeRun(dir, runID)
+	}
+}
+
+// survivingRunIDs reads the jobs dir and returns the set of RunIDs that still have
+// at least one job meta on disk. gcRunManifests calls it AFTER the job-removal pass,
+// so the snapshot reflects which runs still have members (kept or just launched),
+// and a manifest is pruned only when its run is genuinely memberless.
+func survivingRunIDs(jobsDir string) map[string]bool {
+	live := map[string]bool{}
+	entries, err := os.ReadDir(jobsDir)
+	if err != nil {
+		return live
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".result.json") {
+			continue
+		}
+		if meta, merr := readMeta(jobsDir, strings.TrimSuffix(name, ".json")); merr == nil && meta.RunID != "" {
+			live[meta.RunID] = true
+		}
+	}
+	return live
 }
 
 // PurgeJobs is the uninstall-time cleanup of ConfigDir()/subagent-jobs. It is a
@@ -494,6 +560,9 @@ func PurgeJobs() (dir string, removedFinished []string, running []string, err er
 		return dir, nil, nil, fmt.Errorf("subagent: read jobs dir: %w", rerr)
 	}
 
+	// runningRuns collects the RunIDs of jobs we keep, so a manifest with a live
+	// member is preserved while all others are purged.
+	runningRuns := map[string]bool{}
 	for _, e := range entries {
 		name := e.Name()
 		// Same filter as GC/ListJobs: meta files only, never the cached .result.json.
@@ -508,6 +577,9 @@ func PurgeJobs() (dir string, removedFinished []string, running []string, err er
 		if _, resultErr := os.Stat(resultPath); resultErr != nil {
 			if meta, merr := readMeta(dir, jobID); merr == nil && processAlive(meta.PID, meta.SettingsPath) {
 				running = append(running, jobID)
+				if meta.RunID != "" {
+					runningRuns[meta.RunID] = true
+				}
 				continue // live → keep this job's file group
 			}
 		}
@@ -517,16 +589,46 @@ func PurgeJobs() (dir string, removedFinished []string, running []string, err er
 		removedFinished = append(removedFinished, jobID)
 	}
 
+	purgeRunManifests(dir, runningRuns)
+
 	sort.Strings(removedFinished)
 	sort.Strings(running)
 
 	// Drop the (now-empty) dir only when nothing is left running. os.Remove is
 	// best-effort: a kept running job — or a stray non-job file — keeps the dir,
-	// which is correct.
+	// which is correct. The runs/ subdir is removed by purgeRunManifests when no
+	// run has a live member, so it no longer orphans this dir at uninstall.
 	if len(running) == 0 {
 		_ = os.Remove(dir)
 	}
 	return dir, removedFinished, running, nil
+}
+
+// purgeRunManifests removes every run manifest whose RunID has no live member
+// (runningRuns), then removes the now-empty runs/ dir best-effort. A missing runs/
+// dir is a no-op. Keeping the runs/ dir empty-and-removable is what lets PurgeJobs
+// finally os.Remove the jobs dir when nothing is running.
+func purgeRunManifests(jobsDir string, runningRuns map[string]bool) {
+	dir := filepath.Join(jobsDir, runsDirName)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return // no runs dir → nothing to purge
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		// The filename IS the run id, so membership is decided WITHOUT reading the
+		// manifest: a run with a live member is kept even if its manifest is corrupt;
+		// every other manifest (no live member, or unreadable / parse-fail) is dropped.
+		runID := strings.TrimSuffix(name, ".json")
+		if runningRuns[runID] {
+			continue // live member → keep this run's manifest
+		}
+		removeRun(dir, runID)
+	}
+	_ = os.Remove(dir) // succeeds only when empty (all manifests gone)
 }
 
 // procRoot is the procfs mount point. A package var so tests can point the
