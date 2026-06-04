@@ -15,30 +15,46 @@ not JS.
   `cc-fleet subagent` batch (`references/subagent.md`). Don't write a script for it.
 
 ## The script API (predeclared; mirrors the native Workflow tool)
-- `meta = {"name": …, "description": …, "phases": [{"title": …, "detail": …}, …]}` — a
-  top-level **pure literal** (no calls/vars). `name` + `description` are **required**;
-  `phases` is the declared plan (optional). Read statically before the run → the board
-  shows the named, phase-skeletoned run immediately.
+- `meta = {"name": …, "description": …, "whenToUse": …, "model": …, "phases": [{"title": …,
+  "detail": …}, …]}` — a top-level **pure literal** (no calls/vars). `name` + `description`
+  are **required**; `whenToUse` (board text) and `model` (the default model for agents that
+  omit `model=`) are optional; `phases` is the declared plan (optional). Read statically
+  before the run → the board shows the named, phase-skeletoned run immediately.
 - `agent(prompt, vendor=…, model=None, schema=None, label=None, phase=None, timeout=None,
-  max_budget_usd=None, max_turns=None)` — runs ONE vendor subagent leaf and **blocks**
-  until it returns the answer **string**. With `schema=` (a dict) it asks for JSON, parses
-  it, checks the schema's top-level `required`/`properties` keys, **retries up to twice**,
-  and returns the parsed value. `schema=` is normally a dict; any JSON-encodable value
-  works (a non-dict → valid-JSON-only validation). On a leaf failure it **raises** — a
-  bare top-level `agent()` aborts the run; inside `parallel`/`pipeline` it becomes `None`.
-  Every arg after `vendor` is optional — omit it or pass `None` (omitting `model` uses the
-  vendor's `default_model`); `timeout=` (seconds) and `max_budget_usd=` accept an int or a float.
+  max_budget_usd=None, max_turns=None, run_in_background=False, isolation=None)` — runs ONE
+  vendor subagent leaf and **blocks** until it returns the answer **string**. With `schema=`
+  (a dict) it asks for JSON and validates it against a real (recursive) JSON-Schema subset —
+  `type` (object/array/string/number/integer/boolean/null; `integer` accepts `5.0`),
+  `required`, nested `properties`, array `items`, scalar `enum` — **retrying up to twice**,
+  then returns the parsed value. (Composition keywords `$ref`/`allOf`/`oneOf` are NOT
+  enforced.) On a leaf failure it **raises** — a bare top-level `agent()` aborts the run;
+  inside `parallel`/`pipeline` it becomes `None`. Omitting `model` uses `meta.model` then the
+  vendor's `default_model`; `timeout=` (seconds) and `max_budget_usd=` accept int or float.
+  `run_in_background=True` returns a **handle** immediately (await it with `wait()`); not
+  combinable with `schema=`. `isolation="worktree"` runs the leaf with cwd = a fresh git
+  worktree (torn down after), so parallel file-editing leaves don't collide (requires a git repo).
+- `wait(handle | [handles])` — block for one background handle (returns its string) or a
+  list of them (returns a list, order preserved). **Named `wait`, not `await`** — Starlark
+  reserves `await` as a keyword.
 - `parallel(thunks)` — run each 0-arg thunk concurrently; **BARRIER** (returns once all
   finish) as a list, `None` where a thunk failed. `thunks` are **functions**:
-  `parallel([lambda: agent("a", vendor="glm"), lambda: agent("b", vendor="glm")])`.
+  `parallel([lambda: agent("a", vendor="glm"), lambda: agent("b", vendor="glm")])`. Live
+  goroutines stay ~pool size even for a huge list (excess queues).
 - `pipeline(items, *stages)` — push each item through all stages independently with **NO
   inter-stage barrier** (item A can be in stage 3 while B is in stage 1). Each stage is
   `lambda prev, item, index: …`. A failing stage drops that item to `None`.
   **DEFAULT to `pipeline` over `parallel`** — only use `parallel` when a stage genuinely
   needs ALL prior results together.
+- `workflow(script_path, args=None)` — run another `.star` inline on the same engine
+  (shared pool/journal/budget), **one level deep** only. Returns the child's module global
+  `result` (Starlark module bodies have no top-level `return`), or `None`.
+- `budget` — `budget.total` (the `--budget-usd` cap, or `None`), `budget.spent()`,
+  `budget.remaining()` (`+inf` when uncapped). `agent()` raises once `spent() >= total`; a
+  `for`-loop guarded by `budget.remaining()` scales depth to the cap.
 - `phase(title, detail=None)` — name the current phase (tags subsequent agents lacking an
-  explicit `phase=`; the detail shows on the board row). `log(msg)` — a narrator line (stderr).
-- `args` — predeclared when you pass `--args-json '<json>'`.
+  explicit `phase=`; the detail shows on the board row). `log(msg)` — a narrator line (board
+  live log + stderr).
+- `args` — predeclared when you pass `--args-json '<json>'` (or `workflow(child, args=…)`).
 
 ## Starlark idioms you must use (the syntax diffs from native JS)
 - Thunks are **`lambda: …`**; closures must NOT mutate shared state — return values
@@ -64,21 +80,35 @@ not JS.
 RUN=$(cc-fleet workflow run audit.star)      # detached; prints ONLY the bare run id
 cc-fleet workflow status "$RUN" --json       # manifest + every tagged leaf (run→phase→agent)
 cc-fleet workflow list --json                # all runs, newest first
-# or watch the board's Workflows view (live run tree). --foreground runs inline (debug).
-# --max-concurrency N overrides the default pool (min(16, cores-2)).
+cc-fleet workflow stop "$RUN"                # reap a running run (engine + in-flight leaves)
+# or watch the board's Workflows view: live log, token/cost columns, prompt/answer drill-in,
+# x = stop, r = restart (= run --resume). --foreground runs inline (debug).
+# --max-concurrency N overrides the default pool (min(16, cores-2));
+# --budget-usd N caps total spend; --no-persist-io disables the prompt/answer drill-in.
 ```
 The run is detached so it outlives this call and your session stays responsive; poll
 `workflow status` or watch the board.
 
-## Non-goals (v1 — state plainly, don't oversell)
-- **No journal / resume.** If the run process dies, in-flight work is lost; the manifest
-  + already-tagged leaves persist, but the schedule does not resume.
-- **No live stop.** An in-flight leaf is bounded only by its per-agent `timeout` (default
-  300s) — size `timeout=` deliberately.
-- **Shallow schema.** `schema=` validates valid-JSON + top-level required keys + retries;
-  it is NOT full JSON-Schema enforcement. Don't rely on deep validation.
+## Resume (content-hash journal)
+Each run records a content-hash **journal** of its completed leaves. Re-run the same
+script under an existing run id to replay:
+```bash
+cc-fleet workflow run audit.star --resume "$RUN"   # journaled leaves return cached (no vendor exec); only un-run leaves run
+```
+A leaf is keyed by its determinant (vendor + model + prompt + schema), so an unchanged
+re-run is ~100% cache hits, a leaf whose prompt you edited (and anything downstream of its
+output) re-runs, and a run that was killed resumes by replaying what finished before the
+kill. Determinism makes this exact: Starlark has no clock/PRNG, so the same script+args
+produce the same keys. A **failed** leaf is never journaled, so resume re-runs it.
+
+## Non-goals (state plainly, don't oversell)
+- **No pause.** A running `claude -p` can't be cleanly suspended; use `workflow stop` (reaps
+  the run) + `run --resume` (cheap restart via the journal) instead.
+- **`schema=` is a practical subset** — `type`/`required`/nested `properties`/array
+  `items`/scalar `enum`, not the full JSON-Schema spec (`$ref`/`allOf`/`oneOf` are ignored).
+- **No deep `$ref`/composition.** Keep schemas concrete.
 - Key-safety is unchanged: the vendor key flows only via `apiKeyHelper`; prompts go to the
-  leaf via stdin, never argv.
+  leaf via stdin, never argv; the journal/events/board carry no key.
 
 ## Worked example — research sweep (fan-out → pipeline → loop)
 ```python

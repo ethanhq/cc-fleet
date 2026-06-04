@@ -44,7 +44,7 @@ so they group into one run tree on the board. List runs and inspect a run's jobs
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
-	cmd.AddCommand(newWorkflowNewCmd(), newWorkflowListCmd(), newWorkflowStatusCmd(), newWorkflowRunCmd())
+	cmd.AddCommand(newWorkflowNewCmd(), newWorkflowListCmd(), newWorkflowStatusCmd(), newWorkflowRunCmd(), newWorkflowStopCmd())
 	return cmd
 }
 
@@ -58,8 +58,11 @@ func newWorkflowRunCmd() *cobra.Command {
 	var (
 		foreground     bool
 		runID          string
+		resume         string
 		maxConcurrency int
 		argsJSON       string
+		noPersistIO    bool
+		budgetUSD      float64
 		asJSON         bool
 	)
 	cmd := &cobra.Command{
@@ -75,7 +78,7 @@ watch the board. --foreground runs inline to completion instead.`,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			script := args[0]
-			opts := workflow.Options{RunID: runID, Concurrency: maxConcurrency, ArgsJSON: argsJSON}
+			opts := workflow.Options{RunID: runID, Resume: resume, Concurrency: maxConcurrency, ArgsJSON: argsJSON, NoPersistIO: noPersistIO, BudgetUSD: budgetUSD}
 			// SIGINT (Ctrl-C on a --foreground run) and SIGTERM (a kill of the detached
 			// child, e.g. by teardown) cancel the run: queued leaves stop launching and
 			// the manifest is finalized off "running" instead of being stranded. An
@@ -112,10 +115,16 @@ watch the board. --foreground runs inline to completion instead.`,
 		"Run inline to completion instead of detaching")
 	cmd.Flags().StringVar(&runID, "run-id", "", "Execute an already-minted run (internal)")
 	_ = cmd.Flags().MarkHidden("run-id")
+	cmd.Flags().StringVar(&resume, "resume", "",
+		"Resume an existing run id: replay its journaled leaves (no re-exec) and run only the rest")
 	cmd.Flags().IntVar(&maxConcurrency, "max-concurrency", 0,
 		"Max concurrent vendor leaves (default: min(16, cores-2))")
 	cmd.Flags().StringVar(&argsJSON, "args-json", "",
 		"JSON value passed to the script as `args`")
+	cmd.Flags().BoolVar(&noPersistIO, "no-persist-io", false,
+		"Don't persist leaf prompts/answers for board drill-in (persistence is default-on)")
+	cmd.Flags().Float64Var(&budgetUSD, "budget-usd", 0,
+		"Cap total vendor spend in USD; agent() fails once reached (0 = uncapped)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit a machine-readable JSON envelope")
 	return cmd
 }
@@ -221,6 +230,35 @@ func newWorkflowStatusCmd() *cobra.Command {
 			for _, j := range jobs {
 				fmt.Printf("  %s  %s  %s  %s\n", j.Phase, j.Label, j.Status, j.JobID)
 			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit a machine-readable JSON envelope")
+	return cmd
+}
+
+// newWorkflowStopCmd builds `cc-fleet workflow stop <run-id>` — reap a running workflow
+// run: kill the engine's process tree (its in-flight vendor leaves included, behind a
+// cmdline reuse guard) and mark the manifest stopped. Restart it with `workflow run
+// <script> --resume <run-id>` (the journal makes the replay cheap).
+func newWorkflowStopCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:           "stop <run-id>",
+		Short:         "Stop a running workflow run (reap its engine + in-flight leaves)",
+		Args:          cobra.ExactArgs(1),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			run, err := subagent.StopRun(args[0])
+			if err != nil {
+				return reportWorkflowErr(err, asJSON)
+			}
+			if asJSON {
+				return emitWorkflow(workflowEnvelope{OK: true, RunID: run.RunID, Name: run.Name,
+					Phases: run.Phases, Status: run.Status, StartedAt: run.StartedAt})
+			}
+			fmt.Printf("stopped %s  %s\n", run.RunID, run.Name)
 			return nil
 		},
 	}
