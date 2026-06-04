@@ -89,6 +89,15 @@ cc-fleet workflow stop "$RUN"                # reap a running run (engine + in-f
 The run is detached so it outlives this call and your session stays responsive; poll
 `workflow status` or watch the board.
 
+To surface a detached run INSIDE this session (the run is otherwise invisible here):
+```bash
+cc-fleet workflow watch "$RUN"               # stream its live events as text until it finishes
+cc-fleet watch                               # stream the whole fleet (teammates + jobs + runs)
+```
+Run either in a backgrounded shell to surface it in the `/tasks` panel, or delegate the
+`cc-fleet:workflow-watch` agent (a run id) / `cc-fleet:fleet-watch` agent (the fleet) to surface
+it in the agent panel. Both are read-only and print only canonical status — never a vendor reply.
+
 ## Resume (content-hash journal)
 Each run records a content-hash **journal** of its completed leaves. Re-run the same
 script under an existing run id to replay:

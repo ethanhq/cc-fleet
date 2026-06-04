@@ -3,10 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -44,7 +46,65 @@ so they group into one run tree on the board. List runs and inspect a run's jobs
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
-	cmd.AddCommand(newWorkflowNewCmd(), newWorkflowListCmd(), newWorkflowStatusCmd(), newWorkflowRunCmd(), newWorkflowStopCmd())
+	cmd.AddCommand(newWorkflowNewCmd(), newWorkflowListCmd(), newWorkflowStatusCmd(), newWorkflowRunCmd(), newWorkflowStopCmd(), newWorkflowWatchCmd())
+	return cmd
+}
+
+// newWorkflowWatchCmd builds `cc-fleet workflow watch <run-id>` — stream a run's live events as
+// scrubbed text until it finishes, so a detached run is observable from a plain terminal (or a
+// backgrounded shell → the /tasks panel, or the `cc-fleet:workflow-watch` agent → FleetView).
+// Exit code: done/stopped→0, failed→1, timed-out-while-running→124 (reattach with --since-seq),
+// SIGINT→130, watcher/IO/unknown-run error→2 (distinct from a run's own failure).
+func newWorkflowWatchCmd() *cobra.Command {
+	var (
+		timeout  time.Duration
+		interval time.Duration
+		sinceSeq int64
+	)
+	cmd := &cobra.Command{
+		Use:   "watch <run-id>",
+		Short: "Stream a workflow run's live status until it finishes",
+		Long: `Stream a workflow run's live events as text until the run reaches a terminal status.
+Blocks (no busy-poll); prints one scrubbed line per event and a final status line. Run it in a
+backgrounded shell to surface the run in the /tasks panel, or via the cc-fleet:workflow-watch
+agent to surface it in the agent panel.`,
+		Args:          cobra.ExactArgs(1),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			if timeout > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, timeout)
+				defer cancel()
+			}
+			run, werr := workflow.Watch(ctx, args[0], os.Stdout,
+				workflow.WatchOptions{Interval: interval, SinceSeq: sinceSeq})
+			switch {
+			case werr == nil:
+				if run.Status == "failed" {
+					os.Exit(1)
+				}
+				return nil // done / stopped
+			case errors.Is(werr, workflow.ErrEngineGone):
+				os.Exit(1)
+			case errors.Is(werr, context.DeadlineExceeded):
+				os.Exit(124) // timed out while still running — reattach (see --since-seq)
+			case errors.Is(werr, context.Canceled):
+				os.Exit(130) // interrupted
+			default:
+				fmt.Fprintln(os.Stderr, "workflow:", werr)
+				os.Exit(2) // watcher / IO / unknown-run error
+			}
+			return nil
+		},
+	}
+	cmd.Flags().DurationVar(&timeout, "timeout", 0,
+		"Stop watching after this duration (0 = until the run finishes / interrupted)")
+	cmd.Flags().DurationVar(&interval, "interval", 0, "Poll cadence (default ~500ms)")
+	cmd.Flags().Int64Var(&sinceSeq, "since-seq", 0,
+		"Skip events with seq <= N for a clean reattach (scoped to one run generation; a resume restarts seq)")
 	return cmd
 }
 

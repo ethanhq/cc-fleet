@@ -50,6 +50,7 @@ teammate Claude Code sessions inside tmux windows.`,
 	root.AddCommand(newHideCmd())
 	root.AddCommand(newShowCmd())
 	root.AddCommand(newPsCmd())
+	root.AddCommand(newWatchCmd())
 	root.AddCommand(newModelsCmd())
 	root.AddCommand(newRefreshCmd())
 	root.AddCommand(newDoctorCmd())

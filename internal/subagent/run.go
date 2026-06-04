@@ -303,6 +303,15 @@ func engineCmdlineMatches(pid int, runID string) bool {
 	if !ok {
 		return false
 	}
+	return argvIsRunEngine(argv, runID)
+}
+
+// argvIsRunEngine reports whether argv is this run's detached `workflow run … --run-id <id>`
+// engine — the argv-matching core shared by the StopRun kill-guard (engineCmdlineMatches) and the
+// EngineAlive liveness check. Requiring the "--run-id" flag (which only the detached child carries)
+// distinguishes the reapable detached engine from a foreground run that merely mentions the id and
+// from a recycled pid.
+func argvIsRunEngine(argv []string, runID string) bool {
 	var hasWorkflow, hasRun, hasRunIDFlag, hasID bool
 	for _, a := range argv {
 		switch a {
@@ -317,6 +326,27 @@ func engineCmdlineMatches(pid int, runID string) bool {
 		}
 	}
 	return hasWorkflow && hasRun && hasRunIDFlag && hasID
+}
+
+// EngineAlive reports whether run's DETACHED engine MIGHT still be running. It is a read-only
+// LIVENESS check (it kills nothing), used by a watcher to stop waiting on a stale "running"
+// manifest whose engine is gone. A foreground run (EnginePID 0) or a definitively-dead pid is
+// "not alive". When the pid IS alive, the answer depends on whether we can read its argv: where
+// we can (unix), require it to still be THIS run's engine so a RECYCLED pid (now an unrelated
+// process) reads as gone — otherwise a SIGKILLed engine whose pid was reused would hold the
+// watcher open forever; where we can't (a platform without process introspection, e.g. Windows),
+// trust pidAlive alone, since a false "gone" for a live engine is worse than a rare missed
+// recycled-pid detection. Unlike StopRun (which must fail-SAFE to never-kill an unverifiable
+// pid), this fails-SOFT to keep-watching — neither can ever kill the wrong process.
+func EngineAlive(run WorkflowRun) bool {
+	if run.EnginePID <= 0 || !pidAlive(run.EnginePID) {
+		return false
+	}
+	argv, ok := reuseGuardArgv(run.EnginePID)
+	if !ok {
+		return true // argv unavailable → can't disprove it's our engine; trust pidAlive
+	}
+	return argvIsRunEngine(argv, run.RunID)
 }
 
 // RunStatus returns a run's manifest plus the Results of the jobs tagged with it.
