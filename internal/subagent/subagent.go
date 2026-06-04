@@ -347,3 +347,10 @@ func runClaude(ctx context.Context, binaryPath string, argv, env []string, stdin
 	}
 	return outW.buf.Bytes(), errW.buf.Bytes(), exitCode, err
 }
+
+// SetDetachGroup puts cmd in its own process group (Setpgid on unix,
+// CREATE_NEW_PROCESS_GROUP on Windows) — the SAME platform primitive the
+// background subagent leaf uses, exported so the workflow runtime can re-exec
+// itself as a detached child that outlives the launching CLI without a second,
+// divergent platform split. The caller still does Start + Process.Release.
+func SetDetachGroup(cmd *exec.Cmd) { setGroupAttr(cmd) }

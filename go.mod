@@ -12,6 +12,7 @@ require (
 	github.com/charmbracelet/x/term v0.2.1
 	github.com/google/uuid v1.6.0
 	github.com/spf13/cobra v1.8.1
+	go.starlark.net v0.0.0-20241125201518-c05ff208a98f
 	golang.org/x/sys v0.36.0
 )
 

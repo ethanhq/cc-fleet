@@ -110,7 +110,7 @@ Either way you drive it with native `SendMessage` and receive results via `SendM
 
 ## Lane 2 — one-shot subagent (summary)
 
-`cc-fleet subagent <vendor> --model <m> --prompt "<task>" --json` runs a vendor model headless and returns the result synchronously on stdout — **no pane, no `TeamCreate`/`SendMessage`/`TeamDelete`**. Use it for one-shot research/analysis and lock-free batch fan-out. `--prompt-file` for big/sensitive prompts, `--timeout` / `--max-budget-usd` / `--max-turns` to bound it, `--background` + `cc-fleet subagent-status` for long tasks, `--resume <session_id>` for multi-turn. Full flags, envelopes, and `error_code` dispatch: **`references/subagent.md`**.
+`cc-fleet subagent <vendor> --model <m> --prompt "<task>" --json` runs a vendor model headless and returns the result synchronously on stdout — **no pane, no `TeamCreate`/`SendMessage`/`TeamDelete`**. Use it for one-shot research/analysis and lock-free batch fan-out. `--prompt-file` for big/sensitive prompts, `--timeout` / `--max-budget-usd` / `--max-turns` to bound it, `--background` + `cc-fleet subagent-status` for long tasks, `--resume <session_id>` for multi-turn. Full flags, envelopes, and `error_code` dispatch: **`references/subagent.md`**. For multi-phase or dynamic orchestration over many vendor subagents — a Starlark script (`cc-fleet workflow run`) that runs OFF this context with fan-out/pipeline/loop and a board run-tree — see **`references/workflow.md`**.
 
 ---
 
@@ -132,6 +132,7 @@ Either way you drive it with native `SendMessage` and receive results via `SendM
 
 - **`references/teammates.md`** — lane 1 full workflow: spawn + examples, vendor/model pick, getting results, stuck-teammate monitoring + `error_class` table, hide/show + the Agent status board, vendor cheat sheet.
 - **`references/subagent.md`** — lane 2 full manual: when, calling, flags, envelopes, batch fan-out, `--background`, `--resume`, cleanup.
+- **`references/workflow.md`** — the workflow runtime: a Starlark script (`cc-fleet workflow run`) run OFF this context that fans out vendor subagents via `meta`/`agent`/`parallel`/`pipeline`/`phase`/`log`, with an enforced pool + board run-tree; non-goals (no resume, no live stop, shallow schema).
 - **`references/cli-reference.md`** — every `cc-fleet` command (user + Claude layer), spawn flags + permission inheritance, JSON envelopes, native-`Agent`-vs-vendor table.
 - **`references/troubleshooting.md`** — spawn `error_code` dispatch table + the 6-step fingerprint self-heal flow.
 

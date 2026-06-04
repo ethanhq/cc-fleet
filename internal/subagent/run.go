@@ -35,11 +35,17 @@ type RunPhase struct {
 // its intended phase sequence; the actual subagent jobs are separate files tagged
 // with this RunID, joined back in RunStatus.
 type WorkflowRun struct {
-	RunID     string     `json:"run_id"`
-	Name      string     `json:"name,omitempty"`
-	StartedAt string     `json:"started_at"`
-	Phases    []RunPhase `json:"phases,omitempty"`
-	Status    string     `json:"status,omitempty"`
+	RunID       string     `json:"run_id"`
+	Name        string     `json:"name,omitempty"`
+	Description string     `json:"description,omitempty"`
+	StartedAt   string     `json:"started_at"`
+	Phases      []RunPhase `json:"phases,omitempty"`
+	Status      string     `json:"status,omitempty"`
+	// Error is the failure cause, set when Status is "failed" — so a DETACHED run
+	// (whose stderr went to /dev/null) still records WHY it failed for `workflow
+	// status`. It is a canonical/script-level message (agent() failures carry
+	// subagent's canonical error_msg, never raw vendor body), so it is key-safe.
+	Error string `json:"error,omitempty"`
 }
 
 // runsDir is ConfigDir/subagent-jobs/runs.
@@ -51,34 +57,69 @@ func runsDir() (string, error) {
 	return filepath.Join(dir, runsDirName), nil
 }
 
-// NewRun mints a run manifest and persists it. RunID is a fresh uuid; StartedAt is
-// RFC3339 UTC (lexically sortable for newest-first listing); Status starts
-// "running". The runs dir is created 0o700 and the manifest written 0o600 via the
-// atomic-write outlet.
-func NewRun(name string, phases []RunPhase) (WorkflowRun, error) {
+// writeRunManifest persists a manifest to runs/<run_id>.json, creating the runs dir
+// 0o700 and writing 0o600 via the atomic-write outlet. It is the single write path
+// for both minting (NewRun*) and in-place updates (SetRunStatus / AppendRunPhase),
+// so the on-disk shape can never diverge between the two.
+func writeRunManifest(run WorkflowRun) error {
+	// Validate the run id before it becomes a path component. SaveRun takes a
+	// caller-supplied WorkflowRun (its id may originate from a `--run-id` flag), so a
+	// "../" id must never escape the runs dir; NewRunWithMeta's uuid always passes.
+	if err := ids.ValidateJobID(run.RunID); err != nil {
+		return fmt.Errorf("subagent: invalid run id %q: %w", run.RunID, err)
+	}
 	dir, err := runsDir()
 	if err != nil {
-		return WorkflowRun{}, err
+		return err
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return WorkflowRun{}, fmt.Errorf("subagent: mkdir runs dir: %w", err)
-	}
-	run := WorkflowRun{
-		RunID:     uuid.NewString(),
-		Name:      name,
-		StartedAt: time.Now().UTC().Format(time.RFC3339),
-		Phases:    phases,
-		Status:    "running",
+		return fmt.Errorf("subagent: mkdir runs dir: %w", err)
 	}
 	data, err := json.MarshalIndent(run, "", "  ")
 	if err != nil {
-		return WorkflowRun{}, fmt.Errorf("subagent: marshal run: %w", err)
+		return fmt.Errorf("subagent: marshal run: %w", err)
 	}
-	if err := fileutil.AtomicWrite(filepath.Join(dir, run.RunID+".json"), data, 0o600); err != nil {
+	return fileutil.AtomicWrite(filepath.Join(dir, run.RunID+".json"), data, 0o600)
+}
+
+// NewRun mints a run manifest and persists it. RunID is a fresh uuid; StartedAt is
+// RFC3339 UTC (lexically sortable for newest-first listing); Status starts
+// "running".
+func NewRun(name string, phases []RunPhase) (WorkflowRun, error) {
+	return NewRunWithMeta(name, "", phases)
+}
+
+// NewRunWithMeta is NewRun plus a description — the workflow runtime mints from a
+// script's `meta` literal (name + description + declared phases).
+func NewRunWithMeta(name, description string, phases []RunPhase) (WorkflowRun, error) {
+	run := WorkflowRun{
+		RunID:       uuid.NewString(),
+		Name:        name,
+		Description: description,
+		StartedAt:   time.Now().UTC().Format(time.RFC3339),
+		Phases:      phases,
+		Status:      "running",
+	}
+	if err := writeRunManifest(run); err != nil {
 		return WorkflowRun{}, err
 	}
 	return run, nil
 }
+
+// SaveRun writes a complete manifest, overwriting any prior file (atomic temp+rename).
+// The workflow-run engine is the single authoritative writer of its manifest: it holds
+// the run's identity + phase plan + status in memory and overwrites the whole file on
+// every phase()/finalize, so there is NO read-modify-write to race, and a manifest a
+// concurrent GC happened to drop is simply recreated on the next write (the run stays
+// inspectable via `workflow status`).
+func SaveRun(run WorkflowRun) error {
+	return writeRunManifest(run)
+}
+
+// ValidateRunID reports whether id is a path-safe run-manifest component (the same
+// check ReadRun/SaveRun apply). Exported so the workflow runtime can fail-fast on a
+// bad `--run-id` before executing a script.
+func ValidateRunID(id string) error { return ids.ValidateJobID(id) }
 
 // ReadRun loads a manifest by id. runID is validated first because it becomes a
 // filesystem path component (guards against a "../" escape via the CLI/status path).
