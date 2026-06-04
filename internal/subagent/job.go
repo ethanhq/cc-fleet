@@ -12,7 +12,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -137,7 +136,7 @@ func launchBackground(req Request, binaryPath, profilePath, model string) Result
 	cmd.Env = childenv.Clean(os.Environ())
 	cmd.Stdout = outF
 	cmd.Stderr = errF
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	setGroupAttr(cmd)
 
 	// stdin: a detached child can't keep a parent copy-goroutine alive, so hand
 	// it a real inherited fd. An *os.File (the common --prompt-file case) is
@@ -277,21 +276,14 @@ func materializePromptReader(r io.Reader, dst string) (f *os.File, err error) {
 	return f, nil
 }
 
-// killProcessGroup sends SIGTERM to the process group (-pid → all members of
-// pgid pid), waits a short grace, then SIGKILLs survivors. Best-effort: ESRCH
-// (already exited) is silently ok. A package var only to allow test injection.
-var killProcessGroup = func(pid int) {
-	if pid <= 0 {
-		return
-	}
-	// Negative pid → group. The leader has Setpgid:true, so its pid == pgid.
-	_ = syscall.Kill(-pid, syscall.SIGTERM)
-	time.Sleep(200 * time.Millisecond)
-	// Probe + escalate. ESRCH means the group is gone — leave it.
-	if err := syscall.Kill(-pid, 0); err == nil {
-		_ = syscall.Kill(-pid, syscall.SIGKILL)
-	}
-}
+// killProcessGroup reaps the whole process tree rooted at the just-launched
+// background child (the leader's process group on unix; the current process tree
+// via taskkill /T on Windows): a graceful terminate, a short grace, then a
+// forced kill of survivors. Best-effort: an already-gone tree is silently ok. A
+// package var only to allow test injection. It is deliberately job-handle-free
+// (see killProcessTree) so it only ever runs while the child is still owned by
+// this process, before the successful-launch Release.
+var killProcessGroup = killProcessTree
 
 // StatusFor reports a background job's status. While the process is alive it
 // returns status=running; once dead it classifies the captured stdout with the
@@ -648,9 +640,7 @@ func processAlive(pid int, settingsPath string) bool {
 	if pid <= 0 {
 		return false
 	}
-	err := syscall.Kill(pid, 0)
-	alive := err == nil || errors.Is(err, syscall.EPERM)
-	if !alive {
+	if !pidAlive(pid) {
 		return false
 	}
 	if settingsPath == "" {

@@ -7,12 +7,26 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/charmbracelet/x/term"
 
 	"github.com/ethanhq/cc-fleet/internal/userops"
 )
+
+// onWindows reports whether the binary is running on Windows. The teammate lane
+// (spawn / teardown / hide / show) drives tmux, which cc-fleet does not support
+// on Windows; only the subagent lane (lane-2) is supported there. A package var
+// (not a const) so it reads at runtime.
+var onWindows = runtime.GOOS == "windows"
+
+// windowsUnsupportedMsg is the clear, command-specific error a teammate-lane
+// command returns on Windows instead of falling through to a generic tmux-exec
+// failure. The subagent lane is the supported path.
+func windowsUnsupportedMsg(cmd string) string {
+	return fmt.Sprintf("%s is not supported on Windows (it drives tmux); use the subagent lane (cc-fleet subagent)", cmd)
+}
 
 // promptPassword reads a line from the controlling terminal without echoing it.
 // Used wherever an API key is collected interactively, so the key never lands in

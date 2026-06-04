@@ -6,8 +6,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/ethanhq/cc-fleet/internal/ids"
 )
 
@@ -127,12 +125,12 @@ func withFlock(path string, fn func() error) error {
 		return fmt.Errorf("config: open lock %s: %w", path, err)
 	}
 	defer f.Close()
-	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
+	if err := lockFile(f); err != nil {
 		return fmt.Errorf("config: flock %s: %w", path, err)
 	}
 	defer func() {
 		// Best-effort unlock; the kernel also releases on Close.
-		_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
+		unlockFile(f)
 	}()
 	return fn()
 }

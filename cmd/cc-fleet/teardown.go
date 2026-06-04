@@ -37,6 +37,10 @@ skill flows don't fail on retries.`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if onWindows {
+				res := teardown.Result{OK: false, Target: args[0], ErrorCode: teardown.ErrCodeInternal, ErrorMsg: windowsUnsupportedMsg("teardown")}
+				return reportTeardown(res, asJSON)
+			}
 			target := args[0]
 			var res teardown.Result
 			if strings.HasPrefix(target, "%") {

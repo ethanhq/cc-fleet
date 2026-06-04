@@ -20,8 +20,6 @@ import (
 	"strconv"
 	"strings"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/fileutil"
 )
@@ -278,10 +276,10 @@ func nextRoundRobinIndex(vendor string, n int) (int, error) {
 		return 0, fmt.Errorf("rotation %s: open %s: %w", vendor, path, err)
 	}
 	defer f.Close()
-	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
+	if err := rotLockEx(f); err != nil {
 		return 0, fmt.Errorf("rotation %s: flock %s: %w", vendor, path, err)
 	}
-	defer func() { _ = unix.Flock(int(f.Fd()), unix.LOCK_UN) }()
+	defer func() { rotUnlock(f) }()
 
 	data, err := io.ReadAll(f)
 	if err != nil {

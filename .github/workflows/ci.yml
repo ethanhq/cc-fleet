@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v6
@@ -25,6 +25,7 @@ jobs:
         with:
           go-version-file: go.mod
       - name: gofmt
+        if: runner.os != 'Windows'
         run: |
           unformatted=$(gofmt -l .)
           if [ -n "$unformatted" ]; then
@@ -33,5 +34,26 @@ jobs:
             exit 1
           fi
       - run: go vet ./...
-      - run: go test -race ./...
-      - run: make build
+      - name: test (all)
+        if: runner.os != 'Windows'
+        run: go test -race ./...
+      # Windows supports only the subagent lane (lane-2); its teammate/tmux tests
+      # install `#!/bin/sh` fakes and can't run on the windows runner. So test the
+      # packages that are supported AND runnable there: the real LockFileEx seams
+      # (config, secrets) + the Job-Object grandchild-reap smoke and the subagent
+      # unit suite. -race needs the runner's bundled gcc (present on the image).
+      - name: test (windows lane-2 seams)
+        if: runner.os == 'Windows'
+        run: go test -race ./internal/config/... ./internal/secrets/... ./internal/subagent/...
+      - name: build (make)
+        if: runner.os != 'Windows'
+        run: make build
+      - name: build (go)
+        if: runner.os == 'Windows'
+        run: go build ./...
+      # Cheap cross-compile wall — catches windows build breaks without a runner.
+      - name: windows cross-compile gate
+        if: runner.os == 'Linux'
+        run: |
+          GOOS=windows GOARCH=amd64 go build ./...
+          GOOS=windows GOARCH=amd64 go vet ./...

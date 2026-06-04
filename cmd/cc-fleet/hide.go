@@ -52,6 +52,11 @@ func runPaneVis(target string, asJSON, hide bool) error {
 		action = "hide"
 	}
 
+	if onWindows {
+		bad := panevis.Result{Action: action, ErrorCode: "UNSUPPORTED_ON_WINDOWS", ErrorMsg: windowsUnsupportedMsg(action)}
+		return reportPaneVis([]panevis.Result{bad}, asJSON)
+	}
+
 	targets, err := panevis.Resolve(target)
 	if err != nil {
 		// Resolve carries the real code (TEAM_NOT_FOUND / PANE_NOT_FOUND / …) in a

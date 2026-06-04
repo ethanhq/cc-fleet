@@ -1,3 +1,5 @@
+//go:build !windows
+
 package subagent
 
 import (
@@ -169,16 +171,6 @@ exit 0
 
 	// Reap detached child.
 	_, _ = syscall.Wait4(res.PID, nil, syscall.WNOHANG, nil)
-}
-
-// argvHasAdjacent reports whether flag is immediately followed by value in argv.
-func argvHasAdjacent(argv []string, flag, value string) bool {
-	for i := 0; i+1 < len(argv); i++ {
-		if argv[i] == flag && argv[i+1] == value {
-			return true
-		}
-	}
-	return false
 }
 
 // TestLaunchBackground_OuterTextStatusEnvelopeAware: with outer text-mode but

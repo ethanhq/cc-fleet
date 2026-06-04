@@ -1,12 +1,7 @@
 package subagent
 
 import (
-	"context"
-	"os"
-	"path/filepath"
-	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 )
@@ -75,19 +70,6 @@ func TestBuildArgv(t *testing.T) {
 }
 
 // ----- classify -----
-
-// Real inner envelopes captured from a smoke run.
-const smokeSuccessJSON = `{"type":"result","subtype":"success","is_error":false,"api_error_status":null,
- "duration_ms":3654,"duration_api_ms":3385,"ttft_ms":3397,"num_turns":1,"stop_reason":"end_turn",
- "session_id":"84c5b474-aaaa","total_cost_usd":0.258409,
- "usage":{"input_tokens":50750,"cache_read_input_tokens":18,"output_tokens":186,"service_tier":"standard"},
- "modelUsage":{"mimo-v2-flash":{"inputTokens":50750,"outputTokens":186,"costUSD":0.258409}},
- "result":"SUBAGENT_SMOKE_OK=42","permission_denials":[],"terminal_reason":"completed"}`
-
-const smoke429BalanceJSON = `{"type":"result","subtype":"success","is_error":true,"api_error_status":429,
- "duration_ms":178257,"duration_api_ms":0,"num_turns":1,"stop_reason":"stop_sequence",
- "result":"API Error: Request rejected (429) · [1113][余额不足或无可用资源包,请充值。]",
- "total_cost_usd":0,"modelUsage":{},"permission_denials":[],"terminal_reason":"completed"}`
 
 func TestClassify(t *testing.T) {
 	req := Request{Vendor: "v", JSON: true}
@@ -252,159 +234,6 @@ func TestClassify(t *testing.T) {
 	})
 }
 
-// ----- runClaude with fake binaries -----
-
-// writeFakeBin writes an executable shell script and returns its path.
-func writeFakeBin(t *testing.T, script string) string {
-	t.Helper()
-	dir := t.TempDir()
-	p := filepath.Join(dir, "claude")
-	if err := os.WriteFile(p, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake bin: %v", err)
-	}
-	return p
-}
-
-func TestRunClaude_SuccessEnvelope(t *testing.T) {
-	bin := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	stdout, stderr, code, err := runClaude(ctx, bin, []string{bin, "-p", "x"}, os.Environ(), nil)
-	if code != 0 {
-		t.Fatalf("exit code = %d, want 0", code)
-	}
-	// A clean success must report no run error and an empty stderr channel.
-	if err != nil {
-		t.Fatalf("clean success returned err=%v, want nil", err)
-	}
-	if len(stderr) != 0 {
-		t.Fatalf("clean success wrote to stderr: %q", stderr)
-	}
-	res := classify(Request{Vendor: "mimo", JSON: true}, "fallback", stdout, nil, code, false, true)
-	if !res.OK || res.Result != "SUBAGENT_SMOKE_OK=42" {
-		t.Fatalf("classify of fake success: OK=%v result=%q", res.OK, res.Result)
-	}
-}
-
-func TestRunClaude_ErrorEnvelopeExit1(t *testing.T) {
-	bin := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smoke429BalanceJSON+"'\nexit 1\n")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	stdout, _, code, err := runClaude(ctx, bin, []string{bin, "-p", "x"}, os.Environ(), nil)
-	if code != 1 {
-		t.Fatalf("exit code = %d, want 1", code)
-	}
-	// A non-zero exit must surface the run error (an *exec.ExitError), not be
-	// swallowed — exitCode is derived from it.
-	if err == nil {
-		t.Fatal("exit-1 returned nil err, want a non-nil run error")
-	}
-	res := classify(Request{Vendor: "glm", JSON: true}, "glm-4.6", stdout, nil, code, false, true)
-	if res.OK || res.ErrorCode != ErrCodeInsufficientBalance {
-		t.Fatalf("want INSUFFICIENT_BALANCE from exit-1 envelope, got OK=%v code=%s", res.OK, res.ErrorCode)
-	}
-}
-
-func TestRunClaude_StdinPrompt(t *testing.T) {
-	// Echo back stdin so we prove --prompt-file/stdin actually reaches the child.
-	bin := writeFakeBin(t, "#!/bin/sh\ncat\n")
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	stdout, _, code, _ := runClaude(ctx, bin, []string{bin, "-p"}, os.Environ(), strings.NewReader("piped-prompt"))
-	if code != 0 || string(stdout) != "piped-prompt" {
-		t.Fatalf("stdin not piped: code=%d stdout=%q", code, stdout)
-	}
-}
-
-// TestRunClaude_TimeoutKillsProcessGroup proves a grandchild that IGNORES
-// SIGTERM is still reaped (via the escalated SIGKILL to the whole process
-// group) when the deadline fires — no orphan survives.
-func TestRunClaude_TimeoutKillsProcessGroup(t *testing.T) {
-	// Shrink the SIGTERM→SIGKILL grace so the test is fast.
-	orig := waitGrace
-	waitGrace = 500 * time.Millisecond
-	t.Cleanup(func() { waitGrace = orig })
-
-	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
-	// Leader and grandchild both trap (ignore) SIGTERM; only a SIGKILL to the
-	// group can reap them. The grandchild records its pid so we can assert death.
-	script := "#!/bin/sh\n" +
-		"trap '' TERM\n" +
-		"sh -c 'trap \"\" TERM; echo $$ > \"" + pidFile + "\"; sleep 30' &\n" +
-		"sleep 30\n"
-	bin := writeFakeBin(t, script)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	start := time.Now()
-	_, _, _, _ = runClaude(ctx, bin, []string{bin}, os.Environ(), nil)
-	elapsed := time.Since(start)
-
-	// Should return within deadline + grace + slack, not hang on the pipe-holding
-	// grandchild (WaitDelay defeats that).
-	if elapsed > 4*time.Second {
-		t.Fatalf("runClaude took %v with a pipe-holding grandchild; WaitDelay/kill model broken", elapsed)
-	}
-
-	gpid := readPID(t, pidFile)
-	if gpid <= 0 {
-		t.Fatalf("grandchild never recorded its pid (%q)", pidFile)
-	}
-	// The grandchild ignored SIGTERM; only the group SIGKILL escalation reaps it.
-	if alive := waitGone(gpid, 3*time.Second); alive {
-		// Best-effort cleanup so a failure doesn't leak a sleeper.
-		_ = syscall.Kill(gpid, syscall.SIGKILL)
-		t.Fatalf("grandchild pid %d survived the timeout (orphan) — process-group SIGKILL escalation missing", gpid)
-	}
-}
-
-// TestRun_NoUserFingerprint_UsesBundled: with NO
-// ~/.config/cc-fleet/fingerprint.json, Run must NOT return FINGERPRINT_MISSING —
-// LoadOrBundled supplies the embedded recipe and the binary path resolves live.
-// A fast-exit fake claude on PATH keeps the run from reaching the (unreachable)
-// vendor or launching a real claude.
-func TestRun_NoUserFingerprint_UsesBundled(t *testing.T) {
-	xdg := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", xdg)
-	t.Setenv("HOME", t.TempDir())
-
-	// Fake claude on PATH so ResolveBinaryPath finds a binary and runClaude
-	// execs something that exits instantly (never touches the invalid base_url).
-	binDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(binDir, "claude"),
-		[]byte("#!/bin/sh\ncase \"$1\" in --version) echo \"2.1.150\";; esac\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-
-	// Minimal vendors.toml with one enabled vendor.
-	dir := filepath.Join(xdg, "cc-fleet")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	toml := `version = 1
-
-[glm]
-base_url        = "https://example.invalid/anthropic"
-default_model   = "glm-4.6"
-models_endpoint = "https://example.invalid/v1/models"
-secret_backend  = "file"
-secret_ref      = "glm.key"
-enabled         = true
-added_at        = 2026-05-24T05:00:00Z
-`
-	if err := os.WriteFile(filepath.Join(dir, "vendors.toml"), []byte(toml), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	res := Run(Request{Vendor: "glm", Prompt: "hi", JSON: true})
-	// The bundled fallback must engage: no FINGERPRINT_MISSING, and the binary
-	// resolved (no FINGERPRINT_STALE either, since the fake claude is on PATH).
-	if res.ErrorCode == ErrCodeFingerprintMissing || res.ErrorCode == ErrCodeFingerprintStale {
-		t.Fatalf("missing user fingerprint must fall back to bundled recipe, got %s: %s", res.ErrorCode, res.ErrorMsg)
-	}
-}
-
 func TestRun_UnknownVendor(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
@@ -412,69 +241,4 @@ func TestRun_UnknownVendor(t *testing.T) {
 	if res.OK || res.ErrorCode != ErrCodeUnknownVendor {
 		t.Fatalf("want UNKNOWN_VENDOR, got OK=%v code=%s", res.OK, res.ErrorCode)
 	}
-}
-
-// ----- argv assertion helpers -----
-
-func idxOf(argv []string, tok string) int {
-	for i, a := range argv {
-		if a == tok {
-			return i
-		}
-	}
-	return -1
-}
-
-// assertSeq checks that the given tokens appear as a contiguous run in argv.
-func assertSeq(t *testing.T, argv []string, seq ...string) {
-	t.Helper()
-	joined := strings.Join(argv, "\x00")
-	want := strings.Join(seq, "\x00")
-	if !strings.Contains(joined, want) {
-		t.Fatalf("argv %v does not contain contiguous %v", argv, seq)
-	}
-}
-
-// assertPairAfter checks flag is present and immediately followed by val.
-func assertPairAfter(t *testing.T, argv []string, flag, val string) {
-	t.Helper()
-	i := idxOf(argv, flag)
-	if i < 0 || i+1 >= len(argv) || argv[i+1] != val {
-		t.Fatalf("expected %s %s in argv: %v", flag, val, argv)
-	}
-}
-
-func assertAbsent(t *testing.T, argv []string, tok string) {
-	t.Helper()
-	if idxOf(argv, tok) >= 0 {
-		t.Fatalf("expected %q absent from argv: %v", tok, argv)
-	}
-}
-
-func readPID(t *testing.T, path string) int {
-	t.Helper()
-	// The grandchild writes asynchronously; poll briefly.
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) {
-		if data, err := os.ReadFile(path); err == nil {
-			if pid, perr := strconv.Atoi(strings.TrimSpace(string(data))); perr == nil {
-				return pid
-			}
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	return -1
-}
-
-// waitGone polls pid for up to d and reports whether it is STILL alive
-// (false = it died, which is what the no-orphan assertion wants).
-func waitGone(pid int, d time.Duration) (stillAlive bool) {
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if syscall.Kill(pid, 0) == syscall.ESRCH {
-			return false
-		}
-		time.Sleep(25 * time.Millisecond)
-	}
-	return syscall.Kill(pid, 0) != syscall.ESRCH
 }

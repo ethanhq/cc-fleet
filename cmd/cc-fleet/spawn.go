@@ -47,6 +47,10 @@ profile that lazily fetches the vendor key.`,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if onWindows {
+				res := spawn.Result{OK: false, ErrorCode: "UNSUPPORTED_ON_WINDOWS", ErrorMsg: windowsUnsupportedMsg("spawn"), Vendor: args[0]}
+				return reportSpawn(res, asJSON)
+			}
 			// Team / agent names flow into filesystem paths (config.json, inbox
 			// files, lock files) and tmux labels. Reject path traversal /
 			// separators / absolute paths via the typed constructors BEFORE any

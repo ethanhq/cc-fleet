@@ -10,7 +10,6 @@ import (
 	"os/exec"
 	"strconv"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/ethanhq/cc-fleet/internal/childenv"
@@ -269,15 +268,28 @@ func runClaude(ctx context.Context, binaryPath string, argv, env []string, stdin
 	if stdin != nil {
 		cmd.Stdin = stdin
 	}
+
+	// The process-group controller owns the whole-tree kill model: a kernel
+	// process group on unix (Setpgid → -pid signals reach Bash-tool
+	// grandchildren), a Job Object on Windows (the child + every descendant are
+	// killed atomically when the job is terminated).
+	pg := newProcGroup()
+	// Release the group controller on EVERY return path. On Windows this closes the
+	// Job Object handle (a no-op once killGroupHard already terminated+closed it on a
+	// timeout/overflow path); on unix it is a no-op. Without it the normal-exit path
+	// would leak the Windows job handle + its kernel object.
+	defer pg.close()
+
 	// Capture each stream through a byte cap so a runaway child can't OOM the
-	// parent. On overflow we SIGKILL the whole group (the over-cap output is
-	// already useless) and surface errOutputTooLarge — never a silent truncation,
-	// which would mis-parse into SUBAGENT_FAILED or echo a truncated answer.
+	// parent. On overflow we hard-kill the whole group/tree (the over-cap output
+	// is already useless) and surface errOutputTooLarge — never a silent
+	// truncation, which would mis-parse into SUBAGENT_FAILED or echo a truncated
+	// answer.
 	var killOnce sync.Once
 	killGroup := func() {
 		killOnce.Do(func() {
 			if cmd.Process != nil {
-				_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+				pg.killGroupHard(cmd.Process.Pid)
 			}
 		})
 	}
@@ -286,29 +298,39 @@ func runClaude(ctx context.Context, binaryPath string, argv, env []string, stdin
 	cmd.Stdout = outW
 	cmd.Stderr = errW
 
-	// Setpgid makes the child its own group leader, so -Pid == the whole group.
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	// On context cancel, SIGTERM the whole group (not just the leader). Treat
-	// "already gone" (ESRCH) as success so an exit/deadline race doesn't make
-	// os/exec think Cancel failed.
+	// Make the child the group/tree root (Setpgid on unix; CREATE_NEW_PROCESS_GROUP
+	// on Windows).
+	setGroupAttr(cmd)
+	// On context cancel, terminate the whole group (not just the leader). The
+	// unix path treats "already gone" (ESRCH) as success so an exit/deadline race
+	// doesn't make os/exec think Cancel failed; the Windows path is best-effort
+	// graceful with the authoritative reap deferred to the post-Run escalation.
 	cmd.Cancel = func() error {
-		if e := syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM); e != nil && !errors.Is(e, syscall.ESRCH) {
-			return e
-		}
-		return nil
+		return pg.signalGroupTerm(cmd.Process.Pid)
 	}
-	// After this grace window os/exec SIGKILLs only the leader; we escalate to
-	// the group below to catch grandchildren that ignored SIGTERM.
+	// After this grace window os/exec SIGKILLs/terminates only the leader; we
+	// escalate to the whole group/tree below to catch grandchildren that ignored
+	// the graceful terminate.
 	cmd.WaitDelay = waitGrace
 
-	err = cmd.Run()
+	// Start + afterStart + Wait is semantically identical to cmd.Run() (Run is
+	// exactly Start followed by Wait, and Cancel/WaitDelay are honored the same
+	// way), but the explicit Start gives the Windows port its assign-after-Start
+	// window to bind the leader to the Job Object before it forks children. On a
+	// Start failure (err set, cmd.Process nil) the tail below behaves exactly as
+	// the old cmd.Run() error path: exitCode -1, no escalation, empty captures.
+	if err = cmd.Start(); err == nil {
+		pg.afterStart(cmd)
+		err = cmd.Wait()
+	}
 
-	// When the deadline/cancel fired, Go's WaitDelay SIGKILLs only cmd.Process
-	// (the leader). A grandchild that trapped/ignored SIGTERM can survive as an
-	// orphan. Escalate to the whole process group so no ghosts survive. ESRCH
-	// (group already empty) is fine.
+	// When the deadline/cancel fired, Go's WaitDelay reaps only cmd.Process (the
+	// leader). A grandchild that trapped/ignored the graceful terminate can
+	// survive as an orphan. Escalate to the whole group/tree so no ghosts survive
+	// (unix: Kill(-pid, SIGKILL); Windows: TerminateJobObject). An already-empty
+	// group is fine.
 	if ctx.Err() != nil && cmd.Process != nil {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		pg.killGroupHard(cmd.Process.Pid)
 	}
 
 	exitCode = 0
