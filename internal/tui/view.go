@@ -55,6 +55,8 @@ func (m Model) View() string {
 		return m.viewKeys()
 	case screenTeammateDetail:
 		return m.viewTeammateDetail()
+	case screenWorkflowDetail:
+		return m.viewWorkflowDetail()
 	case screenSetup:
 		return m.viewSetup()
 	case screenSetupTmux:
@@ -194,12 +196,19 @@ func (m Model) viewSpawn() string {
 	return b.String()
 }
 
-// viewWorkflows renders the read-only Workflows board: RunID-tagged subagent jobs
-// as a run→phase→agent tree. Like viewJobTable it shows ONLY status columns —
-// NEVER the job's answer text (Result.Result) — so no vendor reply can leak. The
-// run name, phase title, and agent label are opaque operator metadata that may
-// carry control bytes, so each is sanitized through sessiontitle.CleanTitle
-// before display.
+// wfColsWidth is the spacing of the leaf metric columns (LABEL VENDOR MODEL STATUS
+// TOK COST TURNS), shared by the legend and each leaf row so they line up.
+const wfMetricCols = "%-14s %-9s %-14s %-7s %-13s %-8s %-3s"
+
+// viewWorkflows renders the Workflows board: RunID-tagged subagent jobs as a
+// run→(group|phase)→agent tree with per-leaf token/cost/turn metrics, a run totals
+// line, and a flowing live-event log below the tree. Like viewJobTable it shows
+// ONLY status + metric columns — NEVER the job's answer text (Result.Result) — so
+// no vendor reply can leak; the answer lives only in the drill-in card. The run
+// name, phase title, agent label, and every log line are opaque operator metadata
+// that may carry control bytes, so each is sanitized through sessiontitle.CleanTitle
+// before display. A leaf cursor (flat index over wfLeaves) selects a row for
+// enter/x/r; header/group lines never take a cursor slot.
 func (m Model) viewWorkflows() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("cc-fleet · Workflows") + faintStyle.Render("    tab → Vendors") + "\n\n")
@@ -213,27 +222,233 @@ func (m Model) viewWorkflows() string {
 		if len(groups) == 0 {
 			b.WriteString(faintStyle.Render("  (no workflow runs)") + "\n")
 		} else {
-			b.WriteString(faintStyle.Render("    "+fmt.Sprintf("%-12s %-14s %-9s %-16s %-8s %-20s",
-				"PHASE", "AGENT", "VENDOR", "MODEL", "STATUS", "STARTED")) + "\n")
-			// No row windowing — render every row (same as viewTeammateTable /
-			// viewJobTable); the operator scrolls the terminal.
+			b.WriteString(faintStyle.Render("      "+fmt.Sprintf(wfMetricCols,
+				"AGENT", "VENDOR", "MODEL", "STATUS", "TOKENS(i/o/c)", "COST", "TRN")) + "\n")
+			// leafIdx is the running flat index over every run's leaf rows; it must
+			// advance in the SAME order as Model.wfLeaves so `leafIdx == cursor`
+			// highlights the right job. No row windowing — render every row (same as
+			// viewTeammateTable / viewJobTable); the operator scrolls the terminal.
+			leafIdx := 0
 			for _, g := range groups {
 				b.WriteString(sessionHdrStyle.Render("◆ run: "+m.runLabel(g)) + "\n")
-				for _, p := range g.phases {
-					b.WriteString("  " + teamHdrStyle.Render("▸ phase: "+sessiontitle.CleanTitle(p.title)) + "\n")
-					for _, j := range p.jobs {
-						b.WriteString("    " + fmt.Sprintf("%-12s %-14s %-9s %-16s %-8s %-20s",
-							trunc(sessiontitle.CleanTitle(j.Phase), 12),
-							trunc(sessiontitle.CleanTitle(j.Label), 14),
-							trunc(j.Vendor, 9), trunc(j.Model, 16),
-							trunc(j.Status, 8), trunc(j.StartedAt, 20)) + "\n")
-					}
-				}
+				m.renderRunTree(&b, g, &leafIdx)
+				b.WriteString("    " + faintStyle.Render(runTotalsLine(g)) + "\n")
 			}
 		}
+		b.WriteString(m.viewWorkflowLog())
 	}
-	b.WriteString("\n" + footer("r refresh · tab/esc vendors · q quit"))
+	if m.workflowStatus != "" {
+		style := okStyle
+		if m.workflowStatusErr {
+			style = errStyle
+		}
+		b.WriteString("\n" + style.Render(m.workflowStatus))
+	}
+	b.WriteString("\n" + footer("↑/↓ move · enter detail · x stop · r restart · R refresh · tab/esc vendors · q quit"))
 	return b.String()
+}
+
+// renderRunTree writes one run's leaf rows, advancing *leafIdx per leaf so the
+// cursor stays a flat index over wfLeaves. It uses the DAG structure (group
+// headers from the run's events) when the run has group events, else falls back to
+// the flat phase→agent tree. Both paths render the SAME leaf jobs in groupByRun
+// order — the structure only changes the indentation/headers — so the flat-index
+// cursor lands on the right job either way.
+func (m Model) renderRunTree(b *strings.Builder, g runGroup, leafIdx *int) {
+	// Flatten this run's jobs in phase→job order (the canonical leaf order).
+	var jobs []subagent.Result
+	for _, p := range g.phases {
+		jobs = append(jobs, p.jobs...)
+	}
+	dag := buildDAG(m.wfEvents[g.runID])
+	if dag != nil && len(jobs) > 0 {
+		// DAG overlay: render the group skeleton, pairing leaf nodes positionally
+		// with the run's jobs (the engine emits a leaf's launch event in start
+		// order, so positional pairing matches groupByRun order). A DAG leaf node
+		// past the job count renders structure-only (no metrics, not selectable).
+		jobPos := 0
+		m.renderDAGNodes(b, dag, 1, jobs, &jobPos, leafIdx)
+		// Any jobs the DAG didn't cover (more jobs than leaf nodes) render flat under
+		// the run so every job stays selectable.
+		for ; jobPos < len(jobs); jobPos++ {
+			m.renderLeafRow(b, jobs[jobPos], 2, leafIdx)
+		}
+		return
+	}
+	for _, p := range g.phases {
+		b.WriteString("  " + teamHdrStyle.Render("▸ phase: "+sessiontitle.CleanTitle(p.title)) + "\n")
+		for _, j := range p.jobs {
+			m.renderLeafRow(b, j, 2, leafIdx)
+		}
+	}
+}
+
+// renderDAGNodes walks the reconstructed structure tree, writing a header for each
+// group node (⇉ parallel / → pipeline / ▽ workflow) indented by depth and pairing
+// each leaf node positionally with the next run job (so the selectable row carries
+// the job's metrics + cursor). depth is the indent level (1 == directly under the
+// run header).
+func (m Model) renderDAGNodes(b *strings.Builder, nodes []*dagNode, depth int, jobs []subagent.Result, jobPos, leafIdx *int) {
+	indent := strings.Repeat("  ", depth)
+	for _, n := range nodes {
+		if n.group {
+			b.WriteString(indent + teamHdrStyle.Render(dagGroupLabel(n)) + "\n")
+			m.renderDAGNodes(b, n.children, depth+1, jobs, jobPos, leafIdx)
+			continue
+		}
+		// A leaf DAG node: pair with the next job if one remains, else render the
+		// event's own (label/vendor/model/status) as a non-selectable structure row.
+		if *jobPos < len(jobs) {
+			m.renderLeafRow(b, jobs[*jobPos], depth+1, leafIdx)
+			*jobPos++
+		} else {
+			b.WriteString(indent + "  " + faintStyle.Render(fmt.Sprintf("%-14s %-9s %-14s %-7s",
+				trunc(sessiontitle.CleanTitle(n.label), 14), trunc(sessiontitle.CleanTitle(n.vendor), 9),
+				trunc(sessiontitle.CleanTitle(n.model), 14), trunc(sessiontitle.CleanTitle(n.status), 7))) + "\n")
+		}
+	}
+}
+
+// dagGroupLabel renders a group node's header: a kind-specific glyph + child count.
+func dagGroupLabel(n *dagNode) string {
+	count := len(n.children)
+	switch n.groupTy {
+	case "parallel":
+		return fmt.Sprintf("⇉ parallel (%d)", count)
+	case "pipeline":
+		return fmt.Sprintf("→ pipeline (%d)", count)
+	case "workflow":
+		return fmt.Sprintf("▽ workflow (%d)", count)
+	default:
+		return fmt.Sprintf("▸ %s (%d)", sessiontitle.CleanTitle(n.groupTy), count)
+	}
+}
+
+// renderLeafRow writes one selectable leaf row at the given indent depth, advancing
+// *leafIdx. The cursor marker (and bold label) light up when *leafIdx == the
+// board cursor. Columns: label / vendor / model / status / tokens(i/o/c) / cost /
+// turns — opaque strings CleanTitle-scrubbed, never the answer text.
+func (m Model) renderLeafRow(b *strings.Builder, j subagent.Result, depth int, leafIdx *int) {
+	indent := strings.Repeat("  ", depth)
+	marker := "  "
+	label := fmt.Sprintf("%-14s", trunc(sessiontitle.CleanTitle(j.Label), 14))
+	if *leafIdx == m.workflowsCursor {
+		marker = cursorStyle.Render("> ")
+		label = selectedStyle.Render(label)
+	}
+	mt := metricsOf(j)
+	tok := fmt.Sprintf("%s/%s/%s", humanTokens(mt.inTok), humanTokens(mt.outTok), humanTokens(mt.cacheTok))
+	cost := fmt.Sprintf("$%.4f", mt.cost)
+	b.WriteString(indent + marker + label + " " + fmt.Sprintf("%-9s %-14s %-7s %-13s %-8s %-3d",
+		trunc(sessiontitle.CleanTitle(j.Vendor), 9), trunc(sessiontitle.CleanTitle(j.Model), 14),
+		trunc(sessiontitle.CleanTitle(j.Status), 7), tok, cost, mt.turns) + "\n")
+	*leafIdx++
+}
+
+// runTotalsLine sums a run's leaf tokens + cost and renders the elapsed wall-clock
+// (StartedAt → the manifest's UpdatedAt, else now). Tool-call counts are not
+// available from the data sources, so they are deliberately absent.
+func runTotalsLine(g runGroup) string {
+	var inTok, outTok, cacheTok int
+	var cost float64
+	for _, p := range g.phases {
+		for _, j := range p.jobs {
+			mt := metricsOf(j)
+			inTok += mt.inTok
+			outTok += mt.outTok
+			cacheTok += mt.cacheTok
+			cost += mt.cost
+		}
+	}
+	return fmt.Sprintf("Σ tokens %s in / %s out / %s cache · $%.4f · %s elapsed",
+		humanTokens(inTok), humanTokens(outTok), humanTokens(cacheTok), cost, g.elapsed())
+}
+
+// viewWorkflowLog renders the flowing live-event log pane below the run tree: the
+// bounded most-recent rendered lines, each already CleanTitle-scrubbed (in
+// renderLogLine) and here trunc'd to a sane width.
+func (m Model) viewWorkflowLog() string {
+	var b strings.Builder
+	b.WriteString("\n" + faintStyle.Render("Live log") + "\n")
+	if len(m.wfLog) == 0 {
+		b.WriteString(faintStyle.Render("  (no events yet)") + "\n")
+		return b.String()
+	}
+	for _, line := range m.wfLog {
+		b.WriteString(faintStyle.Render(trunc(line, 100)) + "\n")
+	}
+	return b.String()
+}
+
+// humanTokens compacts a token count: <1000 verbatim, else N.Nk (e.g. 50.7k), else
+// N.NM for millions.
+func humanTokens(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1000:
+		return fmt.Sprintf("%.1fk", float64(n)/1000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
+// viewWorkflowDetail renders the read-only leaf drill-in card: the selected leaf's
+// prompt + answer read from its io files, CleanTitle-scrubbed and collapsed by
+// default (e/space expands). The answer text appears ONLY here — never the board
+// table or the live log. When the io files are absent (run executed with
+// --no-persist-io, or GC'd) it shows the not-persisted note.
+func (m Model) viewWorkflowDetail() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("cc-fleet · leaf detail") + footer("    esc back") + "\n\n")
+	j := m.wfDetailJob
+	b.WriteString(selectedStyle.Render("  "+trunc(sessiontitle.CleanTitle(j.Label), 60)) +
+		faintStyle.Render("  "+trunc(sessiontitle.CleanTitle(j.Vendor), 16)+"/"+trunc(sessiontitle.CleanTitle(j.Model), 24)) + "\n")
+	b.WriteString(faintStyle.Render("  status "+trunc(sessiontitle.CleanTitle(j.Status), 16)+
+		" · phase "+trunc(sessiontitle.CleanTitle(j.Phase), 24)) + "\n\n")
+	if !m.wfDetailIO {
+		b.WriteString(faintStyle.Render("  (not persisted — run with default persist-io)") + "\n")
+		b.WriteString("\n" + footer("esc/enter back · q quit"))
+		return b.String()
+	}
+	limit := wfCollapsedChars
+	if m.wfDetailExpand {
+		limit = 0 // 0 == no limit
+	}
+	b.WriteString(faintStyle.Render("  PROMPT") + "\n")
+	b.WriteString(renderIOBlock(m.wfDetailPrompt, limit))
+	b.WriteString("\n" + faintStyle.Render("  ANSWER") + "\n")
+	b.WriteString(renderIOBlock(m.wfDetailAnswer, limit))
+	hint := "e/space expand"
+	if m.wfDetailExpand {
+		hint = "e/space collapse"
+	}
+	b.WriteString("\n" + footer(hint+" · esc/enter back · q quit"))
+	return b.String()
+}
+
+// wfCollapsedChars is the per-block character cap in the collapsed drill-in view.
+const wfCollapsedChars = 600
+
+// renderIOBlock renders one io block (prompt or answer), CleanTitle-scrubbed and
+// indented. limit > 0 truncates to that many runes with a "…(N more)" marker; 0
+// renders it whole (the expanded view). An empty block shows a dim placeholder.
+func renderIOBlock(s string, limit int) string {
+	clean := sessiontitle.CleanTitle(s)
+	if strings.TrimSpace(clean) == "" {
+		return faintStyle.Render("  (empty)") + "\n"
+	}
+	runes := []rune(clean)
+	suffix := ""
+	if limit > 0 && len(runes) > limit {
+		suffix = fmt.Sprintf("\n  %s", faintStyle.Render(fmt.Sprintf("…(%d more chars — e/space to expand)", len(runes)-limit)))
+		clean = string(runes[:limit])
+	}
+	var b strings.Builder
+	for _, line := range strings.Split(clean, "\n") {
+		b.WriteString("  " + line + "\n")
+	}
+	return b.String() + suffix
 }
 
 // runLabel renders a run header label: its sanitized name plus the short run id,
@@ -410,7 +625,28 @@ type runGroup struct {
 	name      string
 	status    string
 	startedAt string
+	updatedAt string
 	phases    []runPhaseGroup
+}
+
+// elapsed renders the run's wall-clock from StartedAt to its last heartbeat
+// (UpdatedAt) when set, else to now. A run with no parseable StartedAt renders "—".
+func (g runGroup) elapsed() string {
+	start, err := time.Parse(time.RFC3339, g.startedAt)
+	if err != nil {
+		return "—"
+	}
+	end := time.Now()
+	if g.updatedAt != "" {
+		if u, uerr := time.Parse(time.RFC3339, g.updatedAt); uerr == nil {
+			end = u
+		}
+	}
+	d := end.Sub(start)
+	if d < 0 {
+		d = 0
+	}
+	return d.Round(time.Second).String()
 }
 
 // runPhaseGroup is one phase of a run with the jobs observed in it.
@@ -448,6 +684,7 @@ func groupByRun(jobs []subagent.Result, runs []subagent.WorkflowRun) []runGroup 
 			g.name = r.Name
 			g.status = r.Status
 			g.startedAt = r.StartedAt
+			g.updatedAt = r.UpdatedAt
 		}
 		groups[runID] = g
 		phaseIdx[runID] = map[string]int{}

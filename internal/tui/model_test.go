@@ -940,7 +940,7 @@ func TestViewsRenderForEveryScreen(t *testing.T) {
 	screens := []screen{
 		screenList, screenSpawn, screenWorkflows, screenPickTemplate,
 		screenForm, screenModelPick, screenRemoveConfirm, screenResult, screenKeys,
-		screenTeammateDetail,
+		screenTeammateDetail, screenWorkflowDetail,
 	}
 	for _, s := range screens {
 		m := NewModel()

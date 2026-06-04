@@ -31,6 +31,7 @@ var handlers = map[screen]screenHandler{
 	screenResult:         {update: Model.updateResult, view: Model.viewResult},
 	screenKeys:           {update: Model.updateKeys, view: Model.viewKeys},
 	screenTeammateDetail: {update: Model.updateTeammateDetail, view: Model.viewTeammateDetail},
+	screenWorkflowDetail: {update: Model.updateWorkflowDetail, view: Model.viewWorkflowDetail},
 	screenSetupTmux:      {update: Model.updateSetupTmux, view: Model.viewSetupTmux},
 	screenSetup:          {update: Model.updateSetup, view: Model.viewSetup},
 }
@@ -56,6 +57,7 @@ func allScreens() []screen {
 		screenResult,
 		screenKeys,
 		screenTeammateDetail,
+		screenWorkflowDetail,
 		screenSetupTmux,
 		screenSetup,
 	}

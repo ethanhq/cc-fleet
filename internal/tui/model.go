@@ -25,6 +25,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 	"github.com/ethanhq/cc-fleet/internal/teardown"
 	"github.com/ethanhq/cc-fleet/internal/userops"
+	"github.com/ethanhq/cc-fleet/internal/workflow"
 )
 
 // screen enumerates the TUI's views; one Model dispatches Update/View on the
@@ -42,6 +43,7 @@ const (
 	screenResult
 	screenKeys           // EDIT form → "Manage API keys →": per-vendor multi-key manager
 	screenTeammateDetail // board → enter on a teammate: full-field detail card
+	screenWorkflowDetail // Workflows board → enter on a leaf: read-only prompt/answer card
 	screenSetupTmux      // first-run tmux setup nudge; shown before agent-teams/hub
 	screenSetup          // first-run agent-teams setup nudge; shown before the hub
 )
@@ -88,13 +90,35 @@ type Model struct {
 	boardStatusErr bool
 
 	// Workflows board (screenWorkflows): RunID-tagged subagent jobs grouped into a
-	// run→phase→agent tree. Read-only (no cursor — rows are status-only, like the
-	// job table). workflowsEpoch tags each auto-refresh tick chain so re-entering
-	// supersedes a stale chain (mirrors boardEpoch).
-	workflowJobs   []subagent.Result
-	workflowRuns   []subagent.WorkflowRun
-	workflowsErr   error
-	workflowsEpoch int
+	// run→phase→agent tree, with per-leaf metrics, a live-event log, and a leaf
+	// cursor for drill-in. workflowsEpoch tags each auto-refresh tick chain so
+	// re-entering supersedes a stale chain (mirrors boardEpoch). workflowsCursor is
+	// a FLAT index over the leaf rows only (header lines never take a slot). wfTails
+	// holds the per-run incremental-tail offset; wfEvents the parsed events per run
+	// (for the DAG view); wfLog the bounded most-recent rendered log ring.
+	// workflowStatus surfaces a stop/restart outcome (like boardStatus).
+	workflowJobs      []subagent.Result
+	workflowRuns      []subagent.WorkflowRun
+	workflowsErr      error
+	workflowsEpoch    int
+	workflowsCursor   int
+	wfTails           map[string]runTail
+	wfEvents          map[string][]eventLine
+	wfLog             []string
+	workflowStatus    string
+	workflowStatusErr bool
+
+	// Workflow leaf drill-in (screenWorkflowDetail): the selected leaf's job + its
+	// prompt/answer read from the leaf io files. wfDetailExpand toggles the
+	// collapsed/full render. wfDetailIO records whether the io files were present.
+	// wfDetailNonce is bumped on each drill-in so a slow IO read for a prior leaf
+	// (or a card already left) is dropped instead of showing the wrong answer.
+	wfDetailJob    subagent.Result
+	wfDetailPrompt string
+	wfDetailAnswer string
+	wfDetailIO     bool
+	wfDetailExpand bool
+	wfDetailNonce  int
 
 	// Active add/edit form.
 	form     form
@@ -339,14 +363,20 @@ func boardTick(epoch int) tea.Cmd {
 }
 
 // workflowsMsg carries one Workflows-board refresh: the RunID-tagged subagent
-// jobs and the run manifests. It opts into screenOwnedAsyncMsg (owningScreen →
-// screenWorkflows) AND carries the workflowsEpoch that scheduled it, so a stale
-// refresh from a prior visit is dropped on re-entry (epoch++) or leaving.
+// jobs, the run manifests, the incrementally-tailed new events (split per run for
+// the DAG view), the advanced per-run tails, and the freshly-rendered log lines.
+// It opts into screenOwnedAsyncMsg (owningScreen → screenWorkflows) AND carries
+// the workflowsEpoch that scheduled it, so a stale refresh from a prior visit is
+// dropped on re-entry (epoch++) or leaving.
 type workflowsMsg struct {
-	jobs  []subagent.Result
-	runs  []subagent.WorkflowRun
-	epoch int
-	err   error
+	jobs     []subagent.Result
+	runs     []subagent.WorkflowRun
+	tails    map[string]runTail
+	newEvts  map[string][]eventLine // run id → events read this refresh
+	resets   map[string]bool        // run id → its events file shrank (truncated): replace, don't append
+	logLines []eventLine            // all new events across runs, in run order, for the log ring
+	epoch    int
+	err      error
 }
 
 func (workflowsMsg) owningScreen() screen { return screenWorkflows }
@@ -357,9 +387,12 @@ type workflowsTickMsg struct{ epoch int }
 
 // loadWorkflows returns a tea.Cmd that assembles a Workflows refresh tagged with
 // the caller's epoch: the RunID-tagged subagent jobs (RunID == "" jobs stay on
-// the agent-status board) plus the run manifests. It carries the first non-nil
-// error so a data-source failure surfaces instead of crashing the board.
-func loadWorkflows(epoch int) tea.Cmd {
+// the agent-status board), the run manifests, and an INCREMENTAL tail of each
+// run's live-event channel (reading only the bytes appended since prevTails, so
+// the 3s poll stays cheap). It carries the first non-nil manifest/jobs error so a
+// data-source failure surfaces; a per-run events read that fails degrades to no
+// new events (tailEvents never errors out).
+func loadWorkflows(epoch int, prevTails map[string]runTail) tea.Cmd {
 	return func() tea.Msg {
 		all, jErr := subagent.ListJobs()
 		var jobs []subagent.Result
@@ -373,7 +406,97 @@ func loadWorkflows(epoch int) tea.Cmd {
 		if err == nil {
 			err = rErr
 		}
-		return workflowsMsg{jobs: jobs, runs: runs, epoch: epoch, err: err}
+		tails := map[string]runTail{}
+		newEvts := map[string][]eventLine{}
+		resets := map[string]bool{}
+		var logLines []eventLine
+		for _, r := range runs {
+			prev := prevTails[r.RunID]
+			path, perr := subagent.RunEventsPath(r.RunID)
+			if perr != nil {
+				tails[r.RunID] = prev
+				continue
+			}
+			evs, next, reset := tailEvents(path, prev)
+			tails[r.RunID] = next
+			if reset {
+				resets[r.RunID] = true
+			}
+			if len(evs) > 0 || reset {
+				newEvts[r.RunID] = evs
+				logLines = append(logLines, evs...)
+			}
+		}
+		return workflowsMsg{
+			jobs: jobs, runs: runs, tails: tails, newEvts: newEvts, resets: resets,
+			logLines: logLines, epoch: epoch, err: err,
+		}
+	}
+}
+
+// stopRunCmd reaps + stops the run under the cursor and reports the outcome on the
+// board status line. It is the board's only run-state mutation besides restart. The
+// epoch stamps the originating Workflows visit so a result landing after the user
+// left + re-entered (epoch++) is dropped (mirror workflowsMsg's gate).
+func stopRunCmd(runID string, epoch int) tea.Cmd {
+	return func() tea.Msg {
+		_, err := subagent.StopRun(runID)
+		return workflowCtlMsg{verb: "stop", runID: runID, err: err, epoch: epoch}
+	}
+}
+
+// restartRunCmd re-launches a stopped run from its saved runs/<id>.star via
+// workflow.Launch(Resume). A missing .star (RunScriptPath error or absent file
+// surfaced by Launch) comes back as the err so the board shows a one-line status
+// instead of crashing. epoch gates a stale result like stopRunCmd.
+func restartRunCmd(runID string, epoch int) tea.Cmd {
+	return func() tea.Msg {
+		scriptPath, perr := subagent.RunScriptPath(runID)
+		if perr != nil {
+			return workflowCtlMsg{verb: "restart", runID: runID, err: perr, epoch: epoch}
+		}
+		_, err := workflow.Launch(context.Background(), scriptPath, workflow.Options{Resume: runID}, false)
+		return workflowCtlMsg{verb: "restart", runID: runID, err: err, epoch: epoch}
+	}
+}
+
+// workflowCtlMsg carries the outcome of an x/r control on the Workflows board. Its
+// handler records the status line and reloads (mirror paneVisMsg). Owned by
+// screenWorkflows; epoch is the originating visit so a stale result is dropped.
+type workflowCtlMsg struct {
+	verb  string // "stop" | "restart"
+	runID string
+	err   error
+	epoch int
+}
+
+func (workflowCtlMsg) owningScreen() screen { return screenWorkflows }
+
+// wfDetailMsg carries the leaf io read for the drill-in card: the prompt + answer
+// (already read off the Update goroutine) and whether either io file was present.
+// Owned by screenWorkflowDetail; nonce is the drill-in request it answers, so a
+// slow read for a previously-selected leaf is dropped rather than shown in the
+// current card.
+type wfDetailMsg struct {
+	nonce   int
+	job     subagent.Result
+	prompt  string
+	answer  string
+	present bool
+}
+
+func (wfDetailMsg) owningScreen() screen { return screenWorkflowDetail }
+
+// loadLeafIOCmd reads the selected leaf's prompt/answer side files
+// (<ConfigDir>/subagent-jobs/<jobID>.prompt / .answer; 0600, present only when
+// persist-io was on). A read failure (absent files) degrades to empty + present
+// false so the card shows the not-persisted note. The answer text reaches ONLY the
+// drill-in card — never the table or the live log. nonce tags the request so a
+// stale read can't populate a later leaf's card.
+func loadLeafIOCmd(job subagent.Result, nonce int) tea.Cmd {
+	return func() tea.Msg {
+		prompt, answer, present := readLeafIO(job.JobID)
+		return wfDetailMsg{nonce: nonce, job: job, prompt: prompt, answer: answer, present: present}
 	}
 }
 
@@ -641,11 +764,90 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.workflowJobs = msg.jobs
 		m.workflowRuns = msg.runs
 		m.workflowsErr = msg.err
+		m.wfTails = msg.tails
+		// Merge the per-run events (DAG source) and the rendered log ring. The
+		// per-run accumulation keeps the full event history (DAG needs all of it);
+		// the log ring is bounded to the most-recent lines.
+		if m.wfEvents == nil {
+			m.wfEvents = map[string][]eventLine{}
+		}
+		for id, evs := range msg.newEvts {
+			if msg.resets[id] {
+				// The events file was truncated by a (re)run: the prior history is
+				// gone, so REPLACE it rather than appending the stale lines back.
+				m.wfEvents[id] = evs
+			} else {
+				m.wfEvents[id] = append(m.wfEvents[id], evs...)
+			}
+		}
+		// Drop accumulated events for runs that no longer exist (GC'd) so the map
+		// can't grow unbounded across a long board session.
+		if len(m.wfEvents) > 0 {
+			live := map[string]bool{}
+			for _, r := range msg.runs {
+				live[r.RunID] = true
+			}
+			for id := range m.wfEvents {
+				if !live[id] {
+					delete(m.wfEvents, id)
+				}
+			}
+		}
+		// On a truncate the global log ring also holds stale lines for the reset run,
+		// so rebuild it from the (now-corrected) accumulated events; otherwise just
+		// append this refresh's new lines.
+		if anyTrue(msg.resets) {
+			m.wfLog = m.rebuildLog()
+		} else {
+			m.wfLog = appendLog(m.wfLog, msg.logLines)
+		}
+		// Keep the leaf cursor in range as rows come and go.
+		if n := m.workflowLeafCount(); m.workflowsCursor >= n {
+			m.workflowsCursor = n - 1
+		}
+		if m.workflowsCursor < 0 {
+			m.workflowsCursor = 0
+		}
+		return m, nil
+
+	case workflowCtlMsg:
+		// A stale result from a prior Workflows visit must not mutate a fresh one —
+		// mirror workflowsMsg's epoch gate.
+		if msg.epoch != m.workflowsEpoch {
+			return m, nil
+		}
+		// Surface the stop/restart outcome on the board status line, then reload so
+		// the run's status reflects the new state (mirror paneVisMsg). workflowsMsg
+		// does NOT touch workflowStatus, so the message survives the refresh. The run
+		// id + error are opaque/operator-supplied text, so scrub them like the rest
+		// of the board before they reach the terminal.
+		runID := shortRunID(sessiontitle.CleanTitle(msg.runID))
+		if msg.err != nil {
+			m.workflowStatusErr = true
+			m.workflowStatus = fmt.Sprintf("%s %s failed: %s", msg.verb, runID,
+				sessiontitle.CleanTitle(msg.err.Error()))
+		} else {
+			m.workflowStatusErr = false
+			m.workflowStatus = fmt.Sprintf("%s %s: ok", msg.verb, runID)
+		}
+		return m, loadWorkflows(m.workflowsEpoch, m.wfTails)
+
+	case wfDetailMsg:
+		// Drop a read that answers a prior drill-in (slow leaf-A read landing after
+		// the user opened leaf-B) so a card never shows the wrong leaf's answer.
+		if msg.nonce != m.wfDetailNonce {
+			return m, nil
+		}
+		m.wfDetailJob = msg.job
+		m.wfDetailPrompt = msg.prompt
+		m.wfDetailAnswer = msg.answer
+		m.wfDetailIO = msg.present
+		m.wfDetailExpand = false
 		return m, nil
 
 	case workflowsTickMsg:
 		if m.screen == screenWorkflows && msg.epoch == m.workflowsEpoch {
-			return m, tea.Batch(loadWorkflows(msg.epoch), workflowsTick(msg.epoch))
+			return m, tea.Batch(loadWorkflows(msg.epoch, m.wfTails), workflowsTick(msg.epoch))
 		}
 		return m, nil
 
@@ -732,6 +934,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateKeys(msg)
 		case screenTeammateDetail:
 			return m.updateTeammateDetail(msg)
+		case screenWorkflowDetail:
+			return m.updateWorkflowDetail(msg)
 		case screenSetup:
 			return m.updateSetup(msg)
 		case screenSetupTmux:
@@ -842,10 +1046,7 @@ func (m Model) updateSpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Advance the 3-way cycle: Agent status → Workflows. Bump the epoch so a
 		// tick still pending from a previous Workflows visit can't double the
 		// refresh rate, and start a fresh load + tick chain (mirror updateList→spawn).
-		m.screen = screenWorkflows
-		m.loading = true
-		m.workflowsEpoch++
-		return m, tea.Batch(loadWorkflows(m.workflowsEpoch), workflowsTick(m.workflowsEpoch))
+		return m.toWorkflows()
 	case "esc":
 		return m.toList()
 	case "q":
@@ -855,15 +1056,69 @@ func (m Model) updateSpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// updateWorkflows drives the read-only Workflows board. r reloads; tab/esc return
-// to the Vendors list (closing the List → Agent status → Workflows → List cycle);
-// q/ctrl+c quit. ↑/↓ are no-ops (rows are status-only, no cursor). The
-// auto-refresh tick chain runs independently (see workflowsTickMsg).
+// toWorkflows enters the Workflows board: bump the epoch so a tick pending from a
+// prior visit can't double the refresh rate, reset the per-visit cursor / status /
+// tails / log, and start a fresh load + tick chain (mirror updateList→spawn). The
+// tails/events/log reset on entry so a re-entry re-tails each run from the top
+// (cheap; the board is bounded) rather than relying on stale offsets.
+func (m Model) toWorkflows() (tea.Model, tea.Cmd) {
+	m.screen = screenWorkflows
+	m.loading = true
+	m.workflowsEpoch++
+	m.workflowsCursor = 0
+	m.workflowStatus = ""
+	m.wfTails = map[string]runTail{}
+	m.wfEvents = map[string][]eventLine{}
+	m.wfLog = nil
+	return m, tea.Batch(loadWorkflows(m.workflowsEpoch, m.wfTails), workflowsTick(m.workflowsEpoch))
+}
+
+// updateWorkflows drives the Workflows board. ↑/↓ walk the leaf cursor (landing on
+// leaf rows only, skipping run/phase headers); enter on a leaf opens the read-only
+// prompt/answer drill-in card; x stops the run under the cursor and r restarts it;
+// R (shift) reloads; tab/esc return to the Vendors list (closing the List → Agent
+// status → Workflows → List cycle); q/ctrl+c quit. The auto-refresh tick chain runs
+// independently (see workflowsTickMsg).
 func (m Model) updateWorkflows(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "up", "k":
+		if m.workflowsCursor > 0 {
+			m.workflowsCursor--
+		}
+	case "down", "j":
+		if m.workflowsCursor < m.workflowLeafCount()-1 {
+			m.workflowsCursor++
+		}
+	case "enter":
+		// Open the read-only drill-in for the selected leaf (its prompt/answer).
+		job, ok := m.selectedLeaf()
+		if !ok {
+			return m, nil
+		}
+		m.screen = screenWorkflowDetail
+		m.wfDetailJob = job
+		m.wfDetailPrompt = ""
+		m.wfDetailAnswer = ""
+		m.wfDetailIO = false
+		m.wfDetailExpand = false
+		// Bump the nonce so a slow read for a previously-opened leaf is dropped.
+		m.wfDetailNonce++
+		return m, loadLeafIOCmd(job, m.wfDetailNonce)
+	case "x":
+		// Stop the run the cursor's leaf belongs to.
+		if runID, ok := m.selectedRunID(); ok {
+			return m, stopRunCmd(runID, m.workflowsEpoch)
+		}
+		return m, nil
 	case "r":
+		// Restart (resume) the run the cursor's leaf belongs to.
+		if runID, ok := m.selectedRunID(); ok {
+			return m, restartRunCmd(runID, m.workflowsEpoch)
+		}
+		return m, nil
+	case "R", "ctrl+r":
 		m.loading = true
-		return m, loadWorkflows(m.workflowsEpoch)
+		return m, loadWorkflows(m.workflowsEpoch, m.wfTails)
 	case "tab", "esc":
 		return m.toList()
 	case "q":
@@ -871,6 +1126,68 @@ func (m Model) updateWorkflows(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	return m, nil
+}
+
+// updateWorkflowDetail drives the read-only leaf drill-in card. e/space toggles the
+// collapsed/expanded prompt+answer render; esc/enter/tab returns to the board
+// (cursor + data preserved, no reload); q quits.
+func (m Model) updateWorkflowDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "q":
+		m.quitting = true
+		return m, tea.Quit
+	case "e", " ", "space":
+		m.wfDetailExpand = !m.wfDetailExpand
+	case "esc", "enter", "tab":
+		m.screen = screenWorkflows
+	}
+	return m, nil
+}
+
+// wfLeaf is one selectable leaf row on the Workflows board: the job (its metrics +
+// io live here) and the run it belongs to (x/r act on the run). The cursor is a
+// flat index over wfLeaves, so header/group lines never take a slot.
+type wfLeaf struct {
+	runID string
+	job   subagent.Result
+}
+
+// wfLeaves returns the board's selectable leaf rows in render order: runs in
+// groupByRun order, then each run's jobs in phase→job order. This is the single
+// canonical ordering the cursor, drill-in, and metrics all key on — and the order
+// the view renders leaf rows in (flat OR DAG), so the cursor always lands on the
+// right job regardless of how many header lines precede it.
+func (m Model) wfLeaves() []wfLeaf {
+	var leaves []wfLeaf
+	for _, g := range groupByRun(m.workflowJobs, m.workflowRuns) {
+		for _, p := range g.phases {
+			for _, j := range p.jobs {
+				leaves = append(leaves, wfLeaf{runID: g.runID, job: j})
+			}
+		}
+	}
+	return leaves
+}
+
+// workflowLeafCount is the number of selectable leaf rows (cursor range).
+func (m Model) workflowLeafCount() int { return len(m.wfLeaves()) }
+
+// selectedLeaf returns the job under the cursor (ok=false when there are no leaves).
+func (m Model) selectedLeaf() (subagent.Result, bool) {
+	leaves := m.wfLeaves()
+	if m.workflowsCursor < 0 || m.workflowsCursor >= len(leaves) {
+		return subagent.Result{}, false
+	}
+	return leaves[m.workflowsCursor].job, true
+}
+
+// selectedRunID returns the run id the cursor's leaf belongs to (for x/r).
+func (m Model) selectedRunID() (string, bool) {
+	leaves := m.wfLeaves()
+	if m.workflowsCursor < 0 || m.workflowsCursor >= len(leaves) {
+		return "", false
+	}
+	return leaves[m.workflowsCursor].runID, true
 }
 
 // updateTeammateDetail drives the read-only teammate detail card (board → enter).
