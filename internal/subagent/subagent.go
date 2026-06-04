@@ -202,6 +202,7 @@ func Run(req Request) Result {
 			fmt.Sprintf("vendor %s child output exceeded %d bytes", req.Vendor, maxChildOutput),
 			req.Vendor, suggestionFor(ErrCodeOutputTooLarge))
 		res.LeadSessionID = req.LeadSessionID
+		res.RunID, res.Phase, res.Label = req.RunID, req.Phase, req.Label
 		res.ExitCode = exitCode
 		return res
 	}
@@ -210,6 +211,7 @@ func Run(req Request) Result {
 	innerJSON := req.JSON || req.OutputFormat == "json"
 	res = classify(req, model, stdout, stderr, exitCode, timedOut, innerJSON)
 	res.LeadSessionID = req.LeadSessionID
+	res.RunID, res.Phase, res.Label = req.RunID, req.Phase, req.Label
 	res.Raw = stdout
 	res.ExitCode = exitCode
 	return res

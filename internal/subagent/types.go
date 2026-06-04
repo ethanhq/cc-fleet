@@ -40,6 +40,14 @@ type Request struct {
 	MaxTurns       int     // --max-turns (claude graceful cap); 0 → omit
 	MaxBudgetUSD   float64 // --max-budget-usd (claude graceful cap); 0 → omit
 	LeadSessionID  string  // parent Claude session id for agent-status board grouping
+
+	// Workflow run grouping (all optional). A workflow orchestrator tags each
+	// subagent with the run it belongs to, the phase within that run, and a human
+	// label, so the board can group N jobs into one run tree. Distinct from
+	// LeadSessionID (a Claude session can host many ad-hoc subagents and runs).
+	RunID string // run this job belongs to
+	Phase string // phase label within the run
+	Label string // human label for this agent within the run
 }
 
 // Usage mirrors the token-usage subset of claude's inner envelope we surface.
@@ -69,6 +77,12 @@ type Result struct {
 	SessionID     string  `json:"session_id,omitempty"` // for --resume
 	LeadSessionID string  `json:"lead_session_id,omitempty"`
 	PermDenials   int     `json:"permission_denials,omitempty"`
+
+	// Workflow run grouping (optional; mirrors the Request fields). Carried on the
+	// job files so the board can group jobs into a run → phase → agent tree.
+	RunID string `json:"run_id,omitempty"`
+	Phase string `json:"phase,omitempty"`
+	Label string `json:"label,omitempty"`
 
 	// Async / background job fields. Present on --background launch and
 	// subagent-status / subagent-gc results.

@@ -8,8 +8,14 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ethanhq/cc-fleet/internal/ids"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
+
+// maxRunTagLen caps --phase / --label (opaque display metadata) so a job file
+// can't be bloated by an oversized tag. --run-id is validated separately (it
+// becomes a filesystem path component for the run manifest).
+const maxRunTagLen = 256
 
 // newSubagentCmd builds `cc-fleet subagent <vendor>` — a one-shot headless
 // vendor subagent. It follows the spawn command's --json / SilenceErrors
@@ -29,6 +35,9 @@ func newSubagentCmd() *cobra.Command {
 		maxTurns       int
 		maxBudget      float64
 		leadSessionID  string
+		runID          string
+		phase          string
+		label          string
 	)
 
 	cmd := &cobra.Command{
@@ -67,6 +76,25 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 				return reportSubagent(res, asJSON)
 			}
 
+			// Workflow tags: --run-id becomes a run-manifest path component, so it
+			// gets the full path-safe id validation; --phase / --label are opaque
+			// display metadata, length-capped only — their control-byte / format
+			// sanitization is the board's job at render time, not here (they are
+			// stored injection-safe via encoding/json).
+			if runID != "" {
+				if err := ids.ValidateJobID(runID); err != nil {
+					res := subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
+						ErrorMsg: fmt.Sprintf("invalid --run-id: %v", err), Vendor: vendor}
+					return reportSubagent(res, asJSON)
+				}
+			}
+			if len(phase) > maxRunTagLen || len(label) > maxRunTagLen {
+				res := subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
+					ErrorMsg: fmt.Sprintf("--phase and --label must each be at most %d bytes", maxRunTagLen),
+					Vendor:   vendor}
+				return reportSubagent(res, asJSON)
+			}
+
 			req := subagent.Request{
 				Vendor:         vendor,
 				Model:          model,
@@ -81,6 +109,9 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 				MaxTurns:       maxTurns,
 				MaxBudgetUSD:   maxBudget,
 				LeadSessionID:  leadSessionID,
+				RunID:          runID,
+				Phase:          phase,
+				Label:          label,
 			}
 
 			if hasFile {
@@ -133,6 +164,12 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 		"Resume a prior session id for a multi-turn follow-up")
 	cmd.Flags().StringVar(&leadSessionID, "lead-session-id", "",
 		"Parent Claude session ID for board grouping (optional)")
+	cmd.Flags().StringVar(&runID, "run-id", "",
+		"Workflow run id to group this job under on the board (optional)")
+	cmd.Flags().StringVar(&phase, "phase", "",
+		"Workflow phase label within the run (optional)")
+	cmd.Flags().StringVar(&label, "label", "",
+		"Human label for this agent within the run (optional)")
 
 	return cmd
 }

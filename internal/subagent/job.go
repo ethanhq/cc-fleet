@@ -59,6 +59,12 @@ type jobMeta struct {
 	// its PID is the cc-fleet process, not a claude child, so the reuse guard
 	// must NOT apply (processAlive degrades to a bare kill(0)).
 	SettingsPath string `json:"settings_path,omitempty"`
+
+	// Workflow run grouping (optional): the run this job belongs to, the phase
+	// within it, and a human label — so the board can group jobs into a run tree.
+	RunID string `json:"run_id,omitempty"`
+	Phase string `json:"phase,omitempty"`
+	Label string `json:"label,omitempty"`
 }
 
 func jobsDir() (string, error) {
@@ -192,6 +198,9 @@ func launchBackground(req Request, binaryPath, profilePath, model string) Result
 		JSON:          true,
 		LeadSessionID: req.LeadSessionID,
 		SettingsPath:  profilePath, // binds this pid to its claude child (reuse guard)
+		RunID:         req.RunID,
+		Phase:         req.Phase,
+		Label:         req.Label,
 	}
 	if err := writeMetaFn(dir, meta); err != nil {
 		// meta write failed AFTER cmd.Start. Without cleanup the detached vendor
@@ -219,6 +228,9 @@ func launchBackground(req Request, binaryPath, profilePath, model string) Result
 		Model:         model,
 		StartedAt:     meta.StartedAt,
 		LeadSessionID: meta.LeadSessionID,
+		RunID:         meta.RunID,
+		Phase:         meta.Phase,
+		Label:         meta.Label,
 	}
 }
 
@@ -307,8 +319,14 @@ func StatusFor(jobID string) Result {
 	if data, rerr := os.ReadFile(resultPath); rerr == nil {
 		var r Result
 		if json.Unmarshal(data, &r) == nil {
+			// Backfill grouping keys for caches written before they existed.
 			if r.LeadSessionID == "" {
 				r.LeadSessionID = meta.LeadSessionID
+			}
+			if r.RunID == "" {
+				r.RunID = meta.RunID
+				r.Phase = meta.Phase
+				r.Label = meta.Label
 			}
 			return r
 		}
@@ -325,6 +343,9 @@ func StatusFor(jobID string) Result {
 			PID:           meta.PID,
 			OutputFile:    filepath.Join(dir, jobID+".out"),
 			LeadSessionID: meta.LeadSessionID,
+			RunID:         meta.RunID,
+			Phase:         meta.Phase,
+			Label:         meta.Label,
 		}
 	}
 
@@ -339,6 +360,9 @@ func StatusFor(jobID string) Result {
 	res.JobID = jobID
 	res.StartedAt = meta.StartedAt
 	res.LeadSessionID = meta.LeadSessionID
+	res.RunID = meta.RunID
+	res.Phase = meta.Phase
+	res.Label = meta.Label
 	if res.OK {
 		res.Status = "done"
 	} else {
@@ -674,6 +698,9 @@ func registerSyncJob(req Request, model string) string {
 		OutputFormat:  req.OutputFormat,
 		JSON:          req.JSON,
 		LeadSessionID: req.LeadSessionID,
+		RunID:         req.RunID,
+		Phase:         req.Phase,
+		Label:         req.Label,
 		// SettingsPath deliberately empty (see processAlive). Sync writes no .out
 		// file, so the deferred result cache is the authoritative done signal.
 	}
@@ -710,6 +737,9 @@ func finalizeSyncJob(jobID string, res Result) {
 		Suggestion:     res.Suggestion,
 		APIErrorStatus: res.APIErrorStatus,
 		LeadSessionID:  meta.LeadSessionID,
+		RunID:          meta.RunID,
+		Phase:          meta.Phase,
+		Label:          meta.Label,
 	}
 	if res.OK {
 		cached.Status = "done"
