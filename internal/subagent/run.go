@@ -35,12 +35,24 @@ type RunPhase struct {
 // its intended phase sequence; the actual subagent jobs are separate files tagged
 // with this RunID, joined back in RunStatus.
 type WorkflowRun struct {
-	RunID       string     `json:"run_id"`
-	Name        string     `json:"name,omitempty"`
-	Description string     `json:"description,omitempty"`
-	StartedAt   string     `json:"started_at"`
-	Phases      []RunPhase `json:"phases,omitempty"`
-	Status      string     `json:"status,omitempty"`
+	RunID       string `json:"run_id"`
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+	WhenToUse   string `json:"when_to_use,omitempty"` // meta.whenToUse — display/board text
+	StartedAt   string `json:"started_at"`
+	// UpdatedAt is a liveness heartbeat: the engine restamps it (RFC3339 UTC) on every
+	// manifest write, and a resume restamps it at launch. Run-aware GC treats a run as
+	// recent (and so protects its manifest + journal) by the LATER of StartedAt/UpdatedAt
+	// — so a resumed run, whose StartedAt is its original (old) timestamp, is not pruned
+	// out from under itself in the window before its first leaf registers a member.
+	UpdatedAt string     `json:"updated_at,omitempty"`
+	Phases    []RunPhase `json:"phases,omitempty"`
+	Status    string     `json:"status,omitempty"`
+	// EnginePID is the OS pid of the process running the engine (the detached child for a
+	// normal run). `workflow stop` reaps its whole process tree — which includes the
+	// engine's in-flight vendor-leaf children — after a cmdline reuse-guard check, so a
+	// recycled pid can never make stop kill an unrelated process.
+	EnginePID int `json:"engine_pid,omitempty"`
 	// Error is the failure cause, set when Status is "failed" — so a DETACHED run
 	// (whose stderr went to /dev/null) still records WHY it failed for `workflow
 	// status`. It is a canonical/script-level message (agent() failures carry
@@ -86,16 +98,18 @@ func writeRunManifest(run WorkflowRun) error {
 // RFC3339 UTC (lexically sortable for newest-first listing); Status starts
 // "running".
 func NewRun(name string, phases []RunPhase) (WorkflowRun, error) {
-	return NewRunWithMeta(name, "", phases)
+	return NewRunWithMeta(name, "", "", phases)
 }
 
-// NewRunWithMeta is NewRun plus a description — the workflow runtime mints from a
-// script's `meta` literal (name + description + declared phases).
-func NewRunWithMeta(name, description string, phases []RunPhase) (WorkflowRun, error) {
+// NewRunWithMeta is NewRun plus a description + whenToUse — the workflow runtime mints
+// from a script's `meta` literal (name + description + whenToUse + declared phases), so a
+// detached run's `--json`/board read carries them before the engine child starts.
+func NewRunWithMeta(name, description, whenToUse string, phases []RunPhase) (WorkflowRun, error) {
 	run := WorkflowRun{
 		RunID:       uuid.NewString(),
 		Name:        name,
 		Description: description,
+		WhenToUse:   whenToUse,
 		StartedAt:   time.Now().UTC().Format(time.RFC3339),
 		Phases:      phases,
 		Status:      "running",
@@ -120,6 +134,39 @@ func SaveRun(run WorkflowRun) error {
 // check ReadRun/SaveRun apply). Exported so the workflow runtime can fail-fast on a
 // bad `--run-id` before executing a script.
 func ValidateRunID(id string) error { return ids.ValidateJobID(id) }
+
+// runSidecarExts are the per-run sidecar files that live next to a manifest
+// (runs/<id>.json) and belong to the same run: the content-hash journal (P1), the
+// live-event channel, and the saved script (for restart). removeRun and the orphan
+// sweep treat them as one unit with the manifest, so reaping a run reaps its whole
+// on-disk footprint. (Per-LEAF io — prompt/answer — is leaf-scoped under subagent-jobs
+// and reaped by removeJob, not here.)
+var runSidecarExts = []string{".journal", ".events", ".star"}
+
+// runSidecarPath returns runs/<id><ext>, validating the id first (it becomes a path
+// component). Centralizes every per-run sidecar path so GC reaps them with the manifest.
+func runSidecarPath(runID, ext string) (string, error) {
+	if err := ids.ValidateJobID(runID); err != nil {
+		return "", fmt.Errorf("subagent: invalid run id %q: %w", runID, err)
+	}
+	dir, err := runsDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, runID+ext), nil
+}
+
+// RunJournalPath returns the content-hash journal path runs/<id>.journal. The workflow
+// runtime owns the journal's I/O + format; this just centralizes the path so GC reaps it.
+func RunJournalPath(runID string) (string, error) { return runSidecarPath(runID, ".journal") }
+
+// RunEventsPath returns the live-event channel path runs/<id>.events — the one-way
+// engine→board stream the board tails for a flowing live log.
+func RunEventsPath(runID string) (string, error) { return runSidecarPath(runID, ".events") }
+
+// RunScriptPath returns the saved-script path runs/<id>.star — the run's source,
+// persisted so a stopped run can be restarted (resumed).
+func RunScriptPath(runID string) (string, error) { return runSidecarPath(runID, ".star") }
 
 // ReadRun loads a manifest by id. runID is validated first because it becomes a
 // filesystem path component (guards against a "../" escape via the CLI/status path).
@@ -185,9 +232,91 @@ func ListRuns() ([]WorkflowRun, error) {
 	return runs, nil
 }
 
-// removeRun deletes a manifest best-effort (used by GC/PurgeJobs manifest pruning).
+// runIsRecent reports whether a run's last activity — the LATER of StartedAt and the
+// UpdatedAt liveness heartbeat — is after cutoff. GC uses it to protect a manifest that
+// has no surviving job member yet: a freshly-minted (still-empty) run, OR an actively
+// resuming run whose StartedAt is its original (old) timestamp but whose UpdatedAt was
+// just restamped. An empty/unparseable timestamp simply doesn't count toward recency.
+func runIsRecent(run WorkflowRun, cutoff time.Time) bool {
+	var latest time.Time
+	for _, ts := range []string{run.StartedAt, run.UpdatedAt} {
+		if ts == "" {
+			continue
+		}
+		if t, err := time.Parse(time.RFC3339, ts); err == nil && t.After(latest) {
+			latest = t
+		}
+	}
+	return latest.After(cutoff)
+}
+
+// removeRun deletes a manifest AND its per-run sidecars (journal, …) best-effort,
+// so GC/PurgeJobs reap a run as one unit (used by manifest pruning).
 func removeRun(dir, runID string) {
 	_ = os.Remove(filepath.Join(dir, runID+".json"))
+	for _, ext := range runSidecarExts {
+		_ = os.Remove(filepath.Join(dir, runID+ext))
+	}
+}
+
+// StopRun reaps an actively-running workflow run and marks its manifest stopped. When a
+// reapable DETACHED engine is found it kills the engine's whole process TREE by ANCESTRY
+// — the engine plus its in-flight vendor-leaf `claude` children and their grandchildren
+// (each leaf is its OWN process group, so an ancestry walk, not a single group signal, is
+// required on unix; reapEngineTree handles the platform split). A cmdline reuse guard
+// means a recycled EnginePID can NEVER make this kill an unrelated process: the pid is
+// reaped only when its argv still proves it is this run's detached `workflow run …
+// --run-id <id>` engine. An already-terminal run is returned untouched (no clobbering a
+// real done/failed). Every other case — a foreground run (EnginePID deliberately 0), an
+// engine already gone (crashed), or a recycled pid whose argv no longer matches — is
+// reaped of nothing and simply flipped to stopped, clearing a stale "running"; the reuse
+// guard ensures such an unverifiable pid is never killed.
+func StopRun(runID string) (WorkflowRun, error) {
+	run, err := ReadRun(runID)
+	if err != nil {
+		return WorkflowRun{}, err
+	}
+	if run.Status != "" && run.Status != "running" {
+		return run, nil // already terminal — don't clobber done/failed/stopped
+	}
+	if run.EnginePID > 0 && pidAlive(run.EnginePID) && engineCmdlineMatches(run.EnginePID, runID) {
+		reapEngineTree(run.EnginePID) // reaps the engine + its in-flight leaf children
+	}
+	run.Status = "stopped"
+	run.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	if serr := SaveRun(run); serr != nil {
+		return WorkflowRun{}, serr
+	}
+	return run, nil
+}
+
+// engineCmdlineMatches reports whether pid is THIS run's DETACHED workflow engine — its
+// argv carries "workflow", "run", the "--run-id" flag, and the run id. Requiring the
+// "--run-id" flag (which only the detached child carries — a user's `workflow run … [
+// --resume <id>] --foreground` never has it) is what distinguishes the reapable detached
+// engine from a foreground run that merely mentions the id, AND from a recycled pid. It
+// is the reuse guard for StopRun. If the argv can't be read (a just-exited pid, or a
+// platform without process introspection) it returns false — fail SAFE: never kill a pid
+// we cannot positively identify.
+func engineCmdlineMatches(pid int, runID string) bool {
+	argv, ok := reuseGuardArgv(pid)
+	if !ok {
+		return false
+	}
+	var hasWorkflow, hasRun, hasRunIDFlag, hasID bool
+	for _, a := range argv {
+		switch a {
+		case "workflow":
+			hasWorkflow = true
+		case "run":
+			hasRun = true
+		case "--run-id":
+			hasRunIDFlag = true
+		case runID:
+			hasID = true
+		}
+	}
+	return hasWorkflow && hasRun && hasRunIDFlag && hasID
 }
 
 // RunStatus returns a run's manifest plus the Results of the jobs tagged with it.

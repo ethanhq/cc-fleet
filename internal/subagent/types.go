@@ -37,6 +37,7 @@ type Request struct {
 	PermissionMode string  // empty → --dangerously-skip-permissions; else --permission-mode <v>
 	Resume         string  // --resume <session_id> (multi-turn)
 	Background     bool    // --background: launch detached, return a job handle
+	WorkingDir     string  // child's cwd (empty = inherit); used for git-worktree isolation
 	MaxTurns       int     // --max-turns (claude graceful cap); 0 → omit
 	MaxBudgetUSD   float64 // --max-budget-usd (claude graceful cap); 0 → omit
 	LeadSessionID  string  // parent Claude session id for agent-status board grouping
@@ -48,6 +49,18 @@ type Request struct {
 	RunID string // run this job belongs to
 	Phase string // phase label within the run
 	Label string // human label for this agent within the run
+
+	// PersistIO opts this job into board drill-in: persist the prompt + answer to
+	// per-job 0600 side files (<id>.prompt / <id>.answer) for the Workflows detail card.
+	// It is CONTENT-PRIVACY, not key-safety — the vendor key never enters the prompt or
+	// answer (it flows via apiKeyHelper). The terminal result CACHE stays answer-stripped
+	// regardless (so the board TABLE never shows a reply); these side files are a separate,
+	// opt-in surface the engine sets default-on with a --no-persist-io opt-out.
+	PersistIO bool
+	// IOPrompt is the prompt text to persist when PersistIO (the workflow engine feeds the
+	// prompt via PromptReader/stdin, which is consumed by the child, so it passes the text
+	// here separately for the side file). Empty → no prompt side file.
+	IOPrompt string
 }
 
 // Usage mirrors the token-usage subset of claude's inner envelope we surface.

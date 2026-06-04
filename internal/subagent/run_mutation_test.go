@@ -9,7 +9,7 @@ import "testing"
 func TestRunManifestAPI(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	run, err := NewRunWithMeta("nm", "the description", []RunPhase{{Title: "a"}})
+	run, err := NewRunWithMeta("nm", "the description", "when to use", []RunPhase{{Title: "a"}})
 	if err != nil {
 		t.Fatalf("NewRunWithMeta: %v", err)
 	}

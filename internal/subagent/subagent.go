@@ -190,7 +190,7 @@ func Run(req Request) Result {
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	stdout, stderr, exitCode, runErr := runClaude(ctx, fp.BinaryPath, argv, env, req.PromptReader)
+	stdout, stderr, exitCode, runErr := runClaude(ctx, fp.BinaryPath, argv, env, req.PromptReader, req.WorkingDir)
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 
 	// A genuine deadline wins over an overflow that fired during the kill (the
@@ -261,10 +261,11 @@ func buildArgv(binaryPath, profilePath, model string, req Request) []string {
 // standalone func so tests can drive it with a fake binary. It never streams to
 // the parent's stdio: stdout/stderr are captured to byte-capped buffers, and a
 // stream that overflows maxChildOutput kills the group and returns errOutputTooLarge.
-func runClaude(ctx context.Context, binaryPath string, argv, env []string, stdin io.Reader) (stdout, stderr []byte, exitCode int, err error) {
+func runClaude(ctx context.Context, binaryPath string, argv, env []string, stdin io.Reader, workingDir string) (stdout, stderr []byte, exitCode int, err error) {
 	cmd := exec.CommandContext(ctx, binaryPath)
 	cmd.Args = argv // argv[0] == binaryPath by construction
 	cmd.Env = env
+	cmd.Dir = workingDir // empty = inherit cwd; set for git-worktree isolation
 	if stdin != nil {
 		cmd.Stdin = stdin
 	}

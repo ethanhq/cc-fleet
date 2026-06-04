@@ -64,6 +64,11 @@ type jobMeta struct {
 	RunID string `json:"run_id,omitempty"`
 	Phase string `json:"phase,omitempty"`
 	Label string `json:"label,omitempty"`
+
+	// PersistIO records that this job opted into board drill-in, so finalizeSyncJob
+	// writes the answer side file (<id>.answer) on completion. The result CACHE stays
+	// answer-stripped regardless; the side files are the separate opt-in drill-in source.
+	PersistIO bool `json:"persist_io,omitempty"`
 }
 
 func jobsDir() (string, error) {
@@ -285,6 +290,29 @@ func materializePromptReader(r io.Reader, dst string) (f *os.File, err error) {
 // this process, before the successful-launch Release.
 var killProcessGroup = killProcessTree
 
+// ReapJob terminates a background job's process tree and finalizes it as a timeout
+// failure. The workflow runtime uses it to enforce a background leaf's timeout at wait()
+// time (launchBackground itself is deadline-less so a detached job survives the launcher).
+// Path-safe (validates the id) and best-effort: an unknown/gone job is a no-op.
+func ReapJob(jobID string) error {
+	if err := ids.ValidateJobID(jobID); err != nil {
+		return err
+	}
+	dir, err := jobsDir()
+	if err != nil {
+		return err
+	}
+	meta, merr := readMeta(dir, jobID)
+	if merr != nil {
+		return nil // unknown / already gone — nothing to reap
+	}
+	if meta.PID > 0 {
+		killProcessGroup(meta.PID)
+	}
+	finalizeSyncJob(jobID, fail(ErrCodeTimeout, "background leaf exceeded its timeout", meta.Vendor, ""))
+	return nil
+}
+
 // StatusFor reports a background job's status. While the process is alive it
 // returns status=running; once dead it classifies the captured stdout with the
 // SAME classifier as the sync path, caches the terminal Result to
@@ -494,12 +522,53 @@ func gcRunManifests(jobsDir string, cutoff time.Time) {
 		if data, rerr := os.ReadFile(filepath.Join(dir, name)); rerr == nil {
 			var run WorkflowRun
 			if json.Unmarshal(data, &run) == nil {
-				if started, perr := time.Parse(time.RFC3339, run.StartedAt); perr == nil && started.After(cutoff) {
-					continue // fresh empty manifest → keep
+				if runIsRecent(run, cutoff) {
+					continue // fresh empty OR actively-resuming manifest → keep
 				}
 			}
 		}
 		removeRun(dir, runID)
+	}
+	sweepOrphanRunSidecars(dir, cutoff, false)
+}
+
+// sweepOrphanRunSidecars removes any per-run sidecar (runs/<id>.journal, …) whose
+// manifest runs/<id>.json no longer exists. removeRun reaps a run's whole group, so
+// an orphan only arises if a prior remove was interrupted mid-group; left behind it
+// would waste disk and, at uninstall, keep the runs/ dir non-empty so PurgeJobs could
+// never os.Remove it. Best-effort, like the rest of GC bookkeeping.
+//
+// When force is false (periodic GC) a FRESH orphan (mtime after cutoff) is KEPT: a run
+// being launched/recreated by another process can momentarily have a journal whose
+// manifest write hasn't landed, and reaping it would lose an active run's cache. This is
+// symmetric with the manifest recency rule (runIsRecent). force=true (uninstall purge)
+// removes every orphan unconditionally — no run is active during uninstall.
+func sweepOrphanRunSidecars(runsDir string, cutoff time.Time, force bool) {
+	entries, err := os.ReadDir(runsDir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() {
+			continue
+		}
+		for _, ext := range runSidecarExts {
+			if !strings.HasSuffix(name, ext) {
+				continue
+			}
+			base := strings.TrimSuffix(name, ext)
+			if _, serr := os.Stat(filepath.Join(runsDir, base+".json")); !errors.Is(serr, os.ErrNotExist) {
+				continue // manifest present (or unstat-able) → not a removable orphan
+			}
+			path := filepath.Join(runsDir, name)
+			if !force {
+				if info, ierr := os.Stat(path); ierr == nil && info.ModTime().After(cutoff) {
+					continue // fresh orphan → may belong to an active run; keep it
+				}
+			}
+			_ = os.Remove(path)
+		}
 	}
 }
 
@@ -620,7 +689,8 @@ func purgeRunManifests(jobsDir string, runningRuns map[string]bool) {
 		}
 		removeRun(dir, runID)
 	}
-	_ = os.Remove(dir) // succeeds only when empty (all manifests gone)
+	sweepOrphanRunSidecars(dir, time.Time{}, true) // uninstall: drop every orphan sidecar so the dir can empty
+	_ = os.Remove(dir)                             // succeeds only when empty (all manifests + sidecars gone)
 }
 
 // procRoot is the procfs mount point. A package var so tests can point the
@@ -754,9 +824,10 @@ func readMeta(dir, jobID string) (jobMeta, error) {
 	return m, nil
 }
 
-// removeJob deletes every file in a job's group (best-effort).
+// removeJob deletes every file in a job's group (best-effort), including the opt-in
+// drill-in side files (.prompt / .answer).
 func removeJob(dir, jobID string) {
-	for _, suffix := range []string{".json", ".out", ".err", ".prompt", ".result.json"} {
+	for _, suffix := range []string{".json", ".out", ".err", ".prompt", ".answer", ".result.json"} {
 		_ = os.Remove(filepath.Join(dir, jobID+suffix))
 	}
 }
@@ -793,11 +864,18 @@ func registerSyncJob(req Request, model string) string {
 		RunID:         req.RunID,
 		Phase:         req.Phase,
 		Label:         req.Label,
+		PersistIO:     req.PersistIO,
 		// SettingsPath deliberately empty (see processAlive). Sync writes no .out
 		// file, so the deferred result cache is the authoritative done signal.
 	}
 	if err := writeMeta(dir, meta); err != nil {
 		return ""
+	}
+	// Opt-in board drill-in: persist the prompt to a 0600 side file. Content-privacy,
+	// not key-safety (the vendor key never enters the prompt). Best-effort — a write
+	// hiccup just means no prompt in the detail card, never a failed run.
+	if req.PersistIO && req.IOPrompt != "" {
+		_ = os.WriteFile(filepath.Join(dir, jobID+".prompt"), []byte(req.IOPrompt), 0o600)
 	}
 	return jobID
 }
@@ -818,6 +896,12 @@ func finalizeSyncJob(jobID string, res Result) {
 		return
 	}
 	meta, _ := readMeta(dir, jobID) // for the stable vendor/model/started columns
+	// Opt-in board drill-in: persist the answer to a 0600 side file, SEPARATE from the
+	// cache below (which stays answer-stripped so the board TABLE never shows a reply).
+	// Content-privacy, not key-safety. Best-effort; only a real answer (success) is kept.
+	if meta.PersistIO && res.Result != "" {
+		_ = os.WriteFile(filepath.Join(dir, jobID+".answer"), []byte(res.Result), 0o600)
+	}
 	cached := Result{
 		OK:             res.OK,
 		Vendor:         meta.Vendor,
