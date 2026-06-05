@@ -196,8 +196,8 @@ func (m Model) viewSpawn() string {
 	return b.String()
 }
 
-// wfColsWidth is the spacing of the leaf metric columns (LABEL VENDOR MODEL STATUS
-// TOK COST TURNS), shared by the legend and each leaf row so they line up.
+// wfMetricCols is the spacing of the leaf metric columns (AGENT VENDOR MODEL STATUS
+// TOKENS(i/o/c) COST TRN), shared by the legend and each leaf row so they line up.
 const wfMetricCols = "%-14s %-9s %-14s %-7s %-13s %-8s %-3s"
 
 // viewWorkflows renders the Workflows board: RunID-tagged subagent jobs as a
@@ -366,7 +366,7 @@ func runTotalsLine(g runGroup) string {
 
 // viewWorkflowLog renders the flowing live-event log pane below the run tree: the
 // bounded most-recent rendered lines, each already CleanTitle-scrubbed (in
-// renderLogLine) and here trunc'd to a sane width.
+// workflow.RenderEventLine) and here trunc'd to a sane width.
 func (m Model) viewWorkflowLog() string {
 	var b strings.Builder
 	b.WriteString("\n" + faintStyle.Render("Live log") + "\n")

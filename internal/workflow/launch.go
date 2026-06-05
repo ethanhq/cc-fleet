@@ -15,9 +15,9 @@ import (
 // session is never blocked for the run's duration (a fan-out easily outlasts a single
 // Bash-call timeout). It reuses the subagent leaf's process-group primitive
 // (SetDetachGroup) + Process.Release — the same proven detach, no new platform code.
-// The child's stdio goes to /dev/null (v1 does not persist a narrator log); the
-// manifest + board carry the run's observable state, and the engine's top-level
-// recover finalizes status even on a panic.
+// The child's stdio goes to /dev/null (the detached engine keeps no stderr log); its
+// observable state is the manifest + the live-event channel + board, and the engine's
+// top-level recover finalizes status even on a panic.
 func launchDetached(scriptPath, runID string, opts Options) error {
 	self, err := os.Executable()
 	if err != nil {

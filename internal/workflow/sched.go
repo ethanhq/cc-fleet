@@ -111,7 +111,6 @@ func (s *scheduler) admit() bool { return s.spawned.Add(1) <= maxLifetimeAgents 
 // (acquireSlot stops launching NEW leaves) and lets the run finalize its manifest; it
 // does NOT interrupt Starlark bytecode already running on a thread — the step cap above
 // is the CPU backstop, and an in-flight leaf is bounded by its own per-agent timeout.
-// Interrupting in-flight bytecode via Thread.Cancel rides with the v4 live-stop command.
 func (s *scheduler) newThread(name string) *starlark.Thread {
 	th := &starlark.Thread{Name: name}
 	th.SetMaxExecutionSteps(maxThreadSteps)

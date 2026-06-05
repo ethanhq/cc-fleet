@@ -29,7 +29,7 @@ type bgHandle struct {
 	key      string
 	resolved bool      // result already known (journal cache hit on resume)
 	cached   string    // the cached result, when resolved
-	deadline time.Time // wall-clock timeout enforced at wait() (zero = none); launchBackground itself is deadline-less
+	deadline time.Time // wall-clock timeout enforced at wait() (zero = none); the launch itself is deadline-less
 	// display/event tags
 	vendor, model, phase, label string
 }
@@ -74,8 +74,8 @@ func (e *engine) launchBg(vendor, model, prompt, phaseTag, label, key string, ti
 	}
 	h := &bgHandle{jobID: res.JobID, key: key, vendor: vendor, model: model, phase: phaseTag, label: label}
 	if timeoutSec > 0 {
-		// launchBackground is deadline-less (a detached job outlives the launcher), so the
-		// timeout is enforced at wait() instead — and the leaf is reaped if it overruns.
+		// A detached background job outlives the launcher, so its timeout is enforced at
+		// wait() instead — and the leaf is reaped if it overruns.
 		h.deadline = time.Now().Add(time.Duration(timeoutSec * float64(time.Second)))
 	}
 	return h, nil

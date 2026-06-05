@@ -395,8 +395,8 @@ func (e *engine) pipeline(thread *starlark.Thread, b *starlark.Builtin, args sta
 
 // phase sets the run's current phase (used to tag agents that don't pass phase=) and
 // records the title on the manifest in first-seen order (live board ordering).
-// Best-effort like the substrate's board bookkeeping: a manifest hiccup never fails
-// the run. GIL-held, so the manifest read-modify-write is serialized.
+// Best-effort: a manifest hiccup never fails the run. GIL-held, so the in-memory
+// phase update and the full manifest overwrite are serialized.
 func (e *engine) phase(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var title, detail string
 	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "title", &title, "detail?", &detail); err != nil {
@@ -445,9 +445,10 @@ func (e *engine) emitGroupClose(gid string) {
 }
 
 // saveManifest overwrites the run manifest from the engine's authoritative in-memory
-// state (errText is recorded only on a failed finalize). Best-effort, like the
-// substrate's board bookkeeping: a write hiccup never fails the run. GIL-held callers
-// only (phase() and Execute's finalize).
+// state (errText is recorded only on a failed finalize). Best-effort: a write hiccup
+// never fails the run. It is called by phase() under the GIL during the run, and by
+// Execute's pre-run stamp + deferred finalize when no leaf goroutine is live — so
+// manifest writes never race.
 func (e *engine) saveManifest(status, errText string) {
 	_ = subagent.SaveRun(subagent.WorkflowRun{
 		RunID:       e.runID,
@@ -463,10 +464,10 @@ func (e *engine) saveManifest(status, errText string) {
 	})
 }
 
-// log emits a narrator line to STDERR (diagnostic), keeping stdout clean for the run
-// id the launcher prints. It is discarded when the run is detached (stderr → /dev/null)
-// and visible with --foreground. v1 does not persist narrator logs — the board reflects
-// the manifest + tagged jobs, and a live activity tail is a v4 concern.
+// log writes a narrator line to stderr (diagnostic — discarded when the run is detached,
+// visible with --foreground) AND emits a live-event record that the board and `workflow
+// watch` render. stdout stays clean for the run id the launcher prints; the stderr stream
+// itself is not persisted.
 func (e *engine) log(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var msg string
 	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "msg", &msg); err != nil {

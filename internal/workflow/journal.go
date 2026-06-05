@@ -131,7 +131,7 @@ func (j *journal) append(key, result string) {
 // in which case the vendor resolves its own default_model at runtime (the caveat below).
 // It is keyed as the script determines it, not the vendor-default it later resolves to.
 //
-// CAVEAT (documented, accepted): when BOTH model= and meta.model are omitted the key holds
+// Caveat: when BOTH model= and meta.model are omitted the key holds
 // the empty string, so a vendor-config change between a run and its resume — editing a
 // vendor's default_model or base_url — is NOT captured, and an omitted-model leaf could
 // serve a result produced under the old config.

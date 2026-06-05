@@ -159,8 +159,8 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 	// Concurrency note: two simultaneous resumes of the SAME run id are not serialized
 	// here — each loads the journal, runs un-cached leaves, and (atomically, O_APPEND
 	// per line) appends; the worst case is duplicated leaf work, not a corrupt journal
-	// or manifest. A per-run execution lock rides with P2's stop/restart liveness work;
-	// for now a caller must not launch concurrent resumes of one id.
+	// or manifest. There is no per-run execution lock, so a caller must not launch
+	// concurrent resumes of one id.
 	if jp, jerr := subagent.RunJournalPath(runID); jerr == nil {
 		eng.journal = loadJournal(jp)
 	}

@@ -136,7 +136,7 @@ func SaveRun(run WorkflowRun) error {
 func ValidateRunID(id string) error { return ids.ValidateJobID(id) }
 
 // runSidecarExts are the per-run sidecar files that live next to a manifest
-// (runs/<id>.json) and belong to the same run: the content-hash journal (P1), the
+// (runs/<id>.json) and belong to the same run: the content-hash journal, the
 // live-event channel, and the saved script (for restart). removeRun and the orphan
 // sweep treat them as one unit with the manifest, so reaping a run reaps its whole
 // on-disk footprint. (Per-LEAF io — prompt/answer — is leaf-scoped under subagent-jobs
