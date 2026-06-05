@@ -79,11 +79,18 @@ func Prepare(scriptPath string) (subagent.WorkflowRun, error) {
 	if err != nil {
 		return subagent.WorkflowRun{}, err
 	}
+	return subagent.NewRunWithMeta(meta.Name, meta.Description, meta.WhenToUse, metaPhases(meta))
+}
+
+// metaPhases converts a parsed script meta's phase plan into the manifest's RunPhase
+// slice. Both Prepare (minting the manifest) and Execute (re-deriving the engine's
+// authoritative copy) feed it, so the on-disk phase shape stays identical between them.
+func metaPhases(meta scriptMeta) []subagent.RunPhase {
 	phases := make([]subagent.RunPhase, 0, len(meta.Phases))
 	for _, p := range meta.Phases {
 		phases = append(phases, subagent.RunPhase{Title: p.Title, Detail: p.Detail})
 	}
-	return subagent.NewRunWithMeta(meta.Name, meta.Description, meta.WhenToUse, phases)
+	return phases
 }
 
 // Execute runs a prepared script's body to completion in the CURRENT process,
@@ -129,10 +136,7 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 		failManifest(merr)
 		return merr
 	}
-	phases := make([]subagent.RunPhase, 0, len(meta.Phases))
-	for _, p := range meta.Phases {
-		phases = append(phases, subagent.RunPhase{Title: p.Title, Detail: p.Detail})
-	}
+	phases := metaPhases(meta)
 
 	concurrency := opts.Concurrency
 	if concurrency <= 0 {
