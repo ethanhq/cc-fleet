@@ -13,7 +13,7 @@ import (
 )
 
 // eventsJSONL marshals records to the on-disk newline-delimited format.
-func eventsJSONL(t *testing.T, recs ...eventRecord) string {
+func eventsJSONL(t *testing.T, recs ...EventRecord) string {
 	t.Helper()
 	var b strings.Builder
 	for _, r := range recs {
@@ -31,8 +31,8 @@ func eventsJSONL(t *testing.T, recs ...eventRecord) string {
 // line is carried as the partial.
 func TestParseEventRecords(t *testing.T) {
 	chunk := eventsJSONL(t,
-		eventRecord{Seq: 1, Kind: "phase", Phase: "Build"},
-		eventRecord{Seq: 2, Kind: "leaf", Status: "done", Label: "a"},
+		EventRecord{Seq: 1, Kind: "phase", Phase: "Build"},
+		EventRecord{Seq: 2, Kind: "leaf", Status: "done", Label: "a"},
 	) + "\n" + "{not json}\n" + `{"seq":3,"kind":"leaf"`
 	evs, partial := parseEventRecords(chunk)
 	if len(evs) != 2 {
@@ -50,17 +50,17 @@ func TestParseEventRecords(t *testing.T) {
 func TestEventTailIncremental(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/x.events"
-	if err := os.WriteFile(path, []byte(eventsJSONL(t, eventRecord{Seq: 1, Kind: "leaf", Label: "a"})), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(eventsJSONL(t, EventRecord{Seq: 1, Kind: "leaf", Label: "a"})), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	tail := &eventTail{}
+	tail := &EventTail{}
 	evs, reset := tail.read(path)
 	if len(evs) != 1 || reset {
 		t.Fatalf("first read: %d evs, reset=%v; want 1, false", len(evs), reset)
 	}
 	// Append one more line; the next read returns only it.
 	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
-	f.WriteString(eventsJSONL(t, eventRecord{Seq: 2, Kind: "leaf", Label: "b"}))
+	f.WriteString(eventsJSONL(t, EventRecord{Seq: 2, Kind: "leaf", Label: "b"}))
 	f.Close()
 	evs, reset = tail.read(path)
 	if len(evs) != 1 || evs[0].Seq != 2 || reset {
@@ -74,23 +74,23 @@ func TestEventTailShrinkReset(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/x.events"
 	if err := os.WriteFile(path, []byte(eventsJSONL(t,
-		eventRecord{Seq: 1, Kind: "leaf", Label: "g1-a"},
-		eventRecord{Seq: 2, Kind: "leaf", Label: "g1-b"},
-		eventRecord{Seq: 3, Kind: "leaf", Label: "g1-c"},
-		eventRecord{Seq: 4, Kind: "leaf", Label: "g1-d"},
-		eventRecord{Seq: 5, Kind: "leaf", Label: "g1-e"},
+		EventRecord{Seq: 1, Kind: "leaf", Label: "g1-a"},
+		EventRecord{Seq: 2, Kind: "leaf", Label: "g1-b"},
+		EventRecord{Seq: 3, Kind: "leaf", Label: "g1-c"},
+		EventRecord{Seq: 4, Kind: "leaf", Label: "g1-d"},
+		EventRecord{Seq: 5, Kind: "leaf", Label: "g1-e"},
 	)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	tail := &eventTail{}
+	tail := &EventTail{}
 	if evs, _ := tail.read(path); len(evs) != 5 {
 		t.Fatalf("gen1: %d evs, want 5", len(evs))
 	}
 	// Resume: remove + recreate, smaller than the prior offset → shrink-detected reset.
 	os.Remove(path)
 	if err := os.WriteFile(path, []byte(eventsJSONL(t,
-		eventRecord{Seq: 1, Kind: "leaf", Label: "g2-a"},
-		eventRecord{Seq: 2, Kind: "leaf", Label: "g2-b"},
+		EventRecord{Seq: 1, Kind: "leaf", Label: "g2-a"},
+		EventRecord{Seq: 2, Kind: "leaf", Label: "g2-b"},
 	)), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -109,19 +109,19 @@ func TestEventTailGrownPastReset(t *testing.T) {
 	path := dir + "/x.events"
 	// Generation 1: ONE event with a long label → a large consumed offset, small cursor (1).
 	if err := os.WriteFile(path, []byte(eventsJSONL(t,
-		eventRecord{Seq: 1, Kind: "leaf", Label: strings.Repeat("g1", 160)},
+		EventRecord{Seq: 1, Kind: "leaf", Label: strings.Repeat("g1", 160)},
 	)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	tail := &eventTail{}
+	tail := &EventTail{}
 	if evs, _ := tail.read(path); len(evs) != 1 {
 		t.Fatalf("gen1: %d evs, want 1", len(evs))
 	}
 	// Generation 2: many short events, total grown PAST the gen1 offset. Reading from that
 	// offset lands many lines deep, so the first parsed Seq (large) cannot equal cursor+1 (=2).
-	var recs []eventRecord
+	var recs []EventRecord
 	for i := int64(1); i <= 30; i++ {
-		recs = append(recs, eventRecord{Seq: i, Kind: "leaf", Label: "g2"})
+		recs = append(recs, EventRecord{Seq: i, Kind: "leaf", Label: "g2"})
 	}
 	os.Remove(path)
 	if err := os.WriteFile(path, []byte(eventsJSONL(t, recs...)), 0o600); err != nil {
@@ -138,7 +138,7 @@ func TestEventTailGrownPastReset(t *testing.T) {
 
 // TestRenderEventScrubsControl: a control sequence in an opaque field never reaches the line.
 func TestRenderEventScrubsControl(t *testing.T) {
-	out := renderEvent(eventRecord{Kind: "leaf", Status: "done", Label: "a\x1b[31mb", Vendor: "v", Model: "m"})
+	out := RenderEventLine(EventRecord{Kind: "leaf", Status: "done", Label: "a\x1b[31mb", Vendor: "v", Model: "m"})
 	if strings.ContainsRune(out, '\x1b') {
 		t.Errorf("render leaked an ESC control rune: %q", out)
 	}
@@ -158,8 +158,8 @@ func TestWatchTerminalRun(t *testing.T) {
 	}
 	ep, _ := subagent.RunEventsPath(run.RunID)
 	if err := os.WriteFile(ep, []byte(eventsJSONL(t,
-		eventRecord{Seq: 1, Kind: "phase", Phase: "Build"},
-		eventRecord{Seq: 2, Kind: "leaf", Status: "done", Label: "worker"},
+		EventRecord{Seq: 1, Kind: "phase", Phase: "Build"},
+		EventRecord{Seq: 2, Kind: "leaf", Status: "done", Label: "worker"},
 	)), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +204,7 @@ func TestWatchEngineGone(t *testing.T) {
 	}
 	// An event the dying engine left behind must still be drained before exiting.
 	ep, _ := subagent.RunEventsPath(run.RunID)
-	if err := os.WriteFile(ep, []byte(eventsJSONL(t, eventRecord{Seq: 1, Kind: "leaf", Status: "done", Label: "last"})), 0o600); err != nil {
+	if err := os.WriteFile(ep, []byte(eventsJSONL(t, EventRecord{Seq: 1, Kind: "leaf", Status: "done", Label: "last"})), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var buf bytes.Buffer
@@ -233,8 +233,8 @@ func TestWatchContextCancel(t *testing.T) {
 	}
 	ep, _ := subagent.RunEventsPath(run.RunID)
 	if err := os.WriteFile(ep, []byte(eventsJSONL(t,
-		eventRecord{Seq: 1, Kind: "leaf", Status: "launch", Label: "w"},
-		eventRecord{Seq: 2, Kind: "leaf", Status: "done", Label: "w"},
+		EventRecord{Seq: 1, Kind: "leaf", Status: "launch", Label: "w"},
+		EventRecord{Seq: 2, Kind: "leaf", Status: "done", Label: "w"},
 	)), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -256,8 +256,8 @@ func TestWatchSinceSeq(t *testing.T) {
 	run, _ := subagent.NewRunWithMeta("n", "d", "", nil)
 	ep, _ := subagent.RunEventsPath(run.RunID)
 	os.WriteFile(ep, []byte(eventsJSONL(t,
-		eventRecord{Seq: 1, Kind: "leaf", Status: "done", Label: "old"},
-		eventRecord{Seq: 2, Kind: "leaf", Status: "done", Label: "new"},
+		EventRecord{Seq: 1, Kind: "leaf", Status: "done", Label: "old"},
+		EventRecord{Seq: 2, Kind: "leaf", Status: "done", Label: "new"},
 	)), 0o600)
 	run.Status = "done"
 	subagent.SaveRun(run)
@@ -275,7 +275,32 @@ func TestWatchSinceSeq(t *testing.T) {
 	}
 }
 
-func seqsOf(evs []eventRecord) []int64 {
+// TestTailEvents exercises the value-threaded façade the board uses: a zero EventTail reads the
+// whole file (reset=false), the returned tail reads only newly-appended events, and an absent
+// file degrades to no events.
+func TestTailEvents(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/x.events"
+	if err := os.WriteFile(path, []byte(eventsJSONL(t, EventRecord{Seq: 1, Kind: "leaf", Label: "a"})), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	evs, tail, reset := TailEvents(path, EventTail{})
+	if len(evs) != 1 || reset {
+		t.Fatalf("first read: %d evs, reset=%v; want 1, false", len(evs), reset)
+	}
+	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	f.WriteString(eventsJSONL(t, EventRecord{Seq: 2, Kind: "leaf", Label: "b"}))
+	f.Close()
+	evs, _, reset = TailEvents(path, tail)
+	if len(evs) != 1 || evs[0].Seq != 2 || reset {
+		t.Fatalf("incremental: %d evs (seq %v), reset=%v; want 1 (seq 2), false", len(evs), seqsOf(evs), reset)
+	}
+	if evs, _, reset := TailEvents(dir+"/absent.events", EventTail{}); len(evs) != 0 || reset {
+		t.Fatalf("absent file: %d evs, reset=%v; want 0, false", len(evs), reset)
+	}
+}
+
+func seqsOf(evs []EventRecord) []int64 {
 	var out []int64
 	for _, e := range evs {
 		out = append(out, e.Seq)
@@ -283,7 +308,7 @@ func seqsOf(evs []eventRecord) []int64 {
 	return out
 }
 
-func firstSeq(evs []eventRecord) int64 {
+func firstSeq(evs []EventRecord) int64 {
 	if len(evs) == 0 {
 		return -1
 	}

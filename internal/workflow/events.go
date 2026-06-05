@@ -6,14 +6,14 @@ import (
 	"path/filepath"
 )
 
-// eventRecord is one line of a run's live-event channel (runs/<id>.events). It is PURE
-// OBSERVABILITY: the board tails it for a flowing live log (and, later, the DAG view) —
+// EventRecord is one line of a run's live-event channel (runs/<id>.events). It is PURE
+// OBSERVABILITY: the board tails it for a flowing live log and the DAG view —
 // the engine NEVER reads it back and it NEVER feeds journalKey, so it cannot perturb
 // resume determinism (the load-bearing rule). It is key-safe BY CONSTRUCTION: there is
 // no prompt or answer field, so a vendor reply (and the never-present vendor key) cannot
 // be written here; a leaf's prompt/answer live in their own 0600 io files. Msg is
 // author-supplied script text (phase title / log line), never vendor output.
-type eventRecord struct {
+type EventRecord struct {
 	Seq    int64  `json:"seq"`
 	Kind   string `json:"kind"`             // phase | log | leaf | group-open | group-close
 	Status string `json:"status,omitempty"` // leaf: launch | done | failed | cached
@@ -43,7 +43,7 @@ type eventWriter struct {
 func newEventWriter(path string) *eventWriter { return &eventWriter{path: path} }
 
 // emit stamps the next seq and appends one JSON line. GIL-held callers only; nil-safe.
-func (w *eventWriter) emit(rec eventRecord) {
+func (w *eventWriter) emit(rec EventRecord) {
 	if w == nil {
 		return
 	}

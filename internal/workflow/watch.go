@@ -73,14 +73,14 @@ func Watch(ctx context.Context, runID string, out io.Writer, opts WatchOptions) 
 	case interval < watchMinInterval:
 		interval = watchMinInterval
 	}
-	tail := &eventTail{since: opts.SinceSeq}
+	tail := &EventTail{since: opts.SinceSeq}
 	drain := func() {
 		evs, reset := tail.read(evPath)
 		if reset {
 			fmt.Fprintln(out, watchResetLine)
 		}
 		for _, ev := range evs {
-			fmt.Fprintln(out, renderEvent(ev))
+			fmt.Fprintln(out, RenderEventLine(ev))
 		}
 	}
 
@@ -134,11 +134,11 @@ func finalLine(run subagent.WorkflowRun) string {
 	return s
 }
 
-// renderEvent formats one event for the live stream. Every opaque field (status / label /
+// RenderEventLine formats one event for the live stream. Every opaque field (status / label /
 // vendor / model / phase / msg / group type) is CleanTitle-scrubbed before it reaches the
-// terminal; the event carries no key or answer by construction (events.go). Mirrors the
-// board's renderLogLine so the two surfaces read identically.
-func renderEvent(ev eventRecord) string {
+// terminal; the event carries no key or answer by construction (events.go). It is the single
+// renderer shared by `workflow watch` and the TUI board's live log.
+func RenderEventLine(ev EventRecord) string {
 	clean := sessiontitle.CleanTitle
 	switch ev.Kind {
 	case "leaf":
@@ -165,16 +165,29 @@ func renderEvent(ev eventRecord) string {
 	}
 }
 
-// eventTail is the incremental-tail state for a run's events file: the byte offset already
+// EventTail is the incremental-tail state for a run's events file: the byte offset already
 // consumed, a torn trailing partial line carried across reads, the identity of the generation
 // being tailed, the seq of the last consumed event (contiguity check + reattach hint), and a
 // one-time skip threshold (SinceSeq, for a clean reattach).
-type eventTail struct {
+//
+// Watch holds a long-lived *EventTail and calls read directly; the TUI board, which threads
+// per-run tail state by value through its refresh loop, drives the same logic via TailEvents.
+type EventTail struct {
 	offset    int64
 	partial   string
 	info      os.FileInfo // generation identity (os.SameFile); nil before the first read
 	cursorSeq int64       // seq of the last consumed event; the reattach hint
 	since     int64       // skip-PRINTING events with Seq <= since (cleared on a generation reset)
+}
+
+// TailEvents is the value-threaded façade over (*EventTail).read for a caller that keeps per-run
+// tail state in a map passed through its own refresh loop (the TUI board): it advances a COPY of
+// prev and returns the new events, the advanced tail to store back, and whether a generation
+// reset was detected. The caller passes the zero EventTail on the first read. (Watch instead
+// holds a *EventTail across its loop and calls read directly.)
+func TailEvents(path string, prev EventTail) (evs []EventRecord, next EventTail, reset bool) {
+	evs, reset = (&prev).read(path)
+	return evs, prev, reset
 }
 
 // read returns the events appended since the last read that are PRINTABLE (Seq > since), plus
@@ -189,14 +202,13 @@ type eventTail struct {
 // missing/unreadable file degrades to no new events (a just-removed file mid-rewrite yields
 // nothing until the new one appears).
 //
-// Accepted residual: all three signals can alias at once — a reused inode AND a grown-past
+// Known limitation: all three signals can alias at once — a reused inode AND a grown-past
 // generation AND a byte-exact line+seq alignment that makes the stale offset's first line read
 // seq == cursorSeq+1. The new generation's head lines are then dropped from the live stream
 // (no banner). This is OBSERVABILITY ONLY: events are never read back by the engine and never
 // journaled, so resume determinism is untouched and the manifest + `workflow status` stay
-// authoritative. The coincidence is rare enough that hardening (a content anchor / a generation
-// marker in the event format) isn't worth the cost.
-func (t *eventTail) read(path string) (printable []eventRecord, reset bool) {
+// authoritative; the coincidence is rare.
+func (t *EventTail) read(path string) (printable []EventRecord, reset bool) {
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, false
@@ -231,7 +243,7 @@ func (t *eventTail) read(path string) (printable []eventRecord, reset bool) {
 // readFrom reads the bytes [t.offset, size) from f, parses the complete lines (carrying a torn
 // partial across reads), and advances t.offset/t.partial. The caller holds f open and supplies
 // its current size.
-func (t *eventTail) readFrom(f *os.File, size int64) []eventRecord {
+func (t *EventTail) readFrom(f *os.File, size int64) []EventRecord {
 	if t.offset >= size {
 		return nil
 	}
@@ -251,7 +263,7 @@ func (t *eventTail) readFrom(f *os.File, size int64) []eventRecord {
 
 // resetState rewinds the tail to the top of a fresh generation, clearing the reattach skip
 // threshold so the new generation is shown in full.
-func (t *eventTail) resetState() {
+func (t *EventTail) resetState() {
 	t.offset = 0
 	t.partial = ""
 	t.cursorSeq = 0
@@ -259,11 +271,11 @@ func (t *eventTail) resetState() {
 }
 
 // parseEventRecords splits chunk into complete newline-terminated lines, unmarshals each into
-// an eventRecord (silently skipping a line that doesn't parse), and returns the parsed events
+// an EventRecord (silently skipping a line that doesn't parse), and returns the parsed events
 // plus the trailing partial (text after the last newline) to carry into the next read. Pure:
 // table-tested independently of the filesystem.
-func parseEventRecords(chunk string) ([]eventRecord, string) {
-	var out []eventRecord
+func parseEventRecords(chunk string) ([]EventRecord, string) {
+	var out []EventRecord
 	for {
 		i := strings.IndexByte(chunk, '\n')
 		if i < 0 {
@@ -274,7 +286,7 @@ func parseEventRecords(chunk string) ([]eventRecord, string) {
 		if strings.TrimSpace(line) == "" {
 			continue
 		}
-		var ev eventRecord
+		var ev EventRecord
 		if json.Unmarshal([]byte(line), &ev) != nil {
 			continue
 		}

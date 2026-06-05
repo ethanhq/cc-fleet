@@ -1,149 +1,29 @@
 package tui
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/ids"
-	"github.com/ethanhq/cc-fleet/internal/sessiontitle"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
+	"github.com/ethanhq/cc-fleet/internal/workflow"
 )
 
-// eventLine mirrors one line of a run's live-event channel (runs/<id>.events,
-// append-only JSONL). The board only READS/tails this stream — it never writes
-// it. The JSON tags match the engine's eventRecord; the stream NEVER carries
-// prompt/answer text (those live in the leaf io files), so nothing here can leak
-// a vendor reply.
-type eventLine struct {
-	Seq     int64  `json:"seq"`
-	Kind    string `json:"kind"`   // phase | log | leaf | group-open | group-close
-	Status  string `json:"status"` // leaf: launch | done | failed | cached
-	Phase   string `json:"phase"`
-	Label   string `json:"label"`
-	Vendor  string `json:"vendor"`
-	Model   string `json:"model"`
-	GroupID string `json:"group_id"`
-	GroupTy string `json:"group_type"`
-	Msg     string `json:"msg"`
-}
+// The run event-stream shape, parser, renderer, and tailer live in internal/workflow (the
+// owner of the on-disk format): workflow.EventRecord, workflow.RenderEventLine, and the
+// value-threaded workflow.TailEvents the board calls in loadWorkflows. This file holds only
+// the board-specific projections of that stream — the bounded log ring, the DAG tree, and
+// the per-leaf metrics + drill-in io.
 
 // maxLogLines bounds the per-run live-log ring (most-recent lines kept).
 const maxLogLines = 200
 
-// runTail is the incremental-tail bookkeeping for one run's events file: the byte
-// offset already consumed and a torn trailing partial line carried to next read.
-type runTail struct {
-	offset  int64
-	partial string
-}
-
-// tailEvents reads only the bytes appended to path since prev.offset, splits the
-// complete lines (carrying a torn trailing partial across reads), unmarshals each,
-// and returns the parsed events, the advanced tail, and a reset flag. reset is true
-// when the file SHRANK below prev.offset — the engine truncates runs/<id>.events at
-// the start of every (re)run (incl. --resume), so a shrink means the prior history
-// is gone and the caller must REPLACE (not append) that run's accumulated events +
-// log. A missing file or a read error degrades to no new events and the prior tail,
-// so a malformed/absent stream never crashes the board. It is a thin IO wrapper
-// around parseEventLines (the pure, table-tested core).
-func tailEvents(path string, prev runTail) (lines []eventLine, next runTail, reset bool) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, prev, false
-	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return nil, prev, false
-	}
-	size := info.Size()
-	off := prev.offset
-	if off > size {
-		// The file shrank (truncated by a (re)run): restart from the top and tell the
-		// caller to discard the now-stale accumulated history.
-		off = 0
-		prev.partial = ""
-		reset = true
-	}
-	if off == size {
-		return nil, runTail{offset: size, partial: prev.partial}, reset
-	}
-	if _, err := f.Seek(off, 0); err != nil {
-		return nil, prev, false
-	}
-	buf := make([]byte, size-off)
-	n, err := f.Read(buf)
-	if err != nil && n == 0 {
-		return nil, prev, false
-	}
-	parsed, partial := parseEventLines(prev.partial + string(buf[:n]))
-	return parsed, runTail{offset: off + int64(n), partial: partial}, reset
-}
-
-// parseEventLines splits chunk into complete newline-terminated lines, unmarshals
-// each into an eventLine (silently skipping a line that doesn't parse), and returns
-// the parsed events plus the trailing partial (text after the last newline) to
-// carry into the next read. Pure: table-tested independently of the filesystem.
-func parseEventLines(chunk string) ([]eventLine, string) {
-	var out []eventLine
-	for {
-		i := strings.IndexByte(chunk, '\n')
-		if i < 0 {
-			break
-		}
-		line := chunk[:i]
-		chunk = chunk[i+1:]
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		var ev eventLine
-		if json.Unmarshal([]byte(line), &ev) != nil {
-			continue
-		}
-		out = append(out, ev)
-	}
-	return out, chunk
-}
-
-// renderLogLine formats one event for the flowing live-log pane. Every opaque
-// string (phase / label / vendor / model / msg) is CleanTitle-scrubbed before it
-// reaches the terminal. A leaf carries its status + label + vendor/model; a phase
-// or log carries its narrator msg; a group bracket shows its type.
-func renderLogLine(ev eventLine) string {
-	clean := sessiontitle.CleanTitle
-	switch ev.Kind {
-	case "leaf":
-		s := "  leaf " + clean(ev.Status) + " · " + clean(ev.Label)
-		if ev.Vendor != "" || ev.Model != "" {
-			s += " (" + clean(ev.Vendor) + "/" + clean(ev.Model) + ")"
-		}
-		return s
-	case "phase":
-		s := "phase " + clean(ev.Phase)
-		if ev.Msg != "" {
-			s += " — " + clean(ev.Msg)
-		}
-		return s
-	case "group-open":
-		return "  ▸ " + clean(ev.GroupTy)
-	case "group-close":
-		return "  ◂ end"
-	default: // log + anything else
-		if ev.Msg != "" {
-			return "  " + clean(ev.Msg)
-		}
-		return "  " + clean(ev.Kind)
-	}
-}
-
 // appendLog pushes rendered lines onto a bounded ring, dropping the oldest when it
 // exceeds maxLogLines. The ring is the most-recent rendered log across all runs.
-func appendLog(ring []string, evs []eventLine) []string {
+func appendLog(ring []string, evs []workflow.EventRecord) []string {
 	for _, ev := range evs {
-		ring = append(ring, renderLogLine(ev))
+		ring = append(ring, workflow.RenderEventLine(ev))
 	}
 	if len(ring) > maxLogLines {
 		ring = ring[len(ring)-maxLogLines:]
@@ -191,7 +71,7 @@ type dagNode struct {
 // bracket order — no parent id is threaded. An unmatched close is ignored (degrades
 // gracefully). Returns the root's children, or nil when the run has no group events
 // (the caller then falls back to the flat phase→agent tree).
-func buildDAG(evs []eventLine) []*dagNode {
+func buildDAG(evs []workflow.EventRecord) []*dagNode {
 	hasGroup := false
 	for _, ev := range evs {
 		if ev.Kind == "group-open" {

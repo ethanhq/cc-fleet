@@ -12,18 +12,18 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
-func readEvents(t *testing.T, path string) []eventRecord {
+func readEvents(t *testing.T, path string) []EventRecord {
 	t.Helper()
 	f, err := os.Open(path)
 	if err != nil {
 		t.Fatalf("open events: %v", err)
 	}
 	defer f.Close()
-	var out []eventRecord
+	var out []EventRecord
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	for sc.Scan() {
-		var r eventRecord
+		var r EventRecord
 		if json.Unmarshal(sc.Bytes(), &r) == nil {
 			out = append(out, r)
 		}
@@ -33,12 +33,12 @@ func readEvents(t *testing.T, path string) []eventRecord {
 
 func TestEventWriterRoundTripSeqAndNilSafe(t *testing.T) {
 	var nilw *eventWriter
-	nilw.emit(eventRecord{Kind: "leaf"}) // nil writer must be a no-op, not a panic
+	nilw.emit(EventRecord{Kind: "leaf"}) // nil writer must be a no-op, not a panic
 
 	path := filepath.Join(t.TempDir(), "x.events")
 	w := newEventWriter(path)
-	w.emit(eventRecord{Kind: "phase", Phase: "map"})
-	w.emit(eventRecord{Kind: "leaf", Status: "launch", Label: "a"})
+	w.emit(EventRecord{Kind: "phase", Phase: "map"})
+	w.emit(EventRecord{Kind: "leaf", Status: "launch", Label: "a"})
 	recs := readEvents(t, path)
 	if len(recs) != 2 {
 		t.Fatalf("got %d events, want 2", len(recs))

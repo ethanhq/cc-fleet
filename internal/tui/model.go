@@ -102,8 +102,8 @@ type Model struct {
 	workflowsErr      error
 	workflowsEpoch    int
 	workflowsCursor   int
-	wfTails           map[string]runTail
-	wfEvents          map[string][]eventLine
+	wfTails           map[string]workflow.EventTail
+	wfEvents          map[string][]workflow.EventRecord
 	wfLog             []string
 	workflowStatus    string
 	workflowStatusErr bool
@@ -371,10 +371,10 @@ func boardTick(epoch int) tea.Cmd {
 type workflowsMsg struct {
 	jobs     []subagent.Result
 	runs     []subagent.WorkflowRun
-	tails    map[string]runTail
-	newEvts  map[string][]eventLine // run id → events read this refresh
-	resets   map[string]bool        // run id → its events file shrank (truncated): replace, don't append
-	logLines []eventLine            // all new events across runs, in run order, for the log ring
+	tails    map[string]workflow.EventTail
+	newEvts  map[string][]workflow.EventRecord // run id → events read this refresh
+	resets   map[string]bool                   // run id → its events file shrank (truncated): replace, don't append
+	logLines []workflow.EventRecord            // all new events across runs, in run order, for the log ring
 	epoch    int
 	err      error
 }
@@ -391,8 +391,8 @@ type workflowsTickMsg struct{ epoch int }
 // run's live-event channel (reading only the bytes appended since prevTails, so
 // the 3s poll stays cheap). It carries the first non-nil manifest/jobs error so a
 // data-source failure surfaces; a per-run events read that fails degrades to no
-// new events (tailEvents never errors out).
-func loadWorkflows(epoch int, prevTails map[string]runTail) tea.Cmd {
+// new events (workflow.TailEvents never errors out).
+func loadWorkflows(epoch int, prevTails map[string]workflow.EventTail) tea.Cmd {
 	return func() tea.Msg {
 		all, jErr := subagent.ListJobs()
 		var jobs []subagent.Result
@@ -406,10 +406,10 @@ func loadWorkflows(epoch int, prevTails map[string]runTail) tea.Cmd {
 		if err == nil {
 			err = rErr
 		}
-		tails := map[string]runTail{}
-		newEvts := map[string][]eventLine{}
+		tails := map[string]workflow.EventTail{}
+		newEvts := map[string][]workflow.EventRecord{}
 		resets := map[string]bool{}
-		var logLines []eventLine
+		var logLines []workflow.EventRecord
 		for _, r := range runs {
 			prev := prevTails[r.RunID]
 			path, perr := subagent.RunEventsPath(r.RunID)
@@ -417,7 +417,7 @@ func loadWorkflows(epoch int, prevTails map[string]runTail) tea.Cmd {
 				tails[r.RunID] = prev
 				continue
 			}
-			evs, next, reset := tailEvents(path, prev)
+			evs, next, reset := workflow.TailEvents(path, prev)
 			tails[r.RunID] = next
 			if reset {
 				resets[r.RunID] = true
@@ -769,7 +769,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// per-run accumulation keeps the full event history (DAG needs all of it);
 		// the log ring is bounded to the most-recent lines.
 		if m.wfEvents == nil {
-			m.wfEvents = map[string][]eventLine{}
+			m.wfEvents = map[string][]workflow.EventRecord{}
 		}
 		for id, evs := range msg.newEvts {
 			if msg.resets[id] {
@@ -1067,8 +1067,8 @@ func (m Model) toWorkflows() (tea.Model, tea.Cmd) {
 	m.workflowsEpoch++
 	m.workflowsCursor = 0
 	m.workflowStatus = ""
-	m.wfTails = map[string]runTail{}
-	m.wfEvents = map[string][]eventLine{}
+	m.wfTails = map[string]workflow.EventTail{}
+	m.wfEvents = map[string][]workflow.EventRecord{}
 	m.wfLog = nil
 	return m, tea.Batch(loadWorkflows(m.workflowsEpoch, m.wfTails), workflowsTick(m.workflowsEpoch))
 }

@@ -397,7 +397,7 @@ func TestE2EFullRun(t *testing.T) {
 		if line == "" {
 			continue
 		}
-		var rec eventRecord
+		var rec EventRecord
 		if json.Unmarshal([]byte(line), &rec) != nil {
 			t.Fatalf("malformed event line: %q", line)
 		}

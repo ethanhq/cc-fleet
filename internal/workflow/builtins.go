@@ -417,14 +417,14 @@ func (e *engine) phase(thread *starlark.Thread, b *starlark.Builtin, args starla
 		e.phases = append(e.phases, subagent.RunPhase{Title: title, Detail: detail})
 	}
 	e.saveManifest("running", "")
-	e.events.emit(eventRecord{Kind: "phase", Phase: title, Msg: detail})
+	e.events.emit(EventRecord{Kind: "phase", Phase: title, Msg: detail})
 	return starlark.None, nil
 }
 
 // emitLeaf records a leaf transition (launch/done/failed/cached) on the live-event
 // channel. GIL-held callers only; nil-safe via the writer.
 func (e *engine) emitLeaf(status, phase, label, vendor, model string) {
-	e.events.emit(eventRecord{Kind: "leaf", Status: status, Phase: phase, Label: label, Vendor: vendor, Model: model})
+	e.events.emit(EventRecord{Kind: "leaf", Status: status, Phase: phase, Label: label, Vendor: vendor, Model: model})
 }
 
 // emitGroupOpen records the start of a parallel/pipeline/workflow group and returns its
@@ -436,12 +436,12 @@ func (e *engine) emitLeaf(status, phase, label, vendor, model string) {
 func (e *engine) emitGroupOpen(groupType string) string {
 	e.groupSeq++
 	gid := fmt.Sprintf("g%d", e.groupSeq)
-	e.events.emit(eventRecord{Kind: "group-open", GroupID: gid, GroupTy: groupType, Phase: e.currentPhase})
+	e.events.emit(EventRecord{Kind: "group-open", GroupID: gid, GroupTy: groupType, Phase: e.currentPhase})
 	return gid
 }
 
 func (e *engine) emitGroupClose(gid string) {
-	e.events.emit(eventRecord{Kind: "group-close", GroupID: gid})
+	e.events.emit(EventRecord{Kind: "group-close", GroupID: gid})
 }
 
 // saveManifest overwrites the run manifest from the engine's authoritative in-memory
@@ -473,7 +473,7 @@ func (e *engine) log(thread *starlark.Thread, b *starlark.Builtin, args starlark
 		return nil, err
 	}
 	fmt.Fprintln(os.Stderr, "[workflow] "+msg)
-	e.events.emit(eventRecord{Kind: "log", Msg: msg})
+	e.events.emit(EventRecord{Kind: "log", Msg: msg})
 	return starlark.None, nil
 }
 

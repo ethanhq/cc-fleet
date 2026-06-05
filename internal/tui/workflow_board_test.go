@@ -8,12 +8,13 @@ import (
 	"testing"
 
 	"github.com/ethanhq/cc-fleet/internal/subagent"
+	"github.com/ethanhq/cc-fleet/internal/workflow"
 )
 
 // workflowsModel parks a model on the Workflows board with the given jobs/runs
 // loaded (screen=screenWorkflows, workflowsEpoch=1, loading=false), bypassing disk
 // via a direct fresh-epoch workflowsMsg.
-func workflowsModel(t *testing.T, jobs []subagent.Result, runs []subagent.WorkflowRun, evts map[string][]eventLine) Model {
+func workflowsModel(t *testing.T, jobs []subagent.Result, runs []subagent.WorkflowRun, evts map[string][]workflow.EventRecord) Model {
 	t.Helper()
 	m := boardModel(t, nil, nil)
 	m, _ = press(t, m, "tab") // -> Workflows, epoch 1, loading
@@ -21,133 +22,16 @@ func workflowsModel(t *testing.T, jobs []subagent.Result, runs []subagent.Workfl
 	return m
 }
 
-// ---------------------------------------------------------------------------
-// R2.1 incremental events tailer (parseEventLines — the pure core)
-// ---------------------------------------------------------------------------
-
-func TestParseEventLines_SplitsAndCarriesPartial(t *testing.T) {
-	// Two whole lines + a torn trailing partial.
-	chunk := `{"seq":1,"kind":"phase","phase":"plan"}` + "\n" +
-		`{"seq":2,"kind":"leaf","status":"launch","label":"a"}` + "\n" +
-		`{"seq":3,"kind":"leaf",`
-	evs, partial := parseEventLines(chunk)
-	if len(evs) != 2 {
-		t.Fatalf("parsed %d complete events, want 2", len(evs))
-	}
-	if evs[0].Kind != "phase" || evs[0].Phase != "plan" {
-		t.Fatalf("event 0 = %+v, want phase/plan", evs[0])
-	}
-	if evs[1].Status != "launch" || evs[1].Label != "a" {
-		t.Fatalf("event 1 = %+v, want launch/a", evs[1])
-	}
-	if partial != `{"seq":3,"kind":"leaf",` {
-		t.Fatalf("partial = %q, want the torn trailing line", partial)
-	}
-}
-
-func TestParseEventLines_RejoinsPartialNextRead(t *testing.T) {
-	// First read tears mid-line; feed the rest prefixed with the carried partial.
-	evs, partial := parseEventLines(`{"seq":1,"kind":"leaf","stat`)
-	if len(evs) != 0 || partial == "" {
-		t.Fatalf("first read should yield no complete event + a partial, got evs=%d partial=%q", len(evs), partial)
-	}
-	evs2, partial2 := parseEventLines(partial + `us":"done","label":"a"}` + "\n")
-	if len(evs2) != 1 || evs2[0].Status != "done" || evs2[0].Label != "a" {
-		t.Fatalf("rejoined read = %+v (partial2=%q), want one done/a event", evs2, partial2)
-	}
-	if partial2 != "" {
-		t.Fatalf("partial2 = %q, want empty (line completed)", partial2)
-	}
-}
-
-func TestParseEventLines_SkipsBlankAndMalformed(t *testing.T) {
-	chunk := "\n" + `not-json` + "\n" + `{"seq":5,"kind":"log","msg":"hi"}` + "\n"
-	evs, partial := parseEventLines(chunk)
-	if len(evs) != 1 || evs[0].Msg != "hi" {
-		t.Fatalf("evs = %+v, want one log/hi (blank + malformed skipped)", evs)
-	}
-	if partial != "" {
-		t.Fatalf("partial = %q, want empty", partial)
-	}
-}
-
-func TestTailEvents_Incremental(t *testing.T) {
-	// tailEvents reads only the bytes appended since the prior offset.
-	dir := t.TempDir()
-	path := filepath.Join(dir, "run.events")
-	first := `{"seq":1,"kind":"phase","phase":"plan"}` + "\n"
-	if err := os.WriteFile(path, []byte(first), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	evs, tail, reset := tailEvents(path, runTail{})
-	if len(evs) != 1 || tail.offset != int64(len(first)) || reset {
-		t.Fatalf("first tail: evs=%d offset=%d reset=%v, want 1 + %d + false", len(evs), tail.offset, reset, len(first))
-	}
-	// Append a second line; the next tail must read ONLY the new bytes.
-	second := `{"seq":2,"kind":"leaf","status":"done","label":"a"}` + "\n"
-	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
-	_, _ = f.WriteString(second)
-	_ = f.Close()
-	evs2, tail2, reset2 := tailEvents(path, tail)
-	if len(evs2) != 1 || evs2[0].Label != "a" || reset2 {
-		t.Fatalf("incremental tail = %+v reset=%v, want only the new done/a event + no reset", evs2, reset2)
-	}
-	if tail2.offset != int64(len(first)+len(second)) {
-		t.Fatalf("offset = %d, want %d", tail2.offset, len(first)+len(second))
-	}
-	// A re-tail with no new bytes yields nothing, offset unchanged.
-	evs3, tail3, _ := tailEvents(path, tail2)
-	if len(evs3) != 0 || tail3.offset != tail2.offset {
-		t.Fatalf("no-op tail = %+v offset=%d, want empty + unchanged", evs3, tail3.offset)
-	}
-}
-
-// TestTailEvents_ShrinkResets: the engine truncates the events file at the start of
-// every (re)run, so a file shorter than the prior offset must signal reset=true and
-// restart reading from the top (the prior history is stale).
-func TestTailEvents_ShrinkResets(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "run.events")
-	// Read a multi-line file to advance the offset well past 0.
-	orig := `{"seq":1,"kind":"phase","phase":"old1"}` + "\n" + `{"seq":2,"kind":"phase","phase":"old2"}` + "\n"
-	if err := os.WriteFile(path, []byte(orig), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	_, tail, _ := tailEvents(path, runTail{})
-	if tail.offset != int64(len(orig)) {
-		t.Fatalf("setup offset = %d, want %d", tail.offset, len(orig))
-	}
-	// A (re)run truncates + rewrites a SHORTER stream.
-	fresh := `{"seq":1,"kind":"phase","phase":"new1"}` + "\n"
-	if err := os.WriteFile(path, []byte(fresh), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	evs, tail2, reset := tailEvents(path, tail)
-	if !reset {
-		t.Fatal("a shrunk file must report reset=true")
-	}
-	if len(evs) != 1 || evs[0].Phase != "new1" {
-		t.Fatalf("after shrink tail = %+v, want the fresh new1 event read from the top", evs)
-	}
-	if tail2.offset != int64(len(fresh)) {
-		t.Fatalf("post-shrink offset = %d, want %d", tail2.offset, len(fresh))
-	}
-}
-
-func TestTailEvents_MissingFileNoCrash(t *testing.T) {
-	evs, tail, reset := tailEvents(filepath.Join(t.TempDir(), "absent.events"), runTail{offset: 42})
-	if len(evs) != 0 || reset {
-		t.Fatalf("missing file should yield no events + no reset, got %d evs reset=%v", len(evs), reset)
-	}
-	if tail.offset != 42 {
-		t.Fatalf("missing file should preserve the prior tail, got offset %d", tail.offset)
-	}
-}
+// The event-stream parser, renderer, and incremental tailer live in internal/workflow
+// (the owner of the on-disk format) and are tested there (TestParseEventRecords,
+// TestEventTail*, TestTailEvents, TestRenderEventScrubsControl). The board consumes them
+// via workflow.TailEvents / workflow.RenderEventLine; the tests below cover the board's own
+// projections of that stream.
 
 func TestAppendLog_BoundedRing(t *testing.T) {
 	var ring []string
 	for i := 0; i < maxLogLines+50; i++ {
-		ring = appendLog(ring, []eventLine{{Kind: "log", Msg: "line"}})
+		ring = appendLog(ring, []workflow.EventRecord{{Kind: "log", Msg: "line"}})
 	}
 	if len(ring) != maxLogLines {
 		t.Fatalf("ring len = %d, want bounded to %d", len(ring), maxLogLines)
@@ -160,7 +44,7 @@ func TestAppendLog_BoundedRing(t *testing.T) {
 
 func TestBuildDAG_NestedGroups(t *testing.T) {
 	// pipeline { parallel { leaf, leaf } } — nested by seq bracket order.
-	evs := []eventLine{
+	evs := []workflow.EventRecord{
 		{Seq: 1, Kind: "group-open", GroupID: "g1", GroupTy: "pipeline"},
 		{Seq: 2, Kind: "group-open", GroupID: "g2", GroupTy: "parallel"},
 		{Seq: 3, Kind: "leaf", Status: "done", Label: "a"},
@@ -183,7 +67,7 @@ func TestBuildDAG_NestedGroups(t *testing.T) {
 }
 
 func TestBuildDAG_NoGroupsFallsBackNil(t *testing.T) {
-	evs := []eventLine{
+	evs := []workflow.EventRecord{
 		{Seq: 1, Kind: "phase", Phase: "plan"},
 		{Seq: 2, Kind: "leaf", Status: "done", Label: "a"},
 	}
@@ -194,7 +78,7 @@ func TestBuildDAG_NoGroupsFallsBackNil(t *testing.T) {
 
 func TestBuildDAG_UnmatchedCloseNoCrash(t *testing.T) {
 	// A stray close (malformed stream) must degrade, never panic or pop the root.
-	evs := []eventLine{
+	evs := []workflow.EventRecord{
 		{Seq: 1, Kind: "group-close", GroupID: "g0"},
 		{Seq: 2, Kind: "group-open", GroupID: "g1", GroupTy: "parallel"},
 		{Seq: 3, Kind: "leaf", Label: "a"},
@@ -217,7 +101,7 @@ func TestWorkflowsView_DAGStructureAndFallback(t *testing.T) {
 		{RunID: "run-dag", Phase: "p", Label: "d2", Vendor: "glm", Status: "done", StartedAt: "2026-05-01T01:00:01Z"},
 		{RunID: "run-flat", Phase: "build", Label: "f1", Vendor: "kimi", Status: "running", StartedAt: "2026-04-01T01:00:00Z"},
 	}
-	evts := map[string][]eventLine{
+	evts := map[string][]workflow.EventRecord{
 		"run-dag": {
 			{Seq: 1, Kind: "group-open", GroupID: "g1", GroupTy: "parallel"},
 			{Seq: 2, Kind: "leaf", Status: "done", Label: "d1"},
@@ -505,7 +389,7 @@ func TestWorkflowsLiveLog_RendersScrubbedLines(t *testing.T) {
 	// Deliver a refresh carrying new log lines (mirrors loadWorkflows output).
 	m, _ = step(t, m, workflowsMsg{
 		runs:     runs,
-		logLines: []eventLine{{Kind: "log", Msg: "hello\x1b[31mworld"}, {Kind: "phase", Phase: "plan"}},
+		logLines: []workflow.EventRecord{{Kind: "log", Msg: "hello\x1b[31mworld"}, {Kind: "phase", Phase: "plan"}},
 		epoch:    m.workflowsEpoch,
 	})
 	out := m.viewWorkflows()
@@ -515,11 +399,11 @@ func TestWorkflowsLiveLog_RendersScrubbedLines(t *testing.T) {
 	if !strings.Contains(out, "world") || !strings.Contains(out, "plan") {
 		t.Fatalf("live log should render the event text:\n%s", out)
 	}
-	// renderLogLine (the unstyled core) must drop the raw ESC byte so it can't reach
+	// The shared renderer (the unstyled core) drops the raw ESC byte so it can't reach
 	// the terminal as an interpretable escape (the styled view also injects ESC for
 	// dimming, so assert on the scrubbed line itself).
-	if line := renderLogLine(eventLine{Kind: "log", Msg: "hello\x1b[31mworld"}); strings.ContainsRune(line, '\x1b') {
-		t.Fatalf("renderLogLine leaked a raw ESC byte: %q", line)
+	if line := workflow.RenderEventLine(workflow.EventRecord{Kind: "log", Msg: "hello\x1b[31mworld"}); strings.ContainsRune(line, '\x1b') {
+		t.Fatalf("RenderEventLine leaked a raw ESC byte: %q", line)
 	}
 }
 
@@ -603,19 +487,19 @@ func TestWorkflowsMsg_ShrinkReplacesEventHistory(t *testing.T) {
 	runs := []subagent.WorkflowRun{{RunID: "run-1", StartedAt: "2026-05-02T00:00:00Z"}}
 	m := workflowsModel(t, nil, runs, nil)
 	// First refresh: two events accumulate.
-	old := []eventLine{{Kind: "phase", Phase: "old1"}, {Kind: "phase", Phase: "old2"}}
+	old := []workflow.EventRecord{{Kind: "phase", Phase: "old1"}, {Kind: "phase", Phase: "old2"}}
 	m, _ = step(t, m, workflowsMsg{
-		runs: runs, newEvts: map[string][]eventLine{"run-1": old}, logLines: old, epoch: m.workflowsEpoch,
+		runs: runs, newEvts: map[string][]workflow.EventRecord{"run-1": old}, logLines: old, epoch: m.workflowsEpoch,
 	})
 	if len(m.wfEvents["run-1"]) != 2 {
 		t.Fatalf("after first refresh: %d events, want 2", len(m.wfEvents["run-1"]))
 	}
 	// A (re)run truncates the file: the refresh reports reset=true with the FRESH
 	// (shorter) event set. History must be replaced, not appended.
-	fresh := []eventLine{{Kind: "phase", Phase: "new1"}}
+	fresh := []workflow.EventRecord{{Kind: "phase", Phase: "new1"}}
 	m, _ = step(t, m, workflowsMsg{
 		runs:     runs,
-		newEvts:  map[string][]eventLine{"run-1": fresh},
+		newEvts:  map[string][]workflow.EventRecord{"run-1": fresh},
 		resets:   map[string]bool{"run-1": true},
 		logLines: fresh,
 		epoch:    m.workflowsEpoch,
