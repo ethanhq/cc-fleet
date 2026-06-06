@@ -49,6 +49,8 @@ cc-fleet subagent deepseek --model deepseek-chat --prompt "总结这段日志" -
 - `--background` —— detached 运行；用 `cc-fleet subagent-status` 轮询进度。
 - `--resume <session_id>` —— 续接上一次 subagent，进行多轮对话。
 - `--timeout` / `--max-turns` / `--max-budget-usd` —— 限制运行时长和费用上限。
+- `--profile slim` / `slim-ro` —— 镜像原生 subagent 上下文（首个请求远小于完整会话
+  prompt）；可用 `--tools` / `--skills` / `--mcp` 细化。
 
 不需要 tmux，也不需要 agent-teams —— 纯 stdout 输入，结果输出。
 

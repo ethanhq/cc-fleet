@@ -21,7 +21,8 @@ not JS.
   omit `model=`) are optional; `phases` is the declared plan (optional). Read statically
   before the run → the board shows the named, phase-skeletoned run immediately.
 - `agent(prompt, vendor=…, model=None, schema=None, label=None, phase=None, timeout=None,
-  max_budget_usd=None, max_turns=None, run_in_background=False, isolation=None)` — runs ONE
+  max_budget_usd=None, max_turns=None, run_in_background=False, isolation=None,
+  profile="full", tools=None, skills=True, mcp=False)` — runs ONE
   vendor subagent leaf and **blocks** until it returns the answer **string**. With `schema=`
   (a dict) it asks for JSON and validates it against a real (recursive) JSON-Schema subset —
   `type` (object/array/string/number/integer/boolean/null; `integer` accepts `5.0`),
@@ -33,6 +34,13 @@ not JS.
   `run_in_background=True` returns a **handle** immediately (await it with `wait()`); not
   combinable with `schema=`. `isolation="worktree"` runs the leaf with cwd = a fresh git
   worktree (torn down after), so parallel file-editing leaves don't collide (requires a git repo).
+  `profile="slim"` (generic-subagent mirror; keeps CLAUDE.md) or `"slim-ro"` (read-only
+  Explore mirror; no CLAUDE.md) swaps the full session prompt for the native subagent shape —
+  a far smaller first request per leaf; rule of thumb: writes files → `slim`, read-only
+  research → `slim-ro`. `tools=` (whitelist), `skills=` (default `True`), `mcp=` (default
+  `False`) refine a slim leaf and are rejected with `profile="full"`. The run journal folds
+  the effective profile + tools, so a `--resume` re-runs a leaf whose shape changed; on a
+  claude below 2.1.88 the leaf fails open to `full` (notice logged before the journal lookup).
 - `wait(handle | [handles])` — block for one background handle (returns its string) or a
   list of them (returns a list, order preserved). **Named `wait`, not `await`** — Starlark
   reserves `await` as a keyword.

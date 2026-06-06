@@ -51,6 +51,8 @@ cc-fleet subagent deepseek --model deepseek-chat --prompt "Summarize this log" -
 - `--background` — run detached; poll with `cc-fleet subagent-status`.
 - `--resume <session_id>` — continue a previous subagent for multi-turn work.
 - `--timeout` / `--max-turns` / `--max-budget-usd` — bound runtime and cost.
+- `--profile slim` / `slim-ro` — mirror the native subagent context (a far smaller first
+  request than the full session prompt); refine with `--tools` / `--skills` / `--mcp`.
 
 It needs no tmux and no agent-teams — pure stdout in, result out.
 
