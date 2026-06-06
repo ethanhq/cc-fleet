@@ -397,10 +397,12 @@ func StatusFor(jobID string) Result {
 		}
 	}
 
-	// A queued placeholder: the workflow engine minted it (PID=0, Status="queued") before the
-	// leaf got a pool slot, and no terminal result is cached yet. Report it AS queued — otherwise
-	// processAlive(0)=false falls through to classify an empty stdout as a dead/failed leaf.
-	if meta.Status == "queued" && meta.PID == 0 {
+	// No recorded process (PID<=0) and no cached terminal result: the job has produced no terminal
+	// signal. It is a queued placeholder the engine minted before the leaf got a pool slot (or a
+	// legacy/odd meta). Report it queued — PID is the authority, not the Status string — so it never
+	// falls through to the dead-classify path below, where an empty .out + the synthetic exit code
+	// would be mis-read as a done/failed leaf.
+	if meta.PID <= 0 {
 		return Result{
 			OK: true, JobID: jobID, Status: "queued",
 			Vendor: meta.Vendor, Model: meta.Model, StartedAt: meta.StartedAt,
@@ -431,14 +433,32 @@ func StatusFor(jobID string) Result {
 		}
 	}
 
-	// Dead → classify the captured output. The detached child was Released, so
-	// we can't reap its exit code; classification keys on the envelope (json
-	// path), not the exit code, so 0 is a safe placeholder.
-	stdout, _ := os.ReadFile(filepath.Join(dir, jobID+".out"))
-	stderr, _ := os.ReadFile(filepath.Join(dir, jobID+".err"))
+	// Dead → classify the captured output. The detached child was Released, so we can't reap a real
+	// exit code; the (json) envelope or (text) answer is the only terminal signal.
+	outPath := filepath.Join(dir, jobID+".out")
+	errPath := filepath.Join(dir, jobID+".err")
+	stdout, _ := os.ReadFile(outPath)
+	stderr, _ := os.ReadFile(errPath)
 	innerJSON := meta.JSON || meta.OutputFormat == "json"
-	req := Request{Vendor: meta.Vendor, Model: meta.Model, JSON: meta.JSON, OutputFormat: meta.OutputFormat}
-	res := classify(req, meta.Model, stdout, stderr, 0, false, innerJSON)
+	// A just-dead detached background leaf (settingsPath set = a real claude child) can have its
+	// envelope write land microseconds after the process is seen gone, leaving an EMPTY capture at
+	// this instant. Re-read once after a short confirm delay before treating it as terminal, so the
+	// visible-write race doesn't cache a spurious failure. Only an empty capture races; non-empty
+	// unparseable output is already written, so it skips the wait. One-shot; the cache then short-circuits.
+	if meta.SettingsPath != "" && innerJSON && strings.TrimSpace(string(stdout)) == "" {
+		time.Sleep(statusConfirmDelay)
+		stdout, _ = os.ReadFile(outPath)
+		stderr, _ = os.ReadFile(errPath)
+	}
+	var res Result
+	if vanishedWithoutResult(stdout, innerJSON) {
+		// No envelope (json) / no answer (text) and no real exit code: the leaf ended without
+		// finishing. Fail honestly (keep any stderr clue) — never bless the synthetic exit as "done".
+		res = failVanished(meta.Vendor, stderr)
+	} else {
+		req := Request{Vendor: meta.Vendor, Model: meta.Model, JSON: meta.JSON, OutputFormat: meta.OutputFormat}
+		res = classify(req, meta.Model, stdout, stderr, 0, false, innerJSON)
+	}
 	res.JobID = jobID
 	res.StartedAt = meta.StartedAt
 	res.LeadSessionID = meta.LeadSessionID
@@ -459,6 +479,38 @@ func StatusFor(jobID string) Result {
 		_ = os.WriteFile(resultPath, data, 0o600)
 	}
 	return res
+}
+
+// statusConfirmDelay is how long StatusFor waits before re-reading a just-dead detached
+// background leaf's empty capture, to let an envelope write that lands right after the
+// process is seen gone become visible. A package var so tests can zero it.
+var statusConfirmDelay = 75 * time.Millisecond
+
+// hasResultEnvelope reports whether stdout parses as a claude result envelope.
+func hasResultEnvelope(stdout []byte) bool {
+	_, ok := parseInner(stdout)
+	return ok
+}
+
+// vanishedWithoutResult reports that a dead job left no terminal signal: no parseable envelope
+// in json mode, or no answer text in text mode. Such a job — a Released detached child with no
+// real exit code — ended without finishing and must classify failed, never a synthetic-exit "done".
+func vanishedWithoutResult(stdout []byte, innerJSON bool) bool {
+	if innerJSON {
+		return !hasResultEnvelope(stdout)
+	}
+	return strings.TrimSpace(string(stdout)) == ""
+}
+
+// failVanished is the honest terminal failure for a job that ended without a result and whose
+// exit status is unknowable (a detached child was Released). It keeps any stderr clue (key-safe
+// via stderrPreview) but never claims a clean "exited 0".
+func failVanished(vendor string, stderr []byte) Result {
+	msg := "subagent ended without a result (process gone; no exit status available)"
+	if prev := stderrPreview(stderr); prev != "" {
+		msg += ": " + prev
+	}
+	return fail(ErrCodeFailed, msg, vendor, suggestionFor(ErrCodeFailed))
 }
 
 // ListJobs scans the jobs dir and returns each background job's current Result
