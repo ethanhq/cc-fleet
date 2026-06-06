@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/ethanhq/cc-fleet/internal/secrets"
 	"github.com/ethanhq/cc-fleet/internal/sessiontitle"
@@ -20,6 +21,9 @@ var (
 	cursorStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
 	selectedStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
 	faintStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
+	contentStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("245")) // board body text — softer than the bright default, above faint
+	liveStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("252")) // active (done/running) labels + the answer body — bright, below the frame
+	borderStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("255")) // master-detail box frame — the strongest line (near-white, like native)
 	sessionHdrStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
 	teamHdrStyle    = lipgloss.NewStyle().Bold(true) // team section header (flush-left bold title)
 	errStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
@@ -55,8 +59,6 @@ func (m Model) View() string {
 		return m.viewKeys()
 	case screenTeammateDetail:
 		return m.viewTeammateDetail()
-	case screenWorkflowDetail:
-		return m.viewWorkflowDetail()
 	case screenSetup:
 		return m.viewSetup()
 	case screenSetupTmux:
@@ -196,188 +198,679 @@ func (m Model) viewSpawn() string {
 	return b.String()
 }
 
-// wfMetricCols is the spacing of the leaf metric columns (AGENT VENDOR MODEL STATUS
-// TOKENS(i/o/c) COST TRN), shared by the legend and each leaf row so they line up.
-const wfMetricCols = "%-14s %-9s %-14s %-7s %-13s %-8s %-3s"
-
-// viewWorkflows renders the Workflows board: RunID-tagged subagent jobs as a
-// run→(group|phase)→agent tree with per-leaf token/cost/turn metrics, a run totals
-// line, and a flowing live-event log below the tree. Like viewJobTable it shows
-// ONLY status + metric columns — NEVER the job's answer text (Result.Result) — so
-// no vendor reply can leak; the answer lives only in the drill-in card. The run
-// name, phase title, agent label, and every log line are opaque operator metadata
-// that may carry control bytes, so each is sanitized through sessiontitle.CleanTitle
-// before display. A leaf cursor (flat index over wfLeaves) selects a row for
-// enter/x/r; header/group lines never take a cursor slot.
+// viewWorkflows renders the native-mirror Workflows board: a persistent run header + ONE enclosing
+// master-detail box that re-roots on wfMode (run picker → Phases overview → agent detail). The agent
+// ROWS show only field-source-safe data — status / metric columns + the per-agent Activity feed
+// (tool name + masked arg), NEVER Result.Result. The focused agent's inline detail additionally
+// reads its prompt/output from the leaf io files (PersistIO opt-in). Run name, phase title, agent
+// label, model, and tool signatures are opaque
+// operator/model metadata sanitized through sessiontitle.CleanTitle before display.
 func (m Model) viewWorkflows() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("cc-fleet · Workflows") + faintStyle.Render("    tab → Vendors") + "\n\n")
 	switch {
 	case m.loading:
-		b.WriteString("loading…\n")
+		b.WriteString(titleStyle.Render("cc-fleet · Workflows") + "\n\nloading…")
 	case m.workflowsErr != nil:
-		b.WriteString(errStyle.Render("error: "+m.workflowsErr.Error()) + "\n")
+		b.WriteString(titleStyle.Render("cc-fleet · Workflows") + "\n\n" +
+			errStyle.Render("error: "+sessiontitle.CleanTitle(m.workflowsErr.Error())))
+	case m.wfMode == wfModePicker:
+		b.WriteString(m.viewWfPicker())
+	case m.wfMode == wfModeAgent:
+		b.WriteString(m.viewWfAgent())
 	default:
-		groups := groupByRun(m.workflowJobs, m.workflowRuns)
-		if len(groups) == 0 {
-			b.WriteString(faintStyle.Render("  (no workflow runs)") + "\n")
+		if _, ok := m.focusedGroup(); !ok {
+			b.WriteString(titleStyle.Render("cc-fleet · Workflows") +
+				faintStyle.Render("    tab → Vendors") + "\n\n" + faintStyle.Render("(no workflow runs)"))
 		} else {
-			b.WriteString(faintStyle.Render("      "+fmt.Sprintf(wfMetricCols,
-				"AGENT", "VENDOR", "MODEL", "STATUS", "TOKENS(i/o/c)", "COST", "TRN")) + "\n")
-			// leafIdx is the running flat index over every run's leaf rows; it must
-			// advance in the SAME order as Model.wfLeaves so `leafIdx == cursor`
-			// highlights the right job. No row windowing — render every row (same as
-			// viewTeammateTable / viewJobTable); the operator scrolls the terminal.
-			leafIdx := 0
-			for _, g := range groups {
-				b.WriteString(sessionHdrStyle.Render("◆ run: "+m.runLabel(g)) + "\n")
-				m.renderRunTree(&b, g, &leafIdx)
-				b.WriteString("    " + faintStyle.Render(runTotalsLine(g)) + "\n")
-			}
+			b.WriteString(m.viewWfPhases())
 		}
-		b.WriteString(m.viewWorkflowLog())
 	}
-	if m.workflowStatus != "" {
+	switch {
+	case m.wfSaving:
+		b.WriteString("\n" + faintStyle.Render("save as: ") + m.wfSaveInput.View() +
+			faintStyle.Render("  · enter save · esc cancel"))
+	case m.workflowStatus != "":
 		style := okStyle
 		if m.workflowStatusErr {
 			style = errStyle
 		}
-		b.WriteString("\n" + style.Render(m.workflowStatus))
+		b.WriteString("\n" + style.Render(sessiontitle.CleanTitle(m.workflowStatus)))
 	}
-	b.WriteString("\n" + footer("↑/↓ move · enter detail · x stop · r restart · R refresh · tab/esc vendors · q quit"))
+	b.WriteString("\n" + renderWfFooter(m.wfMode))
 	return b.String()
 }
 
-// renderRunTree writes one run's leaf rows, advancing *leafIdx per leaf so the
-// cursor stays a flat index over wfLeaves. It uses the DAG structure (group
-// headers from the run's events) when the run has group events, else falls back to
-// the flat phase→agent tree. Both paths render the SAME leaf jobs in groupByRun
-// order — the structure only changes the indentation/headers — so the flat-index
-// cursor lands on the right job either way.
-func (m Model) renderRunTree(b *strings.Builder, g runGroup, leafIdx *int) {
-	// Flatten this run's jobs in phase→job order (the canonical leaf order).
-	var jobs []subagent.Result
-	for _, p := range g.phases {
-		jobs = append(jobs, p.jobs...)
-	}
-	dag := buildDAG(m.wfEvents[g.runID])
-	if dag != nil && len(jobs) > 0 {
-		// DAG overlay: render the group skeleton, pairing leaf nodes positionally
-		// with the run's jobs (the engine emits a leaf's launch event in start
-		// order, so positional pairing matches groupByRun order). A DAG leaf node
-		// past the job count renders structure-only (no metrics, not selectable).
-		jobPos := 0
-		m.renderDAGNodes(b, dag, 1, jobs, &jobPos, leafIdx)
-		// Any jobs the DAG didn't cover (more jobs than leaf nodes) render flat under
-		// the run so every job stays selectable.
-		for ; jobPos < len(jobs); jobPos++ {
-			m.renderLeafRow(b, jobs[jobPos], 2, leafIdx)
-		}
-		return
-	}
-	for _, p := range g.phases {
-		b.WriteString("  " + teamHdrStyle.Render("▸ phase: "+sessiontitle.CleanTitle(p.title)) + "\n")
-		for _, j := range p.jobs {
-			m.renderLeafRow(b, j, 2, leafIdx)
-		}
+// statusDot maps a leaf/run/phase status to a colored glyph: done ✔ (green), running ● (accent),
+// failed/stopped ● (err), cached ○ (faint), queued/unknown ◌ (faint hollow).
+func statusDot(status string) string {
+	switch status {
+	case "done":
+		return okStyle.Render("✔")
+	case "running":
+		return cursorStyle.Render("●")
+	case "failed", "stopped":
+		return errStyle.Render("●")
+	case "cached":
+		return faintStyle.Render("○")
+	default: // "" / queued / not-yet-started
+		return faintStyle.Render("◌")
 	}
 }
 
-// renderDAGNodes walks the reconstructed structure tree, writing a header for each
-// group node (⇉ parallel / → pipeline / ▽ workflow) indented by depth and pairing
-// each leaf node positionally with the next run job (so the selectable row carries
-// the job's metrics + cursor). depth is the indent level (1 == directly under the
-// run header).
-func (m Model) renderDAGNodes(b *strings.Builder, nodes []*dagNode, depth int, jobs []subagent.Result, jobPos, leafIdx *int) {
-	indent := strings.Repeat("  ", depth)
-	for _, n := range nodes {
-		if n.group {
-			b.WriteString(indent + teamHdrStyle.Render(dagGroupLabel(n)) + "\n")
-			m.renderDAGNodes(b, n.children, depth+1, jobs, jobPos, leafIdx)
+// labelStyle colors a board row label by progress: bright (liveStyle) for a reached row
+// (done/running/failed/stopped), faint for a queued/not-started/cached one. The cursored row overrides
+// this with selectedStyle (focus precedence), so labelStyle applies to non-cursored rows only.
+func labelStyle(status string) lipgloss.Style {
+	switch status {
+	case "done", "running", "failed", "stopped":
+		return liveStyle
+	default: // "" (queued/not-started) / "cached"
+		return faintStyle
+	}
+}
+
+// phaseStatus derives a phase's progress from its agent counts: done when all finished, running when
+// some have started, "" (queued) when none have — so a phase row colors like a leaf row.
+func phaseStatus(done, total int) string {
+	switch {
+	case total > 0 && done >= total:
+		return "done"
+	case total > 0:
+		return "running"
+	default:
+		return ""
+	}
+}
+
+// statusLabel is the detail-pane status token (glyph + word in one color): done renders an all-green
+// "✔ Done", failed/stopped a red dot + word, running/other an accent dot + a bright word.
+func statusLabel(status string) string {
+	switch status {
+	case "done":
+		return okStyle.Render("✔ " + humanStatus(status))
+	case "failed", "stopped":
+		return statusDot(status) + " " + errStyle.Render(humanStatus(status))
+	default:
+		return statusDot(status) + " " + liveStyle.Render(humanStatus(status))
+	}
+}
+
+// humanStatus title-cases a status word for the detail card ("running" → "Running"); empty → "Running".
+func humanStatus(status string) string {
+	if status == "" {
+		return "Running"
+	}
+	return strings.ToUpper(status[:1]) + status[1:]
+}
+
+// boardWidth is the usable board width — m.width, or a default when no WindowSizeMsg has arrived
+// (every board unit test renders at width 0, so the panes must still size positively).
+func (m Model) boardWidth() int {
+	if m.width > 40 {
+		return m.width
+	}
+	return 100
+}
+
+// phaseAgentCounts / runAgentCounts return (done, total) where done counts terminal (non-running) leaves.
+func phaseAgentCounts(p runPhaseGroup) (done, total int) {
+	for _, j := range p.jobs {
+		total++
+		if j.Status != "" && j.Status != "running" {
+			done++
+		}
+	}
+	return
+}
+
+func runAgentCounts(g runGroup) (done, total int) {
+	for _, p := range g.phases {
+		d, t := phaseAgentCounts(p)
+		done += d
+		total += t
+	}
+	return
+}
+
+// renderRunHeader is the persistent native header: the run name (bold) + description (faint) on the
+// left, and the right-aligned "<done>/<total> agents · <elapsed>".
+func (m Model) renderRunHeader(g runGroup) string {
+	done, total := runAgentCounts(g)
+	left := titleStyle.Render(m.runLabel(g))
+	if g.description != "" {
+		left += faintStyle.Render("  " + trunc(sessiontitle.CleanTitle(g.description), 60))
+	}
+	right := faintStyle.Render(fmt.Sprintf("%d/%d agents · %s", done, total, g.elapsed()))
+	gap := m.boardWidth() - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		// A long name+description must not wrap the header onto a second line — that would shift the
+		// fixed-height box down. Truncate the left side to fit one line beside the right summary.
+		left = boxCell(left, m.boardWidth()-lipgloss.Width(right)-1)
+		gap = 1
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+// boardBodyHeight is the inner row budget for the master-detail box (drives right-pane scroll). It
+// derives from the terminal height, with a default for tests / pre-WindowSizeMsg renders.
+func (m Model) boardBodyHeight() int {
+	h := m.height
+	if h < 12 {
+		h = 24
+	}
+	avail := h - 8 // header + blank + box top/bottom + status + footer + margin
+	if avail < 5 {
+		avail = 5
+	}
+	return avail
+}
+
+// boxCell pads (or ANSI-aware-truncates) a possibly-styled line to EXACTLY w visible columns. After a
+// truncation it re-pads: ansi.Truncate refuses to split a double-width (CJK) glyph, so cutting on a
+// wide-char boundary returns w-1 columns — without the re-pad the right border would shift left by one.
+func boxCell(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	if ansi.StringWidth(s) > w {
+		s = ansi.Truncate(s, w, "")
+	}
+	if pad := w - ansi.StringWidth(s); pad > 0 {
+		s += strings.Repeat(" ", pad)
+	}
+	return s
+}
+
+// boxBorder builds one rounded box border row — a top "╭ <lt> ─┬ <rt> ─╮" or a bottom "╰─┴─ <extra>╯".
+// leftW/rightW are the inner cell widths; each title segment spans its cell width + 4 (the cell's two
+// surrounding spaces on each side). rightExtra is appended at the right segment's end (the bottom-border scroll
+// indicator). The whole line renders in the box frame color so titles read as part of the frame.
+func boxBorder(open, join, clos, leftTitle, rightTitle, rightExtra string, leftW, rightW int) string {
+	seg := func(title, extra string, width int) string {
+		if title == "" {
+			fill := width - ansi.StringWidth(extra)
+			if fill < 0 {
+				fill = 0
+			}
+			return strings.Repeat("─", fill) + extra
+		}
+		head := "  " + title + " "
+		fill := width - ansi.StringWidth(head) - ansi.StringWidth(extra)
+		if fill < 0 {
+			return boxCell(head, width-ansi.StringWidth(extra)) + extra
+		}
+		return head + strings.Repeat("─", fill) + extra
+	}
+	return borderStyle.Render(open + seg(leftTitle, "", leftW+4) + join + seg(rightTitle, rightExtra, rightW+4) + clos)
+}
+
+// renderBoard draws the native single enclosing box: two title segments over an internal divider
+// (┬/┴-joined), the left pane's rows beside a scroll-window of the right pane's rows, and a bottom-
+// right "↑ a–b of T ↓" when the right pane overflows bodyH. Both panes' lines are pre-styled; cells
+// are ANSI-aware padded/truncated to the column widths.
+func renderBoard(leftTitle string, leftLines []string, rightTitle string, rightLines []string, leftW, rightW, bodyH, scroll int) string {
+	if scroll < 0 {
+		scroll = 0
+	}
+	rightExtra := ""
+	if len(rightLines) > bodyH {
+		last := scroll + bodyH
+		if last > len(rightLines) {
+			last = len(rightLines)
+		}
+		rightExtra = fmt.Sprintf(" ↑ %d–%d of %d ↓ ", scroll+1, last, len(rightLines))
+	}
+	var b strings.Builder
+	b.WriteString(boxBorder("╭", "┬", "╮", leftTitle, rightTitle, "", leftW, rightW) + "\n")
+	bar := borderStyle.Render("│")
+	for i := 0; i < bodyH; i++ {
+		l, r := "", ""
+		if i < len(leftLines) {
+			l = leftLines[i]
+		}
+		if ri := i + scroll; ri < len(rightLines) {
+			r = rightLines[ri]
+		}
+		b.WriteString(bar + "  " + boxCell(l, leftW) + "  " + bar + "  " + boxCell(r, rightW) + "  " + bar + "\n")
+	}
+	b.WriteString(boxBorder("╰", "┴", "╯", "", "", rightExtra, leftW, rightW))
+	return b.String()
+}
+
+// windowLines keeps the cursor visible for a list longer than the box: it returns up to height lines
+// centered on cursor. A list that already fits is returned unchanged.
+func windowLines(lines []string, cursor, height int) []string {
+	if height < 1 || len(lines) <= height {
+		return lines
+	}
+	start := cursor - height/2
+	if start < 0 {
+		start = 0
+	}
+	if start+height > len(lines) {
+		start = len(lines) - height
+	}
+	if start < 0 {
+		start = 0
+	}
+	return lines[start : start+height]
+}
+
+// leftWidth sizes the master list (left rail) to its content — the wider of its title and its widest
+// row — rather than a fixed fraction, so a short phase list doesn't hog the frame (the native board's
+// left rail hugs its labels). Clamped to [14, boardWidth/2]. The right pane gets the rest.
+func leftWidth(title string, lines []string, boardW int) int {
+	w := ansi.StringWidth(title)
+	for _, l := range lines {
+		if sw := ansi.StringWidth(l); sw > w {
+			w = sw
+		}
+	}
+	w += 2 // breathing room past the widest label
+	if w < 14 {
+		w = 14
+	}
+	if cap := boardW / 2; w > cap {
+		w = cap
+	}
+	return w
+}
+
+// paneWidths derives the right pane from a content-sized left: left + right + 11 == boardWidth (the 11
+// non-content columns are the two outer borders, the divider, and TWO spaces on each side of each cell).
+// leftW is CAPPED to always leave ≥20 columns for the detail pane, so the box never overflows (the
+// floor only bites on a sub-41-column terminal, where the box must wrap regardless).
+func (m Model) paneWidths(leftW int) (left, right int) {
+	avail := m.boardWidth() - 11
+	if avail < 30 {
+		avail = 30
+	}
+	if leftW > avail-20 {
+		leftW = avail - 20
+	}
+	if leftW < 10 {
+		leftW = 10
+	}
+	return leftW, avail - leftW
+}
+
+// viewWfPicker is the run picker (shown only when >1 run): runs grouped under their launching
+// session like the teammates board (groupByRun orders runs session-contiguous), the cursor walking
+// the flat run list. Each session prints one "◆ <session>" header.
+func (m Model) viewWfPicker() string {
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("cc-fleet · Workflows") + faintStyle.Render("    tab → Vendors") + "\n\n")
+	lastSession := "\x00" // sentinel so the first header always prints (even for a "" session)
+	for i, g := range m.wfGroups() {
+		if g.sessionID != lastSession {
+			lastSession = g.sessionID
+			b.WriteString(sessionHdrStyle.Render("◆ "+m.sessionLabel(g.sessionID)) + "\n")
+		}
+		marker := "  "
+		name := trunc(m.runLabel(g), 42)
+		if i == m.wfRunCursor {
+			marker = cursorStyle.Render("❯ ")
+			name = selectedStyle.Render(name)
+		} else {
+			name = labelStyle(g.status).Render(name)
+		}
+		done, total := runAgentCounts(g)
+		b.WriteString(fmt.Sprintf("  %s%s %s  %s\n", marker, statusDot(g.status), name,
+			faintStyle.Render(fmt.Sprintf("%d/%d agents · %s", done, total, g.elapsed()))))
+	}
+	return b.String()
+}
+
+// viewWfPhases is L1: the run header above one box — "Phases | the selected phase's agents". The box
+// is a FIXED height (fills the screen) so the bottom border stays put; the left rail is content-sized.
+func (m Model) viewWfPhases() string {
+	g, ok := m.focusedGroup()
+	if !ok {
+		return faintStyle.Render("(no workflow runs)")
+	}
+	var leftLines []string
+	for i, p := range g.phases {
+		marker := "  "
+		done, total := phaseAgentCounts(p)
+		st := phaseStatus(done, total)
+		title := trunc(sessiontitle.CleanTitle(p.title), 28)
+		// A completed phase shows a green ✔ where its index would be; otherwise the 1-based index.
+		glyph := fmt.Sprintf("%d", i+1)
+		if st == "done" {
+			glyph = statusDot("done")
+		}
+		if i == m.wfPhaseCursor {
+			marker = cursorStyle.Render("❯ ")
+			title = selectedStyle.Render(title)
+		} else {
+			title = labelStyle(st).Render(title)
+		}
+		counts := ""
+		if total > 0 {
+			counts = "  " + faintStyle.Render(fmt.Sprintf("%d/%d", done, total))
+		}
+		leftLines = append(leftLines, fmt.Sprintf("%s%s %s%s", marker, glyph, title, counts))
+	}
+	leftW, rightW := m.paneWidths(leftWidth("Phases", leftLines, m.boardWidth()))
+	rightTitle, rightLines := m.phaseAgentLines(rightW)
+	bodyH := m.boardBodyHeight()
+	leftLines = windowLines(leftLines, m.wfPhaseCursor, bodyH)
+	return m.renderRunHeader(g) + "\n\n" +
+		renderBoard("Phases", leftLines, rightTitle, rightLines, leftW, rightW, bodyH, 0)
+}
+
+// phaseAgentLines returns the title + full agent rows (right pane) for the focused phase ("Not started
+// yet" when empty). width is the right pane width — the metrics right-align to it.
+func (m Model) phaseAgentLines(width int) (title string, lines []string) {
+	p, ok := m.focusedPhase()
+	if !ok {
+		return "agents", []string{faintStyle.Render("Not started yet")}
+	}
+	title = fmt.Sprintf("%s · %d agents", trunc(sessiontitle.CleanTitle(p.title), 20), len(p.jobs))
+	if len(p.jobs) == 0 {
+		return title, []string{faintStyle.Render("Not started yet")}
+	}
+	for _, j := range p.jobs {
+		lines = append(lines, m.renderAgentRowFull(j, width))
+	}
+	return title, lines
+}
+
+// agentLeftLines builds the COMPACT agent list shown in the L2 left rail (status + label only; the
+// metrics live in the detail pane), plus its title. Shared by viewWfAgent and wfAgentRightWidth so the
+// scroll clamp and the render agree on the right pane width.
+func (m Model) agentLeftLines() (title string, lines []string) {
+	p, ok := m.focusedPhase()
+	if !ok {
+		return "agents", nil
+	}
+	title = fmt.Sprintf("%s · %d agents", trunc(sessiontitle.CleanTitle(p.title), 20), len(p.jobs))
+	for i, j := range p.jobs {
+		lines = append(lines, m.renderAgentRowCompact(j, i == m.wfAgentCursor))
+	}
+	return title, lines
+}
+
+// wfAgentRightWidth is the L2 right pane width (mirrors viewWfAgent's content-sized split) so the
+// scroll clamp wraps the detail to the same column budget the render uses.
+func (m Model) wfAgentRightWidth() int {
+	title, lines := m.agentLeftLines()
+	_, rightW := m.paneWidths(leftWidth(title, lines, m.boardWidth()))
+	return rightW
+}
+
+// viewWfAgent is L2: the run header above one box — "agent list | the focused agent's inline detail"
+// (the right pane scrolls with j/k via wfCardScroll). Fixed-height box; content-sized left rail.
+func (m Model) viewWfAgent() string {
+	g, ok := m.focusedGroup()
+	if !ok {
+		return faintStyle.Render("(no workflow runs)")
+	}
+	listTitle, leftLines := m.agentLeftLines()
+	leftW, rightW := m.paneWidths(leftWidth(listTitle, leftLines, m.boardWidth()))
+	cardTitle := "agent"
+	if j, jok := m.selectedLeaf(); jok {
+		if t := trunc(sessiontitle.CleanTitle(j.Label), rightW-6); t != "" {
+			cardTitle = t
+		}
+	}
+	rightLines := m.agentDetailLines(rightW)
+	bodyH := m.boardBodyHeight()
+	leftLines = windowLines(leftLines, m.wfAgentCursor, bodyH)
+	return m.renderRunHeader(g) + "\n\n" +
+		renderBoard(listTitle, leftLines, cardTitle, rightLines, leftW, rightW, bodyH, m.clampCardScroll(m.wfCardScroll))
+}
+
+// renderAgentRowFull is one agent row for a phase's agent list (right pane): "<dot> <label>  <model>"
+// left, "<tok> tok · <N> tools · <dur>" RIGHT-ALIGNED to width. Live tokens/tools for a RUNNING leaf
+// come from its activity snapshot; a done leaf uses its final Result metrics. No answer text.
+func (m Model) renderAgentRowFull(j subagent.Result, width int) string {
+	in, out, tools := m.leafCounts(j)
+	label := sessiontitle.CleanTitle(j.Label)
+	model := sessiontitle.CleanTitle(j.Model)
+	left := statusDot(j.Status) + " "
+	switch {
+	case label != "":
+		left += labelStyle(j.Status).Render(label)
+		if model != "" {
+			left += "  " + faintStyle.Render(trunc(model, 22))
+		}
+	case model != "":
+		left += faintStyle.Render(trunc(model, 28)) // unlabeled leaf → the model is its identifier
+	default:
+		left += faintStyle.Render("agent")
+	}
+	metrics := fmt.Sprintf("%s tok · %d tools", humanTokens(in+out), tools)
+	if d := leafDuration(j); d != "" {
+		metrics += " · " + d
+	}
+	right := faintStyle.Render(metrics)
+	rw := ansi.StringWidth(right)
+	gap := width - ansi.StringWidth(left) - rw
+	if gap < 1 {
+		if avail := width - rw - 1; avail >= 1 {
+			left = boxCell(left, avail) // tight: shrink the label to fit beside the metrics
+			gap = 1
+		} else {
+			return boxCell(right, width) // pathologically narrow: metrics alone, truncated
+		}
+	}
+	return left + strings.Repeat(" ", gap) + right
+}
+
+// renderAgentRowCompact is one agent row for the L2 left rail: marker + status + label only (narrow).
+func (m Model) renderAgentRowCompact(j subagent.Result, selected bool) string {
+	marker := "  "
+	label := sessiontitle.CleanTitle(j.Label)
+	if label == "" {
+		if model := sessiontitle.CleanTitle(j.Model); model != "" {
+			label = model // unlabeled leaf → the model is its identifier
+		} else {
+			label = "agent"
+		}
+	}
+	if selected {
+		marker = cursorStyle.Render("❯ ")
+		label = selectedStyle.Render(label)
+	} else {
+		label = labelStyle(j.Status).Render(label)
+	}
+	return marker + statusDot(j.Status) + " " + label
+}
+
+// leafDuration formats a done leaf's wall-clock (DurationMs) as "30s" / "2m 3s"; "" while running.
+func leafDuration(j subagent.Result) string {
+	if j.DurationMs <= 0 {
+		return ""
+	}
+	d := time.Duration(j.DurationMs) * time.Millisecond
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	return fmt.Sprintf("%dm %ds", int(d/time.Minute), int(d.Seconds())%60)
+}
+
+// leafCounts returns the leaf's (input, output) tokens + tool-call count: live from the activity
+// snapshot (a monotonic count) while running, the accurate final from the Result once done. Tool
+// count always comes from the snapshot (the final Result doesn't carry it).
+func (m Model) leafCounts(j subagent.Result) (in, out, tools int) {
+	if j.Usage != nil {
+		in, out = j.Usage.InputTokens, j.Usage.OutputTokens
+	}
+	snap := m.wfActivity[j.JobID]
+	if j.Status == "running" && snap.hasUsage {
+		in, out = snap.inTok, snap.outTok
+	}
+	return in, out, snap.toolCount()
+}
+
+// agentDetailLines is the focused agent's inline detail (the L2 right pane, scrollable): status/model,
+// tokens·tool-calls, the Activity feed (last 3 tool signatures), the Outcome, and — when the io files
+// are loaded for THIS leaf (PersistIO opt-in) — the Prompt + Output. The Output reads from the leaf's
+// .answer side file (focused-single-agent surface, CleanTitle-scrubbed), NEVER Result.Result on a row.
+func (m Model) agentDetailLines(rightW int) []string {
+	j, ok := m.selectedLeaf()
+	if !ok {
+		return []string{faintStyle.Render("(no agent)")}
+	}
+	in, out, tools := m.leafCounts(j)
+	snap := m.wfActivity[j.JobID]
+	lines := []string{
+		statusLabel(j.Status) + faintStyle.Render(" · "+trunc(sessiontitle.CleanTitle(j.Model), 28)),
+		faintStyle.Render(fmt.Sprintf("%s tok · %d tool calls", humanTokens(in+out), tools)),
+		"",
+		faintStyle.Render(fmt.Sprintf("Activity · last 3 of %d tool calls", tools)),
+	}
+	sigs := snap.lastSigs(3)
+	if len(sigs) == 0 {
+		lines = append(lines, faintStyle.Render(" (no tool calls)"))
+	}
+	for _, s := range sigs {
+		lines = append(lines, " "+contentStyle.Render(truncCols(sessiontitle.CleanTitle(s), rightW-2)))
+	}
+	lines = append(lines, "", faintStyle.Render("Outcome"), " "+m.renderOutcome(j))
+	switch {
+	case m.wfDetailJob.JobID != j.JobID:
+		lines = append(lines, "", faintStyle.Render("(loading…)"))
+	case !m.wfDetailIO:
+		lines = append(lines, "", faintStyle.Render("(prompt/output not persisted — run with default persist-io)"))
+	default:
+		lines = append(lines, "")
+		if m.wfPromptExpanded {
+			lines = append(lines, faintStyle.Render("Prompt"))
+			lines = append(lines, ioLines(m.wfDetailPrompt, rightW, contentStyle)...)
+		} else {
+			total := promptLineCount(m.wfDetailPrompt)
+			lines = append(lines, faintStyle.Render(fmt.Sprintf("Prompt · %d lines · ⏎ expand", total)))
+			lines = append(lines, ioLines(firstLogicalLines(m.wfDetailPrompt, promptPreviewLines), rightW, contentStyle)...)
+			if more := total - promptPreviewLines; more > 0 {
+				lines = append(lines, faintStyle.Render(fmt.Sprintf("… %d more lines", more)))
+			}
+		}
+		lines = append(lines, "", faintStyle.Render("Output"))
+		lines = append(lines, ioLines(m.wfDetailAnswer, rightW, liveStyle)...)
+	}
+	return lines
+}
+
+// ioLines renders an io block (prompt or answer) preserving its source LOGICAL lines: each newline-
+// delimited line is CleanTitle-scrubbed (scrub per line — CleanTitle collapses whitespace, so scrubbing
+// the whole block first would lose the line breaks), then hard-wrapped to width-2 and indented ONE
+// column within the cell. With the cell's own 2-column pane padding the body sits 3 columns from the
+// left box border and a matching margin from the right (boxCell pads the spare column) — one step
+// deeper than the section headers, so the hierarchy reads. An empty block shows a dim placeholder.
+// style colors the body — the gray contentStyle for the prompt, the bright liveStyle for the answer.
+func ioLines(s string, width int, style lipgloss.Style) []string {
+	if strings.TrimSpace(s) == "" {
+		return []string{faintStyle.Render(" (empty)")}
+	}
+	var out []string
+	for _, ln := range strings.Split(s, "\n") {
+		clean := sessiontitle.CleanTitle(ln)
+		if clean == "" {
+			out = append(out, "") // preserve a blank line between paragraphs
 			continue
 		}
-		// A leaf DAG node: pair with the next job if one remains, else render the
-		// event's own (label/vendor/model/status) as a non-selectable structure row.
-		if *jobPos < len(jobs) {
-			m.renderLeafRow(b, jobs[*jobPos], depth+1, leafIdx)
-			*jobPos++
-		} else {
-			b.WriteString(indent + "  " + faintStyle.Render(fmt.Sprintf("%-14s %-9s %-14s %-7s",
-				trunc(sessiontitle.CleanTitle(n.label), 14), trunc(sessiontitle.CleanTitle(n.vendor), 9),
-				trunc(sessiontitle.CleanTitle(n.model), 14), trunc(sessiontitle.CleanTitle(n.status), 7))) + "\n")
+		for _, w := range wrapTo(clean, width-2) {
+			out = append(out, " "+style.Render(w))
 		}
 	}
+	return out
 }
 
-// dagGroupLabel renders a group node's header: a kind-specific glyph + child count.
-func dagGroupLabel(n *dagNode) string {
-	count := len(n.children)
-	switch n.groupTy {
-	case "parallel":
-		return fmt.Sprintf("⇉ parallel (%d)", count)
-	case "pipeline":
-		return fmt.Sprintf("→ pipeline (%d)", count)
-	case "workflow":
-		return fmt.Sprintf("▽ workflow (%d)", count)
+// promptLineCount counts the prompt's logical (newline-delimited) lines for the collapsed
+// "Prompt · N lines · ⏎ expand" summary — counted on the RAW text (before CleanTitle, which collapses
+// the newlines), mirroring native's logical-line view and matching what ioLines renders on expand.
+func promptLineCount(s string) int {
+	s = strings.TrimRight(s, "\n")
+	if strings.TrimSpace(s) == "" {
+		return 0
+	}
+	return strings.Count(s, "\n") + 1
+}
+
+// promptPreviewLines is how many leading logical lines the collapsed prompt shows before "… N more".
+const promptPreviewLines = 2
+
+// firstLogicalLines returns the first n newline-delimited lines of s (raw, pre-scrub), so the collapsed
+// prompt preview slices on the same boundaries promptLineCount counts.
+func firstLogicalLines(s string, n int) string {
+	s = strings.TrimRight(s, "\n")
+	parts := strings.SplitN(s, "\n", n+1)
+	if len(parts) > n {
+		parts = parts[:n]
+	}
+	return strings.Join(parts, "\n")
+}
+
+// truncCols truncates a plain (un-styled) string to w DISPLAY columns with an "…" tail (CJK-aware), so
+// a tool signature is bounded by columns, not runes — leaving the pane's right margin intact.
+func truncCols(s string, w int) string {
+	if w < 1 {
+		w = 1
+	}
+	if ansi.StringWidth(s) <= w {
+		return s
+	}
+	return ansi.Truncate(s, w, "…")
+}
+
+// wrapTo hard-wraps a plain (un-styled) string to w DISPLAY columns — CJK-aware (a wide glyph counts
+// as 2), so a double-width line doesn't overflow the pane and get truncated off-screen.
+func wrapTo(s string, w int) []string {
+	if w < 1 {
+		w = 1
+	}
+	if ansi.StringWidth(s) <= w {
+		return []string{s}
+	}
+	var out []string
+	var cur strings.Builder
+	curW := 0
+	for _, r := range s {
+		rw := ansi.StringWidth(string(r))
+		if curW+rw > w && curW > 0 {
+			out = append(out, cur.String())
+			cur.Reset()
+			curW = 0
+		}
+		cur.WriteRune(r)
+		curW += rw
+	}
+	if cur.Len() > 0 {
+		out = append(out, cur.String())
+	}
+	return out
+}
+
+// renderOutcome is the key-safe outcome line: status + a canonical summary, NEVER Result.Result. A
+// done leaf shows "done · N turns"; a failed one its error class; a running one "Still running…".
+func (m Model) renderOutcome(j subagent.Result) string {
+	switch {
+	case j.Status == "running" || j.Status == "":
+		return faintStyle.Render("Still running…")
+	case j.OK || j.Status == "done":
+		return faintStyle.Render(fmt.Sprintf("done · %d turns", j.NumTurns))
 	default:
-		return fmt.Sprintf("▸ %s (%d)", sessiontitle.CleanTitle(n.groupTy), count)
-	}
-}
-
-// renderLeafRow writes one selectable leaf row at the given indent depth, advancing
-// *leafIdx. The cursor marker (and bold label) light up when *leafIdx == the
-// board cursor. Columns: label / vendor / model / status / tokens(i/o/c) / cost /
-// turns — opaque strings CleanTitle-scrubbed, never the answer text.
-func (m Model) renderLeafRow(b *strings.Builder, j subagent.Result, depth int, leafIdx *int) {
-	indent := strings.Repeat("  ", depth)
-	marker := "  "
-	label := fmt.Sprintf("%-14s", trunc(sessiontitle.CleanTitle(j.Label), 14))
-	if *leafIdx == m.workflowsCursor {
-		marker = cursorStyle.Render("> ")
-		label = selectedStyle.Render(label)
-	}
-	mt := metricsOf(j)
-	tok := fmt.Sprintf("%s/%s/%s", humanTokens(mt.inTok), humanTokens(mt.outTok), humanTokens(mt.cacheTok))
-	cost := fmt.Sprintf("$%.4f", mt.cost)
-	b.WriteString(indent + marker + label + " " + fmt.Sprintf("%-9s %-14s %-7s %-13s %-8s %-3d",
-		trunc(sessiontitle.CleanTitle(j.Vendor), 9), trunc(sessiontitle.CleanTitle(j.Model), 14),
-		trunc(sessiontitle.CleanTitle(j.Status), 7), tok, cost, mt.turns) + "\n")
-	*leafIdx++
-}
-
-// runTotalsLine sums a run's leaf tokens + cost and renders the elapsed wall-clock
-// (StartedAt → the manifest's UpdatedAt, else now). Tool-call counts are not
-// available from the data sources, so they are deliberately absent.
-func runTotalsLine(g runGroup) string {
-	var inTok, outTok, cacheTok int
-	var cost float64
-	for _, p := range g.phases {
-		for _, j := range p.jobs {
-			mt := metricsOf(j)
-			inTok += mt.inTok
-			outTok += mt.outTok
-			cacheTok += mt.cacheTok
-			cost += mt.cost
+		cls := j.ErrorCode
+		if cls == "" {
+			cls = "failed"
 		}
+		return errStyle.Render(sessiontitle.CleanTitle(cls))
 	}
-	return fmt.Sprintf("Σ tokens %s in / %s out / %s cache · $%.4f · %s elapsed",
-		humanTokens(inTok), humanTokens(outTok), humanTokens(cacheTok), cost, g.elapsed())
 }
 
-// viewWorkflowLog renders the flowing live-event log pane below the run tree: the
-// bounded most-recent rendered lines, each already CleanTitle-scrubbed (in
-// workflow.RenderEventLine) and here trunc'd to a sane width.
-func (m Model) viewWorkflowLog() string {
-	var b strings.Builder
-	b.WriteString("\n" + faintStyle.Render("Live log") + "\n")
-	if len(m.wfLog) == 0 {
-		b.WriteString(faintStyle.Render("  (no events yet)") + "\n")
-		return b.String()
+// renderWfFooter is the contextual footer per wfMode. NOTE: no `p pause` — pause is a deliberate
+// non-goal (vendor leaves have no cooperative-pause protocol).
+func renderWfFooter(mode wfMode) string {
+	switch mode {
+	case wfModePicker:
+		return footer("↑/↓ select · →/⏎ open · d delete · esc/tab vendors · R refresh · q quit")
+	case wfModeAgent:
+		return footer("↑/↓ agent · j/k scroll · ⏎ prompt · r restart agent · x stop · s save · ← back · q quit")
+	default:
+		return footer("↑/↓ phase · → agents · r restart · x stop · d delete · s save · ← back · tab vendors · q quit")
 	}
-	for _, line := range m.wfLog {
-		b.WriteString(faintStyle.Render(trunc(line, 100)) + "\n")
-	}
-	return b.String()
 }
 
 // humanTokens compacts a token count: <1000 verbatim, else N.Nk (e.g. 50.7k), else
@@ -391,64 +884,6 @@ func humanTokens(n int) string {
 	default:
 		return fmt.Sprintf("%d", n)
 	}
-}
-
-// viewWorkflowDetail renders the read-only leaf drill-in card: the selected leaf's
-// prompt + answer read from its io files, CleanTitle-scrubbed and collapsed by
-// default (e/space expands). The answer text appears ONLY here — never the board
-// table or the live log. When the io files are absent (run executed with
-// --no-persist-io, or GC'd) it shows the not-persisted note.
-func (m Model) viewWorkflowDetail() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("cc-fleet · leaf detail") + footer("    esc back") + "\n\n")
-	j := m.wfDetailJob
-	b.WriteString(selectedStyle.Render("  "+trunc(sessiontitle.CleanTitle(j.Label), 60)) +
-		faintStyle.Render("  "+trunc(sessiontitle.CleanTitle(j.Vendor), 16)+"/"+trunc(sessiontitle.CleanTitle(j.Model), 24)) + "\n")
-	b.WriteString(faintStyle.Render("  status "+trunc(sessiontitle.CleanTitle(j.Status), 16)+
-		" · phase "+trunc(sessiontitle.CleanTitle(j.Phase), 24)) + "\n\n")
-	if !m.wfDetailIO {
-		b.WriteString(faintStyle.Render("  (not persisted — run with default persist-io)") + "\n")
-		b.WriteString("\n" + footer("esc/enter back · q quit"))
-		return b.String()
-	}
-	limit := wfCollapsedChars
-	if m.wfDetailExpand {
-		limit = 0 // 0 == no limit
-	}
-	b.WriteString(faintStyle.Render("  PROMPT") + "\n")
-	b.WriteString(renderIOBlock(m.wfDetailPrompt, limit))
-	b.WriteString("\n" + faintStyle.Render("  ANSWER") + "\n")
-	b.WriteString(renderIOBlock(m.wfDetailAnswer, limit))
-	hint := "e/space expand"
-	if m.wfDetailExpand {
-		hint = "e/space collapse"
-	}
-	b.WriteString("\n" + footer(hint+" · esc/enter back · q quit"))
-	return b.String()
-}
-
-// wfCollapsedChars is the per-block character cap in the collapsed drill-in view.
-const wfCollapsedChars = 600
-
-// renderIOBlock renders one io block (prompt or answer), CleanTitle-scrubbed and
-// indented. limit > 0 truncates to that many runes with a "…(N more)" marker; 0
-// renders it whole (the expanded view). An empty block shows a dim placeholder.
-func renderIOBlock(s string, limit int) string {
-	clean := sessiontitle.CleanTitle(s)
-	if strings.TrimSpace(clean) == "" {
-		return faintStyle.Render("  (empty)") + "\n"
-	}
-	runes := []rune(clean)
-	suffix := ""
-	if limit > 0 && len(runes) > limit {
-		suffix = fmt.Sprintf("\n  %s", faintStyle.Render(fmt.Sprintf("…(%d more chars — e/space to expand)", len(runes)-limit)))
-		clean = string(runes[:limit])
-	}
-	var b strings.Builder
-	for _, line := range strings.Split(clean, "\n") {
-		b.WriteString("  " + line + "\n")
-	}
-	return b.String() + suffix
 }
 
 // runLabel renders a run header label: its sanitized name plus the short run id,
@@ -621,12 +1056,14 @@ func groupedJobsBySession(jobs []subagent.Result) []jobBucket {
 
 // runGroup is a workflow run with its jobs bucketed by phase, ready to render.
 type runGroup struct {
-	runID     string
-	name      string
-	status    string
-	startedAt string
-	updatedAt string
-	phases    []runPhaseGroup
+	runID       string
+	name        string
+	description string
+	sessionID   string // launching Claude session (picker grouping); "" when launched outside one
+	status      string
+	startedAt   string
+	updatedAt   string
+	phases      []runPhaseGroup
 }
 
 // elapsed renders the run's wall-clock from StartedAt to its last heartbeat
@@ -682,6 +1119,8 @@ func groupByRun(jobs []subagent.Result, runs []subagent.WorkflowRun) []runGroup 
 		g = &runGroup{runID: runID}
 		if r, ok := byRunID[runID]; ok {
 			g.name = r.Name
+			g.description = r.Description
+			g.sessionID = r.SessionID
 			g.status = r.Status
 			g.startedAt = r.StartedAt
 			g.updatedAt = r.UpdatedAt
@@ -728,7 +1167,11 @@ func groupByRun(jobs []subagent.Result, runs []subagent.WorkflowRun) []runGroup 
 
 	out := make([]runGroup, 0, len(order))
 	for _, id := range order {
-		out = append(out, *groups[id])
+		g := *groups[id]
+		for i := range g.phases {
+			g.phases[i].jobs = dedupePhaseJobs(g.phases[i].jobs)
+		}
+		out = append(out, g)
 	}
 	// Newest-first by StartedAt; empty StartedAt sorts last, first-seen order as
 	// the stable tiebreaker.
@@ -745,16 +1188,62 @@ func groupByRun(jobs []subagent.Result, runs []subagent.WorkflowRun) []runGroup 
 		}
 		return false
 	})
+	// Then group sessions contiguously (a session ranked by its newest run), preserving the
+	// newest-first order within each — so the picker headers each session exactly once.
+	newestPerSession := map[string]string{}
+	for _, g := range out {
+		if g.startedAt > newestPerSession[g.sessionID] {
+			newestPerSession[g.sessionID] = g.startedAt
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return newestPerSession[out[i].sessionID] > newestPerSession[out[j].sessionID]
+	})
 	return out
+}
+
+// dedupePhaseJobs collapses re-run leaves: within a phase, jobs sharing a non-empty Label keep only the
+// newest by StartedAt (a single-leaf restart mints a fresh jobID; the old job lingers until GC). The
+// slot identity is (Phase, Label), NOT the JournalKey, on purpose: a cascaded downstream re-run gets a
+// NEW key (its input shifted) but keeps its label, so key-dedup would leave it doubled. The cost is two
+// leaves an author gave the SAME non-empty label collapse to one row — acceptable, since a sensible
+// board needs unique labels per phase (the native board requires them). Empty-Label leaves have no
+// stable identity, so they are kept as-is. Order is preserved.
+func dedupePhaseJobs(jobs []subagent.Result) []subagent.Result {
+	out := make([]subagent.Result, 0, len(jobs))
+	idx := map[string]int{} // non-empty Label → index in out
+	for _, j := range jobs {
+		if j.Label == "" {
+			out = append(out, j)
+			continue
+		}
+		if k, ok := idx[j.Label]; ok {
+			if jobNewer(j, out[k]) {
+				out[k] = j
+			}
+			continue
+		}
+		idx[j.Label] = len(out)
+		out = append(out, j)
+	}
+	return out
+}
+
+// jobNewer reports whether a started strictly after b (StartedAt parsed as time, so a precision or
+// format difference doesn't mis-rank). Unparseable timestamps sort as the zero time (oldest).
+func jobNewer(a, b subagent.Result) bool {
+	ta, _ := time.Parse(time.RFC3339, a.StartedAt)
+	tb, _ := time.Parse(time.RFC3339, b.StartedAt)
+	return ta.After(tb)
 }
 
 func (m Model) sessionLabel(id string) string {
 	if id == "" {
 		return "(no session)"
 	}
-	short := shortSessionID(id)
-	// Use sessiontitle.CleanTitle so the board header strips ANSI/BEL/OSC control
-	// bytes (not just whitespace) before display.
+	// Scrub both the opaque session id and any /rename title with CleanTitle so the board header
+	// strips ANSI/BEL/OSC control bytes (not just whitespace) before display.
+	short := shortSessionID(sessiontitle.CleanTitle(id))
 	if title := sessiontitle.CleanTitle(m.sessionTitles[id]); title != "" {
 		return trunc(title, 48) + " (" + short + ")"
 	}

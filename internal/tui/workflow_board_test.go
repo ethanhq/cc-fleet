@@ -1,538 +1,525 @@
 package tui
 
 import (
-	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/ethanhq/cc-fleet/internal/subagent"
-	"github.com/ethanhq/cc-fleet/internal/workflow"
 )
 
-// workflowsModel parks a model on the Workflows board with the given jobs/runs
-// loaded (screen=screenWorkflows, workflowsEpoch=1, loading=false), bypassing disk
-// via a direct fresh-epoch workflowsMsg.
-func workflowsModel(t *testing.T, jobs []subagent.Result, runs []subagent.WorkflowRun, evts map[string][]workflow.EventRecord) Model {
+// workflowsModel parks a model on the Workflows board with the given jobs/runs/activity loaded
+// (via toWorkflows + a fresh-epoch workflowsMsg), bypassing disk.
+func workflowsModel(t *testing.T, jobs []subagent.Result, runs []subagent.WorkflowRun, activity map[string]activitySnapshot) Model {
 	t.Helper()
-	m := boardModel(t, nil, nil)
-	m, _ = press(t, m, "tab") // -> Workflows, epoch 1, loading
-	m, _ = step(t, m, workflowsMsg{jobs: jobs, runs: runs, newEvts: evts, epoch: m.workflowsEpoch})
+	mm, _ := boardModel(t, nil, nil).toWorkflows()
+	m := mm.(Model)
+	m, _ = step(t, m, workflowsMsg{jobs: jobs, runs: runs, activity: activity, epoch: m.workflowsEpoch})
 	return m
 }
 
-// The event-stream parser, renderer, and incremental tailer live in internal/workflow
-// (the owner of the on-disk format) and are tested there (TestParseEventRecords,
-// TestEventTail*, TestTailEvents, TestRenderEventScrubsControl). The board consumes them
-// via workflow.TailEvents / workflow.RenderEventLine; the tests below cover the board's own
-// projections of that stream.
-
-func TestAppendLog_BoundedRing(t *testing.T) {
-	var ring []string
-	for i := 0; i < maxLogLines+50; i++ {
-		ring = appendLog(ring, []workflow.EventRecord{{Kind: "log", Msg: "line"}})
-	}
-	if len(ring) != maxLogLines {
-		t.Fatalf("ring len = %d, want bounded to %d", len(ring), maxLogLines)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// R2.5 DAG reconstruction + fallback
-// ---------------------------------------------------------------------------
-
-func TestBuildDAG_NestedGroups(t *testing.T) {
-	// pipeline { parallel { leaf, leaf } } — nested by seq bracket order.
-	evs := []workflow.EventRecord{
-		{Seq: 1, Kind: "group-open", GroupID: "g1", GroupTy: "pipeline"},
-		{Seq: 2, Kind: "group-open", GroupID: "g2", GroupTy: "parallel"},
-		{Seq: 3, Kind: "leaf", Status: "done", Label: "a"},
-		{Seq: 4, Kind: "leaf", Status: "done", Label: "b"},
-		{Seq: 5, Kind: "group-close", GroupID: "g2"},
-		{Seq: 6, Kind: "group-close", GroupID: "g1"},
-	}
-	roots := buildDAG(evs)
-	if len(roots) != 1 || !roots[0].group || roots[0].groupTy != "pipeline" {
-		t.Fatalf("root = %+v, want one pipeline group", roots)
-	}
-	pipe := roots[0]
-	if len(pipe.children) != 1 || pipe.children[0].groupTy != "parallel" {
-		t.Fatalf("pipeline children = %+v, want one parallel group", pipe.children)
-	}
-	par := pipe.children[0]
-	if len(par.children) != 2 || par.children[0].label != "a" || par.children[1].label != "b" {
-		t.Fatalf("parallel leaves = %+v, want [a b]", par.children)
-	}
-}
-
-func TestBuildDAG_NoGroupsFallsBackNil(t *testing.T) {
-	evs := []workflow.EventRecord{
-		{Seq: 1, Kind: "phase", Phase: "plan"},
-		{Seq: 2, Kind: "leaf", Status: "done", Label: "a"},
-	}
-	if got := buildDAG(evs); got != nil {
-		t.Fatalf("no group events should yield nil (flat fallback), got %+v", got)
-	}
-}
-
-func TestBuildDAG_UnmatchedCloseNoCrash(t *testing.T) {
-	// A stray close (malformed stream) must degrade, never panic or pop the root.
-	evs := []workflow.EventRecord{
-		{Seq: 1, Kind: "group-close", GroupID: "g0"},
-		{Seq: 2, Kind: "group-open", GroupID: "g1", GroupTy: "parallel"},
-		{Seq: 3, Kind: "leaf", Label: "a"},
-		// no matching close for g1
-	}
-	roots := buildDAG(evs)
-	if len(roots) != 1 || roots[0].groupTy != "parallel" || len(roots[0].children) != 1 {
-		t.Fatalf("malformed stream = %+v, want one parallel with one leaf", roots)
-	}
-}
-
-func TestWorkflowsView_DAGStructureAndFallback(t *testing.T) {
-	runs := []subagent.WorkflowRun{
-		{RunID: "run-dag", Name: "dag", StartedAt: "2026-05-01T00:00:00Z"},
-		{RunID: "run-flat", Name: "flat", StartedAt: "2026-04-01T00:00:00Z",
-			Phases: []subagent.RunPhase{{Title: "build"}}},
-	}
+// oneRun is a single manifested run with two phases (map: 1 done, build: 1 running).
+func oneRun() ([]subagent.Result, []subagent.WorkflowRun) {
+	runs := []subagent.WorkflowRun{{
+		RunID: "run-1", Name: "sweep", Description: "a sweep run",
+		StartedAt: "2026-06-01T00:00:00Z", UpdatedAt: "2026-06-01T00:00:30Z",
+		Phases: []subagent.RunPhase{{Title: "map"}, {Title: "build"}},
+	}}
 	jobs := []subagent.Result{
-		{RunID: "run-dag", Phase: "p", Label: "d1", Vendor: "glm", Status: "done", StartedAt: "2026-05-01T01:00:00Z"},
-		{RunID: "run-dag", Phase: "p", Label: "d2", Vendor: "glm", Status: "done", StartedAt: "2026-05-01T01:00:01Z"},
-		{RunID: "run-flat", Phase: "build", Label: "f1", Vendor: "kimi", Status: "running", StartedAt: "2026-04-01T01:00:00Z"},
+		{RunID: "run-1", Phase: "map", Label: "m1", Vendor: "glm", Model: "glm-4.6", Status: "done",
+			JobID: "job-m1", NumTurns: 3, CostUSD: 0.01, Usage: &subagent.Usage{InputTokens: 50700, OutputTokens: 1200}},
+		{RunID: "run-1", Phase: "build", Label: "b1", Vendor: "kimi", Model: "k2", Status: "running",
+			JobID: "job-b1", StartedAt: "2026-06-01T00:00:10Z"},
 	}
-	evts := map[string][]workflow.EventRecord{
-		"run-dag": {
-			{Seq: 1, Kind: "group-open", GroupID: "g1", GroupTy: "parallel"},
-			{Seq: 2, Kind: "leaf", Status: "done", Label: "d1"},
-			{Seq: 3, Kind: "leaf", Status: "done", Label: "d2"},
-			{Seq: 4, Kind: "group-close", GroupID: "g1"},
-		},
-		// run-flat has NO events → flat phase tree.
+	return jobs, runs
+}
+
+// TestWfHeader_AgentCounts: the header shows the run name, description, and <done>/<total> agents.
+func TestWfHeader_AgentCounts(t *testing.T) {
+	jobs, runs := oneRun()
+	out := workflowsModel(t, jobs, runs, nil).viewWorkflows()
+	if !strings.Contains(out, "sweep") || !strings.Contains(out, "a sweep run") {
+		t.Fatalf("header missing run name/description:\n%s", out)
 	}
-	m := workflowsModel(t, jobs, runs, evts)
+	if !strings.Contains(out, "1/2 agents") {
+		t.Fatalf("header should count 1 done of 2 agents:\n%s", out)
+	}
+}
+
+// TestWfPhasesPane: single run auto-focuses (no picker); the Phases pane is numbered with per-phase
+// done/total; the selected phase's agents render on the right.
+func TestWfPhasesPane(t *testing.T) {
+	jobs, runs := oneRun()
+	m := workflowsModel(t, jobs, runs, nil)
+	if m.wfMode != wfModePhases || m.focusedRunID != "run-1" {
+		t.Fatalf("single run should auto-focus into Phases, got mode=%d focus=%q", m.wfMode, m.focusedRunID)
+	}
 	out := m.viewWorkflows()
-	if !strings.Contains(out, "⇉ parallel (2)") {
-		t.Fatalf("DAG run should render a parallel group header:\n%s", out)
-	}
-	if !strings.Contains(out, "▸ phase: build") {
-		t.Fatalf("event-less run should fall back to the flat phase tree:\n%s", out)
-	}
-	// Every leaf still renders (selectable rows survive both paths).
-	for _, lbl := range []string{"d1", "d2", "f1"} {
-		if !strings.Contains(out, lbl) {
-			t.Fatalf("leaf %q missing from board:\n%s", lbl, out)
+	for _, want := range []string{"Phases", "✔ map", "2 build", "1/1"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("phases pane missing %q:\n%s", want, out)
 		}
 	}
-}
-
-// ---------------------------------------------------------------------------
-// R2.3 metrics columns + totals
-// ---------------------------------------------------------------------------
-
-func TestHumanTokens(t *testing.T) {
-	cases := map[int]string{0: "0", 999: "999", 1000: "1.0k", 50700: "50.7k", 2_000_000: "2.0M"}
-	for in, want := range cases {
-		if got := humanTokens(in); got != want {
-			t.Errorf("humanTokens(%d) = %q, want %q", in, got, want)
-		}
+	// The first phase (map) is selected → its agent m1 shows on the right.
+	if !strings.Contains(out, "m1") {
+		t.Fatalf("selected phase's agent row missing:\n%s", out)
 	}
 }
 
-func TestWorkflowsView_RendersMetricsAndTotals(t *testing.T) {
-	runs := []subagent.WorkflowRun{{RunID: "run-m", Name: "m",
-		StartedAt: "2026-05-01T00:00:00Z", UpdatedAt: "2026-05-01T00:00:30Z"}}
-	jobs := []subagent.Result{
-		{RunID: "run-m", Phase: "p", Label: "a", Vendor: "glm", Status: "done",
-			StartedAt: "2026-05-01T00:00:01Z", NumTurns: 3, CostUSD: 0.0123,
-			Usage: &subagent.Usage{InputTokens: 50700, OutputTokens: 1200, CacheReadInputTokens: 800}},
+// TestWfAgentRow_LiveTokens: a running leaf's tokens + tool count come from the live activity
+// snapshot (not the still-empty final Result); a done leaf uses its final Result metrics.
+func TestWfAgentRow_LiveTokens(t *testing.T) {
+	jobs, runs := oneRun()
+	activity := map[string]activitySnapshot{
+		"job-b1": {sigs: []string{"WebSearch(golang)", "Bash(go test)"}, inTok: 12000, outTok: 800, hasUsage: true},
 	}
-	m := workflowsModel(t, jobs, runs, nil)
+	m := workflowsModel(t, jobs, runs, activity)
+	// Move to the build phase (the running leaf) so its row renders on the right.
+	m, _ = press(t, m, "down")
 	out := m.viewWorkflows()
-	if !strings.Contains(out, "50.7k") {
-		t.Fatalf("leaf row should humanize input tokens (50.7k):\n%s", out)
+	if !strings.Contains(out, "12.8k tok") {
+		t.Fatalf("running leaf should show live tokens (12.8k) from the snapshot:\n%s", out)
 	}
-	if !strings.Contains(out, "$0.0123") {
-		t.Fatalf("leaf row should show cost:\n%s", out)
+	if !strings.Contains(out, "2 tools") {
+		t.Fatalf("running leaf should show the live tool count (2):\n%s", out)
 	}
-	// Totals line: summed tokens + cost + elapsed (30s window).
-	if !strings.Contains(out, "Σ tokens") || !strings.Contains(out, "30s elapsed") {
-		t.Fatalf("run totals line missing tokens/elapsed:\n%s", out)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// R2.2 leaf cursor over grouped rows + drill-in card
-// ---------------------------------------------------------------------------
-
-func TestWorkflowsCursor_WalksLeafRowsOnly(t *testing.T) {
-	runs := []subagent.WorkflowRun{
-		{RunID: "run-1", Name: "one", StartedAt: "2026-05-02T00:00:00Z",
-			Phases: []subagent.RunPhase{{Title: "plan"}, {Title: "build"}}},
-	}
-	jobs := []subagent.Result{
-		{RunID: "run-1", Phase: "plan", Label: "p1", JobID: "job-p1", StartedAt: "2026-05-02T00:01:00Z"},
-		{RunID: "run-1", Phase: "build", Label: "b1", JobID: "job-b1", StartedAt: "2026-05-02T00:02:00Z"},
-		{RunID: "run-1", Phase: "build", Label: "b2", JobID: "job-b2", StartedAt: "2026-05-02T00:03:00Z"},
-	}
-	m := workflowsModel(t, jobs, runs, nil)
-	if n := m.workflowLeafCount(); n != 3 {
-		t.Fatalf("leaf count = %d, want 3 (header lines excluded)", n)
-	}
-	// up at the top clamps.
+	// The done leaf (map phase) shows its final 51.9k (50.7k in + 1.2k out) once re-selected.
 	m, _ = press(t, m, "up")
-	if m.workflowsCursor != 0 {
-		t.Fatalf("up at top: cursor = %d, want 0", m.workflowsCursor)
-	}
-	// down lands on each leaf in groupByRun order (p1, b1, b2).
-	m, _ = press(t, m, "down")
-	if job, ok := m.selectedLeaf(); !ok || job.JobID != "job-b1" {
-		t.Fatalf("cursor 1 leaf = %v/%q, want job-b1", ok, job.JobID)
-	}
-	m, _ = press(t, m, "down")
-	m, _ = press(t, m, "down") // clamp at the last leaf
-	if m.workflowsCursor != 2 {
-		t.Fatalf("cursor should clamp at the last leaf, got %d", m.workflowsCursor)
-	}
-	if job, _ := m.selectedLeaf(); job.JobID != "job-b2" {
-		t.Fatalf("last leaf = %q, want job-b2", job.JobID)
-	}
-	if rid, _ := m.selectedRunID(); rid != "run-1" {
-		t.Fatalf("selected run id = %q, want run-1", rid)
+	if out := m.viewWorkflows(); !strings.Contains(out, "51.9k tok") {
+		t.Fatalf("done leaf should show final tokens:\n%s", out)
 	}
 }
 
-func TestWorkflowsCursor_ClampsOnReload(t *testing.T) {
-	runs := []subagent.WorkflowRun{{RunID: "run-1", StartedAt: "2026-05-02T00:00:00Z"}}
-	jobs := []subagent.Result{
-		{RunID: "run-1", Phase: "p", Label: "a", JobID: "ja", StartedAt: "2026-05-02T00:01:00Z"},
-		{RunID: "run-1", Phase: "p", Label: "b", JobID: "jb", StartedAt: "2026-05-02T00:02:00Z"},
+// TestWfAgentCard: drilling into a phase shows the agent detail card with status/model, tok·tools,
+// the Activity last-3 feed, and the Outcome line.
+func TestWfAgentCard(t *testing.T) {
+	jobs, runs := oneRun()
+	activity := map[string]activitySnapshot{
+		"job-b1": {sigs: []string{"A(1)", "B(2)", "C(3)", "D(4)"}, inTok: 1000, outTok: 50, hasUsage: true},
 	}
-	m := workflowsModel(t, jobs, runs, nil)
-	m, _ = press(t, m, "down")
-	if m.workflowsCursor != 1 {
-		t.Fatalf("cursor = %d, want 1", m.workflowsCursor)
+	m := workflowsModel(t, jobs, runs, activity)
+	m, _ = press(t, m, "down")  // → build phase
+	m, _ = press(t, m, "enter") // → agent detail (L2)
+	if m.wfMode != wfModeAgent {
+		t.Fatalf("enter on a non-empty phase should drill into agents, mode=%d", m.wfMode)
 	}
-	// A refresh that shrinks to one leaf must clamp the cursor back into range.
-	m, _ = step(t, m, workflowsMsg{
-		jobs:  []subagent.Result{{RunID: "run-1", Phase: "p", Label: "a", JobID: "ja", StartedAt: "2026-05-02T00:01:00Z"}},
-		runs:  runs,
-		epoch: m.workflowsEpoch,
-	})
-	if m.workflowsCursor != 0 {
-		t.Fatalf("after shrink: cursor = %d, want 0 (clamped)", m.workflowsCursor)
+	out := m.viewWorkflows()
+	if !strings.Contains(out, "Activity · last 3 of 4 tool calls") {
+		t.Fatalf("card missing the activity header:\n%s", out)
 	}
-}
-
-func TestWorkflowDetail_RendersPersistedIO(t *testing.T) {
-	const prompt = "SUMMARIZE THIS PROMPT TEXT"
-	const answer = "THE-VENDOR-ANSWER-DRILL-IN-ONLY"
-	xdg := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", xdg)
-	jobsDir := filepath.Join(xdg, "cc-fleet", "subagent-jobs")
-	if err := os.MkdirAll(jobsDir, 0o700); err != nil {
-		t.Fatal(err)
+	// Only the LAST 3 signatures show.
+	if strings.Contains(out, "A(1)") || !strings.Contains(out, "D(4)") {
+		t.Fatalf("card should show the last 3 sigs (B,C,D), not A:\n%s", out)
 	}
-	if err := os.WriteFile(filepath.Join(jobsDir, "job-x.prompt"), []byte(prompt), 0o600); err != nil {
-		t.Fatal(err)
+	if !strings.Contains(out, "Still running…") {
+		t.Fatalf("a running leaf's Outcome should be 'Still running…':\n%s", out)
 	}
-	if err := os.WriteFile(filepath.Join(jobsDir, "job-x.answer"), []byte(answer), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	runs := []subagent.WorkflowRun{{RunID: "run-1", StartedAt: "2026-05-02T00:00:00Z"}}
-	jobs := []subagent.Result{{RunID: "run-1", Phase: "p", Label: "a", JobID: "job-x",
-		Status: "done", StartedAt: "2026-05-02T00:01:00Z"}}
-	m := workflowsModel(t, jobs, runs, nil)
-
-	// enter on the leaf opens the drill-in and dispatches the io read.
-	m, cmd := press(t, m, "enter")
-	if m.screen != screenWorkflowDetail || cmd == nil {
-		t.Fatalf("enter on leaf: screen=%d cmd=%v, want detail + io-load cmd", m.screen, cmd)
-	}
-	// Run the io-load cmd and deliver its message.
-	msg := cmd()
-	m, _ = step(t, m, msg)
-	if !m.wfDetailIO {
-		t.Fatal("io should be marked present after reading the side files")
-	}
-	out := m.View()
-	if !strings.Contains(out, prompt) {
-		t.Fatalf("drill-in should render the prompt:\n%s", out)
-	}
-	// Collapsed by default: a short answer still shows (under the cap); the answer
-	// appears ONLY in the card.
-	if !strings.Contains(out, answer) {
-		t.Fatalf("drill-in should render the answer:\n%s", out)
-	}
-	// The answer must NEVER appear on the board table itself.
-	board := m.viewWorkflows()
-	if strings.Contains(board, answer) {
-		t.Fatalf("answer leaked into the board table:\n%s", board)
-	}
-	// esc returns to the board.
+	// esc ascends back to Phases.
 	m, _ = press(t, m, "esc")
-	if m.screen != screenWorkflows {
-		t.Fatalf("esc from detail: screen=%d, want screenWorkflows", m.screen)
+	if m.wfMode != wfModePhases {
+		t.Fatalf("esc from the agent card should return to Phases, mode=%d", m.wfMode)
 	}
 }
 
-func TestWorkflowDetail_AbsentIOShowsNote(t *testing.T) {
-	xdg := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", xdg) // no side files written
-
-	runs := []subagent.WorkflowRun{{RunID: "run-1", StartedAt: "2026-05-02T00:00:00Z"}}
-	jobs := []subagent.Result{{RunID: "run-1", Phase: "p", Label: "a", JobID: "job-missing",
-		Status: "done", StartedAt: "2026-05-02T00:01:00Z"}}
+// TestWfOutcome_Done: a done leaf's Outcome is "done · N turns" — never the raw answer.
+func TestWfOutcome_Done(t *testing.T) {
+	jobs, runs := oneRun()
 	m := workflowsModel(t, jobs, runs, nil)
-	m, cmd := press(t, m, "enter")
-	if m.screen != screenWorkflowDetail || cmd == nil {
-		t.Fatalf("enter: screen=%d cmd=%v, want detail + cmd", m.screen, cmd)
-	}
-	m, _ = step(t, m, cmd())
-	if m.wfDetailIO {
-		t.Fatal("io should be absent (no side files)")
-	}
-	if out := m.View(); !strings.Contains(out, "not persisted") {
-		t.Fatalf("absent io should show the not-persisted note:\n%s", out)
+	m, _ = press(t, m, "enter") // map phase (done leaf m1) → agent detail
+	out := m.viewWorkflows()
+	if !strings.Contains(out, "done · 3 turns") {
+		t.Fatalf("done leaf Outcome should read 'done · 3 turns':\n%s", out)
 	}
 }
 
-func TestWorkflowDetail_ExpandToggle(t *testing.T) {
-	// A prompt longer than the collapsed cap is truncated by default and whole when
-	// expanded.
-	long := strings.Repeat("x", wfCollapsedChars+200)
-	xdg := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", xdg)
-	jobsDir := filepath.Join(xdg, "cc-fleet", "subagent-jobs")
-	_ = os.MkdirAll(jobsDir, 0o700)
-	_ = os.WriteFile(filepath.Join(jobsDir, "job-l.prompt"), []byte(long), 0o600)
-
-	runs := []subagent.WorkflowRun{{RunID: "run-1", StartedAt: "2026-05-02T00:00:00Z"}}
-	jobs := []subagent.Result{{RunID: "run-1", Phase: "p", Label: "a", JobID: "job-l",
-		Status: "done", StartedAt: "2026-05-02T00:01:00Z"}}
-	m := workflowsModel(t, jobs, runs, nil)
-	m, cmd := press(t, m, "enter")
-	m, _ = step(t, m, cmd())
-	if collapsed := m.View(); !strings.Contains(collapsed, "more chars") {
-		t.Fatalf("collapsed long prompt should show a truncation marker:\n%s", collapsed)
+// TestWfPicker_MultiRun: with >1 run the board opens on the run picker; enter focuses a run.
+func TestWfPicker_MultiRun(t *testing.T) {
+	runs := []subagent.WorkflowRun{
+		{RunID: "run-a", Name: "alpha", StartedAt: "2026-06-02T00:00:00Z"},
+		{RunID: "run-b", Name: "beta", StartedAt: "2026-06-01T00:00:00Z"},
 	}
-	m, _ = press(t, m, "e") // expand
-	if !m.wfDetailExpand {
-		t.Fatal("e should toggle expand on")
+	m := workflowsModel(t, nil, runs, nil)
+	if m.wfMode != wfModePicker {
+		t.Fatalf(">1 run should open the picker, mode=%d", m.wfMode)
 	}
-	if expanded := m.View(); strings.Contains(expanded, "more chars") {
-		t.Fatalf("expanded view should render the whole prompt (no truncation marker):\n%s", expanded)
+	out := m.viewWorkflows()
+	if !strings.Contains(out, "alpha") || !strings.Contains(out, "beta") {
+		t.Fatalf("picker should list both runs:\n%s", out)
+	}
+	m, _ = press(t, m, "down")  // select beta (newest-first → alpha at 0, beta at 1)
+	m, _ = press(t, m, "enter") // focus it
+	if m.wfMode != wfModePhases || m.focusedRunID != "run-b" {
+		t.Fatalf("enter should focus the cursor's run, mode=%d focus=%q", m.wfMode, m.focusedRunID)
 	}
 }
 
-// ---------------------------------------------------------------------------
-// R2.4 controls (x stop / r restart)
-// ---------------------------------------------------------------------------
+// TestWfEmptyPhase_EnterNoOp: a manifest phase with zero jobs is a no-op on Enter (no panic, stays L1).
+func TestWfEmptyPhase_EnterNoOp(t *testing.T) {
+	runs := []subagent.WorkflowRun{{RunID: "run-1", Name: "empty",
+		StartedAt: "2026-06-01T00:00:00Z", Phases: []subagent.RunPhase{{Title: "map"}}}}
+	m := workflowsModel(t, nil, runs, nil) // manifest only, zero jobs
+	out := m.viewWorkflows()
+	if !strings.Contains(out, "Not started yet") {
+		t.Fatalf("an empty phase should render 'Not started yet':\n%s", out)
+	}
+	m, _ = press(t, m, "enter")
+	if m.wfMode != wfModePhases {
+		t.Fatalf("enter on an empty phase must be a no-op (stay in Phases), mode=%d", m.wfMode)
+	}
+}
 
-func TestWorkflowsControls_StopAndRestartDispatch(t *testing.T) {
-	runs := []subagent.WorkflowRun{{RunID: "run-ctl", StartedAt: "2026-05-02T00:00:00Z"}}
-	jobs := []subagent.Result{{RunID: "run-ctl", Phase: "p", Label: "a", JobID: "job-c",
-		Status: "running", StartedAt: "2026-05-02T00:01:00Z"}}
+// TestWfReroot_GC: when the focused run disappears (GC'd) on a refresh, the board re-roots without panic.
+func TestWfReroot_GC(t *testing.T) {
+	jobs, runs := oneRun()
 	m := workflowsModel(t, jobs, runs, nil)
+	if m.focusedRunID != "run-1" {
+		t.Fatalf("setup focus = %q, want run-1", m.focusedRunID)
+	}
+	// A refresh where run-1 is gone → 0 runs → empty Phases, no focus, no crash.
+	m, _ = step(t, m, workflowsMsg{jobs: nil, runs: nil, epoch: m.workflowsEpoch})
+	if m.focusedRunID != "" {
+		t.Fatalf("a GC'd focused run should clear focus, got %q", m.focusedRunID)
+	}
+	if got := m.viewWorkflows(); !strings.Contains(got, "no workflow runs") {
+		t.Fatalf("empty board should render the no-runs note:\n%s", got)
+	}
+}
+
+// TestWfFooters: each mode's footer is contextual and NEVER offers 'p pause' (the non-goal).
+func TestWfFooters(t *testing.T) {
+	jobs, runs := oneRun()
+	m := workflowsModel(t, jobs, runs, nil)
+	phases := m.viewWorkflows()
+	if !strings.Contains(phases, "x stop") || !strings.Contains(phases, "s save") {
+		t.Fatalf("phases footer missing controls:\n%s", phases)
+	}
+	if strings.Contains(phases, "pause") {
+		t.Fatalf("pause is a non-goal — the footer must not offer it:\n%s", phases)
+	}
+	m, _ = press(t, m, "right") // → agent detail
+	agent := m.viewWorkflows()
+	if !strings.Contains(agent, "j/k scroll") || !strings.Contains(agent, "restart agent") {
+		t.Fatalf("agent footer missing scroll / restart-agent hints:\n%s", agent)
+	}
+	if strings.Contains(agent, "pause") {
+		t.Fatalf("agent footer must not offer pause:\n%s", agent)
+	}
+}
+
+// TestWfControlsTargetRun: x/r/s act on the FOCUSED run even when the cursor's phase has no agents.
+func TestWfControlsTargetRun(t *testing.T) {
+	runs := []subagent.WorkflowRun{{RunID: "run-1", Name: "r",
+		StartedAt: "2026-06-01T00:00:00Z", Phases: []subagent.RunPhase{{Title: "map"}}}}
+	m := workflowsModel(t, nil, runs, nil) // empty phase, no agents
 	if _, cmd := press(t, m, "x"); cmd == nil {
-		t.Fatal("x on a leaf should dispatch a stop command")
+		t.Fatal("x should stop the focused run even with no agents in the phase")
 	}
 	if _, cmd := press(t, m, "r"); cmd == nil {
-		t.Fatal("r on a leaf should dispatch a restart command")
+		t.Fatal("r should restart the focused run even with no agents")
+	}
+	m2, _ := press(t, m, "s")
+	if !m2.wfSaving || !strings.Contains(m2.viewWorkflows(), "save as:") {
+		t.Fatalf("s should open the save-workflow name prompt:\n%s", m2.viewWorkflows())
+	}
+	// enter on a non-empty name dispatches the save; esc cancels.
+	if _, cmd := press(t, m2, "enter"); cmd == nil {
+		t.Fatal("enter on the prefilled save name should dispatch a save")
+	}
+	m3, _ := press(t, m2, "esc")
+	if m3.wfSaving {
+		t.Fatal("esc should cancel the save prompt")
 	}
 }
 
-func TestWorkflowsControls_NoOpWhenNoLeaves(t *testing.T) {
-	// A manifest-only run with zero jobs has no selectable leaf → x/r are no-ops.
-	runs := []subagent.WorkflowRun{{RunID: "run-empty", StartedAt: "2026-05-02T00:00:00Z"}}
-	m := workflowsModel(t, nil, runs, nil)
-	if m.workflowLeafCount() != 0 {
-		t.Fatalf("leaf count = %d, want 0", m.workflowLeafCount())
-	}
-	if _, cmd := press(t, m, "x"); cmd != nil {
-		t.Fatal("x with no leaves should be a no-op (nil cmd)")
-	}
-	if _, cmd := press(t, m, "r"); cmd != nil {
-		t.Fatal("r with no leaves should be a no-op (nil cmd)")
-	}
-}
-
-func TestWorkflowCtlMsg_SurfacesStatusAndReloads(t *testing.T) {
-	runs := []subagent.WorkflowRun{{RunID: "run-ctl", StartedAt: "2026-05-02T00:00:00Z"}}
-	jobs := []subagent.Result{{RunID: "run-ctl", Phase: "p", Label: "a", JobID: "job-c",
-		Status: "running", StartedAt: "2026-05-02T00:01:00Z"}}
+// TestWfKeySafety_NoAnswerLeak: a planted Result.Result answer canary never reaches any rendered board
+// surface (header / picker / row / agent-detail pane) — the inline detail reads the leaf's .answer side
+// file, never Result.Result.
+func TestWfKeySafety_NoAnswerLeak(t *testing.T) {
+	const canary = "PLANTED_ANSWER_CANARY"
+	jobs := []subagent.Result{{RunID: "run-1", Phase: "p", Label: "a", JobID: "job-a", Status: "done",
+		NumTurns: 1, Result: canary, Usage: &subagent.Usage{InputTokens: 10}}}
+	runs := []subagent.WorkflowRun{{RunID: "run-1", Name: "r", StartedAt: "2026-06-01T00:00:00Z"}}
 	m := workflowsModel(t, jobs, runs, nil)
-	m, cmd := step(t, m, workflowCtlMsg{verb: "stop", runID: "run-ctl", epoch: m.workflowsEpoch})
-	if cmd == nil {
-		t.Fatal("a control outcome should trigger a reload")
+	if strings.Contains(m.viewWorkflows(), canary) {
+		t.Fatalf("the answer canary leaked onto the Phases board:\n%s", m.viewWorkflows())
 	}
-	if m.workflowStatusErr || !strings.Contains(m.workflowStatus, "stop") {
-		t.Fatalf("ok stop should set an ok status line: %q (err=%v)", m.workflowStatus, m.workflowStatusErr)
-	}
-	if out := m.viewWorkflows(); !strings.Contains(out, "stop") {
-		t.Fatalf("board should surface the control status:\n%s", out)
-	}
-	// A refresh must NOT wipe the surfaced status.
-	m, _ = step(t, m, workflowsMsg{jobs: jobs, runs: runs, epoch: m.workflowsEpoch})
-	if m.workflowStatus == "" {
-		t.Fatal("a workflows refresh must not clear the control status line")
+	m, _ = press(t, m, "enter") // agent detail card
+	if strings.Contains(m.viewWorkflows(), canary) {
+		t.Fatalf("the answer canary leaked into the agent card:\n%s", m.viewWorkflows())
 	}
 }
 
-// TestWorkflowsLiveLog_RendersScrubbedLines: the live-log pane renders tailed
-// events, CleanTitle-scrubbed; a control byte in an event msg must not reach the
-// terminal raw.
-func TestWorkflowsLiveLog_RendersScrubbedLines(t *testing.T) {
-	runs := []subagent.WorkflowRun{{RunID: "run-1", StartedAt: "2026-05-02T00:00:00Z"}}
-	m := workflowsModel(t, nil, runs, nil)
-	// Deliver a refresh carrying new log lines (mirrors loadWorkflows output).
-	m, _ = step(t, m, workflowsMsg{
-		runs:     runs,
-		logLines: []workflow.EventRecord{{Kind: "log", Msg: "hello\x1b[31mworld"}, {Kind: "phase", Phase: "plan"}},
-		epoch:    m.workflowsEpoch,
-	})
+// TestWfStaleEpoch_Dropped: a refresh from a prior visit (stale epoch) must not mutate the board.
+func TestWfStaleEpoch_Dropped(t *testing.T) {
+	jobs, runs := oneRun()
+	m := workflowsModel(t, jobs, runs, nil)
+	before := len(m.workflowJobs)
+	m, _ = step(t, m, workflowsMsg{jobs: nil, runs: nil, epoch: m.workflowsEpoch - 1})
+	if len(m.workflowJobs) != before {
+		t.Fatalf("a stale-epoch refresh must be dropped, jobs went %d → %d", before, len(m.workflowJobs))
+	}
+}
+
+// TestWfNav_ArrowsDrillInAndOut: → descends a level (Phases → Agent), ← ascends back.
+func TestWfNav_ArrowsDrillInAndOut(t *testing.T) {
+	jobs, runs := oneRun()
+	m := workflowsModel(t, jobs, runs, nil) // single run → auto-focus Phases
+	if m.wfMode != wfModePhases {
+		t.Fatalf("setup: expected Phases, got %d", m.wfMode)
+	}
+	m, _ = press(t, m, "right")
+	if m.wfMode != wfModeAgent {
+		t.Fatalf("→ should descend Phases → Agent, got %d", m.wfMode)
+	}
+	m, _ = press(t, m, "left")
+	if m.wfMode != wfModePhases {
+		t.Fatalf("← should ascend Agent → Phases, got %d", m.wfMode)
+	}
+}
+
+// TestWfNav_LeftClampsAtTop: ← at the board's TOP level (single-run Phases or the multi-run picker) is
+// a no-op — only esc/tab leave for Vendors, so repeated ← can't fall out of the board.
+func TestWfNav_LeftClampsAtTop(t *testing.T) {
+	jobs, runs := oneRun()
+	m := workflowsModel(t, jobs, runs, nil) // single run → Phases is the top level
+	if m2, _ := press(t, m, "left"); m2.screen != screenWorkflows || m2.wfMode != wfModePhases {
+		t.Fatalf("← at single-run Phases must stay on the board, got screen=%d mode=%d", m2.screen, m2.wfMode)
+	}
+	if m3, _ := press(t, m, "esc"); m3.screen != screenList {
+		t.Fatalf("esc at the board top must exit to Vendors, got screen=%d", m3.screen)
+	}
+	// The multi-run picker is also a top level: ← stays put there too.
+	mp := workflowsModel(t, nil, []subagent.WorkflowRun{
+		{RunID: "ra", Name: "a", StartedAt: "2026-06-02T00:00:00Z"},
+		{RunID: "rb", Name: "b", StartedAt: "2026-06-01T00:00:00Z"},
+	}, nil)
+	if mp.wfMode != wfModePicker {
+		t.Fatalf("setup: expected the picker, got %d", mp.wfMode)
+	}
+	if mp2, _ := press(t, mp, "left"); mp2.screen != screenWorkflows || mp2.wfMode != wfModePicker {
+		t.Fatalf("← at the picker must stay put, got screen=%d mode=%d", mp2.screen, mp2.wfMode)
+	}
+}
+
+// TestWfTickInterval_LiveWhileRunning: the board ticks fast while a leaf runs (smooth counters) and
+// falls back to the slow cadence once nothing is running.
+func TestWfTickInterval_LiveWhileRunning(t *testing.T) {
+	jobs, runs := oneRun() // b1 is running
+	if got := workflowsModel(t, jobs, runs, nil).workflowsTickInterval(); got != workflowsLiveInterval {
+		t.Fatalf("a running leaf should drive the live tick interval, got %v", got)
+	}
+	for i := range jobs {
+		jobs[i].Status = "done"
+	}
+	if got := workflowsModel(t, jobs, runs, nil).workflowsTickInterval(); got != boardRefreshInterval {
+		t.Fatalf("with no running leaf the tick should fall back to the slow cadence, got %v", got)
+	}
+}
+
+// TestWfPromptFold_TogglesOnEnter: the focused agent's prompt is collapsed by default ("Prompt · N
+// lines · ⏎ expand"); ⏎ expands the full text, a second ⏎ collapses it again.
+func TestWfPromptFold_TogglesOnEnter(t *testing.T) {
+	jobs, runs := oneRun()
+	m := workflowsModel(t, jobs, runs, nil)
+	m, _ = press(t, m, "enter") // → agent detail (map phase, leaf m1)
+	leaf, ok := m.selectedLeaf()
+	if !ok {
+		t.Fatal("setup: no focused leaf at the agent level")
+	}
+	// Simulate the focused leaf's io load completing (bypassing disk).
+	m.wfDetailJob, m.wfDetailPrompt, m.wfDetailAnswer, m.wfDetailIO = leaf, "line one\nline two\nline three\nline four", "the output", true
 	out := m.viewWorkflows()
-	if !strings.Contains(out, "Live log") {
-		t.Fatalf("board should render a live-log pane:\n%s", out)
+	// Collapsed: header + a 2-line preview + "… N more lines"; the tail stays hidden until expand.
+	if !strings.Contains(out, "Prompt · 4 lines · ⏎ expand") || !strings.Contains(out, "… 2 more lines") {
+		t.Fatalf("the prompt should collapse to a preview + more-lines trailer:\n%s", out)
 	}
-	if !strings.Contains(out, "world") || !strings.Contains(out, "plan") {
-		t.Fatalf("live log should render the event text:\n%s", out)
+	if !strings.Contains(out, "line one") || strings.Contains(out, "line four") {
+		t.Fatalf("collapsed should preview the head (line one) but hide the tail (line four):\n%s", out)
 	}
-	// The shared renderer (the unstyled core) drops the raw ESC byte so it can't reach
-	// the terminal as an interpretable escape (the styled view also injects ESC for
-	// dimming, so assert on the scrubbed line itself).
-	if line := workflow.RenderEventLine(workflow.EventRecord{Kind: "log", Msg: "hello\x1b[31mworld"}); strings.ContainsRune(line, '\x1b') {
-		t.Fatalf("RenderEventLine leaked a raw ESC byte: %q", line)
+	m, _ = press(t, m, "enter") // expand
+	if !strings.Contains(m.viewWorkflows(), "line four") {
+		t.Fatalf("⏎ should expand to the full prompt (line four):\n%s", m.viewWorkflows())
+	}
+	m, _ = press(t, m, "enter") // collapse again
+	if strings.Contains(m.viewWorkflows(), "line four") {
+		t.Fatalf("a second ⏎ should collapse the prompt again:\n%s", m.viewWorkflows())
 	}
 }
 
-// TestWfDetailMsg_StaleNonceDropped: a leaf-A IO read landing after the user drilled
-// into leaf-B (nonce bumped) must be dropped — the card keeps leaf-B's content and
-// never shows leaf-A's answer (#1 wrong-answer race).
-func TestWfDetailMsg_StaleNonceDropped(t *testing.T) {
-	runs := []subagent.WorkflowRun{{RunID: "run-1", StartedAt: "2026-05-02T00:00:00Z"}}
+// TestWfLeafCounts_DoneUsesFinalResult: a done leaf shows its accurate final Result.Usage (not the
+// live activity snapshot), while a running leaf shows the live snapshot.
+func TestWfLeafCounts_DoneUsesFinalResult(t *testing.T) {
+	jobs, runs := oneRun() // m1 done (Usage 50700 in + 1200 out), b1 running
+	snap := map[string]activitySnapshot{
+		"job-m1": {inTok: 9, outTok: 5000, hasUsage: true}, // a stale live snapshot for the done leaf
+		"job-b1": {inTok: 12000, outTok: 800, hasUsage: true},
+	}
+	m := workflowsModel(t, jobs, runs, snap)
+	if in, out, _ := m.leafCounts(jobs[0]); in != 50700 || out != 1200 {
+		t.Fatalf("a done leaf should use its final Result.Usage (50700/1200), got %d/%d", in, out)
+	}
+	if in, out, _ := m.leafCounts(jobs[1]); in != 12000 || out != 800 {
+		t.Fatalf("a running leaf should use the live snapshot (12000/800), got %d/%d", in, out)
+	}
+}
+
+// TestWfSingleBox_DividerJoins: the board is ONE enclosing box with an internal ┬/┴-joined divider.
+func TestWfSingleBox_DividerJoins(t *testing.T) {
+	jobs, runs := oneRun()
+	out := workflowsModel(t, jobs, runs, nil).viewWorkflows()
+	if !strings.Contains(out, "┬") || !strings.Contains(out, "┴") {
+		t.Fatalf("board should be one box with a ┬/┴-joined divider:\n%s", out)
+	}
+}
+
+// TestWfSessionGrouping: >1 run groups under one "◆ session" header each, runs contiguous per session
+// (a session ranked by its newest run).
+func TestWfSessionGrouping(t *testing.T) {
+	runs := []subagent.WorkflowRun{
+		{RunID: "r1", Name: "alpha", SessionID: "sessA", StartedAt: "2026-06-01T00:00:20Z"},
+		{RunID: "r2", Name: "beta", SessionID: "sessB", StartedAt: "2026-06-01T00:00:10Z"},
+		{RunID: "r3", Name: "gamma", SessionID: "sessA", StartedAt: "2026-06-01T00:00:05Z"},
+	}
+	m := workflowsModel(t, nil, runs, nil)
+	if m.wfMode != wfModePicker {
+		t.Fatalf(">1 run should show the picker, got mode=%d", m.wfMode)
+	}
+	if out := m.viewWorkflows(); strings.Count(out, "◆") != 2 {
+		t.Fatalf("expected one header per session (2 ◆), got:\n%s", out)
+	}
+	g := m.wfGroups()
+	if g[0].sessionID != "sessA" || g[1].sessionID != "sessA" || g[2].sessionID != "sessB" {
+		t.Fatalf("sessions must be contiguous (A,A,B), got %q,%q,%q", g[0].sessionID, g[1].sessionID, g[2].sessionID)
+	}
+}
+
+// TestWfDedup_RerunKeepsNewest: two jobs sharing (phase,label) — a restarted leaf's fresh job + its
+// lingering old job — collapse to the newest by StartedAt.
+func TestWfDedup_RerunKeepsNewest(t *testing.T) {
+	runs := []subagent.WorkflowRun{{RunID: "r1", Name: "r", StartedAt: "2026-06-01T00:00:00Z",
+		Phases: []subagent.RunPhase{{Title: "p"}}}}
 	jobs := []subagent.Result{
-		{RunID: "run-1", Phase: "p", Label: "A", JobID: "job-a", StartedAt: "2026-05-02T00:01:00Z"},
-		{RunID: "run-1", Phase: "p", Label: "B", JobID: "job-b", StartedAt: "2026-05-02T00:02:00Z"},
+		{RunID: "r1", Phase: "p", Label: "a", JobID: "old", Status: "failed", StartedAt: "2026-06-01T00:00:05Z"},
+		{RunID: "r1", Phase: "p", Label: "a", JobID: "new", Status: "done", NumTurns: 2, StartedAt: "2026-06-01T00:00:20Z"},
 	}
 	m := workflowsModel(t, jobs, runs, nil)
-	// Drill into leaf A (nonce -> 1), then immediately drill into leaf B (nonce -> 2)
-	// before A's read returns.
-	m, _ = press(t, m, "enter") // A
-	nonceA := m.wfDetailNonce
-	m, _ = press(t, m, "esc")   // back to board (cursor preserved on A)
-	m, _ = press(t, m, "down")  // cursor -> B
-	m, _ = press(t, m, "enter") // B (nonce bumped past A's)
-	if m.wfDetailNonce == nonceA {
-		t.Fatal("opening a second leaf should bump the detail nonce")
+	g, _ := m.focusedGroup()
+	if n := len(g.phases[0].jobs); n != 1 {
+		t.Fatalf("a re-run leaf (same phase+label) should dedup to 1 row, got %d", n)
 	}
-	// A's slow read finally lands carrying the OLD nonce + A's content.
-	m, _ = step(t, m, wfDetailMsg{nonce: nonceA, job: jobs[0], prompt: "A-PROMPT", answer: "A-ANSWER", present: true})
-	if m.wfDetailJob.JobID != "job-b" {
-		t.Fatalf("stale nonce overwrote the current card: job=%q, want job-b", m.wfDetailJob.JobID)
-	}
-	if m.wfDetailPrompt == "A-PROMPT" || m.wfDetailAnswer == "A-ANSWER" {
-		t.Fatalf("stale leaf-A content leaked into leaf-B's card: prompt=%q answer=%q",
-			m.wfDetailPrompt, m.wfDetailAnswer)
-	}
-	// The matching-nonce read for B DOES land.
-	m, _ = step(t, m, wfDetailMsg{nonce: m.wfDetailNonce, job: jobs[1], prompt: "B-PROMPT", answer: "B-ANSWER", present: true})
-	if m.wfDetailPrompt != "B-PROMPT" || m.wfDetailAnswer != "B-ANSWER" {
-		t.Fatalf("matching-nonce read dropped: prompt=%q answer=%q", m.wfDetailPrompt, m.wfDetailAnswer)
+	if g.phases[0].jobs[0].JobID != "new" {
+		t.Fatalf("dedup should keep the NEWEST job, got %q", g.phases[0].jobs[0].JobID)
 	}
 }
 
-// TestWorkflowCtlMsg_StaleEpochDropped: a stop/restart result from a prior Workflows
-// visit (epoch != current) must not mutate the fresh visit's status (#2).
-func TestWorkflowCtlMsg_StaleEpochDropped(t *testing.T) {
-	runs := []subagent.WorkflowRun{{RunID: "run-1", StartedAt: "2026-05-02T00:00:00Z"}}
-	jobs := []subagent.Result{{RunID: "run-1", Phase: "p", Label: "a", JobID: "job-a",
-		Status: "running", StartedAt: "2026-05-02T00:01:00Z"}}
-	m := workflowsModel(t, jobs, runs, nil)                                          // workflowsEpoch == 1
-	stale, cmd := step(t, m, workflowCtlMsg{verb: "stop", runID: "run-1", epoch: 0}) // from a prior visit
+// TestWfScroll_ClampsAndResets: k clamps at the top; moving the agent cursor resets the scroll.
+func TestWfScroll_ClampsAndResets(t *testing.T) {
+	jobs, runs := oneRun()
+	m := workflowsModel(t, jobs, runs, nil)
+	m, _ = press(t, m, "right") // → agent
+	m, _ = press(t, m, "k")
+	if m.wfCardScroll != 0 {
+		t.Fatalf("k at the top should clamp to 0, got %d", m.wfCardScroll)
+	}
+	m.wfCardScroll = 5         // simulate a scrolled state
+	m, _ = press(t, m, "down") // moving the focused agent reloads io + resets scroll
+	if m.wfCardScroll != 0 {
+		t.Fatalf("scroll should reset to 0 when the focused agent changes, got %d", m.wfCardScroll)
+	}
+}
+
+// TestWfRestartLeaf_DispatchesAtAgentLevel: r at the agent level dispatches a single-leaf restart
+// (even a leaf with an empty key falls back to a whole-run restart — never a silent no-op).
+func TestWfRestartLeaf_DispatchesAtAgentLevel(t *testing.T) {
+	jobs, runs := oneRun()
+	jobs[0].JournalKey = "deadbeefkey" // the engine persists the leaf's key
+	m := workflowsModel(t, jobs, runs, nil)
+	m, _ = press(t, m, "right") // → agent, focused on the map phase's leaf
+	if _, cmd := press(t, m, "r"); cmd == nil {
+		t.Fatal("r at the agent level should dispatch a single-leaf restart")
+	}
+}
+
+// TestWfDelete_TwoPressConfirm: the first d ARMS (a confirm prompt, no dispatch); a second d confirms
+// and dispatches; any other key disarms.
+func TestWfDelete_TwoPressConfirm(t *testing.T) {
+	runs := []subagent.WorkflowRun{
+		{RunID: "r1", Name: "a", SessionID: "s", StartedAt: "2026-06-01T00:00:20Z"},
+		{RunID: "r2", Name: "b", SessionID: "s", StartedAt: "2026-06-01T00:00:10Z"},
+	}
+	m := workflowsModel(t, nil, runs, nil) // >1 run → picker
+	m, cmd := press(t, m, "d")
 	if cmd != nil {
-		t.Fatal("a stale-epoch control result should not trigger a reload")
+		t.Fatal("the first d should ARM the delete, not dispatch it")
 	}
-	if stale.workflowStatus != "" {
-		t.Fatalf("stale-epoch control result mutated the status line: %q", stale.workflowStatus)
+	if !strings.Contains(m.viewWorkflows(), "press d again") {
+		t.Fatalf("arming should surface a confirm prompt:\n%s", m.viewWorkflows())
 	}
-	// A matching-epoch result DOES land.
-	fresh, cmd := step(t, m, workflowCtlMsg{verb: "stop", runID: "run-1", epoch: m.workflowsEpoch})
-	if cmd == nil || fresh.workflowStatus == "" {
-		t.Fatalf("matching-epoch control result dropped: cmd=%v status=%q", cmd, fresh.workflowStatus)
+	m, cmd = press(t, m, "d")
+	if cmd == nil {
+		t.Fatal("the second d should confirm + dispatch the delete")
 	}
-}
-
-// TestWorkflowCtlMsg_ScrubsRunIDAndError: the status line scrubs a control byte in
-// the run id and the error text before rendering (#4 unscrubbed status text).
-func TestWorkflowCtlMsg_ScrubsRunIDAndError(t *testing.T) {
-	runs := []subagent.WorkflowRun{{RunID: "run-1", StartedAt: "2026-05-02T00:00:00Z"}}
-	m := workflowsModel(t, nil, runs, nil)
-	m, _ = step(t, m, workflowCtlMsg{
-		verb: "restart", runID: "\x1b[31mrun", err: errors.New("boom\x1b[0m"), epoch: m.workflowsEpoch,
-	})
-	if strings.ContainsRune(m.workflowStatus, '\x1b') {
-		t.Fatalf("status line leaked a raw ESC byte from the run id/error: %q", m.workflowStatus)
+	if m.wfDeleteArm != "" || strings.Contains(m.viewWorkflows(), "press d again") {
+		t.Fatalf("confirming should clear the arm + its prompt")
 	}
-	if !m.workflowStatusErr {
-		t.Fatal("a control error should style the status line as an error")
+	// A non-d key after arming disarms (no accidental delete on a later stray d).
+	m, _ = press(t, m, "d")
+	if m.wfDeleteArm == "" {
+		t.Fatal("d should re-arm after a prior delete")
+	}
+	m, _ = press(t, m, "down")
+	if m.wfDeleteArm != "" || strings.Contains(m.viewWorkflows(), "press d again") {
+		t.Fatal("a non-d key should disarm the pending delete")
 	}
 }
 
-// TestWorkflowsMsg_ShrinkReplacesEventHistory: when a run's events file is truncated
-// (reset=true), the handler REPLACES that run's accumulated events + log rather than
-// appending the fresh lines onto the stale ones (#3).
-func TestWorkflowsMsg_ShrinkReplacesEventHistory(t *testing.T) {
-	runs := []subagent.WorkflowRun{{RunID: "run-1", StartedAt: "2026-05-02T00:00:00Z"}}
-	m := workflowsModel(t, nil, runs, nil)
-	// First refresh: two events accumulate.
-	old := []workflow.EventRecord{{Kind: "phase", Phase: "old1"}, {Kind: "phase", Phase: "old2"}}
-	m, _ = step(t, m, workflowsMsg{
-		runs: runs, newEvts: map[string][]workflow.EventRecord{"run-1": old}, logLines: old, epoch: m.workflowsEpoch,
-	})
-	if len(m.wfEvents["run-1"]) != 2 {
-		t.Fatalf("after first refresh: %d events, want 2", len(m.wfEvents["run-1"]))
-	}
-	// A (re)run truncates the file: the refresh reports reset=true with the FRESH
-	// (shorter) event set. History must be replaced, not appended.
-	fresh := []workflow.EventRecord{{Kind: "phase", Phase: "new1"}}
-	m, _ = step(t, m, workflowsMsg{
-		runs:     runs,
-		newEvts:  map[string][]workflow.EventRecord{"run-1": fresh},
-		resets:   map[string]bool{"run-1": true},
-		logLines: fresh,
-		epoch:    m.workflowsEpoch,
-	})
-	if got := m.wfEvents["run-1"]; len(got) != 1 || got[0].Phase != "new1" {
-		t.Fatalf("after truncate: events = %+v, want only the fresh new1 (history replaced)", got)
-	}
-	// The log ring is rebuilt from the corrected history — the stale old lines are gone.
-	joined := strings.Join(m.wfLog, "\n")
-	if strings.Contains(joined, "old1") || strings.Contains(joined, "old2") {
-		t.Fatalf("log ring kept stale pre-truncate lines:\n%s", joined)
-	}
-	if !strings.Contains(joined, "new1") {
-		t.Fatalf("log ring missing the fresh post-truncate line:\n%s", joined)
+// TestWfAgentRow_LabelThenModelThenMetrics: a phase's agent row reads label → model → metrics, left
+// to right (the metrics are right-aligned, but order is the testable part).
+func TestWfAgentRow_LabelThenModelThenMetrics(t *testing.T) {
+	jobs, runs := oneRun()
+	out := workflowsModel(t, jobs, runs, nil).viewWorkflows() // phases view, map phase's agent m1
+	li, mi, ti := strings.Index(out, "m1"), strings.Index(out, "glm-4.6"), strings.Index(out, "tok")
+	if li < 0 || mi < 0 || ti < 0 || !(li < mi && mi < ti) {
+		t.Fatalf("agent row should read label → model → metrics (idx %d,%d,%d):\n%s", li, mi, ti, out)
 	}
 }
 
-// TestReadLeafIO_RejectsTraversalJobID: a malformed cached JobID (path separators /
-// "..") must be rejected by ids.ValidateJobID so readLeafIO never reads outside
-// subagent-jobs (#5 path traversal). It degrades to not-persisted.
-func TestReadLeafIO_RejectsTraversalJobID(t *testing.T) {
-	xdg := t.TempDir()
-	t.Setenv("XDG_CONFIG_HOME", xdg)
-	// Plant a file OUTSIDE subagent-jobs that a "../" id would otherwise reach.
-	secretDir := filepath.Join(xdg, "cc-fleet")
-	_ = os.MkdirAll(secretDir, 0o700)
-	_ = os.WriteFile(filepath.Join(secretDir, "escape.prompt"), []byte("SECRET-OUTSIDE-JOBS"), 0o600)
+// TestWfFixedHeight_AcrossViews: the box is a fixed height, so the rendered frame has the same line
+// count whether you're at the Phases or the agent level (the bottom border doesn't move).
+func TestWfFixedHeight_AcrossViews(t *testing.T) {
+	jobs, runs := oneRun()
+	m := workflowsModel(t, jobs, runs, nil)
+	m.height = 30
+	h1 := strings.Count(m.viewWorkflows(), "\n")
+	m2, _ := press(t, m, "right") // → agent detail (different content)
+	h2 := strings.Count(m2.viewWorkflows(), "\n")
+	if h1 != h2 {
+		t.Fatalf("box height must be fixed across views (phases=%d, agent=%d lines)", h1, h2)
+	}
+}
 
-	for _, bad := range []string{"", "..", "../escape", "a/b", `a\b`, "../../etc/passwd"} {
-		prompt, answer, present := readLeafIO(bad)
-		if present || prompt != "" || answer != "" {
-			t.Fatalf("readLeafIO(%q) returned present=%v prompt=%q answer=%q, want rejected/empty",
-				bad, present, prompt, answer)
+// TestWrapTo_CJKByDisplayWidth: a double-width (CJK) line wraps by display columns, not rune count, so
+// no wrapped line overflows the pane.
+func TestWrapTo_CJKByDisplayWidth(t *testing.T) {
+	lines := wrapTo("你好世界你好世界你好", 10) // 10 CJK runes = 20 display columns
+	if len(lines) < 2 {
+		t.Fatalf("20-col CJK text must wrap to ≥2 lines at width 10, got %d", len(lines))
+	}
+	for _, l := range lines {
+		if w := ansi.StringWidth(l); w > 10 {
+			t.Fatalf("wrapped line exceeds 10 columns: %q (%d)", l, w)
 		}
+	}
+}
+
+// TestBoxCell_CJKExactWidth: truncating a CJK line on a double-width boundary still returns EXACTLY w
+// columns (it re-pads after a wide-glyph cut); the pad case too.
+func TestBoxCell_CJKExactWidth(t *testing.T) {
+	if w := ansi.StringWidth(boxCell("你好世界你好", 5)); w != 5 { // 12 cols → cut at 5 lands mid-glyph
+		t.Fatalf("boxCell must return exactly 5 columns on a CJK truncation, got %d", w)
+	}
+	if w := ansi.StringWidth(boxCell("hi", 6)); w != 6 {
+		t.Fatalf("boxCell must pad to 6 columns, got %d", w)
 	}
 }

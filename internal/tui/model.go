@@ -43,7 +43,6 @@ const (
 	screenResult
 	screenKeys           // EDIT form → "Manage API keys →": per-vendor multi-key manager
 	screenTeammateDetail // board → enter on a teammate: full-field detail card
-	screenWorkflowDetail // Workflows board → enter on a leaf: read-only prompt/answer card
 	screenSetupTmux      // first-run tmux setup nudge; shown before agent-teams/hub
 	screenSetup          // first-run agent-teams setup nudge; shown before the hub
 )
@@ -55,6 +54,18 @@ type formMode int
 const (
 	modeAdd formMode = iota
 	modeEdit
+)
+
+// wfMode is the active pane level of the Workflows master-detail board — all WITHIN
+// screenWorkflows, so the refresh/tick/control msg ownership stays on one screen. →/enter
+// descend a level; ← ascends but CLAMPS at the board's top level (a no-op there), while esc/tab
+// leave for Vendors — so repeated ← can't fall out of the board (mirrors the native board).
+type wfMode int
+
+const (
+	wfModePicker wfMode = iota // run picker; shown only when >1 run
+	wfModePhases               // L1: Phases | the selected phase's agents
+	wfModeAgent                // L2: agent list | the selected agent's inline detail (j/k scroll)
 )
 
 // Model is the root bubbletea model.
@@ -89,36 +100,51 @@ type Model struct {
 	boardStatus    string
 	boardStatusErr bool
 
-	// Workflows board (screenWorkflows): RunID-tagged subagent jobs grouped into a
-	// run→phase→agent tree, with per-leaf metrics, a live-event log, and a leaf
-	// cursor for drill-in. workflowsEpoch tags each auto-refresh tick chain so
-	// re-entering supersedes a stale chain (mirrors boardEpoch). workflowsCursor is
-	// a FLAT index over the leaf rows only (header lines never take a slot). wfTails
-	// holds the per-run incremental-tail offset; wfEvents the parsed events per run
-	// (for the DAG view); wfLog the bounded most-recent rendered log ring.
-	// workflowStatus surfaces a stop/restart outcome (like boardStatus).
+	// Workflows board (screenWorkflows): a native-mirror master-detail. wfMode re-roots
+	// the two panes (run picker → Phases overview → agent detail) WITHIN this one screen;
+	// focusedRunID is the run shown in L1/L2; the three cursors index the run picker, the
+	// focused run's phases, and the focused phase's agents. wfActivity holds each leaf's
+	// activity snapshot (read off the refresh goroutine, keyed by job id): a running leaf's
+	// tokens climb live, and every leaf's tool count persists. workflowsEpoch tags each auto-refresh
+	// tick chain so re-entering supersedes a stale chain (mirrors boardEpoch).
+	// workflowStatus surfaces a stop/restart/save outcome (like boardStatus).
 	workflowJobs      []subagent.Result
 	workflowRuns      []subagent.WorkflowRun
 	workflowsErr      error
 	workflowsEpoch    int
-	workflowsCursor   int
-	wfTails           map[string]workflow.EventTail
-	wfEvents          map[string][]workflow.EventRecord
-	wfLog             []string
+	wfMode            wfMode
+	focusedRunID      string
+	wfRunCursor       int
+	wfPhaseCursor     int
+	wfAgentCursor     int
+	wfActivity        map[string]activitySnapshot
 	workflowStatus    string
 	workflowStatusErr bool
+	// wfDeleteArm holds the run id armed for deletion: the first `d` arms it (status prompt), a second
+	// `d` on the same run confirms; any other key disarms (guards against an accidental single keypress).
+	wfDeleteArm string
+	// Save-workflow name prompt: `s` on a focused run opens wfSaveInput (prefilled with the run name);
+	// while wfSaving, keys route to the input (enter saves to ~/.config/cc-fleet/workflows/<name>.star,
+	// esc cancels).
+	wfSaveInput textinput.Model
+	wfSaving    bool
 
-	// Workflow leaf drill-in (screenWorkflowDetail): the selected leaf's job + its
-	// prompt/answer read from the leaf io files. wfDetailExpand toggles the
-	// collapsed/full render. wfDetailIO records whether the io files were present.
-	// wfDetailNonce is bumped on each drill-in so a slow IO read for a prior leaf
-	// (or a card already left) is dropped instead of showing the wrong answer.
+	// Focused-agent inline detail (wfModeAgent right pane): the focused leaf's prompt/answer
+	// read from its io files (PersistIO-gated), rendered scrollable in the right pane.
+	// wfDetailJob records WHICH leaf the loaded io belongs to, so a render only shows the
+	// prompt/output when it matches the focused leaf. wfDetailIO records whether the io files
+	// were present. wfCardScroll is the right-pane scroll offset (lines), preserved across the
+	// auto-refresh and reset when the focused leaf changes. wfDetailNonce is bumped on each
+	// focused-leaf change so a slow read for a prior leaf is dropped, never shown on the wrong one.
 	wfDetailJob    subagent.Result
 	wfDetailPrompt string
 	wfDetailAnswer string
 	wfDetailIO     bool
-	wfDetailExpand bool
+	wfCardScroll   int
 	wfDetailNonce  int
+	// wfPromptExpanded toggles the inline detail's prompt between a collapsed "N lines · ⏎ expand"
+	// summary (default) and the full text; reset to collapsed when the focused leaf changes.
+	wfPromptExpanded bool
 
 	// Active add/edit form.
 	form     form
@@ -238,6 +264,11 @@ type boardTickMsg struct{ epoch int }
 
 // boardRefreshInterval is the auto-refresh cadence while the board is open.
 const boardRefreshInterval = 3 * time.Second
+
+// workflowsLiveInterval is the tighter cadence the Workflows board ticks at while a leaf is running,
+// so its live token/tool counters climb smoothly instead of in coarse 3s steps; it falls back to
+// boardRefreshInterval once nothing is running.
+const workflowsLiveInterval = 500 * time.Millisecond
 
 // opDoneMsg carries the result of an add/edit/remove mutation.
 type opDoneMsg struct {
@@ -362,19 +393,15 @@ func boardTick(epoch int) tea.Cmd {
 	})
 }
 
-// workflowsMsg carries one Workflows-board refresh: the RunID-tagged subagent
-// jobs, the run manifests, the incrementally-tailed new events (split per run for
-// the DAG view), the advanced per-run tails, and the freshly-rendered log lines.
-// It opts into screenOwnedAsyncMsg (owningScreen → screenWorkflows) AND carries
-// the workflowsEpoch that scheduled it, so a stale refresh from a prior visit is
-// dropped on re-entry (epoch++) or leaving.
+// workflowsMsg carries one Workflows-board refresh: the RunID-tagged subagent jobs, the run
+// manifests, and each leaf's activity snapshot (tool calls + a running leaf's live tokens, read off
+// the refresh goroutine — render helpers stay pure). It opts into screenOwnedAsyncMsg
+// (owningScreen → screenWorkflows) AND carries the workflowsEpoch that scheduled it, so a stale
+// refresh from a prior visit is dropped on re-entry (epoch++) or leaving.
 type workflowsMsg struct {
 	jobs     []subagent.Result
 	runs     []subagent.WorkflowRun
-	tails    map[string]workflow.EventTail
-	newEvts  map[string][]workflow.EventRecord // run id → events read this refresh
-	resets   map[string]bool                   // run id → its events file shrank (truncated): replace, don't append
-	logLines []workflow.EventRecord            // all new events across runs, in run order, for the log ring
+	activity map[string]activitySnapshot // job id → per-leaf tool snapshot (+ live usage while running)
 	epoch    int
 	err      error
 }
@@ -385,20 +412,28 @@ func (workflowsMsg) owningScreen() screen { return screenWorkflows }
 // != Model.workflowsEpoch is stale and dropped (mirror boardTickMsg).
 type workflowsTickMsg struct{ epoch int }
 
-// loadWorkflows returns a tea.Cmd that assembles a Workflows refresh tagged with
-// the caller's epoch: the RunID-tagged subagent jobs (RunID == "" jobs stay on
-// the agent-status board), the run manifests, and an INCREMENTAL tail of each
-// run's live-event channel (reading only the bytes appended since prevTails, so
-// the 3s poll stays cheap). It carries the first non-nil manifest/jobs error so a
-// data-source failure surfaces; a per-run events read that fails degrades to no
-// new events (workflow.TailEvents never errors out).
-func loadWorkflows(epoch int, prevTails map[string]workflow.EventTail) tea.Cmd {
+// loadWorkflows returns a tea.Cmd that assembles a Workflows refresh tagged with the caller's epoch:
+// the RunID-tagged subagent jobs (RunID == "" jobs stay on the agent-status board), the run
+// manifests, and — for each leaf — its activity snapshot (tool calls + a running leaf's live tokens
+// from the <jobID>.activity sidecar). ALL disk reads happen here on the refresh goroutine; render
+// helpers stay pure. It carries the first non-nil manifest/jobs error so a data-source failure surfaces.
+func loadWorkflows(epoch int) tea.Cmd {
 	return func() tea.Msg {
 		all, jErr := subagent.ListJobs()
 		var jobs []subagent.Result
+		activity := map[string]activitySnapshot{}
 		for _, j := range all {
-			if j.RunID != "" {
-				jobs = append(jobs, j)
+			if j.RunID == "" {
+				continue
+			}
+			jobs = append(jobs, j)
+			// Read each leaf's activity sidecar once per refresh (keyed by job id): a running leaf's
+			// live tokens come from it, and the tool-call count + signatures persist after done (the
+			// final Result doesn't carry tool calls). Disk reads stay HERE — render helpers are pure.
+			if j.JobID != "" {
+				if snap, ok := readLeafActivity(j.JobID); ok {
+					activity[j.JobID] = snap
+				}
 			}
 		}
 		runs, rErr := subagent.ListRuns()
@@ -406,35 +441,11 @@ func loadWorkflows(epoch int, prevTails map[string]workflow.EventTail) tea.Cmd {
 		if err == nil {
 			err = rErr
 		}
-		tails := map[string]workflow.EventTail{}
-		newEvts := map[string][]workflow.EventRecord{}
-		resets := map[string]bool{}
-		var logLines []workflow.EventRecord
-		for _, r := range runs {
-			prev := prevTails[r.RunID]
-			path, perr := subagent.RunEventsPath(r.RunID)
-			if perr != nil {
-				tails[r.RunID] = prev
-				continue
-			}
-			evs, next, reset := workflow.TailEvents(path, prev)
-			tails[r.RunID] = next
-			if reset {
-				resets[r.RunID] = true
-			}
-			if len(evs) > 0 || reset {
-				newEvts[r.RunID] = evs
-				logLines = append(logLines, evs...)
-			}
-		}
-		return workflowsMsg{
-			jobs: jobs, runs: runs, tails: tails, newEvts: newEvts, resets: resets,
-			logLines: logLines, epoch: epoch, err: err,
-		}
+		return workflowsMsg{jobs: jobs, runs: runs, activity: activity, epoch: epoch, err: err}
 	}
 }
 
-// stopRunCmd reaps + stops the run under the cursor and reports the outcome on the
+// stopRunCmd reaps + stops the focused run and reports the outcome on the
 // board status line. It is the board's only run-state mutation besides restart. The
 // epoch stamps the originating Workflows visit so a result landing after the user
 // left + re-entered (epoch++) is dropped (mirror workflowsMsg's gate).
@@ -445,26 +456,32 @@ func stopRunCmd(runID string, epoch int) tea.Cmd {
 	}
 }
 
-// restartRunCmd re-launches a stopped run from its saved runs/<id>.star via
-// workflow.Launch(Resume). A missing .star (RunScriptPath error or absent file
-// surfaced by Launch) comes back as the err so the board shows a one-line status
-// instead of crashing. epoch gates a stale result like stopRunCmd.
-func restartRunCmd(runID string, epoch int) tea.Cmd {
+// restartCmd restarts a run via workflow.Restart: an empty journalKey resumes the WHOLE run
+// (re-running only un-journaled / failed leaves); a leaf's journalKey drops just that leaf's cache
+// so the resume re-runs only it (+ any downstream leaf whose input shifted). workflow.Restart stops
+// a live run first, replays the run's original launch options off the manifest, and (for a keyed
+// restart) invalidates the leaf's journal entry. epoch gates a stale result like stopRunCmd.
+func restartCmd(runID, journalKey string, epoch int) tea.Cmd {
 	return func() tea.Msg {
-		scriptPath, perr := subagent.RunScriptPath(runID)
-		if perr != nil {
-			return workflowCtlMsg{verb: "restart", runID: runID, err: perr, epoch: epoch}
-		}
-		_, err := workflow.Launch(context.Background(), scriptPath, workflow.Options{Resume: runID}, false)
+		err := workflow.Restart(context.Background(), runID, journalKey)
 		return workflowCtlMsg{verb: "restart", runID: runID, err: err, epoch: epoch}
 	}
 }
 
-// workflowCtlMsg carries the outcome of an x/r control on the Workflows board. Its
+// deleteRunCmd removes a run + all its jobs from the board (the board never auto-clears, so runs
+// accumulate until deleted). Mirrors stopRunCmd's epoch-gated workflowCtlMsg outcome.
+func deleteRunCmd(runID string, epoch int) tea.Cmd {
+	return func() tea.Msg {
+		err := subagent.PurgeRun(runID)
+		return workflowCtlMsg{verb: "delete", runID: runID, err: err, epoch: epoch}
+	}
+}
+
+// workflowCtlMsg carries the outcome of an x/r/d/s control on the Workflows board. Its
 // handler records the status line and reloads (mirror paneVisMsg). Owned by
 // screenWorkflows; epoch is the originating visit so a stale result is dropped.
 type workflowCtlMsg struct {
-	verb  string // "stop" | "restart"
+	verb  string // "stop" | "restart" | "delete" | "save"
 	runID string
 	err   error
 	epoch int
@@ -472,11 +489,10 @@ type workflowCtlMsg struct {
 
 func (workflowCtlMsg) owningScreen() screen { return screenWorkflows }
 
-// wfDetailMsg carries the leaf io read for the drill-in card: the prompt + answer
-// (already read off the Update goroutine) and whether either io file was present.
-// Owned by screenWorkflowDetail; nonce is the drill-in request it answers, so a
-// slow read for a previously-selected leaf is dropped rather than shown in the
-// current card.
+// wfDetailMsg carries the focused leaf's io read for the inline agent-detail pane: the prompt +
+// answer (already read off the Update goroutine) and whether either io file was present. Owned by
+// screenWorkflows (the agent detail is inline); nonce is the focused-leaf request it answers, so a
+// slow read for a previously-focused leaf is dropped rather than shown on the wrong agent.
 type wfDetailMsg struct {
 	nonce   int
 	job     subagent.Result
@@ -485,14 +501,14 @@ type wfDetailMsg struct {
 	present bool
 }
 
-func (wfDetailMsg) owningScreen() screen { return screenWorkflowDetail }
+func (wfDetailMsg) owningScreen() screen { return screenWorkflows }
 
 // loadLeafIOCmd reads the selected leaf's prompt/answer side files
 // (<ConfigDir>/subagent-jobs/<jobID>.prompt / .answer; 0600, present only when
 // persist-io was on). A read failure (absent files) degrades to empty + present
-// false so the card shows the not-persisted note. The answer text reaches ONLY the
-// drill-in card — never the table or the live log. nonce tags the request so a
-// stale read can't populate a later leaf's card.
+// false so the inline detail shows the not-persisted note. The answer text reaches ONLY the
+// focused agent's inline detail pane — never the board's agent rows. nonce tags the request so a
+// stale read can't populate a later leaf's detail.
 func loadLeafIOCmd(job subagent.Result, nonce int) tea.Cmd {
 	return func() tea.Msg {
 		prompt, answer, present := readLeafIO(job.JobID)
@@ -500,11 +516,31 @@ func loadLeafIOCmd(job subagent.Result, nonce int) tea.Cmd {
 	}
 }
 
-// workflowsTick schedules the next Workflows auto-refresh tick for the epoch.
-func workflowsTick(epoch int) tea.Cmd {
-	return tea.Tick(boardRefreshInterval, func(time.Time) tea.Msg {
+// workflowsTick schedules the next Workflows auto-refresh tick for the epoch at the given cadence
+// (tighter while a leaf runs — see workflowsTickInterval).
+func workflowsTick(epoch int, interval time.Duration) tea.Cmd {
+	return tea.Tick(interval, func(time.Time) tea.Msg {
 		return workflowsTickMsg{epoch: epoch}
 	})
+}
+
+// workflowsTickInterval picks the refresh cadence: the tight live interval while any leaf is still
+// running (smooth counters), the slow fallback otherwise.
+func (m Model) workflowsTickInterval() time.Duration {
+	if m.anyLeafRunning() {
+		return workflowsLiveInterval
+	}
+	return boardRefreshInterval
+}
+
+// anyLeafRunning reports whether any workflow leaf is still running (drives the live tick cadence).
+func (m Model) anyLeafRunning() bool {
+	for _, j := range m.workflowJobs {
+		if j.Status == "running" {
+			return true
+		}
+	}
+	return false
 }
 
 // paneVisMsg carries the outcome of an inline hide/show so the board can surface
@@ -764,50 +800,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.workflowJobs = msg.jobs
 		m.workflowRuns = msg.runs
 		m.workflowsErr = msg.err
-		m.wfTails = msg.tails
-		// Merge the per-run events (DAG source) and the rendered log ring. The
-		// per-run accumulation keeps the full event history (DAG needs all of it);
-		// the log ring is bounded to the most-recent lines.
-		if m.wfEvents == nil {
-			m.wfEvents = map[string][]workflow.EventRecord{}
-		}
-		for id, evs := range msg.newEvts {
-			if msg.resets[id] {
-				// The events file was truncated by a (re)run: the prior history is
-				// gone, so REPLACE it rather than appending the stale lines back.
-				m.wfEvents[id] = evs
-			} else {
-				m.wfEvents[id] = append(m.wfEvents[id], evs...)
-			}
-		}
-		// Drop accumulated events for runs that no longer exist (GC'd) so the map
-		// can't grow unbounded across a long board session.
-		if len(m.wfEvents) > 0 {
-			live := map[string]bool{}
-			for _, r := range msg.runs {
-				live[r.RunID] = true
-			}
-			for id := range m.wfEvents {
-				if !live[id] {
-					delete(m.wfEvents, id)
-				}
-			}
-		}
-		// On a truncate the global log ring also holds stale lines for the reset run,
-		// so rebuild it from the (now-corrected) accumulated events; otherwise just
-		// append this refresh's new lines.
-		if anyTrue(msg.resets) {
-			m.wfLog = m.rebuildLog()
-		} else {
-			m.wfLog = appendLog(m.wfLog, msg.logLines)
-		}
-		// Keep the leaf cursor in range as rows come and go.
-		if n := m.workflowLeafCount(); m.workflowsCursor >= n {
-			m.workflowsCursor = n - 1
-		}
-		if m.workflowsCursor < 0 {
-			m.workflowsCursor = 0
-		}
+		m.wfActivity = msg.activity
+		// Re-derive focus on a run-set change (a GC'd focused run, the 0/1/>1 routing) and
+		// clamp the run/phase/agent cursors to the new data.
+		m.rerootWorkflows(false)
 		return m, nil
 
 	case workflowCtlMsg:
@@ -816,25 +812,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.epoch != m.workflowsEpoch {
 			return m, nil
 		}
-		// Surface the stop/restart outcome on the board status line, then reload so
-		// the run's status reflects the new state (mirror paneVisMsg). workflowsMsg
-		// does NOT touch workflowStatus, so the message survives the refresh. The run
-		// id + error are opaque/operator-supplied text, so scrub them like the rest
-		// of the board before they reach the terminal.
+		// Surface the control outcome on the board status line, then reload so the run's status
+		// reflects the new state (mirror paneVisMsg). workflowsMsg does NOT touch workflowStatus, so
+		// the message survives the refresh. A successful restart clears the line instead — the leaf
+		// flips to a Running dot on the reload, the natural in-place feedback. The run id + error are
+		// opaque/operator-supplied text, so scrub them like the rest of the board before display.
 		runID := shortRunID(sessiontitle.CleanTitle(msg.runID))
 		if msg.err != nil {
 			m.workflowStatusErr = true
 			m.workflowStatus = fmt.Sprintf("%s %s failed: %s", msg.verb, runID,
 				sessiontitle.CleanTitle(msg.err.Error()))
+		} else if msg.verb == "restart" {
+			// A successful restart needs no standalone confirmation — the leaf flips to a ● Running
+			// dot on the reload below, which is the natural in-place feedback; clear any stale line.
+			m.workflowStatusErr = false
+			m.workflowStatus = ""
 		} else {
 			m.workflowStatusErr = false
 			m.workflowStatus = fmt.Sprintf("%s %s: ok", msg.verb, runID)
 		}
-		return m, loadWorkflows(m.workflowsEpoch, m.wfTails)
+		return m, loadWorkflows(m.workflowsEpoch)
 
 	case wfDetailMsg:
-		// Drop a read that answers a prior drill-in (slow leaf-A read landing after
-		// the user opened leaf-B) so a card never shows the wrong leaf's answer.
+		// Drop a read that answers a prior focused leaf (a slow leaf-A read landing after the
+		// user moved to leaf-B) so the inline detail never shows the wrong leaf's answer.
 		if msg.nonce != m.wfDetailNonce {
 			return m, nil
 		}
@@ -842,12 +843,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.wfDetailPrompt = msg.prompt
 		m.wfDetailAnswer = msg.answer
 		m.wfDetailIO = msg.present
-		m.wfDetailExpand = false
 		return m, nil
 
 	case workflowsTickMsg:
 		if m.screen == screenWorkflows && msg.epoch == m.workflowsEpoch {
-			return m, tea.Batch(loadWorkflows(msg.epoch, m.wfTails), workflowsTick(msg.epoch))
+			return m, tea.Batch(loadWorkflows(msg.epoch), workflowsTick(msg.epoch, m.workflowsTickInterval()))
 		}
 		return m, nil
 
@@ -934,8 +934,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateKeys(msg)
 		case screenTeammateDetail:
 			return m.updateTeammateDetail(msg)
-		case screenWorkflowDetail:
-			return m.updateWorkflowDetail(msg)
 		case screenSetup:
 			return m.updateSetup(msg)
 		case screenSetupTmux:
@@ -1057,137 +1055,416 @@ func (m Model) updateSpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // toWorkflows enters the Workflows board: bump the epoch so a tick pending from a
-// prior visit can't double the refresh rate, reset the per-visit cursor / status /
-// tails / log, and start a fresh load + tick chain (mirror updateList→spawn). The
-// tails/events/log reset on entry so a re-entry re-tails each run from the top
-// (cheap; the board is bounded) rather than relying on stale offsets.
+// prior visit can't double the refresh rate, reset the per-visit status / activity /
+// cursors, route to the run picker or a focused run (rerootWorkflows), and start a
+// fresh load + tick chain (mirror updateList→spawn).
 func (m Model) toWorkflows() (tea.Model, tea.Cmd) {
 	m.screen = screenWorkflows
 	m.loading = true
 	m.workflowsEpoch++
-	m.workflowsCursor = 0
 	m.workflowStatus = ""
-	m.wfTails = map[string]workflow.EventTail{}
-	m.wfEvents = map[string][]workflow.EventRecord{}
-	m.wfLog = nil
-	return m, tea.Batch(loadWorkflows(m.workflowsEpoch, m.wfTails), workflowsTick(m.workflowsEpoch))
+	m.wfActivity = nil
+	m.wfRunCursor, m.wfPhaseCursor, m.wfAgentCursor = 0, 0, 0
+	m.rerootWorkflows(true) // fresh 0/1/>1 routing on entry
+	return m, tea.Batch(loadWorkflows(m.workflowsEpoch), workflowsTick(m.workflowsEpoch, m.workflowsTickInterval()))
 }
 
-// updateWorkflows drives the Workflows board. ↑/↓ walk the leaf cursor (landing on
-// leaf rows only, skipping run/phase headers); enter on a leaf opens the read-only
-// prompt/answer drill-in card; x stops the run under the cursor and r restarts it;
-// R (shift) reloads; tab/esc return to the Vendors list (closing the List → Agent
-// status → Workflows → List cycle); q/ctrl+c quit. The auto-refresh tick chain runs
+// wfGroups is the board's run→phase→agent tree (newest-first) — the single source the picker, phases,
+// agents, and all three cursors index.
+func (m Model) wfGroups() []runGroup { return groupByRun(m.workflowJobs, m.workflowRuns) }
+
+// focusedGroup returns the run the board is rooted on, ok=false when focusedRunID is unset or GC'd.
+func (m Model) focusedGroup() (runGroup, bool) {
+	for _, g := range m.wfGroups() {
+		if g.runID == m.focusedRunID {
+			return g, true
+		}
+	}
+	return runGroup{}, false
+}
+
+// focusedPhase returns the phase under wfPhaseCursor in the focused run.
+func (m Model) focusedPhase() (runPhaseGroup, bool) {
+	g, ok := m.focusedGroup()
+	if !ok || m.wfPhaseCursor < 0 || m.wfPhaseCursor >= len(g.phases) {
+		return runPhaseGroup{}, false
+	}
+	return g.phases[m.wfPhaseCursor], true
+}
+
+// selectedLeaf returns the agent (job) under wfAgentCursor in the focused phase.
+func (m Model) selectedLeaf() (subagent.Result, bool) {
+	p, ok := m.focusedPhase()
+	if !ok || m.wfAgentCursor < 0 || m.wfAgentCursor >= len(p.jobs) {
+		return subagent.Result{}, false
+	}
+	return p.jobs[m.wfAgentCursor], true
+}
+
+// selectedRunID returns the focused run id (x/r/s act on the whole run, even when the focused phase
+// has no agents).
+func (m Model) selectedRunID() (string, bool) {
+	if _, ok := m.focusedGroup(); ok {
+		return m.focusedRunID, true
+	}
+	return "", false
+}
+
+// rerootWorkflows re-derives focus + clamps the cursors after the run set changes. On entry
+// (initial=true) it routes by run count: 0 → empty Phases, 1 → auto-focus the sole run, >1 → the run
+// picker. On a refresh (initial=false) it preserves the user's drill state unless the focused run was
+// GC'd, then re-routes the same way.
+func (m *Model) rerootWorkflows(initial bool) {
+	groups := m.wfGroups()
+	focusExists := false
+	for _, g := range groups {
+		if g.runID == m.focusedRunID {
+			focusExists = true
+			break
+		}
+	}
+	if initial || !focusExists {
+		switch {
+		case len(groups) == 0:
+			m.focusedRunID, m.wfMode = "", wfModePhases
+		case len(groups) == 1:
+			m.focusedRunID, m.wfMode = groups[0].runID, wfModePhases
+		default:
+			m.focusedRunID, m.wfMode = "", wfModePicker
+		}
+		m.wfPhaseCursor, m.wfAgentCursor = 0, 0
+	}
+	m.clampWfCursors()
+}
+
+// clampWfCursors bounds the run/phase/agent cursors to the live data and drops out of agent mode when
+// the focused phase has no agents, so Enter/render can never index past the end.
+func (m *Model) clampWfCursors() {
+	groups := m.wfGroups()
+	m.wfRunCursor = clampIndex(m.wfRunCursor, len(groups))
+	g, ok := m.focusedGroup()
+	if !ok {
+		m.wfPhaseCursor, m.wfAgentCursor = 0, 0
+		return
+	}
+	m.wfPhaseCursor = clampIndex(m.wfPhaseCursor, len(g.phases))
+	agents := 0
+	if m.wfPhaseCursor < len(g.phases) {
+		agents = len(g.phases[m.wfPhaseCursor].jobs)
+	}
+	m.wfAgentCursor = clampIndex(m.wfAgentCursor, agents)
+	if m.wfMode == wfModeAgent && agents == 0 {
+		m.wfMode = wfModePhases
+	}
+}
+
+// clampIndex keeps i in [0, n-1]; returns 0 when n==0 (an empty list parks the cursor at 0).
+func clampIndex(i, n int) int {
+	switch {
+	case n <= 0:
+		return 0
+	case i >= n:
+		return n - 1
+	case i < 0:
+		return 0
+	default:
+		return i
+	}
+}
+
+// updateWorkflows drives the Workflows master-detail board, branching on wfMode (the run picker,
+// the Phases overview, or an agent's detail). R reloads; tab returns to the Vendors list (closing
+// the List → Agent status → Workflows → List cycle); q/ctrl+c quit. The per-mode handlers own ↑/↓,
+// enter (descend), esc (ascend), and the run controls x/r/s. The auto-refresh tick chain runs
 // independently (see workflowsTickMsg).
 func (m Model) updateWorkflows(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.wfSaving {
+		return m.updateWfSaveInput(msg)
+	}
+	if msg.String() != "d" && m.wfDeleteArm != "" {
+		m.wfDeleteArm = "" // any non-d key disarms a pending delete
+		if m.workflowStatus == deleteArmPrompt {
+			m.workflowStatus = ""
+		}
+	}
 	switch msg.String() {
-	case "up", "k":
-		if m.workflowsCursor > 0 {
-			m.workflowsCursor--
-		}
-	case "down", "j":
-		if m.workflowsCursor < m.workflowLeafCount()-1 {
-			m.workflowsCursor++
-		}
-	case "enter":
-		// Open the read-only drill-in for the selected leaf (its prompt/answer).
-		job, ok := m.selectedLeaf()
-		if !ok {
-			return m, nil
-		}
-		m.screen = screenWorkflowDetail
-		m.wfDetailJob = job
-		m.wfDetailPrompt = ""
-		m.wfDetailAnswer = ""
-		m.wfDetailIO = false
-		m.wfDetailExpand = false
-		// Bump the nonce so a slow read for a previously-opened leaf is dropped.
-		m.wfDetailNonce++
-		return m, loadLeafIOCmd(job, m.wfDetailNonce)
-	case "x":
-		// Stop the run the cursor's leaf belongs to.
-		if runID, ok := m.selectedRunID(); ok {
-			return m, stopRunCmd(runID, m.workflowsEpoch)
-		}
-		return m, nil
-	case "r":
-		// Restart (resume) the run the cursor's leaf belongs to.
-		if runID, ok := m.selectedRunID(); ok {
-			return m, restartRunCmd(runID, m.workflowsEpoch)
-		}
-		return m, nil
 	case "R", "ctrl+r":
 		m.loading = true
-		return m, loadWorkflows(m.workflowsEpoch, m.wfTails)
-	case "tab", "esc":
+		return m, loadWorkflows(m.workflowsEpoch)
+	case "tab":
 		return m.toList()
 	case "q":
 		m.quitting = true
 		return m, tea.Quit
 	}
-	return m, nil
-}
-
-// updateWorkflowDetail drives the read-only leaf drill-in card. e/space toggles the
-// collapsed/expanded prompt+answer render; esc/enter/tab returns to the board
-// (cursor + data preserved, no reload); q quits.
-func (m Model) updateWorkflowDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "q":
-		m.quitting = true
-		return m, tea.Quit
-	case "e", " ", "space":
-		m.wfDetailExpand = !m.wfDetailExpand
-	case "esc", "enter", "tab":
-		m.screen = screenWorkflows
+	switch m.wfMode {
+	case wfModePicker:
+		return m.updateWfPicker(msg)
+	case wfModeAgent:
+		return m.updateWfAgent(msg)
+	default:
+		return m.updateWfPhases(msg)
 	}
-	return m, nil
 }
 
-// wfLeaf is one selectable leaf row on the Workflows board: the job (its metrics +
-// io live here) and the run it belongs to (x/r act on the run). The cursor is a
-// flat index over wfLeaves, so header/group lines never take a slot.
-type wfLeaf struct {
-	runID string
-	job   subagent.Result
-}
-
-// wfLeaves returns the board's selectable leaf rows in render order: runs in
-// groupByRun order, then each run's jobs in phase→job order. This is the single
-// canonical ordering the cursor, drill-in, and metrics all key on — and the order
-// the view renders leaf rows in (flat OR DAG), so the cursor always lands on the
-// right job regardless of how many header lines precede it.
-func (m Model) wfLeaves() []wfLeaf {
-	var leaves []wfLeaf
-	for _, g := range groupByRun(m.workflowJobs, m.workflowRuns) {
-		for _, p := range g.phases {
-			for _, j := range p.jobs {
-				leaves = append(leaves, wfLeaf{runID: g.runID, job: j})
-			}
+// updateWfPicker (run picker, >1 run): ↑/↓ choose a run, →/enter descend into it; esc/tab → Vendors
+// (← clamps here — it never leaves the board).
+func (m Model) updateWfPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	groups := m.wfGroups()
+	switch msg.String() {
+	case "up":
+		m.wfRunCursor = clampIndex(m.wfRunCursor-1, len(groups))
+	case "down":
+		m.wfRunCursor = clampIndex(m.wfRunCursor+1, len(groups))
+	case "right", "enter":
+		return m.wfDescend()
+	case "esc":
+		return m.wfAscend(true)
+	case "left":
+		return m.wfAscend(false) // ← clamps at the picker (top level); esc/tab leave
+	case "d":
+		if m.wfRunCursor < len(groups) {
+			return m.armOrDelete(groups[m.wfRunCursor].runID)
 		}
 	}
-	return leaves
+	return m, nil
 }
 
-// workflowLeafCount is the number of selectable leaf rows (cursor range).
-func (m Model) workflowLeafCount() int { return len(m.wfLeaves()) }
+// deleteArmPrompt is the status shown after the first `d` while a delete is armed.
+const deleteArmPrompt = "press d again to delete this run · any other key cancels"
 
-// selectedLeaf returns the job under the cursor (ok=false when there are no leaves).
-func (m Model) selectedLeaf() (subagent.Result, bool) {
-	leaves := m.wfLeaves()
-	if m.workflowsCursor < 0 || m.workflowsCursor >= len(leaves) {
-		return subagent.Result{}, false
+// armOrDelete is the two-press delete guard: the first `d` on a run arms it (sets the prompt); a second
+// `d` on the SAME run confirms and dispatches the delete. (updateWorkflows disarms on any other key.)
+func (m Model) armOrDelete(runID string) (tea.Model, tea.Cmd) {
+	if m.wfDeleteArm == runID {
+		m.wfDeleteArm = ""
+		if m.workflowStatus == deleteArmPrompt {
+			m.workflowStatus = "" // clear the prompt; the delete's own outcome replaces it
+		}
+		return m, deleteRunCmd(runID, m.workflowsEpoch)
 	}
-	return leaves[m.workflowsCursor].job, true
+	m.wfDeleteArm = runID
+	m.workflowStatusErr = false
+	m.workflowStatus = deleteArmPrompt
+	return m, nil
 }
 
-// selectedRunID returns the run id the cursor's leaf belongs to (for x/r).
-func (m Model) selectedRunID() (string, bool) {
-	leaves := m.wfLeaves()
-	if m.workflowsCursor < 0 || m.workflowsCursor >= len(leaves) {
-		return "", false
+// updateWfPhases (L1): ↑/↓ walk phases, → descend into a non-empty phase's agents, ← ascend to the
+// picker (multi-run) or clamp at the top (single-run); esc/tab → Vendors; x/r/s control the focused run.
+func (m Model) updateWfPhases(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	g, ok := m.focusedGroup()
+	switch msg.String() {
+	case "up":
+		if ok {
+			m.wfPhaseCursor = clampIndex(m.wfPhaseCursor-1, len(g.phases))
+			m.wfAgentCursor = 0
+		}
+	case "down":
+		if ok {
+			m.wfPhaseCursor = clampIndex(m.wfPhaseCursor+1, len(g.phases))
+			m.wfAgentCursor = 0
+		}
+	case "right", "enter":
+		return m.wfDescend()
+	case "esc":
+		return m.wfAscend(true)
+	case "left":
+		return m.wfAscend(false) // ← ascends to the picker (multi-run) or clamps (single-run); esc/tab leave
+	default:
+		return m.wfControl(msg)
 	}
-	return leaves[m.workflowsCursor].runID, true
+	return m, nil
+}
+
+// updateWfAgent (L2): ↑/↓ walk agents (reloading the inline detail), j/k scroll that detail, ← ascend
+// to Phases; r restarts ONLY the focused agent; x/s control the focused run.
+func (m Model) updateWfAgent(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	p, ok := m.focusedPhase()
+	switch msg.String() {
+	case "up":
+		if ok {
+			m.wfAgentCursor = clampIndex(m.wfAgentCursor-1, len(p.jobs))
+			return m.focusLeafIO()
+		}
+	case "down":
+		if ok {
+			m.wfAgentCursor = clampIndex(m.wfAgentCursor+1, len(p.jobs))
+			return m.focusLeafIO()
+		}
+	case "j":
+		m.wfCardScroll = m.clampCardScroll(m.wfCardScroll + 1)
+	case "k":
+		m.wfCardScroll = m.clampCardScroll(m.wfCardScroll - 1)
+	case "left", "esc":
+		return m.wfAscend(true)
+	case "right":
+		return m, nil // already at the deepest level
+	case "enter":
+		// Fold/unfold the focused agent's prompt (collapsed by default); re-clamp the scroll
+		// since the detail height changes.
+		m.wfPromptExpanded = !m.wfPromptExpanded
+		m.wfCardScroll = m.clampCardScroll(m.wfCardScroll)
+		return m, nil
+	case "r":
+		return m.restartFocusedLeaf()
+	default:
+		return m.wfControl(msg)
+	}
+	return m, nil
+}
+
+// wfDescend drops one level: picker → Phases (focus the cursored run), Phases → agent detail (when
+// the focused phase has agents, loading the first agent's io). The agent level is the deepest.
+func (m Model) wfDescend() (tea.Model, tea.Cmd) {
+	switch m.wfMode {
+	case wfModePicker:
+		groups := m.wfGroups()
+		if m.wfRunCursor < len(groups) {
+			m.focusedRunID = groups[m.wfRunCursor].runID
+			m.wfMode = wfModePhases
+			m.wfPhaseCursor, m.wfAgentCursor = 0, 0
+		}
+	case wfModePhases:
+		if p, ok := m.focusedPhase(); ok && len(p.jobs) > 0 {
+			m.wfMode = wfModeAgent
+			m.wfAgentCursor = 0
+			return m.focusLeafIO()
+		}
+	}
+	return m, nil
+}
+
+// wfAscend climbs one level: agent → Phases, Phases → picker (multi-run). At the board's TOP level
+// (the picker, or single-run Phases) there's nowhere to climb: exitAtTop leaves for Vendors (esc/tab)
+// vs stays put (←), so repeated ← can't fall out of the board.
+func (m Model) wfAscend(exitAtTop bool) (tea.Model, tea.Cmd) {
+	switch m.wfMode {
+	case wfModeAgent:
+		m.wfMode = wfModePhases
+		return m, nil
+	case wfModePhases:
+		if len(m.wfGroups()) > 1 {
+			m.wfMode, m.focusedRunID = wfModePicker, ""
+			return m, nil
+		}
+	}
+	if exitAtTop {
+		return m.toList()
+	}
+	return m, nil
+}
+
+// focusLeafIO resets the detail scroll and loads the focused leaf's prompt/answer into the inline
+// detail pane (nonce-gated so a slow read for a prior leaf is dropped). Called whenever the agent
+// cursor lands on a new leaf.
+func (m Model) focusLeafIO() (tea.Model, tea.Cmd) {
+	m.wfCardScroll = 0
+	m.wfPromptExpanded = false // each newly focused leaf starts with its prompt collapsed
+	job, ok := m.selectedLeaf()
+	if !ok {
+		m.wfDetailJob, m.wfDetailPrompt, m.wfDetailAnswer, m.wfDetailIO = subagent.Result{}, "", "", false
+		return m, nil
+	}
+	m.wfDetailNonce++ // drop a slow read for a previously-focused leaf
+	return m, loadLeafIOCmd(job, m.wfDetailNonce)
+}
+
+// clampCardScroll bounds the inline-detail scroll offset to [0, lines-viewport] so j/k never scroll
+// past the content (and a stale offset from a longer leaf snaps back on a shorter one).
+func (m Model) clampCardScroll(v int) int {
+	max := len(m.agentDetailLines(m.wfAgentRightWidth())) - m.boardBodyHeight()
+	if max < 0 {
+		max = 0
+	}
+	switch {
+	case v < 0:
+		return 0
+	case v > max:
+		return max
+	default:
+		return v
+	}
+}
+
+// restartFocusedLeaf restarts ONLY the focused agent — workflow.Restart drops its journal entry and
+// resumes, re-running just this leaf (+ any downstream leaf whose input shifted). A leaf with no
+// persisted JournalKey falls back to a whole-run restart so r is never a silent no-op.
+func (m Model) restartFocusedLeaf() (tea.Model, tea.Cmd) {
+	job, ok := m.selectedLeaf()
+	if !ok {
+		return m, nil
+	}
+	runID, rok := m.selectedRunID()
+	if !rok {
+		return m, nil
+	}
+	return m, restartCmd(runID, job.JournalKey, m.workflowsEpoch)
+}
+
+// wfControl runs the run-level controls (x stop / r restart / s save) shared by the Phases pane and
+// the Agent pane's non-r keys — all targeting the FOCUSED run, so they work even when the focused
+// phase has no agents. s opens a name prompt and saves the focused run as a named, reusable workflow
+// (<ConfigDir>/workflows/<name>.star + .json).
+func (m Model) wfControl(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	runID, ok := m.selectedRunID()
+	if !ok {
+		return m, nil
+	}
+	switch msg.String() {
+	case "x":
+		return m, stopRunCmd(runID, m.workflowsEpoch)
+	case "r":
+		return m, restartCmd(runID, "", m.workflowsEpoch) // whole run (no single leaf focused)
+	case "d":
+		return m.armOrDelete(runID)
+	case "s":
+		return m.startSaveWorkflow()
+	}
+	return m, nil
+}
+
+// startSaveWorkflow opens the name input to save the focused run as a named, reusable workflow
+// (prefilled with the run's name). updateWfSaveInput then handles enter (save) / esc (cancel).
+func (m Model) startSaveWorkflow() (tea.Model, tea.Cmd) {
+	g, ok := m.focusedGroup()
+	if !ok {
+		return m, nil
+	}
+	m.wfSaving = true
+	m.wfSaveInput = newTextInput(g.name, "workflow name", false)
+	m.wfSaveInput.Focus()
+	return m, textinput.Blink
+}
+
+// updateWfSaveInput drives the save-workflow name prompt: enter saves the focused run under the typed
+// name (a blank name or no focused run just cancels), esc cancels, any other key edits the input.
+func (m Model) updateWfSaveInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.wfSaving = false
+		return m, nil
+	case "enter":
+		name := strings.TrimSpace(m.wfSaveInput.Value())
+		runID, ok := m.selectedRunID()
+		m.wfSaving = false
+		if !ok || name == "" {
+			return m, nil
+		}
+		g, _ := m.focusedGroup()
+		return m, saveWorkflowCmd(runID, name, g.sessionID, g.description, m.workflowsEpoch)
+	}
+	var cmd tea.Cmd
+	m.wfSaveInput, cmd = m.wfSaveInput.Update(msg)
+	return m, cmd
+}
+
+// saveWorkflowCmd saves a run as a named workflow off the Update goroutine; the outcome rides the
+// shared workflowCtlMsg (verb "save"), epoch-gated like the others.
+func saveWorkflowCmd(runID, name, sessionID, description string, epoch int) tea.Cmd {
+	return func() tea.Msg {
+		err := subagent.SaveWorkflow(runID, name, sessionID, description)
+		return workflowCtlMsg{verb: "save", runID: runID, err: err, epoch: epoch}
+	}
 }
 
 // updateTeammateDetail drives the read-only teammate detail card (board → enter).

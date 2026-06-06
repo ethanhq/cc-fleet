@@ -940,7 +940,7 @@ func TestViewsRenderForEveryScreen(t *testing.T) {
 	screens := []screen{
 		screenList, screenSpawn, screenWorkflows, screenPickTemplate,
 		screenForm, screenModelPick, screenRemoveConfirm, screenResult, screenKeys,
-		screenTeammateDetail, screenWorkflowDetail,
+		screenTeammateDetail,
 	}
 	for _, s := range screens {
 		m := NewModel()
@@ -1688,7 +1688,7 @@ func TestWorkflowsMsg_StaleEpochDropped(t *testing.T) {
 		t.Fatalf("matching workflowsMsg dropped: loading=%v jobs=%d runs=%d",
 			m.loading, len(m.workflowJobs), len(m.workflowRuns))
 	}
-	if out := m.viewWorkflows(); !strings.Contains(out, "agent-a") || !strings.Contains(out, "Workflows") {
+	if out := m.viewWorkflows(); !strings.Contains(out, "agent-a") || !strings.Contains(out, "agents") {
 		t.Fatalf("workflows view missing expected content:\n%s", out)
 	}
 }
