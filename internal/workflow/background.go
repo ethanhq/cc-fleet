@@ -14,6 +14,13 @@ import (
 // leaves are multi-second vendor execs, so a coarse poll keeps fs load low.
 const bgPollInterval = 250 * time.Millisecond
 
+// defaultBgBackstop bounds an awaited background leaf the script launched with no timeout=. It is a
+// safety net against an infinitely stalled leaf (a stalled result stream with no process exit), NOT a
+// task-length budget — deliberately large so it rarely trips on a legitimately long background task (one
+// that genuinely runs past it is reaped: a stall and a slow task are indistinguishable by wall-clock).
+// An overrun is reaped at wait() (resolveHandle → ReapJob → SUBAGENT_TIMEOUT).
+const defaultBgBackstop = 45 * time.Minute
+
 // statusForFn is the background-job poll — a seam so tests inject a deterministic status
 // in place of reading real job files. Production = subagent.StatusFor.
 var statusForFn = subagent.StatusFor
@@ -74,12 +81,20 @@ func (e *engine) launchBg(vendor, model, prompt, phaseTag, label, key string, ti
 		return nil, fmt.Errorf("agent(%s): background launch: %s: %s", vendor, res.ErrorCode, res.ErrorMsg)
 	}
 	h := &bgHandle{jobID: res.JobID, key: key, vendor: vendor, model: model, phase: phaseTag, label: label}
-	if timeoutSec > 0 {
-		// A detached background job outlives the launcher, so its timeout is enforced at
-		// wait() instead — and the leaf is reaped if it overruns.
-		h.deadline = time.Now().Add(time.Duration(timeoutSec * float64(time.Second)))
-	}
+	// A detached background job outlives the launcher, so its timeout is enforced at wait() (resolveHandle
+	// reaps an overrun); with no script timeout it falls back to the backstop so an AWAITED leaf can never
+	// poll forever.
+	h.deadline = bgDeadline(time.Now(), timeoutSec)
 	return h, nil
+}
+
+// bgDeadline is the wall-clock deadline for an awaited background leaf: the script timeout when
+// positive, else the default backstop (so an awaited leaf can never poll forever).
+func bgDeadline(now time.Time, timeoutSec float64) time.Time {
+	if timeoutSec <= 0 {
+		return now.Add(defaultBgBackstop)
+	}
+	return now.Add(time.Duration(timeoutSec * float64(time.Second)))
 }
 
 // await blocks for one handle or a list of handles and returns their result string(s) —
