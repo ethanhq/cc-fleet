@@ -63,6 +63,9 @@ type WorkflowRun struct {
 	// at `workflow run`, or a --lead-session-id override) — so the board groups runs by
 	// session like the teammates board. Empty when launched outside a Claude session.
 	SessionID string `json:"session_id,omitempty"`
+	// Cwd is the directory `workflow run` was invoked from (the project dir); the board shows it on
+	// the run header. Captured at mint in the foreground launcher and preserved across resume.
+	Cwd string `json:"cwd,omitempty"`
 	// Launch options replayed on restart (resume re-execs with the SAME inputs, else a leaf's
 	// key — and thus its cache validity — would shift). Persisted at mint; the engine carries
 	// them so every manifest overwrite preserves them. ArgsJSON is the script's `args` input.

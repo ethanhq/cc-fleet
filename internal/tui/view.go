@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -312,6 +313,31 @@ func (m Model) boardWidth() int {
 	return 100
 }
 
+// boardMargin is the horizontal inset of the header + box; the full-width header rule overhangs the
+// inset box by this much on each side.
+const boardMargin = 2
+
+// boardInner is the content width of the inset header + box (boardWidth minus the two-side margin).
+func (m Model) boardInner() int {
+	return m.boardWidth() - 2*boardMargin
+}
+
+// headerRule is the full-width divider drawn between the run header and the inset box, so it overhangs
+// the box top border by boardMargin on each side.
+func (m Model) headerRule() string {
+	return borderStyle.Render(strings.Repeat("─", m.boardWidth()))
+}
+
+// indentBox left-pads every line of s by n columns — the board content inset that lets the full-width
+// header rule overhang the box.
+func indentBox(s string, n int) string {
+	if n <= 0 {
+		return s
+	}
+	pad := strings.Repeat(" ", n)
+	return pad + strings.ReplaceAll(s, "\n", "\n"+pad)
+}
+
 // phaseAgentCounts / runAgentCounts return (done, total) where done counts terminal (non-running) leaves.
 func phaseAgentCounts(p runPhaseGroup) (done, total int) {
 	for _, j := range p.jobs {
@@ -332,26 +358,56 @@ func runAgentCounts(g runGroup) (done, total int) {
 	return
 }
 
-// renderRunHeader is the persistent native header, TWO lines: the bold run name on line 1 (bounded to the
-// box width so a long name can't wrap onto a third row and shift the fixed-height box down); the faint
-// description (left) + the right-aligned "<done>/<total> agents · <elapsed>" on line 2 (just the counts
-// when there's no description).
+// runTokens sums the input+output tokens across every leaf of the run — the live snapshot for a running
+// leaf, the final Result for a done one (the same source as the per-leaf "tok" column).
+func (m Model) runTokens(g runGroup) int {
+	total := 0
+	for _, p := range g.phases {
+		for _, j := range p.jobs {
+			in, out, _ := m.leafCounts(j)
+			total += in + out
+		}
+	}
+	return total
+}
+
+// renderRunHeader is the persistent native header, THREE lines: line 1 is the bold run name (left) and, when
+// the run recorded it, the launching project dir (right-aligned); a blank spacer; then the description
+// (left) + the right-aligned "<done>/<total> agents · <elapsed> · ↓ <tokens> tokens" (just the summary when there's no
+// description). Each text line is width-bounded so a long name/path/description can't wrap onto an extra row
+// and shift the fixed-height box down.
 func (m Model) renderRunHeader(g runGroup) string {
 	done, total := runAgentCounts(g)
-	name := titleStyle.Render(truncCols(m.runLabel(g), m.boardWidth()))
-	right := faintStyle.Render(fmt.Sprintf("%d/%d agents · %s", done, total, g.elapsed()))
+	bw := m.boardInner() // header aligns with the inset box; the full-width rule overhangs both
+	// Line 1: run name (left) + project dir (right-aligned, home-abbreviated, tail kept). The name takes
+	// the width the dir leaves; both bounded so neither wraps.
+	dir, nameW := "", bw
+	if g.cwd != "" {
+		dir = faintStyle.Render(leftTruncCols(sessiontitle.CleanTitle(prettyDir(g.cwd)), bw/2))
+		nameW = bw - lipgloss.Width(dir) - 1
+	}
+	name := titleStyle.Render(truncCols(m.runLabel(g), nameW))
+	line1 := name
+	if dir != "" {
+		gap := bw - lipgloss.Width(name) - lipgloss.Width(dir)
+		if gap < 1 {
+			gap = 1
+		}
+		line1 = name + strings.Repeat(" ", gap) + dir
+	}
+	right := liveStyle.Render(fmt.Sprintf("%d/%d agents · %s · ↓ %s tokens", done, total, g.elapsed(), humanTokens(m.runTokens(g))))
 	left := ""
 	if g.description != "" {
-		left = faintStyle.Render(trunc(sessiontitle.CleanTitle(g.description), 80))
+		left = liveStyle.Render(trunc(sessiontitle.CleanTitle(g.description), 80))
 	}
-	gap := m.boardWidth() - lipgloss.Width(left) - lipgloss.Width(right)
+	gap := bw - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
-		// A long description must not wrap line 2 onto a third line — that would shift the fixed-height
+		// A long description must not wrap the third line onto a fourth — that would shift the fixed-height
 		// box down. Truncate the description to fit beside the right summary.
-		left = boxCell(left, m.boardWidth()-lipgloss.Width(right)-1)
+		left = boxCell(left, bw-lipgloss.Width(right)-1)
 		gap = 1
 	}
-	return name + "\n" + left + strings.Repeat(" ", gap) + right
+	return line1 + "\n\n" + left + strings.Repeat(" ", gap) + right
 }
 
 // boardBodyHeight is the inner row budget for the master-detail box (drives right-pane scroll). It
@@ -361,7 +417,7 @@ func (m Model) boardBodyHeight() int {
 	if h < 12 {
 		h = 24
 	}
-	avail := h - 9 // header (2 lines) + blank + box top/bottom + status + footer + margin
+	avail := h - 10 // header (3 lines: name / blank / desc) + rule + box top/bottom + status + footer + margin
 	if avail < 5 {
 		avail = 5
 	}
@@ -479,12 +535,12 @@ func leftWidth(title string, lines []string, boardW int) int {
 	return w
 }
 
-// paneWidths derives the right pane from a content-sized left: left + right + 11 == boardWidth (the 11
+// paneWidths derives the right pane from a content-sized left: left + right + 11 == boardInner (the 11
 // non-content columns are the two outer borders, the divider, and TWO spaces on each side of each cell).
-// leftW is CAPPED to always leave ≥20 columns for the detail pane, so the box never overflows (the
-// floor only bites on a sub-41-column terminal, where the box must wrap regardless).
+// leftW is CAPPED to always leave ≥20 columns for the detail pane, so the box never overflows its inset
+// width (the floor only bites on a sub-45-column terminal, where the box must wrap regardless).
 func (m Model) paneWidths(leftW int) (left, right int) {
-	avail := m.boardWidth() - 11
+	avail := m.boardInner() - 11
 	if avail < 30 {
 		avail = 30
 	}
@@ -554,12 +610,12 @@ func (m Model) viewWfPhases() string {
 		}
 		leftLines = append(leftLines, fmt.Sprintf("%s%s %s%s", marker, glyph, title, counts))
 	}
-	leftW, rightW := m.paneWidths(leftWidth("Phases", leftLines, m.boardWidth()))
+	leftW, rightW := m.paneWidths(leftWidth("Phases", leftLines, m.boardInner()))
 	rightTitle, rightLines := m.phaseAgentLines(rightW)
 	bodyH := m.boardBodyHeight()
 	leftLines = windowLines(leftLines, m.wfPhaseCursor, bodyH)
-	return m.renderRunHeader(g) + "\n\n" +
-		renderBoard("Phases", leftLines, rightTitle, rightLines, leftW, rightW, bodyH, 0)
+	return indentBox(m.renderRunHeader(g), boardMargin) + "\n" + m.headerRule() + "\n" +
+		indentBox(renderBoard("Phases", leftLines, rightTitle, rightLines, leftW, rightW, bodyH, 0), boardMargin)
 }
 
 // phaseAgentLines returns the title + full agent rows (right pane) for the focused phase ("Not started
@@ -598,7 +654,7 @@ func (m Model) agentLeftLines() (title string, lines []string) {
 // scroll clamp wraps the detail to the same column budget the render uses.
 func (m Model) wfAgentRightWidth() int {
 	title, lines := m.agentLeftLines()
-	_, rightW := m.paneWidths(leftWidth(title, lines, m.boardWidth()))
+	_, rightW := m.paneWidths(leftWidth(title, lines, m.boardInner()))
 	return rightW
 }
 
@@ -610,7 +666,7 @@ func (m Model) viewWfAgent() string {
 		return faintStyle.Render("(no workflow runs)")
 	}
 	listTitle, leftLines := m.agentLeftLines()
-	leftW, rightW := m.paneWidths(leftWidth(listTitle, leftLines, m.boardWidth()))
+	leftW, rightW := m.paneWidths(leftWidth(listTitle, leftLines, m.boardInner()))
 	cardTitle := "agent"
 	if j, jok := m.selectedLeaf(); jok {
 		if t := trunc(sessiontitle.CleanTitle(j.Label), rightW-6); t != "" {
@@ -620,8 +676,8 @@ func (m Model) viewWfAgent() string {
 	rightLines := m.agentDetailLines(rightW)
 	bodyH := m.boardBodyHeight()
 	leftLines = windowLines(leftLines, m.wfAgentCursor, bodyH)
-	return m.renderRunHeader(g) + "\n\n" +
-		renderBoard(listTitle, leftLines, cardTitle, rightLines, leftW, rightW, bodyH, m.clampCardScroll(m.wfCardScroll))
+	return indentBox(m.renderRunHeader(g), boardMargin) + "\n" + m.headerRule() + "\n" +
+		indentBox(renderBoard(listTitle, leftLines, cardTitle, rightLines, leftW, rightW, bodyH, m.clampCardScroll(m.wfCardScroll)), boardMargin)
 }
 
 // renderAgentRowFull is one agent row for a phase's agent list (right pane): "<dot> <label>  <model>"
@@ -707,10 +763,11 @@ func (m Model) leafCounts(j subagent.Result) (in, out, tools int) {
 	return in, out, snap.toolCount()
 }
 
-// agentDetailLines is the focused agent's inline detail (the L2 right pane, scrollable): status/model,
-// tokens·tool-calls, the Activity feed (last 3 tool signatures), the Outcome, and — when the io files
-// are loaded for THIS leaf (PersistIO opt-in) — the Prompt + Output. The Output reads from the leaf's
-// .answer side file (focused-single-agent surface, CleanTitle-scrubbed), NEVER Result.Result on a row.
+// agentDetailLines is the focused agent's inline detail (the L2 right pane, scrollable): status/model and
+// tokens·tool-calls, then a fixed Prompt → Activity → Output → Outcome order — the Prompt, the Activity
+// feed (last 3 tool signatures), the Output (when the io files are loaded for THIS leaf via the PersistIO
+// opt-in), and the Outcome. The Output reads from the leaf's .answer side file (focused-single-agent
+// surface, CleanTitle-scrubbed), NEVER Result.Result on a row.
 func (m Model) agentDetailLines(rightW int) []string {
 	j, ok := m.selectedLeaf()
 	if !ok {
@@ -721,17 +778,8 @@ func (m Model) agentDetailLines(rightW int) []string {
 	lines := []string{
 		statusLabel(j.Status) + faintStyle.Render(" · "+trunc(sessiontitle.CleanTitle(j.Model), 28)),
 		faintStyle.Render(fmt.Sprintf("%s tok · %d tool calls", humanTokens(in+out), tools)),
-		"",
-		faintStyle.Render(fmt.Sprintf("Activity · last 3 of %d tool calls", tools)),
 	}
-	sigs := snap.lastSigs(3)
-	if len(sigs) == 0 {
-		lines = append(lines, faintStyle.Render(" (no tool calls)"))
-	}
-	for _, s := range sigs {
-		lines = append(lines, " "+contentStyle.Render(truncCols(sessiontitle.CleanTitle(s), rightW-2)))
-	}
-	lines = append(lines, "", faintStyle.Render("Outcome"), " "+m.renderOutcome(j))
+	// Prompt first.
 	switch {
 	case m.wfDetailJob.JobID != j.JobID:
 		lines = append(lines, "", faintStyle.Render("(loading…)"))
@@ -754,9 +802,23 @@ func (m Model) agentDetailLines(rightW int) []string {
 				lines = append(lines, " "+faintStyle.Render(fmt.Sprintf("… %d more lines", more))) // body-aligned (indent 1)
 			}
 		}
+	}
+	// Then the Activity feed.
+	lines = append(lines, "", faintStyle.Render(fmt.Sprintf("Activity · last 3 of %d tool calls", tools)))
+	sigs := snap.lastSigs(3)
+	if len(sigs) == 0 {
+		lines = append(lines, faintStyle.Render(" (no tool calls)"))
+	}
+	for _, s := range sigs {
+		lines = append(lines, " "+contentStyle.Render(truncCols(sessiontitle.CleanTitle(s), rightW-2)))
+	}
+	// Then the Output, when this leaf's io files are loaded.
+	if m.wfDetailJob.JobID == j.JobID && m.wfDetailIO {
 		lines = append(lines, "", faintStyle.Render("Output"))
 		lines = append(lines, ioLines(m.wfDetailAnswer, rightW, liveStyle)...)
 	}
+	// Outcome last.
+	lines = append(lines, "", faintStyle.Render("Outcome"), " "+m.renderOutcome(j))
 	return lines
 }
 
@@ -820,6 +882,35 @@ func truncCols(s string, w int) string {
 		return s
 	}
 	return ansi.Truncate(s, w, "…")
+}
+
+// prettyDir abbreviates $HOME to ~ for a compact project-dir display.
+func prettyDir(dir string) string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if dir == home {
+			return "~"
+		}
+		if strings.HasPrefix(dir, home+string(os.PathSeparator)) {
+			return "~" + dir[len(home):]
+		}
+	}
+	return dir
+}
+
+// leftTruncCols keeps the TRAILING w display columns of s (a path's tail is the useful part), prefixing
+// "…" when it cut. CJK-aware via ansi.StringWidth.
+func leftTruncCols(s string, w int) string {
+	if w < 1 {
+		w = 1
+	}
+	if ansi.StringWidth(s) <= w {
+		return s
+	}
+	r := []rune(s)
+	for len(r) > 0 && ansi.StringWidth(string(r)) > w-1 {
+		r = r[1:]
+	}
+	return "…" + string(r)
 }
 
 // wrapTo hard-wraps a plain (un-styled) string to w DISPLAY columns — CJK-aware (a wide glyph counts
@@ -1067,21 +1158,23 @@ type runGroup struct {
 	name        string
 	description string
 	sessionID   string // launching Claude session (picker grouping); "" when launched outside one
+	cwd         string // launching project dir (shown right-aligned on the run header); "" when unknown
 	status      string
 	startedAt   string
 	updatedAt   string
 	phases      []runPhaseGroup
 }
 
-// elapsed renders the run's wall-clock from StartedAt to its last heartbeat
-// (UpdatedAt) when set, else to now. A run with no parseable StartedAt renders "—".
+// elapsed renders the run's wall-clock from StartedAt. A running run ticks live to now (the board
+// re-renders each frame); a terminal run freezes at its last heartbeat (UpdatedAt) so the duration
+// stops growing once it ends. A run with no parseable StartedAt renders "—".
 func (g runGroup) elapsed() string {
 	start, err := time.Parse(time.RFC3339, g.startedAt)
 	if err != nil {
 		return "—"
 	}
 	end := time.Now()
-	if g.updatedAt != "" {
+	if g.status != "running" && g.updatedAt != "" {
 		if u, uerr := time.Parse(time.RFC3339, g.updatedAt); uerr == nil {
 			end = u
 		}
@@ -1128,6 +1221,7 @@ func groupByRun(jobs []subagent.Result, runs []subagent.WorkflowRun) []runGroup 
 			g.name = r.Name
 			g.description = r.Description
 			g.sessionID = r.SessionID
+			g.cwd = r.Cwd
 			g.status = r.Status
 			g.startedAt = r.StartedAt
 			g.updatedAt = r.UpdatedAt

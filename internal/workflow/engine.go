@@ -170,6 +170,7 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 		whenToUse:   meta.WhenToUse,
 		budgetTotal: opts.BudgetUSD,
 		sessionID:   prepared.SessionID, // from the minted manifest; re-persisted on every save
+		cwd:         prepared.Cwd,       // launching project dir; ditto
 		argsJSON:    opts.ArgsJSON,
 	}
 	// Load the run's content-hash journal (resume). The path is derived from the
@@ -313,6 +314,9 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 		run.ArgsJSON = opts.ArgsJSON
 		run.NoPersistIO = opts.NoPersistIO
 		run.BudgetUSD = opts.BudgetUSD
+		if cwd, cerr := os.Getwd(); cerr == nil {
+			run.Cwd = cwd
+		}
 		if serr := subagent.SaveRun(run); serr != nil {
 			return "", fmt.Errorf("workflow: persist run options: %w", serr)
 		}

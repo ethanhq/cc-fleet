@@ -505,7 +505,8 @@ func TestWfDelete_TwoPressConfirm(t *testing.T) {
 func TestWfAgentRow_LabelThenModelThenMetrics(t *testing.T) {
 	jobs, runs := oneRun()
 	out := workflowsModel(t, jobs, runs, nil).viewWorkflows() // phases view, map phase's agent m1
-	li, mi, ti := strings.Index(out, "m1"), strings.Index(out, "glm-4.6"), strings.Index(out, "tok")
+	// "tok ·" is the agent row's metric marker; the run-header total uses "tokens", so anchor on the former.
+	li, mi, ti := strings.Index(out, "m1"), strings.Index(out, "glm-4.6"), strings.Index(out, "tok ·")
 	if li < 0 || mi < 0 || ti < 0 || !(li < mi && mi < ti) {
 		t.Fatalf("agent row should read label → model → metrics (idx %d,%d,%d):\n%s", li, mi, ti, out)
 	}
@@ -578,21 +579,24 @@ func TestWfPromptPreview_BlankLineAndIndent(t *testing.T) {
 	}
 }
 
-// TestWfRunHeader_TwoLines: the run header is two lines — the bold name on line 1, the description +
-// right-aligned counts on line 2.
-func TestWfRunHeader_TwoLines(t *testing.T) {
+// TestWfRunHeader_Layout: the run header is three lines — the bold name on line 1, a blank spacer on
+// line 2, the description + right-aligned counts on line 3.
+func TestWfRunHeader_Layout(t *testing.T) {
 	jobs, runs := oneRun()
 	m := workflowsModel(t, jobs, runs, nil)
 	g, _ := m.focusedGroup()
 	parts := strings.Split(m.renderRunHeader(g), "\n")
-	if len(parts) != 2 {
-		t.Fatalf("run header must be 2 lines, got %d", len(parts))
+	if len(parts) != 3 {
+		t.Fatalf("run header must be 3 lines (name / blank / description), got %d", len(parts))
 	}
 	if !strings.Contains(parts[0], "sweep") || strings.Contains(parts[0], "agents") {
 		t.Fatalf("line 1 must be the name with no counts: %q", parts[0])
 	}
-	if !strings.Contains(parts[1], "a sweep run") || !strings.Contains(parts[1], "agents") {
-		t.Fatalf("line 2 must be the description + counts: %q", parts[1])
+	if strings.TrimSpace(parts[1]) != "" {
+		t.Fatalf("line 2 must be a blank spacer: %q", parts[1])
+	}
+	if !strings.Contains(parts[2], "a sweep run") || !strings.Contains(parts[2], "agents") {
+		t.Fatalf("line 3 must be the description + counts: %q", parts[2])
 	}
 }
 
@@ -632,6 +636,69 @@ func TestWfTickKeepsResolvedTitles(t *testing.T) {
 	m, _ = step(t, m, workflowsMsg{jobs: jobs, runs: runs, sessionTitles: nil, titlesResolved: false, epoch: m.workflowsEpoch})
 	if m.sessionTitles["sess-x"] != "My Chat" {
 		t.Fatalf("a live tick must not clobber resolved titles, got %v", m.sessionTitles)
+	}
+}
+
+// TestWfRunHeader_ProjectDir: a run that recorded its launch cwd shows it right-aligned on header line 1
+// (right of the run name), and line 1 stays within the box width.
+func TestWfRunHeader_ProjectDir(t *testing.T) {
+	runs := []subagent.WorkflowRun{{
+		RunID: "run-1", Name: "sweep", Description: "d", Cwd: "/tmp/projects/my-app",
+		StartedAt: "2026-06-01T00:00:00Z", UpdatedAt: "2026-06-01T00:00:30Z",
+		Phases: []subagent.RunPhase{{Title: "map"}},
+	}}
+	jobs := []subagent.Result{{RunID: "run-1", Phase: "map", Label: "m1", Status: "running", JobID: "job-m1"}}
+	m := workflowsModel(t, jobs, runs, nil)
+	g, _ := m.focusedGroup()
+	line1 := strings.Split(m.renderRunHeader(g), "\n")[0]
+	if !strings.Contains(line1, "/tmp/projects/my-app") || !strings.Contains(line1, "sweep") {
+		t.Fatalf("header line 1 must show the run name and the project dir: %q", line1)
+	}
+	if strings.Index(line1, "sweep") > strings.Index(line1, "my-app") {
+		t.Fatalf("the project dir must be right of the run name: %q", line1)
+	}
+	if w := ansi.StringWidth(line1); w > m.boardWidth() {
+		t.Fatalf("header line 1 width %d exceeds box width %d: %q", w, m.boardWidth(), line1)
+	}
+}
+
+// TestWfBoard_RuleOverhangsBox: a full-width rule sits directly above the box and overhangs the inset
+// box top border on both sides.
+func TestWfBoard_RuleOverhangsBox(t *testing.T) {
+	jobs, runs := oneRun()
+	m := workflowsModel(t, jobs, runs, nil)
+	m.width = 80
+	lines := strings.Split(m.viewWorkflows(), "\n")
+	boxIdx := -1
+	for i, l := range lines {
+		if strings.Contains(l, "╭") {
+			boxIdx = i
+			break
+		}
+	}
+	if boxIdx <= 0 {
+		t.Fatalf("no box top border found in:\n%s", m.viewWorkflows())
+	}
+	ruleW, boxW := ansi.StringWidth(lines[boxIdx-1]), ansi.StringWidth(lines[boxIdx])
+	if ruleW != m.boardWidth() {
+		t.Fatalf("the header rule should be full board width %d, got %d", m.boardWidth(), ruleW)
+	}
+	if ruleW <= boxW {
+		t.Fatalf("the header rule (%d cols) must overhang the box top border (%d cols)", ruleW, boxW)
+	}
+}
+
+// TestRunElapsed_LiveVsTerminal: a running run's elapsed ticks to now (not frozen at its last heartbeat);
+// a terminal run freezes at UpdatedAt-StartedAt so it shows the final duration.
+func TestRunElapsed_LiveVsTerminal(t *testing.T) {
+	g := runGroup{startedAt: "2020-01-01T00:00:00Z", updatedAt: "2020-01-01T00:00:05Z"}
+	g.status = "done"
+	if got := g.elapsed(); got != "5s" {
+		t.Fatalf("a terminal run should freeze at UpdatedAt-StartedAt = 5s, got %q", got)
+	}
+	g.status = "running"
+	if got := g.elapsed(); got == "5s" {
+		t.Fatalf("a running run must tick to now, not freeze at 5s, got %q", got)
 	}
 }
 

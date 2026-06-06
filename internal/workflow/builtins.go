@@ -40,6 +40,7 @@ type engine struct {
 	metaModel string // meta.model: default model for agents that omit model= (applied before journalKey)
 	whenToUse string // meta.whenToUse: display/board text
 	sessionID string // parent Claude session (board grouping); seeded from the manifest, re-persisted every save
+	cwd       string // launching project dir (board run header); seeded from the manifest, re-persisted every save
 	argsJSON  string // --args-json, re-persisted so a restart resumes with the SAME args (else leaf keys shift)
 	// Budget accounting (USD), GIL-protected. budgetTotal<=0 means uncapped. budgetSpent
 	// accumulates each completed leaf's CostUSD; agent() raises once spent>=total.
@@ -469,6 +470,7 @@ func (e *engine) saveManifest(status, errText string) {
 		// Carried in engine state so every whole-file overwrite preserves them (the board
 		// groups by SessionID; a restart resumes with the same args/persistIO/budget).
 		SessionID:   e.sessionID,
+		Cwd:         e.cwd,
 		ArgsJSON:    e.argsJSON,
 		NoPersistIO: !e.persistIO,
 		BudgetUSD:   e.budgetTotal,
