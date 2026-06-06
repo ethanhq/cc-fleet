@@ -25,7 +25,14 @@ const stopBarrierTimeout = 5 * time.Second
 // detached run (recorded pid now dead) is resumed as-is; a foreground run with no killable engine
 // fails closed. The resume replays the run's original launch options (args / persistIO / budget) off
 // the manifest so a leaf's key — and thus its cache validity — doesn't shift.
+// The whole decision runs under the per-run execution lock so a concurrent restart / resume / stop never
+// acts on stale state or races the pre-launch pid window; the lock releases when Launch returns (after the
+// child registers) and is NEVER held around the engine's Execute. StopRun/Launch internals stay lock-free.
 func Restart(ctx context.Context, runID, journalKey string) error {
+	return subagent.WithRunLock(runID, func() error { return restartLocked(ctx, runID, journalKey) })
+}
+
+func restartLocked(ctx context.Context, runID, journalKey string) error {
 	run, err := subagent.ReadRun(runID)
 	if err != nil {
 		return err

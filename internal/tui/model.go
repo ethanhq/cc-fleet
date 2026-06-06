@@ -123,6 +123,10 @@ type Model struct {
 	// wfDeleteArm holds the run id armed for deletion: the first `d` arms it (status prompt), a second
 	// `d` on the same run confirms; any other key disarms (guards against an accidental single keypress).
 	wfDeleteArm string
+	// wfRestarting is the per-run in-flight guard: a run id is added when a stop/restart/delete is
+	// dispatched and removed when its workflowCtlMsg lands, so a second x/r/d on the same run is a
+	// no-op until the first completes (and a restart shows a transient "restarting …" status meanwhile).
+	wfRestarting map[string]bool
 	// Save-workflow name prompt: `s` on a focused run opens wfSaveInput (prefilled with the run name);
 	// while wfSaving, keys route to the input (enter saves to ~/.config/cc-fleet/workflows/<name>.star,
 	// esc cancels).
@@ -469,7 +473,10 @@ func loadWorkflows(epoch int, resolve bool) tea.Cmd {
 // left + re-entered (epoch++) is dropped (mirror workflowsMsg's gate).
 func stopRunCmd(runID string, epoch int) tea.Cmd {
 	return func() tea.Msg {
-		_, err := subagent.StopRun(runID)
+		err := subagent.WithRunLock(runID, func() error {
+			_, e := subagent.StopRun(runID)
+			return e
+		})
 		return workflowCtlMsg{verb: "stop", runID: runID, err: err, epoch: epoch}
 	}
 }
@@ -490,7 +497,7 @@ func restartCmd(runID, journalKey string, epoch int) tea.Cmd {
 // accumulate until deleted). Mirrors stopRunCmd's epoch-gated workflowCtlMsg outcome.
 func deleteRunCmd(runID string, epoch int) tea.Cmd {
 	return func() tea.Msg {
-		err := subagent.PurgeRun(runID)
+		err := subagent.WithRunLock(runID, func() error { return subagent.PurgeRun(runID) })
 		return workflowCtlMsg{verb: "delete", runID: runID, err: err, epoch: epoch}
 	}
 }
@@ -835,6 +842,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.epoch != m.workflowsEpoch {
 			return m, nil
 		}
+		delete(m.wfRestarting, msg.runID) // the op completed — clear the in-flight guard
 		// Surface the control outcome on the board status line, then reload so the run's status
 		// reflects the new state (mirror paneVisMsg). workflowsMsg does NOT touch workflowStatus, so
 		// the message survives the refresh. A successful restart clears the line instead — the leaf
@@ -1086,6 +1094,7 @@ func (m Model) toWorkflows() (tea.Model, tea.Cmd) {
 	m.loading = true
 	m.workflowsEpoch++
 	m.workflowStatus = ""
+	m.wfRestarting = map[string]bool{}
 	m.wfActivity = nil
 	m.wfRunCursor, m.wfPhaseCursor, m.wfAgentCursor = 0, 0, 0
 	m.rerootWorkflows(true) // fresh 0/1/>1 routing on entry
@@ -1264,6 +1273,10 @@ func (m Model) armOrDelete(runID string) (tea.Model, tea.Cmd) {
 		if m.workflowStatus == deleteArmPrompt {
 			m.workflowStatus = "" // clear the prompt; the delete's own outcome replaces it
 		}
+		if m.wfBusy(runID) {
+			return m, nil // a stop/restart/delete is already in flight — don't dispatch a second
+		}
+		m = m.markBusy(runID)
 		return m, deleteRunCmd(runID, m.workflowsEpoch)
 	}
 	m.wfDeleteArm = runID
@@ -1412,6 +1425,28 @@ func (m Model) clampCardScroll(v int) int {
 // restartFocusedLeaf restarts ONLY the focused agent — workflow.Restart drops its journal entry and
 // resumes, re-running just this leaf (+ any downstream leaf whose input shifted). A leaf with no
 // persisted JournalKey falls back to a whole-run restart so r is never a silent no-op.
+// wfBusy reports whether a stop/restart/delete is already in flight for runID — the in-flight guard
+// that makes a second x/r/d on the same run a no-op until its workflowCtlMsg lands.
+func (m Model) wfBusy(runID string) bool { return m.wfRestarting[runID] }
+
+// markBusy adds runID to the in-flight guard (lazily creating the map).
+func (m Model) markBusy(runID string) Model {
+	if m.wfRestarting == nil {
+		m.wfRestarting = map[string]bool{}
+	}
+	m.wfRestarting[runID] = true
+	return m
+}
+
+// armRestarting marks runID in-flight AND shows a transient "restarting <masked>…" status; the
+// workflowCtlMsg handler clears the guard, and on success the status, when the restart completes.
+func (m Model) armRestarting(runID string) Model {
+	m = m.markBusy(runID)
+	m.workflowStatusErr = false
+	m.workflowStatus = "restarting " + shortRunID(sessiontitle.CleanTitle(runID)) + "…"
+	return m
+}
+
 func (m Model) restartFocusedLeaf() (tea.Model, tea.Cmd) {
 	job, ok := m.selectedLeaf()
 	if !ok {
@@ -1421,6 +1456,10 @@ func (m Model) restartFocusedLeaf() (tea.Model, tea.Cmd) {
 	if !rok {
 		return m, nil
 	}
+	if m.wfBusy(runID) {
+		return m, nil
+	}
+	m = m.armRestarting(runID)
 	return m, restartCmd(runID, job.JournalKey, m.workflowsEpoch)
 }
 
@@ -1435,8 +1474,16 @@ func (m Model) wfControl(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	switch msg.String() {
 	case "x":
+		if m.wfBusy(runID) {
+			return m, nil
+		}
+		m = m.markBusy(runID) // stop surfaces its own "stop: ok" outcome
 		return m, stopRunCmd(runID, m.workflowsEpoch)
 	case "r":
+		if m.wfBusy(runID) {
+			return m, nil
+		}
+		m = m.armRestarting(runID)
 		return m, restartCmd(runID, "", m.workflowsEpoch) // whole run (no single leaf focused)
 	case "d":
 		return m.armOrDelete(runID)

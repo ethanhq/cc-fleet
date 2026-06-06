@@ -266,6 +266,15 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 			return "", fmt.Errorf("workflow: cannot resume: %w", rerr)
 		}
 		run = existing
+		// One engine per run: refuse to resume a run that still has a LIVE engine — a verifiably-live
+		// detached one, or a foreground/unreapable run (EnginePID<=0) still claiming to run. The board
+		// Restart path stops the old engine first (so the status is no longer running when it reaches
+		// here); a crashed/killed detached run (recorded pid now dead) falls through and resumes as-is.
+		// This guards the public `workflow run --resume` entry, which would otherwise launch a second
+		// concurrent engine. (Mirrors restart.go's fail-closed liveness check.)
+		if run.Status == "running" && (subagent.EngineAlive(run) || run.EnginePID <= 0) {
+			return "", fmt.Errorf("workflow: run %s already has a live engine; stop it first", opts.Resume)
+		}
 		// Replay the run's original launch options on resume so a leaf's content key — and thus
 		// its journal-cache validity — doesn't shift. A non-zero/non-empty opts value overrides
 		// (e.g. resuming with a larger --budget-usd); a zero/empty one reads as "not set" and
@@ -288,6 +297,7 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 		// run can't be tracked or protected, so fail the resume rather than launch blind.
 		run.Status = "running"
 		run.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		run.EnginePID = 0 // clear the prior engine's pid; the new child re-stamps, and WaitEngineStarted waits for exactly that
 		if serr := subagent.SaveRun(run); serr != nil {
 			return "", fmt.Errorf("workflow: stamp resume liveness: %w", serr)
 		}
@@ -318,10 +328,49 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 	if foreground {
 		return run.RunID, Execute(ctx, abs, run.RunID, opts)
 	}
-	if lerr := launchDetached(abs, run.RunID, opts); lerr != nil {
+	pid, reaper, lerr := launchDetached(abs, run.RunID, opts)
+	if lerr != nil {
 		run.Status = "failed"
 		_ = subagent.SaveRun(run)
 		return "", lerr
 	}
+	if !WaitEngineStarted(run.RunID, pid) {
+		// The detached child did not self-stamp its pid within the startup budget (slow OR
+		// dead). Kill + reap it BEFORE failing the run, so a slow-but-live child can't later
+		// overwrite the failed manifest and run on as a second engine.
+		reaper.kill()
+		_ = reaper.wait()
+		run.Status, run.Error, run.EnginePID = "failed", "workflow: engine did not register within the startup budget", 0
+		_ = subagent.SaveRun(run)
+		return "", fmt.Errorf("workflow: engine failed to start")
+	}
+	// Registered: reap the child asynchronously so it never lingers as a zombie under a
+	// long-lived parent (the TUI board). A short-lived CLI launcher exits before this
+	// goroutine completes; init then adopts and reaps the orphan.
+	go func() { _ = reaper.wait() }()
 	return run.RunID, nil
+}
+
+// engineStartupBudget bounds how long a launcher waits — under the per-run execution lock —
+// for a freshly detached engine child to self-stamp its pid into the manifest. (A var so a test can
+// shorten it; production never reassigns it.)
+var engineStartupBudget = 10 * time.Second
+
+// WaitEngineStarted blocks until the detached child has self-stamped EnginePID == childPID
+// (its first manifest write in Execute's pre-run saveManifest) or the startup budget
+// elapses. The launcher holds the per-run execution lock across this wait, so a serialized
+// second restart/stop/resume always observes a fully-registered engine — never the
+// pre-stamp EnginePID==0 window. Returns false on timeout; the caller must then kill+reap
+// the child before failing the run.
+func WaitEngineStarted(runID string, childPID int) bool {
+	deadline := time.Now().Add(engineStartupBudget)
+	for {
+		if run, err := subagent.ReadRun(runID); err == nil && run.EnginePID == childPID {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }

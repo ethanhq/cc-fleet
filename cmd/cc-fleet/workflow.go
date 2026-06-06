@@ -181,7 +181,22 @@ watch the board. --foreground runs inline to completion instead.`,
 				return nil
 			}
 
-			id, err := workflow.Launch(ctx, script, opts, foreground)
+			// A detached --resume serializes against the board's restart and any concurrent
+			// resume/stop via the per-run execution lock; a foreground resume IS the engine
+			// running inline (it self-stamps its pid synchronously) and must not hold the lock
+			// around Execute, so it is not wrapped.
+			id, err := func() (string, error) {
+				if resume != "" && !foreground {
+					var rid string
+					lerr := subagent.WithRunLock(resume, func() error {
+						var e error
+						rid, e = workflow.Launch(ctx, script, opts, foreground)
+						return e
+					})
+					return rid, lerr
+				}
+				return workflow.Launch(ctx, script, opts, foreground)
+			}()
 			if err != nil {
 				return reportWorkflowErr(err, asJSON)
 			}
@@ -368,8 +383,14 @@ func newWorkflowStopCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			run, err := subagent.StopRun(args[0])
-			if err != nil {
+			// Serialize stop against a concurrent restart/resume of the same run via the per-run
+			// execution lock (so a stop can't race the pre-launch pid window into skipping the kill).
+			var run subagent.WorkflowRun
+			if err := subagent.WithRunLock(args[0], func() error {
+				var e error
+				run, e = subagent.StopRun(args[0])
+				return e
+			}); err != nil {
 				return reportWorkflowErr(err, asJSON)
 			}
 			if asJSON {

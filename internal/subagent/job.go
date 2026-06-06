@@ -665,12 +665,11 @@ func PurgeJobs() (dir string, removedFinished []string, running []string, err er
 	sort.Strings(removedFinished)
 	sort.Strings(running)
 
-	// Drop the (now-empty) dir only when nothing is left running. os.Remove is
-	// best-effort: a kept running job — or a stray non-job file — keeps the dir,
-	// which is correct. The runs/ subdir is removed by purgeRunManifests when no
-	// run has a live member, so it no longer orphans this dir at uninstall.
+	// Drop the dir when nothing is left running. RemoveAll (not Remove) so a leftover
+	// per-run .lock file — deliberately not a GC'd sidecar — can't strand the dir at an
+	// exclusive uninstall; with nothing running, no lock is held, so this is safe.
 	if len(running) == 0 {
-		_ = os.Remove(dir)
+		_ = os.RemoveAll(dir)
 	}
 	return dir, removedFinished, running, nil
 }

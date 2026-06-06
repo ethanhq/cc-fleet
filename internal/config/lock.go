@@ -135,6 +135,15 @@ func withFlock(path string, fn func() error) error {
 	return fn()
 }
 
+// WithFlock is the exported generic blocking-exclusive flock primitive (the same
+// withFlock the three config scopes use), for any cross-process critical section
+// keyed by a file path. The CALLER owns path validation and choosing a safe lock
+// path (it is created lazily and the kernel locks its inode). See
+// subagent.WithRunLock for the workflow runtime's per-run execution lock.
+func WithFlock(path string, fn func() error) error {
+	return withFlock(path, fn)
+}
+
 // teamLockPath returns $HOME/.claude/teams/<team>/.cc-fleet-lock.
 //
 // $HOME is required — XDG does not apply here because Claude Code reads

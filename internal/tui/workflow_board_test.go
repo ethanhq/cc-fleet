@@ -215,7 +215,9 @@ func TestWfControlsTargetRun(t *testing.T) {
 	if _, cmd := press(t, m, "x"); cmd == nil {
 		t.Fatal("x should stop the focused run even with no agents in the phase")
 	}
-	if _, cmd := press(t, m, "r"); cmd == nil {
+	// Fresh model: x above marked the run in-flight (the guard shares its map), which would correctly
+	// block a back-to-back r on the SAME model — here we just assert r dispatches on its own.
+	if _, cmd := press(t, workflowsModel(t, nil, runs, nil), "r"); cmd == nil {
 		t.Fatal("r should restart the focused run even with no agents")
 	}
 	m2, _ := press(t, m, "s")
@@ -229,6 +231,30 @@ func TestWfControlsTargetRun(t *testing.T) {
 	m3, _ := press(t, m2, "esc")
 	if m3.wfSaving {
 		t.Fatal("esc should cancel the save prompt")
+	}
+}
+
+// TestWfInFlightGuard: a restart marks the run in-flight with a transient "restarting" status; a second
+// r (or x) while it is in flight is a no-op; the completing workflowCtlMsg clears the guard so r works again.
+func TestWfInFlightGuard(t *testing.T) {
+	jobs, runs := oneRun()
+	m := workflowsModel(t, jobs, runs, nil)
+	m1, cmd := press(t, m, "r")
+	if cmd == nil {
+		t.Fatal("first r should dispatch a restart")
+	}
+	if !strings.Contains(m1.viewWorkflows(), "restarting") {
+		t.Fatalf("first r should show a transient 'restarting' status:\n%s", m1.viewWorkflows())
+	}
+	if _, c2 := press(t, m1, "r"); c2 != nil {
+		t.Fatal("a second r while a restart is in flight must be a no-op")
+	}
+	if _, cx := press(t, m1, "x"); cx != nil {
+		t.Fatal("x on a run with a restart in flight must be a no-op")
+	}
+	m2, _ := step(t, m1, workflowCtlMsg{verb: "restart", runID: "run-1", epoch: m1.workflowsEpoch})
+	if _, c3 := press(t, m2, "r"); c3 == nil {
+		t.Fatal("after the restart completes (guard cleared), r should dispatch again")
 	}
 }
 

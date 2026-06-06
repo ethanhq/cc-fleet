@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/fileutil"
 	"github.com/ethanhq/cc-fleet/internal/ids"
 )
@@ -174,6 +175,28 @@ func RunJournalPath(runID string) (string, error) { return runSidecarPath(runID,
 // engine→watcher stream `cc-fleet workflow watch` tails for a flowing live log.
 func RunEventsPath(runID string) (string, error) { return runSidecarPath(runID, ".events") }
 
+// RunLockPath returns runs/<id>.lock — the per-run execution lock file. It is
+// deliberately NOT in runSidecarExts: a flock locks an inode, so GC / removeRun must
+// never unlink a possibly-held lock (unlink + recreate yields a new inode and
+// silently breaks mutual exclusion). Leftover empty lock files are bounded by
+// distinct-run-count and cleared by PurgeJobs' RemoveAll at an exclusive uninstall.
+func RunLockPath(runID string) (string, error) { return runSidecarPath(runID, ".lock") }
+
+// WithRunLock serializes a run's lifecycle decisions (restart / resume / stop /
+// delete) across processes via a blocking exclusive flock on runs/<id>.lock — the
+// workflow runtime's per-run execution lock. It is a STANDALONE flock scope,
+// independent of the three config scopes (the run-lifecycle paths take none of
+// vendors/team/server). It must wrap an entry point's whole decision and NEVER the
+// engine's Execute: the detached engine runs lock-free, so there is no re-entrancy
+// or deadlock when Restart composes stop + launch under one lock.
+func WithRunLock(runID string, fn func() error) error {
+	path, err := RunLockPath(runID)
+	if err != nil {
+		return err
+	}
+	return config.WithFlock(path, fn)
+}
+
 // RunScriptPath returns the saved-script path runs/<id>.star — the run's source,
 // persisted so a stopped run can be restarted (resumed).
 func RunScriptPath(runID string) (string, error) { return runSidecarPath(runID, ".star") }
@@ -289,15 +312,72 @@ func StopRun(runID string) (WorkflowRun, error) {
 	if run.Status != "" && run.Status != "running" {
 		return run, nil // already terminal — don't clobber done/failed/stopped
 	}
-	if run.EnginePID > 0 && pidAlive(run.EnginePID) && engineCmdlineMatches(run.EnginePID, runID) {
+	switch {
+	case run.EnginePID > 0 && pidAlive(run.EnginePID) && engineCmdlineMatches(run.EnginePID, runID):
+		// Verifiably this run's live detached engine: reap it + confirm dead before finalizing its leaves.
 		reapEngineTree(run.EnginePID) // reaps the engine + its in-flight leaf children
+		if !WaitEngineStopped(runID, stopReapTimeout) {
+			// Won't die — do NOT flip stopped or clear the pid, or a caller (Restart / PurgeRun) would
+			// falsely read it as dead and act under a still-live engine. Fail closed.
+			return WorkflowRun{}, fmt.Errorf("subagent: run %s engine did not stop in time", runID)
+		}
+		// Confirmed dead: finalize the engine's mid-flight leaves (left "running" because its
+		// finalizeSyncJob defer died with it) — never racing that defer, since the engine is gone.
+		finalizeRunLeaves(runID)
+	case EngineAlive(run):
+		// The engine MIGHT still be live but we cannot verify it is THIS run's (its argv is unreadable),
+		// so we must neither kill it (fail SAFE) nor flip the run stopped — a caller would then rewrite
+		// the journal / delete / launch under a possibly-live engine. Fail closed.
+		return WorkflowRun{}, fmt.Errorf("subagent: run %s engine (pid %d) is alive but unverifiable; cannot stop safely", runID, run.EnginePID)
+	case run.EnginePID > 0:
+		// A recorded detached pid that is DEFINITIVELY gone (dead, or recycled to a different process):
+		// its mid-flight leaves are ghosts — finalize them. (A foreground EnginePID==0 run has nothing to
+		// reap and no ghost leaves here; it just flips stopped below, clearing a stale "running".)
+		finalizeRunLeaves(runID)
 	}
 	run.Status = "stopped"
 	run.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+	run.EnginePID = 0 // a stopped run has no engine; clear the stale pid
 	if serr := SaveRun(run); serr != nil {
 		return WorkflowRun{}, serr
 	}
 	return run, nil
+}
+
+// stopReapTimeout bounds how long StopRun waits for a reaped engine to actually die before
+// finalizing its leaves — long enough for a SIGTERM'd engine to exit, short enough to not wedge.
+const stopReapTimeout = 5 * time.Second
+
+// finalizeRunLeaves writes a terminal failure Result for every leaf of runID that a now-dead engine
+// left without a result cache, so a stopped run shows no phantom "running" leaf. The caller invokes it
+// ONLY after the engine is confirmed dead (StopRun's reap + WaitEngineStopped), so it never races the
+// engine's own finalizeSyncJob defer; the result.json-absence gate skips any leaf that already
+// finished. finalizeSyncJob writes the sanitized (answer/Raw-stripped) cache, so the synthetic
+// canonical-string Result keeps no raw bytes or keys.
+func finalizeRunLeaves(runID string) {
+	dir, err := jobsDir()
+	if err != nil {
+		return
+	}
+	entries, rerr := os.ReadDir(dir)
+	if rerr != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".result.json") {
+			continue
+		}
+		jobID := strings.TrimSuffix(name, ".json")
+		if _, serr := os.Stat(filepath.Join(dir, jobID+".result.json")); serr == nil {
+			continue // already finished — only the killed-mid-flight ghosts need finalizing
+		}
+		meta, merr := readMeta(dir, jobID)
+		if merr != nil || meta.RunID != runID {
+			continue
+		}
+		finalizeSyncJob(jobID, fail(ErrCodeFailed, "engine stopped before the leaf finished", meta.Vendor, ""))
+	}
 }
 
 // engineCmdlineMatches reports whether pid is THIS run's DETACHED workflow engine — its
