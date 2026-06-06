@@ -30,6 +30,7 @@ type workflowEnvelope struct {
 	Runs      []subagent.WorkflowRun   `json:"runs,omitempty"`
 	Jobs      []subagent.Result        `json:"jobs,omitempty"`
 	Saved     []subagent.SavedWorkflow `json:"saved,omitempty"`
+	Removed   int                      `json:"removed,omitempty"`   // rm/prune: number of runs deleted
 	RunError  string                   `json:"run_error,omitempty"` // a failed run's cause (distinct from the command-level Error)
 	Error     string                   `json:"error,omitempty"`
 }
@@ -48,7 +49,66 @@ so they group into one run tree on the board. List runs and inspect a run's jobs
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
-	cmd.AddCommand(newWorkflowNewCmd(), newWorkflowListCmd(), newWorkflowStatusCmd(), newWorkflowRunCmd(), newWorkflowStopCmd(), newWorkflowWatchCmd(), newWorkflowSavedCmd())
+	cmd.AddCommand(newWorkflowNewCmd(), newWorkflowListCmd(), newWorkflowStatusCmd(), newWorkflowRunCmd(), newWorkflowStopCmd(), newWorkflowWatchCmd(), newWorkflowSavedCmd(), newWorkflowRmCmd(), newWorkflowPruneCmd())
+	return cmd
+}
+
+// newWorkflowRmCmd builds `cc-fleet workflow rm <run-id>` — delete a run and all its jobs (the board
+// never auto-clears, so runs accumulate). A still-live engine is stopped and confirmed dead first; a
+// run whose engine can't be confirmed dead aborts rather than delete under it. Wraps PurgeRun under the
+// per-run execution lock so it can't race a concurrent restart/resume.
+func newWorkflowRmCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:           "rm <run-id>",
+		Short:         "Delete a workflow run and its jobs (stops a live engine first)",
+		Args:          cobra.ExactArgs(1),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			id := args[0]
+			if err := subagent.ValidateRunID(id); err != nil {
+				return reportWorkflowErr(err, asJSON)
+			}
+			if err := subagent.WithRunLock(id, func() error { return subagent.PurgeRun(id) }); err != nil {
+				return reportWorkflowErr(err, asJSON)
+			}
+			if asJSON {
+				return emitWorkflow(workflowEnvelope{OK: true, RunID: id, Removed: 1})
+			}
+			fmt.Printf("removed %s\n", id)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit a machine-readable JSON envelope")
+	return cmd
+}
+
+// newWorkflowPruneCmd builds `cc-fleet workflow prune` — delete every run whose engine is no longer
+// alive (crashed/killed runs still stuck "running", plus terminal ones), sparing any run with a live
+// engine. Each delete runs under the per-run execution lock; the sweep is best-effort, so one run that
+// won't delete doesn't abort the rest.
+func newWorkflowPruneCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:           "prune",
+		Short:         "Delete every run with no live engine (spares running ones)",
+		Args:          cobra.NoArgs,
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			removed, err := subagent.PruneRuns()
+			if err != nil {
+				return reportWorkflowErr(err, asJSON)
+			}
+			if asJSON {
+				return emitWorkflow(workflowEnvelope{OK: true, Removed: removed})
+			}
+			fmt.Printf("pruned %d run(s)\n", removed)
+			return nil
+		},
+	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit a machine-readable JSON envelope")
 	return cmd
 }
 
@@ -125,6 +185,8 @@ func newWorkflowRunCmd() *cobra.Command {
 		argsJSON       string
 		noPersistIO    bool
 		budgetUSD      float64
+		budgetTokens   int64
+		noBudget       bool
 		leadSessionID  string
 		saved          string
 		asJSON         bool
@@ -156,7 +218,17 @@ watch the board. --foreground runs inline to completion instead.`,
 			default:
 				return reportWorkflowErr(fmt.Errorf("workflow run needs a script path or --saved <name>"), asJSON)
 			}
-			opts := workflow.Options{RunID: runID, Resume: resume, Concurrency: maxConcurrency, ArgsJSON: argsJSON, NoPersistIO: noPersistIO, BudgetUSD: budgetUSD}
+			// --no-budget clears BOTH caps via the -1 sentinel (normalized to 0 in Launch); an
+			// explicit positive --budget-usd / --budget-tokens wins over it.
+			if noBudget {
+				if budgetUSD == 0 {
+					budgetUSD = -1
+				}
+				if budgetTokens == 0 {
+					budgetTokens = -1
+				}
+			}
+			opts := workflow.Options{RunID: runID, Resume: resume, Concurrency: maxConcurrency, ArgsJSON: argsJSON, NoPersistIO: noPersistIO, BudgetUSD: budgetUSD, BudgetTokens: budgetTokens}
 			// Capture the launching Claude session on a genuine FRESH launch only (the detached
 			// --run-id re-exec reads it back off the manifest; a --resume preserves it), so the
 			// board groups runs by session like the teammates board. An explicit flag wins.
@@ -225,7 +297,11 @@ watch the board. --foreground runs inline to completion instead.`,
 	cmd.Flags().BoolVar(&noPersistIO, "no-persist-io", false,
 		"Don't persist leaf prompts/answers for board drill-in (persistence is default-on)")
 	cmd.Flags().Float64Var(&budgetUSD, "budget-usd", 0,
-		"Cap total vendor spend in USD; agent() fails once reached (0 = uncapped)")
+		"Cap total spend in USD (an Anthropic list-price estimate, not the vendor's actual charge); agent() fails once reached (0 = uncapped)")
+	cmd.Flags().Int64Var(&budgetTokens, "budget-tokens", 0,
+		"Cap total tokens (input+output, the exact vendor-neutral ceiling); agent() fails once reached (0 = uncapped)")
+	cmd.Flags().BoolVar(&noBudget, "no-budget", false,
+		"Uncap both budgets (on resume, override an inherited cap; an explicit --budget-* value wins)")
 	cmd.Flags().StringVar(&leadSessionID, "lead-session-id", "",
 		"Parent Claude session id for board grouping (default: auto-detect)")
 	cmd.Flags().StringVar(&saved, "saved", "",

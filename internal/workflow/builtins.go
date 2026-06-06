@@ -42,10 +42,20 @@ type engine struct {
 	sessionID string // parent Claude session (board grouping); seeded from the manifest, re-persisted every save
 	cwd       string // launching project dir (board run header); seeded from the manifest, re-persisted every save
 	argsJSON  string // --args-json, re-persisted so a restart resumes with the SAME args (else leaf keys shift)
-	// Budget accounting (USD), GIL-protected. budgetTotal<=0 means uncapped. budgetSpent
-	// accumulates each completed leaf's CostUSD; agent() raises once spent>=total.
-	budgetTotal float64
-	budgetSpent float64
+	// Budget accounting, GIL-protected. A cap (<=0 = uncapped) trips on the FIRST of two
+	// counters to breach: USD (an Anthropic list-price ESTIMATE — claude's own metering, not
+	// the third-party vendor's actual charge) and tokens (Usage.InputTokens+OutputTokens, the
+	// exact vendor-neutral ceiling). *Spent accumulates each completed leaf's real cost; *Reserved
+	// holds a pessimistic per-leaf estimate from the budget gate until the leaf reconciles to real,
+	// so a concurrent fan-out admits leaves against spent+reserved (not spent alone) and can't
+	// overshoot the cap by the whole in-flight set. See budgetReserve/budgetRelease/budgetCharge.
+	budgetTotal    float64
+	budgetSpent    float64
+	budgetReserved float64
+	// Token cap twin of the USD fields (int64, exact). budgetTokensTotal<=0 = uncapped.
+	budgetTokensTotal    int64
+	budgetTokensSpent    int64
+	budgetTokensReserved int64
 }
 
 // builtins returns the predeclared environment exposed to a workflow script. It
@@ -269,23 +279,65 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 		}
 	}
 
-	// Budget gate: a real exec is about to spend, so refuse once the cap is reached.
-	// Placed AFTER the journal lookup (a cache hit is free and never blocked) and BEFORE
-	// admit/slot. budgetTotal<=0 is uncapped. GIL-held → budgetSpent is exact.
-	if e.budgetTotal > 0 && e.budgetSpent >= e.budgetTotal {
-		return nil, fmt.Errorf("agent: budget exceeded ($%.4f of $%.2f spent)", e.budgetSpent, e.budgetTotal)
+	// Budget gate: a real exec is about to spend, so refuse once a cap would be breached.
+	// Placed AFTER the journal lookup (a cache hit is free and never blocked) and BEFORE the
+	// bg branch + admit/slot. A leaf RESERVES a pessimistic per-leaf estimate against each cap
+	// so a concurrent fan-out admits against spent+reserved — not spent alone — and can't
+	// overshoot the cap by the whole in-flight set; the estimate reconciles to real on completion.
+	// The USD estimate over-counts a typical leaf (its own max_budget_usd wins when larger); the
+	// token estimate is the flat per-leaf floor. The gate→reserve is GIL-held (atomic), so a
+	// parallel fan-out's leaves serialize through it. First cap to trip aborts.
+	usdEst := defaultLeafEstimate
+	if maxBudget > usdEst {
+		usdEst = maxBudget
+	}
+	tokEst := int64(defaultLeafTokenEstimate)
+	if e.budgetWouldExceed(usdEst, tokEst) {
+		return nil, e.budgetExceededErr()
 	}
 
-	// Background leaf: launch detached, return a handle (NO live-pool slot; result is
-	// journaled at await time). launchBg does its own lifetime admit.
+	// Background leaf: launch detached, return a handle (NO live-pool slot; result is journaled at
+	// await time). launchBg does its own lifetime admit AND owns the reservation lifecycle — it
+	// reserves before the launch and carries the estimate on the handle so resolveHandle releases
+	// (and charges real) at await; a launch failure releases there.
 	if runInBackground {
 		return e.launchBg(vendor, model, prompt, phaseTag, label, key, timeoutSec, maxBudget, maxTurns,
-			slimReq{profile: profile, tools: keyTools, noSkills: !skills, mcp: mcp})
+			usdEst, tokEst, slimReq{profile: profile, tools: keyTools, noSkills: !skills, mcp: mcp})
 	}
 
 	if !e.sched.admit() {
 		return nil, fmt.Errorf("agent: run exceeded the %d-leaf lifetime cap", maxLifetimeAgents)
 	}
+
+	// Reserve this sync leaf's estimate (GIL-held, atomic with the gate above), then register the
+	// release defer — placed AFTER the reservation so it never over-releases a cache-hit/bg return,
+	// and it runs GIL-held on the unwind (like the slot defer below), covering EVERY exit beyond
+	// here (slot-fail, worktree-fail, leaf-fail, schema-exhausted, panic, success). Success charges
+	// real BEFORE returning, so the defer then frees only the estimate.
+	e.budgetReserve(usdEst, tokEst)
+	defer e.budgetRelease(usdEst, tokEst)
+
+	// Mint a queued placeholder (PID=0) so the board shows this leaf as a queued ◌ row WHILE it
+	// waits for a pool slot; subagent.Run reuses this id, flipping the same job queued→running→
+	// terminal as one file. The mint writes a file, so it runs GIL-released (like the slot wait).
+	var queuedJobID string
+	e.sched.runBlocking(func() {
+		queuedJobID = mintQueuedLeaf(subagent.Request{
+			Vendor: vendor, RunID: e.runID, Phase: phaseTag, Label: label,
+			JournalKey: key, PersistIO: e.persistIO, PromptProfile: profile,
+		}, model)
+	})
+	// Guarantee the reused job ends terminal: unless a success return sets leafDone, this defer
+	// finalizes it FAILED on EVERY other exit (slot-cancel, worktree-fail, pre-flight vendor fail,
+	// schema-exhausted, panic) — so a queued placeholder never lingers and a schema-invalid "done"
+	// attempt is corrected. leafErr carries a real failure's error class (preserved); else canonical.
+	leafDone := false
+	var leafErr subagent.Result
+	defer func() {
+		if !leafDone {
+			subagent.FinalizeQueuedLeafFailed(queuedJobID, leafErr)
+		}
+	}()
 
 	// Acquire a pool slot with the GIL released, so waiting for a slot never pins the
 	// interpreter. The slot is held ONLY across this leaf's actual exec and released right
@@ -336,7 +388,9 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 			RunID:          e.runID,
 			Phase:          phaseTag,
 			Label:          label,
-			JournalKey:     key, // persisted so the board can restart THIS leaf (invalidate + resume)
+			JobID:          queuedJobID, // reuse the queued placeholder: one job, queued→running→terminal
+			Attempt:        i + 1,       // 1-based schema-retry ordinal; the board shows "attempt N" when >1
+			JournalKey:     key,         // persisted so the board can restart THIS leaf (invalidate + resume)
 			PersistIO:      e.persistIO,
 			StreamActivity: e.persistIO, // sync leaf streams tool/usage activity for the board (gated like PersistIO)
 			IOPrompt:       sendPrompt,  // persisted only when PersistIO (subagent gates)
@@ -351,18 +405,23 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 		var res subagent.Result
 		e.sched.runBlocking(func() { res = runLeaf(req) })
 		if !res.OK {
+			leafErr = res // a pre-flight fail (no Run registration) keeps its real error class on the job
 			e.emitLeaf("failed", phaseTag, label, vendor, model)
 			return nil, fmt.Errorf("agent(%s): %s: %s", vendor, res.ErrorCode, res.ErrorMsg)
 		}
-		// Accumulate every OK exec's cost (incl. each schema-retry attempt) under the GIL.
-		e.budgetSpent += res.CostUSD
+		// Book every OK exec's real cost (incl. each schema-retry attempt) under the GIL: USD
+		// (claude's list-price estimate) + tokens (input+output). The reservation is freed by the
+		// defer at return; charging before it keeps spent+reserved monotonic for concurrent gates.
+		e.budgetCharge(res.CostUSD, leafTokens(res))
 		if schemaJSON == "" {
+			leafDone = true // subagent.Run finalized this job done; keep it
 			e.journal.append(key, res.Result)
 			e.emitLeaf("done", phaseTag, label, vendor, model)
 			return starlark.String(res.Result), nil
 		}
 		v, verr := decodeAndValidate(thread, res.Result, schemaVal)
 		if verr == nil {
+			leafDone = true
 			e.journal.append(key, res.Result)
 			e.emitLeaf("done", phaseTag, label, vendor, model)
 			return v, nil
@@ -611,11 +670,12 @@ func (e *engine) saveManifest(status, errText string) {
 		EnginePID:   e.enginePID,
 		// Carried in engine state so every whole-file overwrite preserves them (the board
 		// groups by SessionID; a restart resumes with the same args/persistIO/budget).
-		SessionID:   e.sessionID,
-		Cwd:         e.cwd,
-		ArgsJSON:    e.argsJSON,
-		NoPersistIO: !e.persistIO,
-		BudgetUSD:   e.budgetTotal,
+		SessionID:    e.sessionID,
+		Cwd:          e.cwd,
+		ArgsJSON:     e.argsJSON,
+		NoPersistIO:  !e.persistIO,
+		BudgetUSD:    e.budgetTotal,
+		BudgetTokens: e.budgetTokensTotal,
 	})
 }
 

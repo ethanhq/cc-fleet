@@ -43,6 +43,11 @@ func runEngineChild(args []string) int {
 		case "--budget-usd":
 			i++
 			opts.BudgetUSD, _ = strconv.ParseFloat(args[i], 64)
+		case "--budget-tokens":
+			i++
+			opts.BudgetTokens, _ = strconv.ParseInt(args[i], 10, 64)
+		case "--no-budget":
+			opts.BudgetUSD, opts.BudgetTokens = -1, -1
 		default:
 			if script == "" && args[i] != "" && args[i][0] != '-' {
 				script = args[i]

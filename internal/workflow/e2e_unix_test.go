@@ -290,7 +290,7 @@ func runComprehensiveGlobals(t *testing.T, env *e2eEnv, runID string, opts Optio
 		persistIO:   !opts.NoPersistIO,
 		metaModel:   meta.Model,
 		whenToUse:   meta.WhenToUse,
-		budgetTotal: opts.BudgetUSD,
+		budgetTotal: opts.BudgetUSD, budgetTokensTotal: opts.BudgetTokens,
 	}
 	if jp, jerr := subagent.RunJournalPath(runID); jerr == nil {
 		eng.journal = loadJournal(jp)
@@ -635,7 +635,7 @@ func resumeAt(t *testing.T, env *e2eEnv, runID, mainPath string, opts Options) s
 		sched: newScheduler(context.Background(), opts.Concurrency), runID: runID,
 		name: meta.Name, description: meta.Description, startedAt: prepared.StartedAt, phases: phases,
 		persistIO: !opts.NoPersistIO, metaModel: meta.Model, whenToUse: meta.WhenToUse,
-		budgetTotal: opts.BudgetUSD,
+		budgetTotal: opts.BudgetUSD, budgetTokensTotal: opts.BudgetTokens,
 	}
 	if jp, jerr := subagent.RunJournalPath(runID); jerr == nil {
 		eng.journal = loadJournal(jp)

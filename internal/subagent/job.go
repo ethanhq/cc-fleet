@@ -67,6 +67,9 @@ type jobMeta struct {
 	// JournalKey is the leaf's content-hash key, carried so finalizeSyncJob/StatusFor can
 	// stamp the terminal Result with it (the board needs it to restart this single leaf).
 	JournalKey string `json:"journal_key,omitempty"`
+	// Attempt is the 1-based schema-retry ordinal this job last ran at (>1 = re-ran on a
+	// schema mismatch); 0 backfills a legacy meta. Carried onto the reconstructed Result.
+	Attempt int `json:"attempt,omitempty"`
 
 	// PersistIO records that this job opted into board drill-in, so finalizeSyncJob
 	// writes the answer side file (<id>.answer) on completion. The result CACHE stays
@@ -386,7 +389,23 @@ func StatusFor(jobID string) Result {
 				r.PromptProfile = meta.PromptProfile
 				r.SlimDowngrade = meta.SlimDowngrade
 			}
+			if r.Attempt == 0 {
+				r.Attempt = meta.Attempt
+			}
 			return r
+		}
+	}
+
+	// A queued placeholder: the workflow engine minted it (PID=0, Status="queued") before the
+	// leaf got a pool slot, and no terminal result is cached yet. Report it AS queued — otherwise
+	// processAlive(0)=false falls through to classify an empty stdout as a dead/failed leaf.
+	if meta.Status == "queued" && meta.PID == 0 {
+		return Result{
+			OK: true, JobID: jobID, Status: "queued",
+			Vendor: meta.Vendor, Model: meta.Model, StartedAt: meta.StartedAt,
+			LeadSessionID: meta.LeadSessionID, RunID: meta.RunID, Phase: meta.Phase, Label: meta.Label,
+			JournalKey: meta.JournalKey, PromptProfile: meta.PromptProfile, SlimDowngrade: meta.SlimDowngrade,
+			Attempt: meta.Attempt,
 		}
 	}
 
@@ -407,6 +426,7 @@ func StatusFor(jobID string) Result {
 			JournalKey:    meta.JournalKey,
 			PromptProfile: meta.PromptProfile,
 			SlimDowngrade: meta.SlimDowngrade,
+			Attempt:       meta.Attempt,
 		}
 	}
 
@@ -427,6 +447,7 @@ func StatusFor(jobID string) Result {
 	res.JournalKey = meta.JournalKey
 	res.PromptProfile = meta.PromptProfile
 	res.SlimDowngrade = meta.SlimDowngrade
+	res.Attempt = meta.Attempt
 	if res.OK {
 		res.Status = "done"
 	} else {
@@ -519,8 +540,8 @@ func GC(olderThan time.Duration) Result {
 		resultPath := filepath.Join(dir, jobID+".result.json")
 		_, resultErr := os.Stat(resultPath)
 		resultCached := resultErr == nil
-		if !resultCached && processAlive(meta.PID, meta.SettingsPath) {
-			continue // truly running (no result cache + alive process)
+		if !resultCached && (processAlive(meta.PID, meta.SettingsPath) || queuedPlaceholder(meta)) {
+			continue // truly running (no result cache + alive process), or a not-yet-started queued leaf
 		}
 		if started, perr := time.Parse(time.RFC3339, meta.StartedAt); perr == nil && started.After(cutoff) {
 			continue // finished but too recent
@@ -680,12 +701,12 @@ func PurgeJobs() (dir string, removedFinished []string, running []string, err er
 		// meta we can't read can't be polled, so it falls through to removal.
 		resultPath := filepath.Join(dir, jobID+".result.json")
 		if _, resultErr := os.Stat(resultPath); resultErr != nil {
-			if meta, merr := readMeta(dir, jobID); merr == nil && processAlive(meta.PID, meta.SettingsPath) {
+			if meta, merr := readMeta(dir, jobID); merr == nil && (processAlive(meta.PID, meta.SettingsPath) || queuedPlaceholder(meta)) {
 				running = append(running, jobID)
 				if meta.RunID != "" {
 					runningRuns[meta.RunID] = true
 				}
-				continue // live → keep this job's file group
+				continue // live (or a not-yet-started queued leaf) → keep this job's file group
 			}
 		}
 		// Finished (or dead / unreadable) → remove its full file group now, even
@@ -739,6 +760,15 @@ func purgeRunManifests(jobsDir string, runningRuns map[string]bool) {
 // procRoot is the procfs mount point. A package var so tests can point the
 // PID-reuse guard at a fixture tree instead of the live /proc.
 var procRoot = "/proc"
+
+// queuedPlaceholder reports whether meta is a workflow queued placeholder the engine minted before
+// the leaf got a pool slot (PID=0, Status="queued", no process yet). GC/PurgeJobs treat it as live —
+// mirroring StatusFor's queued branch — so a `subagent-gc --older-than 0s` (which clears done entries)
+// can't remove an active not-yet-started leaf out from under the engine. It flips to running
+// (registerSyncJob) or terminal (finalize) shortly; a crashed engine's orphan is reaped by run prune/rm.
+func queuedPlaceholder(meta jobMeta) bool {
+	return meta.Status == "queued" && meta.PID == 0
+}
 
 // processAlive reports whether pid is alive AND (when settingsPath is known)
 // still the claude subagent this job launched. A bare kill(pid,0) only proves
@@ -950,11 +980,18 @@ func registerSyncJob(jobID string, req Request, model string, effective, downgra
 		Phase:         req.Phase,
 		Label:         req.Label,
 		JournalKey:    req.JournalKey,
+		Attempt:       req.Attempt,
 		PersistIO:     req.PersistIO,
 		PromptProfile: effective,
 		SlimDowngrade: downgrade,
 		// SettingsPath deliberately empty (see processAlive). Sync writes no .out
 		// file, so the deferred result cache is the authoritative done signal.
+	}
+	// A REUSED job id (the engine's queued→running flip, or a schema retry re-registering an
+	// already-finalized attempt) must start clean: drop any terminal cache + stale answer/activity
+	// so the board re-reads this attempt as running, not the prior done/answer. No-op for a fresh id.
+	for _, ext := range []string{".result.json", ".answer", ".activity"} {
+		_ = os.Remove(filepath.Join(dir, jobID+ext))
 	}
 	if err := writeMetaFn(dir, meta); err != nil {
 		return false
@@ -966,6 +1003,61 @@ func registerSyncJob(jobID string, req Request, model string, effective, downgra
 		_ = os.WriteFile(filepath.Join(dir, jobID+".prompt"), []byte(req.IOPrompt), 0o600)
 	}
 	return true
+}
+
+// MintQueuedLeaf records a leaf the workflow engine has admitted but not yet given a pool slot:
+// a PLACEHOLDER jobMeta with Status="queued" and PID=0 (no process yet), so the board shows it as
+// a queued ◌ row immediately instead of only once it starts running. The engine passes the returned
+// id back as Request.JobID, so the SAME on-disk job flips queued→running (registerSyncJob) →terminal
+// (finalizeSyncJob) as one file. It writes NO prompt/answer (key-safety, same as registerSyncJob).
+// Best-effort: "" on any error, so board bookkeeping never fails the run; an empty id makes the
+// engine fall back to minting at run time.
+func MintQueuedLeaf(req Request, model string) string {
+	jobID := mintSyncJobID()
+	if jobID == "" {
+		return ""
+	}
+	dir, err := jobsDir()
+	if err != nil {
+		return ""
+	}
+	meta := jobMeta{
+		JobID:         jobID,
+		PID:           0, // no process yet — StatusFor reports queued until registerSyncJob flips it
+		Vendor:        req.Vendor,
+		Model:         model,
+		StartedAt:     time.Now().UTC().Format(time.RFC3339),
+		Status:        "queued",
+		OutputFormat:  req.OutputFormat,
+		JSON:          req.JSON,
+		LeadSessionID: req.LeadSessionID,
+		RunID:         req.RunID,
+		Phase:         req.Phase,
+		Label:         req.Label,
+		JournalKey:    req.JournalKey,
+		Attempt:       req.Attempt,
+		PersistIO:     req.PersistIO,
+		PromptProfile: req.PromptProfile,
+	}
+	if err := writeMetaFn(dir, meta); err != nil {
+		return ""
+	}
+	return jobID
+}
+
+// FinalizeQueuedLeafFailed marks a leaf's (reused) job terminal-failed when the engine abandoned it
+// without a success: a queued placeholder cancelled before its slot or whose worktree failed, a
+// pre-flight vendor failure (subagent.Run returned before registering), or a schema-exhausted leaf
+// whose last attempt cached "done". A res carrying a real error class is preserved (so the board keeps
+// e.g. INSUFFICIENT_BALANCE); otherwise a canonical SUBAGENT_FAILED is written. No-op for an empty id.
+func FinalizeQueuedLeafFailed(jobID string, res Result) {
+	if jobID == "" {
+		return
+	}
+	if res.OK || res.ErrorCode == "" {
+		res = fail(ErrCodeFailed, "leaf did not complete", res.Vendor, "")
+	}
+	finalizeSyncJob(jobID, res)
 }
 
 // finalizeSyncJob flips a sync job from running → done/failed by writing a
@@ -1014,6 +1106,7 @@ func finalizeSyncJob(jobID string, res Result) {
 		Phase:          meta.Phase,
 		Label:          meta.Label,
 		JournalKey:     meta.JournalKey,
+		Attempt:        meta.Attempt,
 		PromptProfile:  meta.PromptProfile,
 		SlimDowngrade:  meta.SlimDowngrade,
 	}

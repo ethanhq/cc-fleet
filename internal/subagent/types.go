@@ -49,6 +49,15 @@ type Request struct {
 	RunID string // run this job belongs to
 	Phase string // phase label within the run
 	Label string // human label for this agent within the run
+	// JobID, when set, REUSES an existing job record instead of minting a fresh one — the
+	// workflow engine mints a queued placeholder (PID=0) before a leaf gets a pool slot and
+	// passes its id here so the same on-disk job flips queued→running→terminal as ONE file.
+	// Empty (the bare-CLI path) mints a fresh id, byte-identical to before.
+	JobID string
+	// Attempt is the 1-based schema-retry ordinal (1 = first try). The engine sets it per
+	// retry so the board can show "attempt N" for a leaf that re-ran on a schema mismatch.
+	// Zero (a non-schema or non-workflow call) renders no marker.
+	Attempt int
 
 	// PersistIO opts this job into board drill-in: persist the prompt + answer to
 	// per-job 0600 side files (<id>.prompt / <id>.answer) for the Workflows detail card.
@@ -123,6 +132,9 @@ type Result struct {
 	// JournalKey is the leaf's content-hash key, persisted so the board can restart THIS leaf
 	// (invalidate its journal entry + resume). A sha256 hex — never a secret.
 	JournalKey string `json:"journal_key,omitempty"`
+	// Attempt is the 1-based schema-retry ordinal the leaf ran at (>1 means it re-ran on a
+	// schema mismatch); 0 backfills a legacy cache that predates the field.
+	Attempt int `json:"attempt,omitempty"`
 
 	// PromptProfile is the EFFECTIVE profile this run used (post-version-gate);
 	// SlimDowngrade is non-empty when a slim request ran full instead (the reason).

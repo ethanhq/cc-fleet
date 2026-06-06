@@ -42,6 +42,11 @@ var fileOptions = &syntax.FileOptions{
 // key-safe via apiKeyHelper, board-registered, tagged with run/phase/label).
 var runLeaf = subagent.Run
 
+// mintQueuedLeaf records a leaf's queued placeholder (PID=0) before it gets a pool slot — a seam so
+// the fake-leaf unit tests opt out of the disk side effect by stubbing it to return "". Production =
+// subagent.MintQueuedLeaf; the engine reuses the returned id as Request.JobID (queued→running flip).
+var mintQueuedLeaf = subagent.MintQueuedLeaf
+
 // resolveProfile maps a REQUESTED prompt profile to the effective one (the version
 // gate), pre-keying. A seam so tests drive the downgrade path without a real claude
 // binary. Production loads the fingerprint the same way Run does and resolves the
@@ -76,9 +81,15 @@ type Options struct {
 	// answer-stripped either way, so the board table is unaffected. Propagated to the
 	// detached child so the whole run honors it.
 	NoPersistIO bool
-	// BudgetUSD caps total vendor spend (sum of leaf CostUSD); agent() raises once the cap
-	// is reached. <=0 is uncapped. Propagated to the detached child.
+	// BudgetUSD caps total vendor spend in USD (a sum of leaf CostUSD — an Anthropic list-price
+	// estimate, not the third-party vendor's actual charge); agent() raises once the cap would be
+	// breached. <=0 is uncapped; a -1 sentinel from --no-budget is normalized to 0 (explicit uncap)
+	// in Launch before any persist. Propagated to the detached child.
 	BudgetUSD float64
+	// BudgetTokens caps total vendor token spend (Usage.InputTokens+OutputTokens summed across
+	// leaves, cache-read excluded — the exact vendor-neutral ceiling); <=0 uncapped, -1 normalized
+	// to 0 like BudgetUSD. The first cap to trip aborts. Propagated to the detached child.
+	BudgetTokens int64
 	// LeadSessionID is the parent Claude session this run was launched from (detected at
 	// `workflow run`). Stored on the manifest at mint so the board groups runs by session.
 	// Used only by Launch's fresh-mint path; a resume reads it back off the manifest.
@@ -139,6 +150,9 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 	if verr := subagent.ValidateRunID(runID); verr != nil {
 		return fmt.Errorf("workflow: invalid run id: %w", verr)
 	}
+	// Normalize the -1 uncap sentinel here too, not only in Launch: the detached `--run-id` re-exec
+	// reaches Execute directly, so the engine and its manifest writes never see a negative budget.
+	normalizeBudgetSentinels(&opts)
 	// Seed the engine's authoritative manifest state from the Prepare-minted manifest
 	// (best-effort) + the script's meta. The engine then OWNS the manifest, overwriting
 	// it whole on every phase()/finalize — so there is no read-modify-write to race and
@@ -180,14 +194,15 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 	eng := &engine{
 		sched: newScheduler(ctx, concurrency), runID: runID,
 		name: meta.Name, description: meta.Description, startedAt: startedAt, phases: phases,
-		persistIO:   !opts.NoPersistIO, // the board's inline prompt/answer detail is default-on
-		enginePID:   detachedEnginePID(opts),
-		metaModel:   meta.Model, // default model for agents that omit model=
-		whenToUse:   meta.WhenToUse,
-		budgetTotal: opts.BudgetUSD,
-		sessionID:   prepared.SessionID, // from the minted manifest; re-persisted on every save
-		cwd:         prepared.Cwd,       // launching project dir; ditto
-		argsJSON:    opts.ArgsJSON,
+		persistIO:         !opts.NoPersistIO, // the board's inline prompt/answer detail is default-on
+		enginePID:         detachedEnginePID(opts),
+		metaModel:         meta.Model, // default model for agents that omit model=
+		whenToUse:         meta.WhenToUse,
+		budgetTotal:       opts.BudgetUSD,
+		budgetTokensTotal: opts.BudgetTokens,
+		sessionID:         prepared.SessionID, // from the minted manifest; re-persisted on every save
+		cwd:               prepared.Cwd,       // launching project dir; ditto
+		argsJSON:          opts.ArgsJSON,
 	}
 	// Load the run's content-hash journal (resume). The path is derived from the
 	// already-validated runID; a missing file (a fresh run) yields an empty cache that
@@ -258,6 +273,18 @@ func (eng *engine) run(scriptPath string, src interface{}, opts Options) (starla
 	return g, err
 }
 
+// normalizeBudgetSentinels turns the --no-budget -1 sentinel into 0 (explicit uncap) for both caps,
+// so the engine and the manifest only ever see >=0 (0 = uncapped). Called AFTER the resume-inherit
+// decision and before any persist, so -1 never inherits the old cap and is never written.
+func normalizeBudgetSentinels(opts *Options) {
+	if opts.BudgetUSD < 0 {
+		opts.BudgetUSD = 0
+	}
+	if opts.BudgetTokens < 0 {
+		opts.BudgetTokens = 0
+	}
+}
+
 // Launch is the entry for `cc-fleet workflow run`. It prepares the run (parse + meta +
 // mint), then either runs it inline (foreground — the debug / deterministic-e2e path)
 // or re-execs cc-fleet as a DETACHED child that runs it to completion off the launching
@@ -295,9 +322,9 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 		// Replay the run's original launch options on resume so a leaf's content key — and thus
 		// its journal-cache validity — doesn't shift. A non-zero/non-empty opts value overrides
 		// (e.g. resuming with a larger --budget-usd); a zero/empty one reads as "not set" and
-		// inherits the manifest. The corollary — you can't override TO the zero value on resume
-		// (uncap a capped run, blank the args) — is a faithful-continuation tradeoff, not a real
-		// use case (the CLI can't express it and Restart wants the inherit).
+		// inherits the manifest. The one way to override TO uncapped is --no-budget, which arrives
+		// as a -1 sentinel: it is non-zero so it skips the inherit, then normalizes to 0 (uncapped)
+		// below — so a capped run CAN be resumed uncapped. (Args/persistIO have no such sentinel.)
 		if opts.ArgsJSON == "" {
 			opts.ArgsJSON = existing.ArgsJSON
 		}
@@ -307,6 +334,15 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 		if opts.BudgetUSD == 0 {
 			opts.BudgetUSD = existing.BudgetUSD
 		}
+		if opts.BudgetTokens == 0 {
+			opts.BudgetTokens = existing.BudgetTokens
+		}
+		// Normalize the -1 uncap sentinel to 0 AFTER the inherit decision (so -1 never inherits),
+		// then re-stamp the budgets onto the manifest so an uncap is durable from resume time — the
+		// engine never persists -1, and never re-caps a run the user just uncapped.
+		normalizeBudgetSentinels(&opts)
+		run.BudgetUSD = opts.BudgetUSD
+		run.BudgetTokens = opts.BudgetTokens
 		// Restamp liveness + flip to running BEFORE detaching, so a concurrent GC can't
 		// prune this (possibly old) run's manifest + journal in the window before the
 		// resumed engine writes its first heartbeat (GC recency keys on the later of
@@ -325,11 +361,15 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 		}
 		run = minted
 		// Stamp the session + replay options onto the manifest BEFORE the child reads it, so
-		// the board can group by session and a later restart resumes with the same inputs.
+		// the board can group by session and a later restart resumes with the same inputs. A fresh
+		// --no-budget is a no-op (already uncapped) but still normalize -1→0 so the manifest never
+		// persists the sentinel.
+		normalizeBudgetSentinels(&opts)
 		run.SessionID = opts.LeadSessionID
 		run.ArgsJSON = opts.ArgsJSON
 		run.NoPersistIO = opts.NoPersistIO
 		run.BudgetUSD = opts.BudgetUSD
+		run.BudgetTokens = opts.BudgetTokens
 		if cwd, cerr := os.Getwd(); cerr == nil {
 			run.Cwd = cwd
 		}

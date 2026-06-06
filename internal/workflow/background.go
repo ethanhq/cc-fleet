@@ -37,6 +37,11 @@ type bgHandle struct {
 	resolved bool      // result already known (journal cache hit on resume)
 	cached   string    // the cached result, when resolved
 	deadline time.Time // wall-clock timeout enforced at wait() (zero = none); the launch itself is deadline-less
+	// est/estTok carry the leaf's budget RESERVATION from launchBg through to resolveHandle, which
+	// releases it (and charges the real cost) at await. A resolved handle (journal hit) never
+	// reserved, so both stay 0 and its release is a no-op.
+	est    float64
+	estTok int64
 	// display/event tags
 	vendor, model, phase, label string
 }
@@ -60,11 +65,15 @@ type slimReq struct {
 
 // launchBg starts a leaf detached (subagent --background) and returns a handle. It admits
 // against the lifetime cap but takes NO live-pool slot (a detached leaf isn't bounded by
-// the in-process pool); its result is journaled at await time, not now. GIL-held caller.
-func (e *engine) launchBg(vendor, model, prompt, phaseTag, label, key string, timeoutSec, maxBudget float64, maxTurns int, slim slimReq) (starlark.Value, error) {
+// the in-process pool); its result is journaled at await time, not now. It owns the budget
+// RESERVATION for the detached leaf: it reserves (usdEst, tokEst) before the launch, releases on a
+// launch failure, and carries the estimate on the handle so resolveHandle frees it (and charges
+// real) at await. GIL-held caller.
+func (e *engine) launchBg(vendor, model, prompt, phaseTag, label, key string, timeoutSec, maxBudget float64, maxTurns int, usdEst float64, tokEst int64, slim slimReq) (starlark.Value, error) {
 	if !e.sched.admit() {
 		return nil, fmt.Errorf("agent: run exceeded the %d-leaf lifetime cap", maxLifetimeAgents)
 	}
+	e.budgetReserve(usdEst, tokEst)
 	e.emitLeaf("launch", phaseTag, label, vendor, model)
 	var res subagent.Result
 	e.sched.runBlocking(func() {
@@ -90,10 +99,11 @@ func (e *engine) launchBg(vendor, model, prompt, phaseTag, label, key string, ti
 		})
 	})
 	if !res.OK {
+		e.budgetRelease(usdEst, tokEst) // launch failed → no handle will carry the reservation; free it here
 		e.emitLeaf("failed", phaseTag, label, vendor, model)
 		return nil, fmt.Errorf("agent(%s): background launch: %s: %s", vendor, res.ErrorCode, res.ErrorMsg)
 	}
-	h := &bgHandle{jobID: res.JobID, key: key, vendor: vendor, model: model, phase: phaseTag, label: label}
+	h := &bgHandle{jobID: res.JobID, key: key, est: usdEst, estTok: tokEst, vendor: vendor, model: model, phase: phaseTag, label: label}
 	// A detached background job outlives the launcher, so its timeout is enforced at wait() (resolveHandle
 	// reaps an overrun); with no script timeout it falls back to the backstop so an AWAITED leaf can never
 	// poll forever.
@@ -153,6 +163,15 @@ func (e *engine) resolveHandle(h *bgHandle) (starlark.Value, error) {
 		e.emitLeaf("cached", h.phase, h.label, h.vendor, h.model)
 		return starlark.String(h.cached), nil
 	}
+	// Free the leaf's budget reservation on EVERY terminal exit below (timeout / cancel / fail /
+	// success); success charges its real cost first. Registered AFTER the resolved short-circuit
+	// (a resolved handle never reserved), and runs GIL-held on the unwind. Zero the estimate after
+	// releasing so awaiting the SAME handle again (its failure paths don't set resolved) can't double-
+	// release and free another leaf's reservation.
+	defer func() {
+		e.budgetRelease(h.est, h.estTok)
+		h.est, h.estTok = 0, 0
+	}()
 	var res subagent.Result
 	cancelled, timedOut := false, false
 	e.sched.runBlocking(func() {
@@ -186,10 +205,10 @@ func (e *engine) resolveHandle(h *bgHandle) (starlark.Value, error) {
 		e.emitLeaf("failed", h.phase, h.label, h.vendor, h.model)
 		return nil, fmt.Errorf("agent(%s, background): %s: %s", h.vendor, res.ErrorCode, res.ErrorMsg)
 	}
-	e.budgetSpent += res.CostUSD
+	e.budgetCharge(res.CostUSD, leafTokens(res))
 	e.journal.append(h.key, res.Result)
 	// Mark resolved so a second wait(h) returns the cached result instead of re-polling,
-	// double-counting CostUSD, and appending a duplicate journal entry.
+	// double-counting cost, and appending a duplicate journal entry.
 	h.resolved = true
 	h.cached = res.Result
 	e.emitLeaf("done", h.phase, h.label, h.vendor, h.model)

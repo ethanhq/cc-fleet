@@ -72,6 +72,9 @@ type WorkflowRun struct {
 	ArgsJSON    string  `json:"args_json,omitempty"`
 	NoPersistIO bool    `json:"no_persist_io,omitempty"`
 	BudgetUSD   float64 `json:"budget_usd,omitempty"`
+	// BudgetTokens is the run-level token cap (Usage.InputTokens+OutputTokens summed across
+	// leaves, cache-read excluded); 0 = uncapped. Replayed on resume like BudgetUSD.
+	BudgetTokens int64 `json:"budget_tokens,omitempty"`
 }
 
 // runsDir is ConfigDir/subagent-jobs/runs.
@@ -485,6 +488,42 @@ func PurgeRun(runID string) error {
 	}
 	removeRun(filepath.Join(dir, runsDirName), runID)
 	return nil
+}
+
+// PruneRuns deletes every run whose engine is no longer alive — crashed/killed runs still stuck
+// "running", plus terminal ones — while sparing any run with a live engine. Each delete runs under the
+// per-run execution lock so it can't race a concurrent restart/resume, and the sweep is best-effort:
+// one run that won't delete (an unverifiable-live engine PurgeRun refuses) doesn't abort the rest.
+// Returns the number of runs removed.
+func PruneRuns() (int, error) {
+	runs, err := ListRuns()
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, r := range runs {
+		id := r.RunID
+		_ = WithRunLock(id, func() error {
+			fresh, rerr := ReadRun(id)
+			if rerr != nil || isLiveOrUnverifiable(fresh) {
+				return nil // gone already, or possibly-live → spare it
+			}
+			if perr := PurgeRun(id); perr == nil {
+				removed++
+			}
+			return nil
+		})
+	}
+	return removed, nil
+}
+
+// isLiveOrUnverifiable reports whether a run might still be writing — a verifiably-live detached
+// engine, OR a still-"running" run with no reapable pid (a --foreground run, or a detached run in the
+// mint→stamp-pid window). PruneRuns spares both: deleting under either could yank files from a live
+// engine. Mirrors the fail-closed liveness guard the resume/restart paths use. A terminal run, or a
+// crashed detached run (recorded pid now dead), is not protected — exactly what prune reaps.
+func isLiveOrUnverifiable(run WorkflowRun) bool {
+	return EngineAlive(run) || (run.Status == "running" && run.EnginePID <= 0)
 }
 
 // WaitEngineStopped polls a run's engine liveness until it is gone or the deadline passes (true once

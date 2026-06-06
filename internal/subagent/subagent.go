@@ -16,6 +16,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/childenv"
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/fingerprint"
+	"github.com/ethanhq/cc-fleet/internal/ids"
 	"github.com/ethanhq/cc-fleet/internal/leadsession"
 	"github.com/ethanhq/cc-fleet/internal/profile"
 	"github.com/ethanhq/cc-fleet/internal/vendorclass"
@@ -198,8 +199,15 @@ func Run(req Request) Result {
 	}
 
 	// Mint the job id BEFORE buildArgv so a slim run can write its
-	// <jobID>.slimprompt sidecar and reference it via --system-prompt-file.
-	jobID := mintSyncJobID()
+	// <jobID>.slimprompt sidecar and reference it via --system-prompt-file. A workflow leaf
+	// passes the id of its queued placeholder so the SAME job flips queued→running→terminal
+	// (one file); the bare-CLI path leaves it empty and mints fresh, byte-identical to before.
+	// A reused id becomes a filesystem path component, so validate it (the engine always passes a
+	// uuid; a malformed/path-unsafe id falls back to a fresh mint rather than escaping the jobs dir).
+	jobID := req.JobID
+	if jobID == "" || ids.ValidateJobID(jobID) != nil {
+		jobID = mintSyncJobID()
+	}
 
 	slim, slimErr := buildSlimArgv(effective, jobID, req, model)
 	if slimErr != nil {

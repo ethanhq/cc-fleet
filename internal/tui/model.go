@@ -482,10 +482,11 @@ func stopRunCmd(runID string, epoch int) tea.Cmd {
 }
 
 // restartCmd restarts a run via workflow.Restart: an empty journalKey resumes the WHOLE run
-// (re-running only un-journaled / failed leaves); a leaf's journalKey drops just that leaf's cache
-// so the resume re-runs only it (+ any downstream leaf whose input shifted). workflow.Restart stops
-// a live run first, replays the run's original launch options off the manifest, and (for a keyed
-// restart) invalidates the leaf's journal entry. epoch gates a stale result like stopRunCmd.
+// (re-running only un-journaled / failed leaves); a leaf's journalKey additionally drops that leaf's
+// cache so the resume re-runs it (+ any downstream leaf whose input shifted). On a still-running run
+// the engine is stopped first, so every in-flight sibling that had not journaled re-runs too — a keyed
+// restart is scoped to the one leaf only once the run is already terminal. workflow.Restart replays the
+// run's original launch options off the manifest. epoch gates a stale result like stopRunCmd.
 func restartCmd(runID, journalKey string, epoch int) tea.Cmd {
 	return func() tea.Msg {
 		err := workflow.Restart(context.Background(), runID, journalKey)
@@ -1422,9 +1423,11 @@ func (m Model) clampCardScroll(v int) int {
 	}
 }
 
-// restartFocusedLeaf restarts ONLY the focused agent — workflow.Restart drops its journal entry and
-// resumes, re-running just this leaf (+ any downstream leaf whose input shifted). A leaf with no
-// persisted JournalKey falls back to a whole-run restart so r is never a silent no-op.
+// restartFocusedLeaf restarts the focused agent — workflow.Restart drops its journal entry and resumes,
+// re-running it (+ any downstream leaf whose input shifted). On a still-running run the engine is stopped
+// first, so every un-journaled in-flight sibling re-runs as well; the single-leaf scope is exact only once
+// the run is terminal. A leaf with no persisted JournalKey falls back to a whole-run restart so r is never
+// a silent no-op.
 // wfBusy reports whether a stop/restart/delete is already in flight for runID — the in-flight guard
 // that makes a second x/r/d on the same run a no-op until its workflowCtlMsg lands.
 func (m Model) wfBusy(runID string) bool { return m.wfRestarting[runID] }

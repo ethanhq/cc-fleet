@@ -67,8 +67,9 @@ func TestWfPhasesPane(t *testing.T) {
 	}
 }
 
-// TestWfAgentRow_LiveTokens: a running leaf's tokens + tool count come from the live activity
-// snapshot (not the still-empty final Result); a done leaf uses its final Result metrics.
+// TestWfAgentRow_LiveTokens: a running leaf's OUTPUT tokens + tool count come from the live activity
+// snapshot (not the still-empty final Result); a done leaf uses its final Result. The row shows output
+// only (↓), so the leaf's input (its peak context) never inflates it — honest cross-leaf-summable tokens.
 func TestWfAgentRow_LiveTokens(t *testing.T) {
 	jobs, runs := oneRun()
 	activity := map[string]activitySnapshot{
@@ -78,21 +79,22 @@ func TestWfAgentRow_LiveTokens(t *testing.T) {
 	// Move to the build phase (the running leaf) so its row renders on the right.
 	m, _ = press(t, m, "down")
 	out := m.viewWorkflows()
-	if !strings.Contains(out, "12.8k tok") {
-		t.Fatalf("running leaf should show live tokens (12.8k) from the snapshot:\n%s", out)
+	if !strings.Contains(out, "↓ 800 out") {
+		t.Fatalf("running leaf should show its live OUTPUT tokens (800) from the snapshot, not in+out:\n%s", out)
 	}
 	if !strings.Contains(out, "2 tools") {
 		t.Fatalf("running leaf should show the live tool count (2):\n%s", out)
 	}
-	// The done leaf (map phase) shows its final 51.9k (50.7k in + 1.2k out) once re-selected.
+	// The done leaf (map phase) shows its final 1.2k OUTPUT once re-selected (the 50.7k input is the
+	// peak context, shown per-leaf in the detail card as "↑ ctx", never summed on the row).
 	m, _ = press(t, m, "up")
-	if out := m.viewWorkflows(); !strings.Contains(out, "51.9k tok") {
-		t.Fatalf("done leaf should show final tokens:\n%s", out)
+	if out := m.viewWorkflows(); !strings.Contains(out, "↓ 1.2k out") {
+		t.Fatalf("done leaf should show its final output tokens (1.2k):\n%s", out)
 	}
 }
 
-// TestWfAgentCard: drilling into a phase shows the agent detail card with status/model, tok·tools,
-// the Activity last-3 feed, and the Outcome line.
+// TestWfAgentCard: drilling into a phase shows the agent detail card with status/model, ↑ ctx · ↓ out
+// · tool-calls, the Activity last-3 feed, and the Outcome line.
 func TestWfAgentCard(t *testing.T) {
 	jobs, runs := oneRun()
 	activity := map[string]activitySnapshot{
@@ -505,8 +507,8 @@ func TestWfDelete_TwoPressConfirm(t *testing.T) {
 func TestWfAgentRow_LabelThenModelThenMetrics(t *testing.T) {
 	jobs, runs := oneRun()
 	out := workflowsModel(t, jobs, runs, nil).viewWorkflows() // phases view, map phase's agent m1
-	// "tok ·" is the agent row's metric marker; the run-header total uses "tokens", so anchor on the former.
-	li, mi, ti := strings.Index(out, "m1"), strings.Index(out, "glm-4.6"), strings.Index(out, "tok ·")
+	// "out ·" is the agent row's output-token metric marker; the run-header total uses "tokens", so anchor on the former.
+	li, mi, ti := strings.Index(out, "m1"), strings.Index(out, "glm-4.6"), strings.Index(out, "out ·")
 	if li < 0 || mi < 0 || ti < 0 || !(li < mi && mi < ti) {
 		t.Fatalf("agent row should read label → model → metrics (idx %d,%d,%d):\n%s", li, mi, ti, out)
 	}
@@ -718,5 +720,69 @@ func TestWfPicker_FullSessionIdAndTitle(t *testing.T) {
 	}
 	if !strings.Contains(out, "sess-untitled-long") {
 		t.Fatalf("an untitled session should show its full id (not truncated):\n%s", out)
+	}
+}
+
+// TestPhaseAgentCountsTerminalOnly: the done counter counts only TERMINAL leaves — done/failed/stopped/
+// cached — so a queued or running leaf is in-progress and never inflates a phase to "complete" early.
+func TestPhaseAgentCountsTerminalOnly(t *testing.T) {
+	p := runPhaseGroup{jobs: []subagent.Result{
+		{Status: "done"}, {Status: "cached"}, {Status: "failed"}, // terminal
+		{Status: "queued"}, {Status: "running"}, {Status: ""}, // in-progress
+	}}
+	done, total := phaseAgentCounts(p)
+	if total != 6 {
+		t.Errorf("total = %d, want 6", total)
+	}
+	if done != 3 {
+		t.Errorf("done = %d, want 3 (done/cached/failed terminal; queued/running/\"\" in-progress)", done)
+	}
+}
+
+// TestWfAgentCardAttemptMarker: a leaf that re-ran on a schema mismatch (Attempt>1) shows a faint
+// "attempt N" in its detail card; a first-attempt leaf shows none.
+func TestWfAgentCardAttemptMarker(t *testing.T) {
+	runs := []subagent.WorkflowRun{{
+		RunID: "run-1", Name: "n", StartedAt: "2026-06-01T00:00:00Z", Phases: []subagent.RunPhase{{Title: "map"}},
+	}}
+	jobs := []subagent.Result{{RunID: "run-1", Phase: "map", Label: "m1", Model: "glm-4.6", Status: "done", Attempt: 2, JobID: "j1", NumTurns: 1}}
+	m := workflowsModel(t, jobs, runs, nil)
+	m, _ = press(t, m, "enter") // drill into the agent detail card
+	if out := m.viewWorkflows(); !strings.Contains(out, "attempt 2") {
+		t.Fatalf("a re-run leaf (Attempt=2) should show 'attempt 2':\n%s", out)
+	}
+
+	jobs[0].Attempt = 1 // first attempt → no marker
+	m = workflowsModel(t, jobs, runs, nil)
+	m, _ = press(t, m, "enter")
+	if out := m.viewWorkflows(); strings.Contains(out, "attempt") {
+		t.Fatalf("a first-attempt leaf must show no attempt marker:\n%s", out)
+	}
+}
+
+// TestWfNewSurfacesKeySafe: the queued row, attempt marker, and token figure render only canonical
+// status + integer tokens — never the leaf's answer/error. A canary key + a NUL planted in a leaf's
+// Result/ErrorMsg must not reach the rendered board.
+func TestWfNewSurfacesKeySafe(t *testing.T) {
+	const canary = "sk-CANARYdeadbeef12345678"
+	runs := []subagent.WorkflowRun{{
+		RunID: "run-1", Name: "n", StartedAt: "2026-06-01T00:00:00Z", Phases: []subagent.RunPhase{{Title: "map"}},
+	}}
+	jobs := []subagent.Result{{
+		RunID: "run-1", Phase: "map", Label: "m1", Status: "queued", Attempt: 2, JobID: "j1",
+		Result:   canary + "\x00",  // the (never-rendered-on-a-row) answer
+		ErrorMsg: "boom " + canary, // a raw error
+		Usage:    &subagent.Usage{InputTokens: 40000, OutputTokens: 1200},
+	}}
+	m := workflowsModel(t, jobs, runs, nil)
+	out := m.viewWorkflows() // phases view: the queued row + its token figure
+	if strings.Contains(out, "sk-CANARY") {
+		t.Fatalf("the queued row must never render the leaf's answer/error (canary key leaked):\n%q", out)
+	}
+	if strings.ContainsRune(out, '\x00') {
+		t.Fatalf("a NUL from the leaf's answer must never reach the board")
+	}
+	if !strings.Contains(out, "↓ 1.2k out") {
+		t.Errorf("the queued leaf should still show its integer output tokens:\n%s", out)
 	}
 }

@@ -57,6 +57,9 @@ func launchDetached(scriptPath, runID string, opts Options) (int, *detachedReape
 	if opts.BudgetUSD > 0 {
 		argv = append(argv, "--budget-usd", strconv.FormatFloat(opts.BudgetUSD, 'f', -1, 64))
 	}
+	if opts.BudgetTokens > 0 {
+		argv = append(argv, "--budget-tokens", strconv.FormatInt(opts.BudgetTokens, 10))
+	}
 	devnull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
 		return 0, nil, fmt.Errorf("workflow: open %s: %w", os.DevNull, err)

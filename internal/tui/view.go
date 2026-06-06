@@ -338,11 +338,22 @@ func indentBox(s string, n int) string {
 	return pad + strings.ReplaceAll(s, "\n", "\n"+pad)
 }
 
-// phaseAgentCounts / runAgentCounts return (done, total) where done counts terminal (non-running) leaves.
+// isTerminalLeaf reports whether a leaf status is finished. cached counts as done (it completed in a
+// prior run and is being replayed); queued / running / "" (not-yet-started) are all in-progress — so a
+// queued placeholder never inflates the done counter into showing a phase complete before any work runs.
+func isTerminalLeaf(status string) bool {
+	switch status {
+	case "done", "failed", "stopped", "cached":
+		return true
+	}
+	return false
+}
+
+// phaseAgentCounts / runAgentCounts return (done, total) where done counts only TERMINAL leaves.
 func phaseAgentCounts(p runPhaseGroup) (done, total int) {
 	for _, j := range p.jobs {
 		total++
-		if j.Status != "" && j.Status != "running" {
+		if isTerminalLeaf(j.Status) {
 			done++
 		}
 	}
@@ -358,14 +369,17 @@ func runAgentCounts(g runGroup) (done, total int) {
 	return
 }
 
-// runTokens sums the input+output tokens across every leaf of the run — the live snapshot for a running
-// leaf, the final Result for a done one (the same source as the per-leaf "tok" column).
+// runTokens sums each leaf's cumulative OUTPUT tokens across the run — the run header's "↓ tokens".
+// Output is the one cross-leaf-additive figure (the generated text accumulates); input is each leaf's
+// PEAK context window, so summing it across leaves is dimensionally meaningless — the header shows
+// output only, and per-leaf input lives in the agent detail (↑ ctx). Live snapshot while running, the
+// final Result once done. Cache-read is excluded throughout.
 func (m Model) runTokens(g runGroup) int {
 	total := 0
 	for _, p := range g.phases {
 		for _, j := range p.jobs {
-			in, out, _ := m.leafCounts(j)
-			total += in + out
+			_, out, _ := m.leafCounts(j)
+			total += out
 		}
 	}
 	return total
@@ -681,10 +695,11 @@ func (m Model) viewWfAgent() string {
 }
 
 // renderAgentRowFull is one agent row for a phase's agent list (right pane): "<dot> <label>  <model>"
-// left, "<tok> tok · <N> tools · <dur>" RIGHT-ALIGNED to width. Live tokens/tools for a RUNNING leaf
-// come from its activity snapshot; a done leaf uses its final Result metrics. No answer text.
+// left, "↓ <out> out · <N> tools · <dur>" RIGHT-ALIGNED to width — output tokens only, so the rows sum
+// to the header total (input is the leaf's peak context, shown per-leaf in the detail, never summed).
+// Live for a RUNNING leaf from its activity snapshot; a done leaf uses its final Result. No answer text.
 func (m Model) renderAgentRowFull(j subagent.Result, width int) string {
-	in, out, tools := m.leafCounts(j)
+	_, out, tools := m.leafCounts(j)
 	label := sessiontitle.CleanTitle(j.Label)
 	model := sessiontitle.CleanTitle(j.Model)
 	left := statusDot(j.Status) + " "
@@ -699,7 +714,7 @@ func (m Model) renderAgentRowFull(j subagent.Result, width int) string {
 	default:
 		left += faintStyle.Render("agent")
 	}
-	metrics := fmt.Sprintf("%s tok · %d tools", humanTokens(in+out), tools)
+	metrics := fmt.Sprintf("↓ %s out · %d tools", humanTokens(out), tools)
 	if d := leafDuration(j); d != "" {
 		metrics += " · " + d
 	}
@@ -749,9 +764,11 @@ func leafDuration(j subagent.Result) string {
 	return fmt.Sprintf("%dm %ds", int(d/time.Minute), int(d.Seconds())%60)
 }
 
-// leafCounts returns the leaf's (input, output) tokens + tool-call count: live from the activity
-// snapshot (a monotonic count) while running, the accurate final from the Result once done. Tool
-// count always comes from the snapshot (the final Result doesn't carry it).
+// leafCounts returns the leaf's (input, output) tokens + tool-call count. input is the PEAK context
+// window (max over turns, non-cumulative — so it is shown per-leaf, never summed across leaves);
+// output is CUMULATIVE generated tokens (additive, what the run header sums); cache-read is excluded.
+// Live from the activity snapshot while running, the accurate final from the Result once done; the
+// tool count always comes from the snapshot (the final Result doesn't carry it).
 func (m Model) leafCounts(j subagent.Result) (in, out, tools int) {
 	if j.Usage != nil {
 		in, out = j.Usage.InputTokens, j.Usage.OutputTokens
@@ -763,8 +780,9 @@ func (m Model) leafCounts(j subagent.Result) (in, out, tools int) {
 	return in, out, snap.toolCount()
 }
 
-// agentDetailLines is the focused agent's inline detail (the L2 right pane, scrollable): status/model and
-// tokens·tool-calls, then a fixed Prompt → Activity → Output → Outcome order — the Prompt, the Activity
+// agentDetailLines is the focused agent's inline detail (the L2 right pane, scrollable): status/model
+// (with an "attempt N" marker on a schema re-run) and ↑ ctx · ↓ out · tool-calls, then a fixed
+// Prompt → Activity → Output → Outcome order — the Prompt, the Activity
 // feed (last 3 tool signatures), the Output (when the io files are loaded for THIS leaf via the PersistIO
 // opt-in), and the Outcome. The Output reads from the leaf's .answer side file (focused-single-agent
 // surface, CleanTitle-scrubbed), NEVER Result.Result on a row.
@@ -775,9 +793,15 @@ func (m Model) agentDetailLines(rightW int) []string {
 	}
 	in, out, tools := m.leafCounts(j)
 	snap := m.wfActivity[j.JobID]
+	status := statusLabel(j.Status) + faintStyle.Render(" · "+trunc(sessiontitle.CleanTitle(j.Model), 28))
+	if j.Attempt > 1 {
+		// A schema-retry leaf re-ran on a rejected reply; surface which attempt it landed on.
+		status += faintStyle.Render(fmt.Sprintf(" · attempt %d", j.Attempt))
+	}
 	lines := []string{
-		statusLabel(j.Status) + faintStyle.Render(" · "+trunc(sessiontitle.CleanTitle(j.Model), 28)),
-		faintStyle.Render(fmt.Sprintf("%s tok · %d tool calls", humanTokens(in+out), tools)),
+		status,
+		// ↑ peak input context · ↓ cumulative output (the header sums only output across leaves).
+		faintStyle.Render(fmt.Sprintf("↑ %s ctx · ↓ %s out · %d tool calls", humanTokens(in), humanTokens(out), tools)),
 	}
 	// Prompt first.
 	switch {
@@ -942,11 +966,11 @@ func wrapTo(s string, w int) []string {
 }
 
 // renderOutcome is the key-safe outcome line: status + a canonical summary, NEVER Result.Result. A
-// done leaf shows "done · N turns"; a failed one its error class; a running one "Still running…".
+// done leaf shows "done · N turns"; a failed one its error class; a running/queued one "Still running…".
 func (m Model) renderOutcome(j subagent.Result) string {
 	switch {
-	case j.Status == "running" || j.Status == "":
-		return faintStyle.Render("Still running…")
+	case j.Status == "running" || j.Status == "queued" || j.Status == "":
+		return faintStyle.Render("Still running…") // queued has OK=true but isn't done — keep it in-progress
 	case j.OK || j.Status == "done":
 		return faintStyle.Render(fmt.Sprintf("done · %d turns", j.NumTurns))
 	default:

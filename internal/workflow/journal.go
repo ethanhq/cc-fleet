@@ -128,11 +128,13 @@ func (j *journal) append(key, result string) {
 }
 
 // removeJournalKey rewrites a run's journal file, dropping EVERY entry whose key matches —
-// the board's single-leaf restart primitive. A leaf's content key can appear more than once
+// the journal half of the board's single-leaf restart. A leaf's content key can appear more than once
 // (identical agent() calls share it; they are interchangeable by construction), so dropping
 // all matching entries re-runs that whole interchangeable set rather than corrupting the
 // FIFO queue by removing a positional one. On the next resume the dropped leaf finds no cache
-// and re-runs live; content-addressing then re-runs any downstream leaf whose input shifted.
+// and re-runs live; content-addressing then re-runs any downstream leaf whose input shifted. The
+// "single-leaf" scope is precise only for an already-terminal run: the caller (Restart) stops a live
+// engine first, and a stopped engine leaves every in-flight sibling un-journaled, so those re-run too.
 //
 // A missing journal (nothing cached yet) or an absent key (e.g. a leaf that failed last time,
 // never journaled) is a no-op success — the leaf re-runs on resume regardless. The rewrite
