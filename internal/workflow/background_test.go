@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"go.starlark.net/starlark"
 
@@ -127,5 +128,21 @@ r = wait(h)
 `, Options{})
 	if err == nil || !strings.Contains(err.Error(), "cancelled") {
 		t.Fatalf("wait() must abort on cancellation, got %v", err)
+	}
+}
+
+// TestBgDeadline_Backstop: a background leaf with NO timeout= (0 or negative) gets the default backstop
+// deadline so an awaited leaf can never poll forever; an explicit timeout still wins. (The deadline's
+// enforcement — overrun → reap → SUBAGENT_TIMEOUT — is exercised by TestBackgroundTimeout.)
+func TestBgDeadline_Backstop(t *testing.T) {
+	now := time.Now()
+	if got := bgDeadline(now, 0); got != now.Add(defaultBgBackstop) {
+		t.Fatalf("timeout=0 must use the backstop, got +%v", got.Sub(now))
+	}
+	if got := bgDeadline(now, -1); got != now.Add(defaultBgBackstop) {
+		t.Fatalf("a negative timeout must use the backstop, got +%v", got.Sub(now))
+	}
+	if got := bgDeadline(now, 10); got != now.Add(10*time.Second) {
+		t.Fatalf("an explicit timeout must win, got +%v", got.Sub(now))
 	}
 }
