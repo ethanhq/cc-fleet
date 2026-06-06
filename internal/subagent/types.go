@@ -18,6 +18,7 @@
 package subagent
 
 import (
+	"encoding/json"
 	"io"
 	"time"
 )
@@ -54,9 +55,10 @@ type Request struct {
 	// passes its id here so the same on-disk job flips queued→running→terminal as ONE file.
 	// Empty (the bare-CLI path) mints a fresh id, byte-identical to before.
 	JobID string
-	// Attempt is the 1-based schema-retry ordinal (1 = first try). The engine sets it per
-	// retry so the board can show "attempt N" for a leaf that re-ran on a schema mismatch.
-	// Zero (a non-schema or non-workflow call) renders no marker.
+	// Attempt is the leaf's 1-based exec ordinal; the workflow engine sets 1 (a schema
+	// mismatch is terminal, so a leaf never re-runs). The board shows "attempt N" only
+	// when >1 — reachable now only via caches from engines that retried schema
+	// mismatches. Zero (a non-workflow call) renders no marker.
 	Attempt int
 
 	// PersistIO opts this job into board drill-in: persist the prompt + answer to
@@ -92,8 +94,18 @@ type Request struct {
 	// zero value (false) is the documented default: skills ON (native parity).
 	NoSkills bool
 	// MCP, when true, inherits the host MCP config (native parity) for a slim
-	// profile. The zero value (false) is the documented default: --strict-mcp-config.
+	// profile; false means --strict-mcp-config. The user-facing boundaries (CLI /
+	// workflow agent()) resolve the per-profile default — slim inherits, slim-ro
+	// strict — and pass the FINAL value here; the zero value stays strict for
+	// direct constructors.
 	MCP bool
+	// JSONSchema, when non-empty, is the leaf's JSON Schema (canonical JSON text).
+	// buildArgv passes it via --json-schema, making claude inject a forced
+	// StructuredOutput tool — profile-independent (the injected tool survives a
+	// slim --tools whitelist). The flag needs claude >= 2.1.88 (the slim floor);
+	// an older claude fails the leaf with the ordinary classified usage error.
+	// Workflow-engine-only: the bare CLI exposes no schema flag.
+	JSONSchema string
 }
 
 // Usage mirrors the token-usage subset of claude's inner envelope we surface.
@@ -132,8 +144,8 @@ type Result struct {
 	// JournalKey is the leaf's content-hash key, persisted so the board can restart THIS leaf
 	// (invalidate its journal entry + resume). A sha256 hex — never a secret.
 	JournalKey string `json:"journal_key,omitempty"`
-	// Attempt is the 1-based schema-retry ordinal the leaf ran at (>1 means it re-ran on a
-	// schema mismatch); 0 backfills a legacy cache that predates the field.
+	// Attempt is the 1-based exec ordinal the leaf ran at (>1 occurs only in caches from
+	// engines that retried schema mismatches); 0 backfills a cache that predates the field.
 	Attempt int `json:"attempt,omitempty"`
 
 	// PromptProfile is the EFFECTIVE profile this run used (post-version-gate);
@@ -163,6 +175,11 @@ type Result struct {
 	// bare text path (Raw = claude's text answer), each exiting ExitCode.
 	Raw      []byte `json:"-"`
 	ExitCode int    `json:"-"`
+	// StructuredOutput is the inner envelope's structured_output payload (present
+	// when the run carried --json-schema). In-process only, like Raw: the workflow
+	// engine consumes it in agent() and persists it only via the run journal — it
+	// never enters the CLI envelope, the sanitized result cache, or jobMeta.
+	StructuredOutput json.RawMessage `json:"-"`
 }
 
 // Error code enumeration. Skills switch on these strings without parsing prose.

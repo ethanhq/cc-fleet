@@ -1,7 +1,9 @@
 package subagent
 
 import (
+	"encoding/json"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -29,6 +31,22 @@ func regSyncJob(req Request, model string) string {
 	jobID := mintSyncJobID()
 	registerSyncJob(jobID, req, model, "", "")
 	return jobID
+}
+
+// assertJSONEq compares two JSON documents structurally (key order and
+// whitespace are irrelevant).
+func assertJSONEq(t *testing.T, got []byte, want string) {
+	t.Helper()
+	var g, w any
+	if err := json.Unmarshal(got, &g); err != nil {
+		t.Fatalf("got is not valid JSON: %v (%q)", err, got)
+	}
+	if err := json.Unmarshal([]byte(want), &w); err != nil {
+		t.Fatalf("want is not valid JSON: %v (%q)", err, want)
+	}
+	if !reflect.DeepEqual(g, w) {
+		t.Fatalf("JSON mismatch:\n got %s\nwant %s", got, want)
+	}
 }
 
 // ----- argv assertion helpers -----

@@ -36,9 +36,9 @@ func TestMintQueuedLeafThenStatusForQueued(t *testing.T) {
 	}
 }
 
-// TestRegisterSyncJobClearsStaleCacheOnReuse: re-registering a reused job id (a schema retry on the
-// engine's one-job-per-leaf) drops a prior attempt's terminal cache + answer so the board re-reads it
-// as running, not the stale done; the carried Attempt updates.
+// TestRegisterSyncJobClearsStaleCacheOnReuse: re-registering a reused job id drops a prior
+// registration's terminal cache + answer so the board re-reads it as running, not the stale
+// done; the carried Attempt updates.
 func TestRegisterSyncJobClearsStaleCacheOnReuse(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	req := Request{Vendor: "v", RunID: "r", Phase: "p", Label: "l", PersistIO: true, IOPrompt: "hi", Attempt: 1}
@@ -48,7 +48,7 @@ func TestRegisterSyncJobClearsStaleCacheOnReuse(t *testing.T) {
 	if StatusFor(jobID).Status != "done" {
 		t.Fatal("attempt 1 should be cached done")
 	}
-	// Attempt 2 re-registers the SAME id (schema retry). The stale done cache must be cleared.
+	// Re-registering the SAME id must clear the stale done cache.
 	req2 := req
 	req2.Attempt = 2
 	if !registerSyncJob(jobID, req2, "m", "", "") {

@@ -336,6 +336,13 @@ func buildArgv(binaryPath, profilePath, model string, req Request, slim slimArgv
 		argv = append(argv, "--max-budget-usd", strconv.FormatFloat(req.MaxBudgetUSD, 'f', -1, 64))
 	}
 
+	// --json-schema makes claude inject a forced StructuredOutput tool whose
+	// input_schema is this schema. Profile-independent; the injected tool
+	// survives a slim --tools whitelist.
+	if req.JSONSchema != "" {
+		argv = append(argv, "--json-schema", req.JSONSchema)
+	}
+
 	// Slim profiles: replace the main prompt with the rendered native-mirror
 	// sidecar, restrict the tool pool, disable thinking (native subagent
 	// behavior), and isolate MCP unless the caller asked to inherit the host

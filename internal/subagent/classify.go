@@ -28,6 +28,7 @@ type innerEnvelope struct {
 	IsError           bool                       `json:"is_error"`
 	APIErrorStatus    int                        `json:"api_error_status"` // null decodes to 0
 	Result            string                     `json:"result"`
+	StructuredOutput  json.RawMessage            `json:"structured_output"`
 	DurationMs        int64                      `json:"duration_ms"`
 	APIDurationMs     int64                      `json:"duration_api_ms"`
 	NumTurns          int                        `json:"num_turns"`
@@ -85,18 +86,19 @@ func classify(req Request, model string, stdout, stderr []byte, exitCode int, ti
 
 	if !inner.IsError {
 		res := Result{
-			OK:             true,
-			Vendor:         req.Vendor,
-			Result:         inner.Result,
-			DurationMs:     inner.DurationMs,
-			APIDurationMs:  inner.APIDurationMs,
-			NumTurns:       inner.NumTurns,
-			StopReason:     inner.StopReason,
-			CostUSD:        inner.TotalCostUSD,
-			SessionID:      inner.SessionID,
-			PermDenials:    len(inner.PermissionDenials),
-			APIErrorStatus: inner.APIErrorStatus,
-			Model:          modelKey(inner.ModelUsage, model),
+			OK:               true,
+			Vendor:           req.Vendor,
+			Result:           inner.Result,
+			StructuredOutput: inner.StructuredOutput,
+			DurationMs:       inner.DurationMs,
+			APIDurationMs:    inner.APIDurationMs,
+			NumTurns:         inner.NumTurns,
+			StopReason:       inner.StopReason,
+			CostUSD:          inner.TotalCostUSD,
+			SessionID:        inner.SessionID,
+			PermDenials:      len(inner.PermissionDenials),
+			APIErrorStatus:   inner.APIErrorStatus,
+			Model:            modelKey(inner.ModelUsage, model),
 		}
 		if inner.Usage != nil {
 			res.Usage = &Usage{

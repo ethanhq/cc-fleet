@@ -1,6 +1,7 @@
 package subagent
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -36,10 +37,15 @@ func TestRegisterAndFinalizeSyncJob(t *testing.T) {
 		t.Fatalf("sync job should carry lead_session_id, got %+v", jobs[0])
 	}
 
-	// Finalize with a successful result whose answer text MUST NOT be persisted
-	// (the sync caller already received it on stdout — key/answer-safety).
+	// Finalize with a successful result whose answer text and structured_output
+	// payload MUST NOT be persisted (the sync caller already received them —
+	// key/answer-safety; the cache copies an explicit field allowlist).
 	const answer = "SECRET-SYNC-ANSWER-42"
-	finalizeSyncJob(jobID, Result{OK: true, Vendor: "glm", Model: "glm-4.6", Result: answer})
+	const structuredPayload = "SECRET-STRUCTURED-PAYLOAD-7"
+	finalizeSyncJob(jobID, Result{
+		OK: true, Vendor: "glm", Model: "glm-4.6", Result: answer,
+		StructuredOutput: json.RawMessage(`{"secret":"` + structuredPayload + `"}`),
+	})
 
 	jobs, _ = ListJobs()
 	if len(jobs) != 1 || jobs[0].Status != "done" {
@@ -54,12 +60,16 @@ func TestRegisterAndFinalizeSyncJob(t *testing.T) {
 	if jobs[0].LeadSessionID != "lead-sync-1" {
 		t.Fatalf("finalized sync job should retain lead_session_id: %+v", jobs[0])
 	}
-	// Neither the meta nor the cached result file may contain the answer on disk.
+	// Neither the meta nor the cached result file may contain the answer or the
+	// structured_output payload on disk (StructuredOutput is not in the
+	// allowlist, so not even its key reaches the file).
 	dir := filepath.Join(xdg, "cc-fleet", jobsDirName)
 	for _, suffix := range []string{".json", ".result.json"} {
 		data, _ := os.ReadFile(filepath.Join(dir, jobID+suffix))
-		if strings.Contains(string(data), answer) {
-			t.Fatalf("%s leaked the answer text to disk", jobID+suffix)
+		for _, leak := range []string{answer, "structured_output", structuredPayload} {
+			if strings.Contains(string(data), leak) {
+				t.Fatalf("%s leaked %q to disk", jobID+suffix, leak)
+			}
 		}
 	}
 }

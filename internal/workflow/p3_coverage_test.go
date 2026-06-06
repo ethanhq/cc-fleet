@@ -2,10 +2,10 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"go.starlark.net/starlark"
@@ -111,36 +111,35 @@ r = wait(h)`
 	}
 }
 
-// TestBudgetAcrossSchemaRetries: each OK vendor exec's cost is counted, including the
-// schema-retry attempts before a valid reply.
-func TestBudgetAcrossSchemaRetries(t *testing.T) {
+// TestBudgetCountsFailedSchemaLeaf: an OK exec's cost is counted even when its
+// structured payload then fails validation — the spend happened; the failure degrades
+// to None under parallel and budget.spent() reflects it.
+func TestBudgetCountsFailedSchemaLeaf(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	rec := &recorder{}
-	var mu sync.Mutex
-	n := 0
 	old := runLeaf
 	runLeaf = fakeLeaf(rec, func(leafCall) subagent.Result {
-		mu.Lock()
-		n++
-		first := n == 1
-		mu.Unlock()
-		if first {
-			return subagent.Result{OK: true, Result: "not json", CostUSD: 0.3} // OK exec, invalid schema → retry
-		}
-		return subagent.Result{OK: true, Result: `{"a": 1}`, CostUSD: 0.3}
+		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"b": 2}`), CostUSD: 0.3}
 	})
 	t.Cleanup(func() { runLeaf = old })
 
 	eng := &engine{sched: newScheduler(context.Background(), 1), runID: "brt", budgetTotal: 100}
 	g, err := eng.run("brt.star", `
-res = agent("q", vendor="v", schema={"required": ["a"]})
+r = parallel([lambda: agent("q", vendor="v", schema={"required": ["a"]})])
+failed = r[0] == None
 sp = budget.spent()
 `, Options{})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if f, _ := starlark.AsFloat(g["sp"]); f != 0.6 {
-		t.Errorf("budget spent = %v, want 0.6 (both the retried + the valid exec)", g["sp"])
+	if g["failed"] != starlark.Bool(true) {
+		t.Error("the schema-failing leaf should degrade to None under parallel")
+	}
+	if f, _ := starlark.AsFloat(g["sp"]); f != 0.3 {
+		t.Errorf("budget spent = %v, want 0.3 (the OK exec's cost counts despite the schema failure)", g["sp"])
+	}
+	if n := len(rec.prompts()); n != 1 {
+		t.Errorf("leaf ran %d times, want 1", n)
 	}
 }
 

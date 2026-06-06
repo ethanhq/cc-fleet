@@ -93,6 +93,22 @@ func TestClassify(t *testing.T) {
 		}
 	})
 
+	t.Run("structured_output lifted on success", func(t *testing.T) {
+		js := `{"type":"result","is_error":false,"result":"prose","structured_output":{"answer":5}}`
+		res := classify(req, "m", []byte(js), nil, 0, false, true)
+		if !res.OK || res.Result != "prose" {
+			t.Fatalf("want OK + prose result, got OK=%v result=%q (%s)", res.OK, res.Result, res.ErrorCode)
+		}
+		assertJSONEq(t, res.StructuredOutput, `{"answer":5}`)
+	})
+
+	t.Run("no structured_output stays empty", func(t *testing.T) {
+		res := classify(req, "m", []byte(smokeSuccessJSON), nil, 0, false, true)
+		if !res.OK || len(res.StructuredOutput) != 0 {
+			t.Fatalf("envelope without the field must leave StructuredOutput empty, got %q", res.StructuredOutput)
+		}
+	})
+
 	t.Run("429 balance", func(t *testing.T) {
 		res := classify(req, "glm-4.6", []byte(smoke429BalanceJSON), nil, 1, false, true)
 		if res.OK || res.ErrorCode != ErrCodeInsufficientBalance {

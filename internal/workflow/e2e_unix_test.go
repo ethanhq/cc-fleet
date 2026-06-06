@@ -30,30 +30,33 @@ type e2eEnv struct {
 	fakePath  string
 }
 
-// fakeClaudeScript is the deterministic fake `claude`. It (a) appends the stdin prompt to
-// an invocation log framed by a record separator so a test can count/identify execs, and
-// (b) prints a `claude --output-format json` success envelope whose `result` is a pure
-// function of the prompt:
+// fakeClaudeScript is the deterministic fake `claude`. It answers --version with the
+// fingerprint's version (2.1.150, above the slim floor, so the default slim profile
+// stays effective) WITHOUT logging an exec record. Otherwise it (a) appends the stdin
+// prompt to an invocation log framed by a record separator so a test can count/identify
+// execs, and (b) prints a `claude --output-format json` success envelope:
 //
-//   - a prompt carrying the schema JSON instruction ("Return ONLY a single JSON value")
-//     gets a JSON object that conforms to the comprehensive script's NESTED schema;
+//   - an invocation carrying --json-schema gets a structured_output payload that
+//     conforms to the comprehensive script's NESTED schema;
 //   - any other prompt gets a deterministic echo string ("LEAF:" + a stable digest line).
 //
 // total_cost_usd is a small fixed value so budget accounting + board metrics have data.
 // It is a POSIX sh script (Unix-only, like the existing integration harness).
 const fakeClaudeScript = `#!/bin/sh
+schema=0
+for a in "$@"; do
+  if [ "$a" = "--version" ]; then printf '2.1.150 (Claude Code)\n'; exit 0; fi
+  if [ "$a" = "--json-schema" ]; then schema=1; fi
+done
 prompt=$(cat)
 { printf '%s' "$prompt"; printf '\037\n'; } >> "$PROMPT_LOG"
-case "$prompt" in
-  *"Return ONLY a single JSON value"*)
-    result='{"summary":"ok","items":[{"name":"a","score":1},{"name":"b","score":2}],"meta":{"count":2}}'
-    ;;
-  *)
-    # Deterministic echo: the first line of the prompt, prefixed. No clock/PID/random.
-    first=$(printf '%s' "$prompt" | head -n1)
-    result="LEAF:$first"
-    ;;
-esac
+if [ "$schema" = 1 ]; then
+  printf '{"type":"result","subtype":"success","is_error":false,"result":"structured","structured_output":{"summary":"ok","items":[{"name":"a","score":1},{"name":"b","score":2}],"meta":{"count":2}},"num_turns":1,"total_cost_usd":0.0025,"usage":{"input_tokens":12,"output_tokens":8}}'
+  exit 0
+fi
+# Deterministic echo: the first line of the prompt, prefixed. No clock/PID/random.
+first=$(printf '%s' "$prompt" | head -n1)
+result="LEAF:$first"
 # Escape the result for embedding in the JSON envelope (backslash + double-quote).
 esc=$(printf '%s' "$result" | sed 's/\\/\\\\/g; s/"/\\"/g')
 printf '{"type":"result","subtype":"success","is_error":false,"result":"%s","num_turns":1,"total_cost_usd":0.0025,"usage":{"input_tokens":12,"output_tokens":8}}' "$esc"
@@ -550,11 +553,12 @@ func TestE2ECrashRecovery(t *testing.T) {
 	}
 
 	// Pre-seed the journal as if the two parallel fan-out leaves finished before the crash.
-	// Their keys are the engine's exact content keys (vendor fake, no model, base prompt).
+	// Their keys are the engine's exact content keys: a bare agent() resolves the default
+	// slim shape under the e2e fingerprint (2.1.150 ≥ the slim floor).
 	jp, _ := subagent.RunJournalPath(runID)
 	j := loadJournal(jp)
-	j.append(journalKey("fake", "", "alpha", "", "", "", nil, false, false), "LEAF:alpha")
-	j.append(journalKey("fake", "", "beta", "", "", "", nil, false, false), "LEAF:beta")
+	j.append(bareSlimKey(t, "fake", "alpha"), "LEAF:alpha")
+	j.append(bareSlimKey(t, "fake", "beta"), "LEAF:beta")
 
 	if err := Execute(context.Background(), mainPath, runID, Options{BudgetUSD: 100}); err != nil {
 		t.Fatalf("resume: %v", err)
@@ -607,6 +611,18 @@ func TestE2EStop(t *testing.T) {
 	if stopped.Status != "stopped" {
 		t.Errorf("stopped run status = %q, want stopped", stopped.Status)
 	}
+}
+
+// bareSlimKey is the engine's content key for a bare (all-defaults) agent() leaf — the
+// effective slim profile with the resolved default tool set, skills on, and mcp
+// inheriting (the slim per-profile default).
+func bareSlimKey(t *testing.T, vendor, prompt string) string {
+	t.Helper()
+	tools, err := subagent.CanonicalizeTools(subagent.DefaultSlimTools(subagent.ProfileSlim, false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return journalKey(vendor, "", prompt, "", "", subagent.ProfileSlim, tools, false, true)
 }
 
 // --- shared resume helpers --------------------------------------------------------------

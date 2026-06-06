@@ -117,7 +117,8 @@ type capturedRequest struct {
 	System   json.RawMessage `json:"system"` // string or array of text blocks
 	Messages json.RawMessage `json:"messages"`
 	Tools    []struct {
-		Name string `json:"name"`
+		Name        string          `json:"name"`
+		InputSchema json.RawMessage `json:"input_schema"`
 	} `json:"tools"`
 	Thinking struct {
 		Type string `json:"type"`
@@ -136,27 +137,33 @@ func parseRequest(t *testing.T, body []byte) capturedRequest {
 	return req
 }
 
-func toolNames(req capturedRequest) []string {
+// filteredWireTools is the sorted wire tool-name list minus the host-coupled
+// names claude may add outside the --tools whitelist — LSP (injected
+// nondeterministically, even under --strict-mcp-config), WaitForMcpServers, and
+// the mcp__<server> tools — so the remaining set compares exactly against the
+// declared slim set on any host.
+func filteredWireTools(req capturedRequest) []string {
 	names := make([]string, 0, len(req.Tools))
 	for _, x := range req.Tools {
+		if x.Name == "LSP" || x.Name == "WaitForMcpServers" || strings.HasPrefix(x.Name, "mcp__") {
+			continue
+		}
 		names = append(names, x.Name)
 	}
 	sort.Strings(names)
 	return names
 }
 
-// expectedSlimWire is the on-the-wire tool set for a slim profile: the
-// canonicalized declared default set plus LSP, which claude auto-adds to any
-// --tools whitelist. Anchored to DefaultSlimTools so a tool rename (which would
-// drop the renamed name from the request) is caught.
+// expectedSlimWire is the declared on-the-wire tool set for a slim profile:
+// exactly the canonicalized default set, compared against the filtered wire
+// list (claude's own additions stripped). Anchored to DefaultSlimTools so a
+// tool rename (which would drop the renamed name from the request) is caught.
 func expectedSlimWire(t *testing.T, profile string) []string {
 	t.Helper()
 	tools, err := CanonicalizeTools(DefaultSlimTools(profile, false))
 	if err != nil {
 		t.Fatalf("canonicalize default tools for %q: %v", profile, err)
 	}
-	tools = append(tools, "LSP")
-	sort.Strings(tools)
 	return tools
 }
 
@@ -188,13 +195,17 @@ const claudeMdSentinel = "SLIMCAPTURE_SENTINEL_CLAUDE_MD"
 
 // slimCaptureArgv builds the real argv for a profile via buildSlimArgv +
 // buildArgv. settingsPath is an inert `{}` settings file so the exact buildArgv
-// shape is preserved without a real vendor profile.
-func slimCaptureArgv(t *testing.T, bin, settingsPath, model, dir, profile string) ([]string, string) {
+// shape is preserved without a real vendor profile. mods adjust the Request
+// before the build (e.g. MCP inherit, a JSON schema).
+func slimCaptureArgv(t *testing.T, bin, settingsPath, model, dir, profile string, mods ...func(*Request)) ([]string, string) {
 	t.Helper()
 	const fakeModel = "claude-sonnet-4-6" // a real CC model id so the probe reaches /v1/messages
 	req := Request{Prompt: "say hi", PromptProfile: profile, WorkingDir: dir, JSON: true}
 	if profile == ProfileFull {
 		req.PromptProfile = ""
+	}
+	for _, mod := range mods {
+		mod(&req)
 	}
 	sa, err := buildSlimArgv(profileForBuild(profile), "slimcap-"+profile, req, fakeModel)
 	if err != nil {
@@ -236,7 +247,11 @@ func TestSlimCaptureFirstRequest(t *testing.T) {
 
 	t.Run("slim", func(t *testing.T) {
 		dir := newCaptureRepo(t)
-		argv, _ := slimCaptureArgv(t, bin, settings, "", dir, ProfileSlim)
+		// MCP: true mirrors the boundary default for slim (inherit the host MCP
+		// config), so the wire set is compared filtered-exact.
+		argv, _ := slimCaptureArgv(t, bin, settings, "", dir, ProfileSlim,
+			func(r *Request) { r.MCP = true })
+		assertAbsent(t, argv, "--strict-mcp-config")
 		req := parseRequest(t, captureFirstRequest(t, bin, argv, nil, dir))
 		sys := string(req.System)
 
@@ -246,8 +261,8 @@ func TestSlimCaptureFirstRequest(t *testing.T) {
 		if strings.Contains(sys, "Tone and style") {
 			t.Error("slim system prompt leaked the full main-prompt marker \"Tone and style\"")
 		}
-		if got, want := toolNames(req), expectedSlimWire(t, ProfileSlim); !reflect.DeepEqual(got, want) {
-			t.Errorf("slim tool set canary: got %v, want %v", got, want)
+		if got, want := filteredWireTools(req), expectedSlimWire(t, ProfileSlim); !reflect.DeepEqual(got, want) {
+			t.Errorf("slim tool set canary (filtered): got %v, want %v", got, want)
 		}
 		if req.Thinking.Type != "disabled" {
 			t.Errorf("slim thinking.type = %q, want \"disabled\"", req.Thinking.Type)
@@ -257,6 +272,55 @@ func TestSlimCaptureFirstRequest(t *testing.T) {
 		}
 		if !strings.Contains(sys, "gitStatus:") {
 			t.Error("slim system prompt missing the gitStatus marker")
+		}
+	})
+
+	t.Run("slim+schema", func(t *testing.T) {
+		dir := newCaptureRepo(t)
+		const schema = `{"type":"object","required":["answer"],"properties":{"answer":{"type":"integer"}}}`
+		argv, _ := slimCaptureArgv(t, bin, settings, "", dir, ProfileSlim,
+			func(r *Request) { r.MCP = true; r.JSONSchema = schema })
+		req := parseRequest(t, captureFirstRequest(t, bin, argv, nil, dir))
+		sys := string(req.System)
+
+		// --json-schema injects a forced StructuredOutput tool: the filtered wire
+		// set is the slim whitelist plus exactly that tool.
+		want := append(expectedSlimWire(t, ProfileSlim), "StructuredOutput")
+		sort.Strings(want)
+		if got := filteredWireTools(req); !reflect.DeepEqual(got, want) {
+			t.Errorf("slim+schema tool set: got %v, want %v", got, want)
+		}
+
+		// The injected tool carries the passed schema as its input_schema
+		// (JSON-equal; key order on the wire may differ).
+		var gotSchema json.RawMessage
+		for _, x := range req.Tools {
+			if x.Name == "StructuredOutput" {
+				gotSchema = x.InputSchema
+			}
+		}
+		var got, exp any
+		if err := json.Unmarshal(gotSchema, &got); err != nil {
+			t.Fatalf("StructuredOutput input_schema not parseable: %v (%q)", err, gotSchema)
+		}
+		if err := json.Unmarshal([]byte(schema), &exp); err != nil {
+			t.Fatal(err)
+		}
+		if !reflect.DeepEqual(got, exp) {
+			t.Errorf("StructuredOutput input_schema = %s, want %s", gotSchema, schema)
+		}
+
+		// The schema rides the tool, never the prompt: no instruction line, no
+		// schema text in the messages (checked raw and JSON-string-escaped).
+		msgs := string(req.Messages)
+		if strings.Contains(msgs, "Return ONLY a single JSON value") {
+			t.Error("messages carry a prompt-side schema instruction; the schema must ride the StructuredOutput tool only")
+		}
+		if strings.Contains(msgs, schema) || strings.Contains(msgs, strings.ReplaceAll(schema, `"`, `\"`)) {
+			t.Error("messages carry the schema text; the schema must ride the StructuredOutput tool only")
+		}
+		if !strings.Contains(sys, agentPromptMarker) {
+			t.Errorf("slim+schema system prompt missing the slim template marker %q", agentPromptMarker)
 		}
 	})
 
@@ -273,8 +337,16 @@ func TestSlimCaptureFirstRequest(t *testing.T) {
 		if !strings.Contains(sys, "read-only research agent") {
 			t.Error("slim-ro system prompt missing the read-only paragraph marker")
 		}
-		if got, want := toolNames(req), expectedSlimWire(t, ProfileSlimRO); !reflect.DeepEqual(got, want) {
+		if got, want := filteredWireTools(req), expectedSlimWire(t, ProfileSlimRO); !reflect.DeepEqual(got, want) {
 			t.Errorf("slim-ro tool set canary: got %v, want %v", got, want)
+		}
+		// Strict MCP is slim-ro's contract: MCP tools must be ABSENT on the wire —
+		// the extras filter above only tolerates the nondeterministic LSP injection,
+		// so a broken --strict-mcp-config must still fail here.
+		for _, x := range req.Tools {
+			if x.Name == "WaitForMcpServers" || strings.HasPrefix(x.Name, "mcp__") {
+				t.Errorf("slim-ro (strict mcp) must not carry MCP tool %q on the wire", x.Name)
+			}
 		}
 		if req.Thinking.Type != "disabled" {
 			t.Errorf("slim-ro thinking.type = %q, want \"disabled\"", req.Thinking.Type)

@@ -49,8 +49,15 @@ cc-fleet subagent deepseek --model deepseek-chat --prompt "总结这段日志" -
 - `--background` —— detached 运行；用 `cc-fleet subagent-status` 轮询进度。
 - `--resume <session_id>` —— 续接上一次 subagent，进行多轮对话。
 - `--timeout` / `--max-turns` / `--max-budget-usd` —— 限制运行时长和费用上限。
-- `--profile slim` / `slim-ro` —— 镜像原生 subagent 上下文（首个请求远小于完整会话
-  prompt）；可用 `--tools` / `--skills` / `--mcp` 细化。
+- `--profile` —— `slim`（默认）镜像原生 subagent 上下文，首个请求远小于完整会话 prompt
+  （工具集：Bash, Edit, Glob, Grep, Read, Skill, Write）；`slim-ro` 为只读镜像（Bash, Glob,
+  Grep, Read, Skill）；`full` 恢复完整会话 prompt —— 仅用于与完整会话对比行为，或排查疑似
+  slim 回归。
+- `--tools` / `--skills` / `--mcp` —— 细化 slim 运行（与 `--profile full` 同时使用会被拒绝）。
+  `--tools` 是整组替换而非追加：白名单之外的工具（如 WebSearch / WebFetch）必须显式列出，
+  且 `--tools WebSearch` 会让 subagent 只剩 WebSearch 一个工具。MCP 默认按 profile 区分：
+  `slim` 继承宿主 MCP 配置，`slim-ro` 走 `--strict-mcp-config`；显式传 `--mcp`（无论真假）
+  均覆盖默认。
 
 不需要 tmux，也不需要 agent-teams —— 纯 stdout 输入，结果输出。
 

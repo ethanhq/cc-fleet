@@ -21,9 +21,9 @@ var (
 // schema (and a deeply-nested reply). Real schemas are shallow; this is a backstop.
 const maxSchemaDepth = 32
 
-// encodeSchema serializes a Starlark schema value to a JSON string — appended to the
-// prompt AND folded into the journal key, so its output must be byte-stable
-// (go.starlark.net's json.encode canonicalizes, so it is). Runs under the GIL.
+// encodeSchema serializes a Starlark schema value to a JSON string — passed to the
+// leaf via --json-schema AND folded into the journal key, so its output must be
+// byte-stable (go.starlark.net's json.encode canonicalizes, so it is). Runs under the GIL.
 func encodeSchema(thread *starlark.Thread, schema starlark.Value) (string, error) {
 	enc, err := starlark.Call(thread, jsonEncode, starlark.Tuple{schema}, nil)
 	if err != nil {
@@ -37,9 +37,9 @@ func encodeSchema(thread *starlark.Thread, schema starlark.Value) (string, error
 }
 
 // decodeAndValidate parses the vendor reply as JSON and recursively validates it against
-// the schema. Runs under the GIL. A parse failure or any validation failure is an error
-// the caller retries on (and, on resume, treats a cached value that no longer validates
-// as a miss). The supported JSON-Schema subset is deliberately the practical core —
+// the schema. Runs under the GIL. A parse failure or any validation failure is an error —
+// terminal for a live leaf, and on resume a cached value that no longer validates is
+// treated as a miss. The supported JSON-Schema subset is deliberately the practical core —
 // `type` (object/array/string/number/integer/boolean/null), `required`, nested
 // `properties`, array `items`, and scalar `enum`; composition keywords ($ref / allOf /
 // oneOf / anyOf) are intentionally NOT enforced (over-scope for a vendor leaf that can't
@@ -179,9 +179,9 @@ func enumContains(lst *starlark.List, v starlark.Value) bool {
 	return false
 }
 
-// stripCodeFence removes a leading/trailing markdown code fence (```json … ```), a
-// common vendor habit despite the prompt's "no fences" instruction, so the JSON
-// inside still decodes. Leaves un-fenced replies untouched.
+// stripCodeFence removes a leading/trailing markdown code fence (```json … ```) so
+// fenced JSON still decodes: a structured_output payload never carries fences, but
+// pre-v2 journals cached raw text answers that may. Leaves un-fenced replies untouched.
 func stripCodeFence(s string) string {
 	t := strings.TrimSpace(s)
 	if !strings.HasPrefix(t, "```") {

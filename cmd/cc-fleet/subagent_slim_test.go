@@ -14,11 +14,36 @@ func TestSubagentSlimFlags_Registered(t *testing.T) {
 			t.Fatalf("--%s flag missing", name)
 		}
 	}
+	if df := cmd.Flags().Lookup("profile").DefValue; df != "slim" {
+		t.Fatalf("--profile default = %q, want slim (the default prompt profile)", df)
+	}
 	if df := cmd.Flags().Lookup("skills").DefValue; df != "true" {
 		t.Fatalf("--skills default = %q, want true (native parity)", df)
 	}
 	if df := cmd.Flags().Lookup("mcp").DefValue; df != "false" {
-		t.Fatalf("--mcp default = %q, want false (strict-mcp)", df)
+		t.Fatalf("--mcp default = %q, want false (the per-profile default is resolved at the boundary, not on the flag)", df)
+	}
+}
+
+// TestResolveMCPDefault: an explicit --mcp wins either way; omitted resolves the
+// per-profile default — slim inherits the host config, everything else stays strict/inert.
+func TestResolveMCPDefault(t *testing.T) {
+	cases := []struct {
+		explicit, value bool
+		profile         string
+		want            bool
+	}{
+		{true, true, "slim-ro", true}, // explicit true beats slim-ro's strict default
+		{true, false, "slim", false},  // explicit false beats slim's inherit default
+		{false, false, "slim", true},
+		{false, false, "slim-ro", false},
+		{false, false, "full", false},
+		{false, false, "", false},
+	}
+	for _, c := range cases {
+		if got := resolveMCPDefault(c.explicit, c.value, c.profile); got != c.want {
+			t.Errorf("resolveMCPDefault(%v, %v, %q) = %v, want %v", c.explicit, c.value, c.profile, got, c.want)
+		}
 	}
 }
 

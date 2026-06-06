@@ -51,8 +51,16 @@ cc-fleet subagent deepseek --model deepseek-chat --prompt "Summarize this log" -
 - `--background` — run detached; poll with `cc-fleet subagent-status`.
 - `--resume <session_id>` — continue a previous subagent for multi-turn work.
 - `--timeout` / `--max-turns` / `--max-budget-usd` — bound runtime and cost.
-- `--profile slim` / `slim-ro` — mirror the native subagent context (a far smaller first
-  request than the full session prompt); refine with `--tools` / `--skills` / `--mcp`.
+- `--profile` — `slim` (the default) mirrors the native subagent context, a far smaller
+  first request than the full session prompt (tools: Bash, Edit, Glob, Grep, Read, Skill,
+  Write); `slim-ro` is the read-only mirror (Bash, Glob, Grep, Read, Skill); `full`
+  restores the full session prompt — use it only to compare behavior against a full
+  session or to diagnose a suspected slim regression.
+- `--tools` / `--skills` / `--mcp` — refine a slim run (rejected with `--profile full`).
+  `--tools` replaces the whole set, never appends: any tool beyond the whitelist (e.g.
+  WebSearch / WebFetch) must be listed explicitly, and `--tools WebSearch` leaves ONLY
+  WebSearch. MCP defaults per profile — `slim` inherits the host MCP config, `slim-ro`
+  runs `--strict-mcp-config`; an explicit `--mcp` (either value) overrides.
 
 It needs no tmux and no agent-teams — pure stdout in, result out.
 

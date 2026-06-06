@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -29,6 +30,7 @@ type leafCall struct {
 	tools                                      []string
 	noSkills                                   bool
 	mcp                                        bool
+	jsonSchema                                 string
 }
 
 type recorder struct {
@@ -70,6 +72,7 @@ func fakeLeaf(r *recorder, respond func(leafCall) subagent.Result) func(subagent
 			model: req.Model, timeout: req.Timeout, maxBudget: req.MaxBudgetUSD, maxTurns: req.MaxTurns,
 			persistIO: req.PersistIO, ioPrompt: req.IOPrompt, workingDir: req.WorkingDir,
 			promptProfile: req.PromptProfile, tools: req.Tools, noSkills: req.NoSkills, mcp: req.MCP,
+			jsonSchema: req.JSONSchema,
 		}
 		r.record(c)
 		res := respond(c)
@@ -86,13 +89,18 @@ func echoLeaf(r *recorder) func(subagent.Request) subagent.Result {
 }
 
 // runScript runs src with a fake leaf and returns the script's module globals. It
-// isolates ConfigDir to a temp dir so any manifest writes stay out of the real home.
+// isolates ConfigDir to a temp dir so any manifest writes stay out of the real home,
+// and pins resolveProfile to identity so the default-slim leaf shape (and any journal
+// key) never depends on the host claude version.
 func runScript(t *testing.T, runID string, concurrency int, leaf func(subagent.Request) subagent.Result, src string) (starlark.StringDict, error) {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	old := runLeaf
 	runLeaf = leaf
 	t.Cleanup(func() { runLeaf = old })
+	oldR := resolveProfile
+	resolveProfile = func(requested string) (string, string) { return requested, "" }
+	t.Cleanup(func() { resolveProfile = oldR })
 	eng := &engine{sched: newScheduler(context.Background(), concurrency), runID: runID}
 	return eng.run("test.star", src, Options{})
 }
@@ -247,19 +255,13 @@ b = results[1]
 	}
 }
 
-func TestSchemaRetryThenValid(t *testing.T) {
+// TestSchemaStructuredOutputReturned: a schema leaf passes the schema through the
+// request (claude enforces the StructuredOutput call) — the prompt stays BARE, the
+// validated payload flows back into the script, and the leaf runs exactly once.
+func TestSchemaStructuredOutputReturned(t *testing.T) {
 	rec := &recorder{}
-	var n int
-	var mu sync.Mutex
 	leaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
-		mu.Lock()
-		n++
-		attempt := n
-		mu.Unlock()
-		if attempt == 1 {
-			return subagent.Result{OK: true, Result: "not json at all"}
-		}
-		return subagent.Result{OK: true, Result: `{"answer": 42}`}
+		return subagent.Result{OK: true, Result: "prose", StructuredOutput: json.RawMessage(`{"answer": 42}`)}
 	})
 	g, err := runScript(t, "run6", 1, leaf, `
 res = agent("compute", vendor="v", schema={"required": ["answer"]})
@@ -269,36 +271,36 @@ ans = res["answer"]
 		t.Fatalf("run: %v", err)
 	}
 	if i, _ := starlark.AsInt32(g["ans"]); i != 42 {
-		t.Errorf("ans = %v, want 42 (retry should have recovered)", g["ans"])
+		t.Errorf("ans = %v, want 42 (the structured payload)", g["ans"])
 	}
-	if n < 2 {
-		t.Errorf("expected at least one retry, leaf ran %d times", n)
+	calls := rec.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("leaf ran %d times, want 1", len(calls))
+	}
+	if c := calls[0]; c.prompt != "compute" {
+		t.Errorf("prompt = %q, want the bare prompt (no injected schema instruction)", c.prompt)
+	}
+	if c := calls[0]; c.jsonSchema != `{"required":["answer"]}` {
+		t.Errorf("JSONSchema = %q, want the canonical schema JSON", c.jsonSchema)
 	}
 }
 
-func TestSchemaMissingKeyRetry(t *testing.T) {
+// TestSchemaNotSatisfiedTerminal: a structured payload that fails validation is
+// TERMINAL — the run aborts after exactly one exec (an identical re-run would only
+// reproduce the failure at full leaf cost).
+func TestSchemaNotSatisfiedTerminal(t *testing.T) {
 	rec := &recorder{}
-	var n int
-	var mu sync.Mutex
 	leaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
-		mu.Lock()
-		n++
-		attempt := n
-		mu.Unlock()
-		if attempt == 1 {
-			return subagent.Result{OK: true, Result: `{"other": 1}`} // valid JSON, missing required key
-		}
-		return subagent.Result{OK: true, Result: `{"answer": 7}`}
+		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"other": 1}`)}
 	})
-	g, err := runScript(t, "run7", 1, leaf, `
+	_, err := runScript(t, "run7", 1, leaf, `
 res = agent("q", vendor="v", schema={"required": ["answer"]})
-ans = res["answer"]
 `)
-	if err != nil {
-		t.Fatalf("run: %v", err)
+	if err == nil || !strings.Contains(err.Error(), "schema not satisfied") {
+		t.Fatalf("err = %v, want a schema-not-satisfied failure", err)
 	}
-	if i, _ := starlark.AsInt32(g["ans"]); i != 7 {
-		t.Errorf("ans = %v, want 7", g["ans"])
+	if n := len(rec.snapshot()); n != 1 {
+		t.Errorf("leaf ran %d times, want exactly 1 (no retry)", n)
 	}
 }
 
@@ -518,7 +520,7 @@ good = results[0]
 func TestSchemaPropertiesKeys(t *testing.T) {
 	rec := &recorder{}
 	leaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
-		return subagent.Result{OK: true, Result: `{"a": 1, "b": 2}`}
+		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"a": 1, "b": 2}`)}
 	})
 	g, err := runScript(t, "rsp", 1, leaf, `
 res = agent("q", vendor="v", schema={"properties": {"a": {}, "b": {}}})

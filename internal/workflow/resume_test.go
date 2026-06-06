@@ -129,10 +129,12 @@ func TestResumeDuplicateKeyCrashRecovery(t *testing.T) {
 
 	const runID = "resume-dup"
 	jp, _ := subagent.RunJournalPath(runID)
+	// The leaves are pinned profile="full" so the seeded key carries no slim shape (and no
+	// host-claude-version dependence).
 	loadJournal(jp).append(journalKey("v", "", "same", "", "", "", nil, false, false), "ok:same") // 1 of 3 done before the kill
 
 	g, err := newEngineFor(t, runID, 1).run("d.star",
-		`r = [agent("same", vendor="v"), agent("same", vendor="v"), agent("same", vendor="v")]`, Options{})
+		`r = [agent("same", vendor="v", profile="full"), agent("same", vendor="v", profile="full"), agent("same", vendor="v", profile="full")]`, Options{})
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -156,11 +158,12 @@ func TestResumeCrashRecoveryPartialJournal(t *testing.T) {
 	const runID = "resume-3"
 	jp, _ := subagent.RunJournalPath(runID)
 	// Seed the journal as if the run finished "a" then was killed (key MUST match the
-	// engine's: vendor "v", model "", prompt "a", no schema).
+	// engine's: vendor "v", model "", prompt "a", no schema; the leaves are pinned
+	// profile="full" so the key carries no slim shape).
 	loadJournal(jp).append(journalKey("v", "", "a", "", "", "", nil, false, false), "ok:a")
 
 	g, err := newEngineFor(t, runID, 4).run("r.star",
-		`r = [agent("a", vendor="v"), agent("b", vendor="v"), agent("c", vendor="v")]`, Options{})
+		`r = [agent("a", vendor="v", profile="full"), agent("b", vendor="v", profile="full"), agent("c", vendor="v", profile="full")]`, Options{})
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -222,14 +225,14 @@ func TestResumeFailedLeafNotCached(t *testing.T) {
 	}
 }
 
-// TestResumeSchemaCorruptCacheFallsThrough: a schema leaf whose journaled raw answer no
+// TestResumeSchemaCorruptCacheFallsThrough: a schema leaf whose journaled payload no
 // longer validates (a corrupt/hand-edited journal) is NOT served from cache — replay
 // falls through and re-runs the leaf rather than aborting the run.
 func TestResumeSchemaCorruptCacheFallsThrough(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	rec := &recorder{}
 	leaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
-		return subagent.Result{OK: true, Result: `{"answer": 9}`}
+		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"answer": 9}`)}
 	})
 	old := runLeaf
 	runLeaf = leaf
@@ -318,14 +321,14 @@ func TestLaunchResumeWiring(t *testing.T) {
 	}
 }
 
-// TestResumeSchemaLeafReplaysWithoutExec: a schema leaf's cached RAW answer is
-// re-decoded + re-validated on resume (deterministic), serving the validated value
-// without a vendor exec.
+// TestResumeSchemaLeafReplaysWithoutExec: a schema leaf's cached payload (the journaled
+// structured output) is re-decoded + re-validated on resume (deterministic), serving the
+// validated value without a vendor exec.
 func TestResumeSchemaLeafReplaysWithoutExec(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	rec := &recorder{}
 	leaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
-		return subagent.Result{OK: true, Result: `{"answer": 5}`}
+		return subagent.Result{OK: true, Result: "prose", StructuredOutput: json.RawMessage(`{"answer": 5}`)}
 	})
 	old := runLeaf
 	runLeaf = leaf
@@ -354,5 +357,36 @@ ans = res["answer"]`
 	}
 	if n := len(rec.prompts()); n != 1 {
 		t.Errorf("schema leaf re-executed on resume: calls = %d, want 1", n)
+	}
+}
+
+// TestResumeSchemaPreV2TextReplay: a journal written before structured outputs may hold
+// the leaf's TEXT answer (possibly markdown-fenced) under a schema leaf's key; replay
+// still decodes + validates it and serves the value without an exec.
+func TestResumeSchemaPreV2TextReplay(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	rec := &recorder{}
+	old := runLeaf
+	runLeaf = echoLeaf(rec)
+	t.Cleanup(func() { runLeaf = old })
+
+	const runID = "resume-prev2"
+	jp, _ := subagent.RunJournalPath(runID)
+	// The leaf is pinned profile="full" so the seeded key carries no slim shape (and no
+	// host-claude-version dependence). The value is the old-style fenced text JSON.
+	loadJournal(jp).append(journalKey("v", "", "q", `{"required":["answer"]}`, "", "full", nil, false, false),
+		"```json\n{\"answer\": 5}\n```")
+
+	g, err := newEngineFor(t, runID, 1).run("r.star",
+		`res = agent("q", vendor="v", profile="full", schema={"required": ["answer"]})
+ans = res["answer"]`, Options{})
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if n := len(rec.prompts()); n != 0 {
+		t.Errorf("a pre-v2 cached schema leaf re-executed: calls = %d, want 0", n)
+	}
+	if i, _ := starlark.AsInt32(g["ans"]); i != 5 {
+		t.Errorf("replayed ans = %v, want 5", g["ans"])
 	}
 }

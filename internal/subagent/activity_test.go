@@ -32,6 +32,23 @@ func TestExtractResultLine(t *testing.T) {
 	}
 }
 
+// TestExtractResultLine_StructuredOutputLift: a stream transcript whose terminal type:"result"
+// line carries structured_output ends with the same lift as the plain json envelope —
+// extractResultLine then classify, the exact sequence Run applies on the StreamActivity path.
+func TestExtractResultLine_StructuredOutputLift(t *testing.T) {
+	stream := strings.Join([]string{
+		`{"type":"system","subtype":"init"}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}`,
+		`{"type":"result","subtype":"success","is_error":false,"result":"prose","structured_output":{"answer":5}}`,
+	}, "\n") + "\n"
+	req := Request{Vendor: "v", StreamActivity: true}
+	res := classify(req, "m", extractResultLine([]byte(stream)), nil, 0, false, true)
+	if !res.OK || res.Result != "prose" {
+		t.Fatalf("want OK + prose result, got OK=%v result=%q (%s)", res.OK, res.Result, res.ErrorCode)
+	}
+	assertJSONEq(t, res.StructuredOutput, `{"answer":5}`)
+}
+
 // TestToolArgPreview: the primary arg value is extracted (known key first), key-masked, length-capped.
 func TestToolArgPreview(t *testing.T) {
 	cases := map[string]string{

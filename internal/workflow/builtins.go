@@ -56,6 +56,30 @@ type engine struct {
 	budgetTokensTotal    int64
 	budgetTokensSpent    int64
 	budgetTokensReserved int64
+	// Slim version-gate result, resolved ONCE per engine by effProfileFor: fingerprint
+	// load + binary detection are too expensive to pay per leaf under the GIL (with slim
+	// the default, every bare leaf resolves — per-leaf resolution would serialize the
+	// whole fanout), and a single resolution keeps one run's journal keys on ONE
+	// effective shape even if the host claude changes mid-run.
+	gateOnce   sync.Once
+	gateOK     bool
+	gateReason string
+}
+
+// effProfileFor maps a REQUESTED prompt profile to the effective one, consulting the
+// engine's once-resolved slim gate. full/"" pass through without resolving.
+func (e *engine) effProfileFor(requested string) (string, string) {
+	if requested == "" || requested == subagent.ProfileFull {
+		return requested, ""
+	}
+	e.gateOnce.Do(func() {
+		eff, reason := resolveProfile(subagent.ProfileSlim)
+		e.gateOK, e.gateReason = eff == subagent.ProfileSlim, reason
+	})
+	if !e.gateOK {
+		return subagent.ProfileFull, e.gateReason
+	}
+	return requested, ""
 }
 
 // builtins returns the predeclared environment exposed to a workflow script. It
@@ -89,10 +113,12 @@ func (e *engine) builtins(opts Options) starlark.StringDict {
 // agent runs ONE vendor subagent leaf and blocks the calling Starlark thread until
 // it returns. On a leaf failure it RAISES a Starlark error (faithful to native: a
 // bare top-level agent() aborts the run; parallel/pipeline recover the error into a
-// None at that index). With schema= it appends a JSON instruction, parses + shallowly
-// validates the reply, and retries up to twice. The prompt is fed via stdin
-// (PromptReader), never argv. Entered + returns with the GIL held; the GIL is
-// released only for the blocking exec + slot wait (via runBlocking).
+// None at that index). With schema= the leaf runs with --json-schema (claude injects
+// and enforces a forced StructuredOutput tool call); the returned payload is
+// validated against the schema as a client backstop — an absent or invalid payload
+// fails the leaf (no retry). The prompt is fed via stdin (PromptReader), never argv.
+// Entered + returns with the GIL held; the GIL is released only for the blocking
+// exec + slot wait (via runBlocking).
 func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var (
 		prompt       string
@@ -172,7 +198,7 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 	if err != nil {
 		return nil, err
 	}
-	profile, err := optStringDefault(profileVal, "profile", subagent.ProfileFull)
+	profile, err := optStringDefault(profileVal, "profile", subagent.ProfileSlim)
 	if err != nil {
 		return nil, err
 	}
@@ -184,7 +210,7 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 	if err != nil {
 		return nil, err
 	}
-	mcp, err := optBoolDefault(mcpVal, "mcp", false)
+	mcp, mcpPresent, err := optBool(mcpVal, "mcp")
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +221,7 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 		return nil, fmt.Errorf("agent: %w", perr)
 	}
 	isFull := profile == "" || profile == subagent.ProfileFull
-	if isFull && (len(tools) > 0 || !skills || mcp) {
+	if isFull && (len(tools) > 0 || !skills || mcpPresent) {
 		return nil, fmt.Errorf("agent: tools= / skills= / mcp= are slim-only; they require profile='slim' or 'slim-ro'")
 	}
 	canonTools, err := canonicalizeTools(tools)
@@ -220,8 +246,8 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 	// Resolve the EFFECTIVE profile (post-version-gate) BEFORE keying, same as meta.model:
 	// a below-floor/unknown claude downgrades a slim request to full, and the key must fold
 	// the effective shape so a cross-machine resume can't replay a full answer under a slim
-	// key. The version detection is process-cached in the resolver.
-	effProfile, downgrade := resolveProfile(profile)
+	// key. The gate is resolved once per engine (effProfileFor).
+	effProfile, downgrade := e.effProfileFor(profile)
 	// Resolve the EFFECTIVE tool set against the effective profile BEFORE keying: an
 	// explicit tools= when given, else the profile default (DefaultSlimTools, canonicalized).
 	// Folding the resolved set — and passing the SAME set to the leaf via Request.Tools —
@@ -235,6 +261,13 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 			return nil, fmt.Errorf("agent: %w", err)
 		}
 	}
+	// MCP per-profile default, resolved in the same pre-keying window as the tool
+	// set: an explicit mcp= wins; else slim inherits the host config (native
+	// generic parity) and slim-ro stays strict. Inert for an effective-full
+	// profile (not folded into the key, not emitted in the argv).
+	if !mcpPresent {
+		mcp = effProfile == subagent.ProfileSlim
+	}
 	var schemaJSON string
 	if schemaVal != nil && schemaVal != starlark.None {
 		sj, serr := encodeSchema(thread, schemaVal)
@@ -244,8 +277,8 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 		schemaJSON = sj
 	}
 	if runInBackground && schemaJSON != "" {
-		// A background leaf is one-shot (no in-process retry loop), so schema enforcement
-		// (which relies on retry) isn't offered for it.
+		// A background leaf's result is read back from its job file at await time, and
+		// the structured payload is in-process only — so schema= isn't offered for it.
 		return nil, fmt.Errorf("agent: schema= is not supported with run_in_background=True")
 	}
 
@@ -312,7 +345,7 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 	// Reserve this sync leaf's estimate (GIL-held, atomic with the gate above), then register the
 	// release defer — placed AFTER the reservation so it never over-releases a cache-hit/bg return,
 	// and it runs GIL-held on the unwind (like the slot defer below), covering EVERY exit beyond
-	// here (slot-fail, worktree-fail, leaf-fail, schema-exhausted, panic, success). Success charges
+	// here (slot-fail, worktree-fail, leaf-fail, schema-invalid, panic, success). Success charges
 	// real BEFORE returning, so the defer then frees only the estimate.
 	e.budgetReserve(usdEst, tokEst)
 	defer e.budgetRelease(usdEst, tokEst)
@@ -329,7 +362,7 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 	})
 	// Guarantee the reused job ends terminal: unless a success return sets leafDone, this defer
 	// finalizes it FAILED on EVERY other exit (slot-cancel, worktree-fail, pre-flight vendor fail,
-	// schema-exhausted, panic) — so a queued placeholder never lingers and a schema-invalid "done"
+	// schema-invalid, panic) — so a queued placeholder never lingers and a schema-invalid "done"
 	// attempt is corrected. leafErr carries a real failure's error class (preserved); else canonical.
 	leafDone := false
 	var leafErr subagent.Result
@@ -351,8 +384,8 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 	}
 	defer e.sched.releaseSlot()
 
-	// Worktree isolation: run the leaf with cwd = a fresh git worktree (created once,
-	// reused across schema retries), torn down on return (success, failure, or panic).
+	// Worktree isolation: run the leaf with cwd = a fresh git worktree, torn down on
+	// return (success, failure, or panic).
 	// Created with the GIL RELEASED (it shells out to git); GIL re-held on return.
 	var workDir string
 	if isolation == "worktree" {
@@ -366,75 +399,69 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 		defer cleanup()
 	}
 
-	attempts := 1
-	if schemaJSON != "" {
-		attempts = 3 // 1 + 2 retries
-	}
-	sendPrompt := prompt
-	if schemaJSON != "" {
-		sendPrompt = prompt + jsonInstruction(schemaJSON)
-	}
 	e.emitLeaf("launch", phaseTag, label, vendor, model)
-	var lastErr error
-	for i := 0; i < attempts; i++ {
-		req := subagent.Request{
-			Vendor:         vendor,
-			Model:          model,
-			PromptReader:   strings.NewReader(sendPrompt), // stdin, not argv
-			JSON:           true,                          // force inner json → res.Result is the answer text
-			Timeout:        time.Duration(timeoutSec * float64(time.Second)),
-			MaxTurns:       maxTurns,
-			MaxBudgetUSD:   maxBudget,
-			RunID:          e.runID,
-			Phase:          phaseTag,
-			Label:          label,
-			JobID:          queuedJobID, // reuse the queued placeholder: one job, queued→running→terminal
-			Attempt:        i + 1,       // 1-based schema-retry ordinal; the board shows "attempt N" when >1
-			JournalKey:     key,         // persisted so the board can restart THIS leaf (invalidate + resume)
-			PersistIO:      e.persistIO,
-			StreamActivity: e.persistIO, // sync leaf streams tool/usage activity for the board (gated like PersistIO)
-			IOPrompt:       sendPrompt,  // persisted only when PersistIO (subagent gates)
-			WorkingDir:     workDir,     // empty unless isolation='worktree'
-			// Slim profile: Run re-resolves the EFFECTIVE profile (its own version gate); the
-			// REQUESTED profile is passed here, the engine's effProfile only keys + logs above.
-			PromptProfile: profile,
-			Tools:         keyTools, // the resolved key set — the leaf execs exactly what was keyed
-			NoSkills:      !skills,
-			MCP:           mcp,
-		}
-		var res subagent.Result
-		e.sched.runBlocking(func() { res = runLeaf(req) })
-		if !res.OK {
-			leafErr = res // a pre-flight fail (no Run registration) keeps its real error class on the job
-			e.emitLeaf("failed", phaseTag, label, vendor, model)
-			return nil, fmt.Errorf("agent(%s): %s: %s", vendor, res.ErrorCode, res.ErrorMsg)
-		}
-		// Book every OK exec's real cost (incl. each schema-retry attempt) under the GIL: USD
-		// (claude's list-price estimate) + tokens (input+output). The reservation is freed by the
-		// defer at return; charging before it keeps spent+reserved monotonic for concurrent gates.
-		e.budgetCharge(res.CostUSD, leafTokens(res))
-		if schemaJSON == "" {
-			leafDone = true // subagent.Run finalized this job done; keep it
-			e.journal.append(key, res.Result)
-			e.emitLeaf("done", phaseTag, label, vendor, model)
-			return starlark.String(res.Result), nil
-		}
-		v, verr := decodeAndValidate(thread, res.Result, schemaVal)
-		if verr == nil {
-			leafDone = true
-			e.journal.append(key, res.Result)
-			e.emitLeaf("done", phaseTag, label, vendor, model)
-			return v, nil
-		}
-		lastErr = verr
-		sendPrompt = prompt + "\n\nYour previous reply was rejected: " + verr.Error() + jsonInstruction(schemaJSON)
+	req := subagent.Request{
+		Vendor:         vendor,
+		Model:          model,
+		PromptReader:   strings.NewReader(prompt), // stdin, not argv
+		JSON:           true,                      // force inner json → res.Result is the answer text
+		Timeout:        time.Duration(timeoutSec * float64(time.Second)),
+		MaxTurns:       maxTurns,
+		MaxBudgetUSD:   maxBudget,
+		RunID:          e.runID,
+		Phase:          phaseTag,
+		Label:          label,
+		JobID:          queuedJobID, // reuse the queued placeholder: one job, queued→running→terminal
+		Attempt:        1,           // single exec — a schema mismatch is terminal, never a retry
+		JournalKey:     key,         // persisted so the board can restart THIS leaf (invalidate + resume)
+		PersistIO:      e.persistIO,
+		StreamActivity: e.persistIO, // sync leaf streams tool/usage activity for the board (gated like PersistIO)
+		IOPrompt:       prompt,      // persisted only when PersistIO (subagent gates)
+		WorkingDir:     workDir,     // empty unless isolation='worktree'
+		// Slim profile: Run re-resolves the EFFECTIVE profile (its own version gate); the
+		// REQUESTED profile is passed here, the engine's effProfile only keys + logs above.
+		PromptProfile: profile,
+		Tools:         keyTools, // the resolved key set — the leaf execs exactly what was keyed
+		NoSkills:      !skills,
+		MCP:           mcp,
+		JSONSchema:    schemaJSON,
 	}
-	e.emitLeaf("failed", phaseTag, label, vendor, model)
-	return nil, fmt.Errorf("agent(%s): schema not satisfied after %d attempts: %v", vendor, attempts, lastErr)
-}
-
-func jsonInstruction(schemaJSON string) string {
-	return "\n\nReturn ONLY a single JSON value matching this schema, with no prose and no markdown fences:\n" + schemaJSON
+	var res subagent.Result
+	e.sched.runBlocking(func() { res = runLeaf(req) })
+	if !res.OK {
+		leafErr = res // a pre-flight fail (no Run registration) keeps its real error class on the job
+		e.emitLeaf("failed", phaseTag, label, vendor, model)
+		return nil, fmt.Errorf("agent(%s): %s: %s", vendor, res.ErrorCode, res.ErrorMsg)
+	}
+	// Book the exec's real cost under the GIL: USD (claude's list-price estimate) +
+	// tokens (input+output). The reservation is freed by the defer at return; charging
+	// before it keeps spent+reserved monotonic for concurrent gates.
+	e.budgetCharge(res.CostUSD, leafTokens(res))
+	if schemaJSON == "" {
+		leafDone = true // subagent.Run finalized this job done; keep it
+		e.journal.append(key, res.Result)
+		e.emitLeaf("done", phaseTag, label, vendor, model)
+		return starlark.String(res.Result), nil
+	}
+	// Schema leaf: claude enforced that the StructuredOutput tool was CALLED; the
+	// client validation below is the backstop for a weak vendor filling it
+	// invalidly. An OK envelope WITHOUT the payload (e.g. a max_turns-starved
+	// leaf) is a failure — never a prose-JSON fallback. Validation failure is
+	// terminal: an identical re-run reproduces it at full leaf cost. leafDone stays
+	// false on both paths, so the deferred finalize corrects the job Run marked done.
+	if len(res.StructuredOutput) == 0 {
+		e.emitLeaf("failed", phaseTag, label, vendor, model)
+		return nil, fmt.Errorf("agent(%s): schema: no structured_output in the result envelope (the StructuredOutput call costs turns — raise max_turns)", vendor)
+	}
+	v, verr := decodeAndValidate(thread, string(res.StructuredOutput), schemaVal)
+	if verr != nil {
+		e.emitLeaf("failed", phaseTag, label, vendor, model)
+		return nil, fmt.Errorf("agent(%s): schema not satisfied: %v", vendor, verr)
+	}
+	leafDone = true
+	e.journal.append(key, string(res.StructuredOutput))
+	e.emitLeaf("done", phaseTag, label, vendor, model)
+	return v, nil
 }
 
 // optString coerces an optional string kwarg to a Go string; omitted (nil) or an
@@ -478,7 +505,7 @@ func optInt(v starlark.Value, name string) (int, error) {
 }
 
 // optStringDefault coerces an optional string kwarg, falling back to def when omitted
-// (nil) or None — so a non-empty documented default (profile='full') is applied without
+// (nil) or None — so a non-empty documented default (profile='slim') is applied without
 // a separate empty check.
 func optStringDefault(v starlark.Value, name, def string) (string, error) {
 	if v == nil || v == starlark.None {
@@ -492,8 +519,8 @@ func optStringDefault(v starlark.Value, name, def string) (string, error) {
 }
 
 // optBoolDefault coerces an optional bool kwarg, falling back to def when omitted (nil)
-// or None — so skills= (default true) and mcp= (default false) read their documented
-// default when the script omits them.
+// or None — so skills= (default true) reads its documented default when the script
+// omits it.
 func optBoolDefault(v starlark.Value, name string, def bool) (bool, error) {
 	if v == nil || v == starlark.None {
 		return def, nil
@@ -503,6 +530,20 @@ func optBoolDefault(v starlark.Value, name string, def bool) (bool, error) {
 		return false, fmt.Errorf("agent: %s must be a bool, got %s", name, v.Type())
 	}
 	return bool(b), nil
+}
+
+// optBool coerces an explicit bool kwarg, reporting presence: omitted (nil) or
+// None is (false, false) — so mcp= reads its per-profile default only when the
+// script truly didn't choose.
+func optBool(v starlark.Value, name string) (val, present bool, err error) {
+	if v == nil || v == starlark.None {
+		return false, false, nil
+	}
+	b, ok := v.(starlark.Bool)
+	if !ok {
+		return false, false, fmt.Errorf("agent: %s must be a bool, got %s", name, v.Type())
+	}
+	return bool(b), true, nil
 }
 
 // optStringList coerces an optional list-of-string kwarg to a Go slice; omitted (nil) or

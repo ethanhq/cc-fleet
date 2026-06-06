@@ -56,9 +56,12 @@ a vendor id. No tmux pane, no team, no locks.
 Designed to be invoked by the cc-fleet skill via Bash with --json, which
 emits one machine-readable subagent.Result envelope the skill switches on.
 
---profile slim (or slim-ro) trades the full session prompt for a native-mirror
-agent prompt + a restricted tool pool — much smaller first request on cache-less
-vendors. --tools / --skills / --mcp refine a slim run.
+slim is the DEFAULT: a native-mirror agent prompt + a restricted tool whitelist (Bash,
+Edit, Glob, Grep, Read, Skill, Write; slim-ro is read-only: Bash, Glob, Grep, Read,
+Skill). Any tool beyond the whitelist (e.g. WebSearch) must be passed explicitly via
+--tools — a whole-set replacement, not an append. --profile full restores the full
+session prompt (for behavior comparison). --skills / --mcp refine a slim run; slim
+inherits the host MCP config by default, slim-ro stays strict.
 
 For long-running or research tasks (web search, many turns — anything that may
 exceed the sync timeout), prefer --background: the job runs detached, returns a
@@ -119,7 +122,7 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 					ErrorMsg: fmt.Sprintf("invalid --tools: %v", err), Vendor: vendor}, asJSON)
 			}
 			noSkills := !skills
-			if isFull && (len(toolList) > 0 || noSkills || mcp) {
+			if isFull && (len(toolList) > 0 || noSkills || cmd.Flags().Changed("mcp")) {
 				return reportSubagent(subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
 					ErrorMsg: "--tools / --skills=false / --mcp are slim-only; pass --profile slim or slim-ro",
 					Vendor:   vendor}, asJSON)
@@ -134,10 +137,15 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 				return reportSubagent(subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
 					ErrorMsg: err.Error(), Vendor: vendor}, asJSON)
 			}
-			// A non-full profile across a resumed session silently swaps the agent's
-			// system prompt mid-conversation; warn but don't fail (profile consistency
-			// across turns is the caller's responsibility).
-			if resume != "" && !isFull {
+			// MCP per-profile default when --mcp wasn't given: slim inherits the host
+			// config (native generic parity), slim-ro stays strict; for full the value is
+			// inert. An explicit --mcp (either value) wins.
+			mcp = resolveMCPDefault(cmd.Flags().Changed("mcp"), mcp, promptProfile)
+			// An explicitly chosen non-full profile across a resumed session silently
+			// swaps the agent's system prompt mid-conversation; warn but don't fail
+			// (profile consistency across turns is the caller's responsibility). The
+			// default-slim resume stays silent.
+			if resume != "" && cmd.Flags().Changed("profile") && !isFull {
 				fmt.Fprintf(os.Stderr, "subagent: warning: --resume with --profile %s swaps the system prompt mid-session; keep the profile constant across turns\n", promptProfile)
 			}
 
@@ -220,14 +228,14 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 		"Workflow phase label within the run (optional)")
 	cmd.Flags().StringVar(&label, "label", "",
 		"Human label for this agent within the run (optional)")
-	cmd.Flags().StringVar(&promptProfile, "profile", "",
-		"Prompt profile: full (default; today's argv) | slim (generic-subagent mirror) | slim-ro (read-only Explore mirror)")
+	cmd.Flags().StringVar(&promptProfile, "profile", "slim",
+		"Prompt profile: slim (default; native generic-subagent mirror) | slim-ro (read-only Explore mirror) | full (the full claude -p session; for behavior comparison)")
 	cmd.Flags().StringVar(&tools, "tools", "",
 		"Comma/space-separated tool set (slim only; replaces the profile default)")
 	cmd.Flags().BoolVar(&skills, "skills", true,
 		"Include the Skill tool + host skill listing (slim only; default true, native parity)")
 	cmd.Flags().BoolVar(&mcp, "mcp", false,
-		"Inherit the host MCP config (slim only; default false = --strict-mcp-config)")
+		"Inherit the host MCP config (slim only; default: slim inherits, slim-ro stays strict)")
 
 	return cmd
 }
@@ -249,6 +257,16 @@ func splitToolsCSV(s string) ([]string, error) {
 		out = append(out, names...)
 	}
 	return out, nil
+}
+
+// resolveMCPDefault applies the per-profile MCP default when --mcp wasn't
+// given: slim inherits the host config, anything else stays strict/inert. An
+// explicit --mcp (either value) wins.
+func resolveMCPDefault(explicit, flagValue bool, profile string) bool {
+	if explicit {
+		return flagValue
+	}
+	return profile == subagent.ProfileSlim
 }
 
 // newSubagentStatusCmd builds `cc-fleet subagent-status <job_id>`.

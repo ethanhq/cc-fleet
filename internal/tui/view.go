@@ -781,7 +781,7 @@ func (m Model) leafCounts(j subagent.Result) (in, out, tools int) {
 }
 
 // agentDetailLines is the focused agent's inline detail (the L2 right pane, scrollable): status/model
-// (with an "attempt N" marker on a schema re-run) and ↑ ctx · ↓ out · tool-calls, then a fixed
+// (with an "attempt N" marker when a legacy record carries one) and ↑ ctx · ↓ out · tool-calls, then a fixed
 // Prompt → Activity → Output → Outcome order — the Prompt, the Activity
 // feed (last 3 tool signatures), the Output (when the io files are loaded for THIS leaf via the PersistIO
 // opt-in), and the Outcome. The Output reads from the leaf's .answer side file (focused-single-agent
@@ -795,7 +795,7 @@ func (m Model) agentDetailLines(rightW int) []string {
 	snap := m.wfActivity[j.JobID]
 	status := statusLabel(j.Status) + faintStyle.Render(" · "+trunc(sessiontitle.CleanTitle(j.Model), 28))
 	if j.Attempt > 1 {
-		// A schema-retry leaf re-ran on a rejected reply; surface which attempt it landed on.
+		// >1 occurs only in records from engines that retried schema mismatches; surface it.
 		status += faintStyle.Render(fmt.Sprintf(" · attempt %d", j.Attempt))
 	}
 	lines := []string{

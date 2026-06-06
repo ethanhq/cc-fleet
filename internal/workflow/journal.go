@@ -47,9 +47,10 @@ type journal struct {
 
 // journalEntry is one JSONL line: a successfully-completed leaf's content key and its
 // raw answer string. Failed/partial leaves are never written, so resume re-runs them.
-// The raw answer string is stored uniformly (schema leaves re-decode+re-validate it on
-// replay — deterministic, no vendor exec). The vendor key never enters a result, so the
-// journal carries no secret; files are 0600 (the board's content-privacy posture).
+// Result is the journaled value: the answer text, or the structured payload for a
+// schema leaf; replay re-decodes + re-validates it (deterministic, no vendor exec).
+// The vendor key never enters a result, so the journal carries no secret; files are
+// 0600 (the board's content-privacy posture).
 type journalEntry struct {
 	Key    string `json:"key"`
 	Result string `json:"result"`

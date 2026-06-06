@@ -2,6 +2,8 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
+	"os"
 	"strings"
 	"testing"
 
@@ -10,16 +12,22 @@ import (
 
 // TestAgentSlimKwargPlumbing: profile=/tools=/skills=/mcp= reach the leaf Request — the
 // REQUESTED profile (Run re-resolves the effective one), the canonicalized (dedupe+sort)
-// tool set, and the inverted NoSkills / MCP toggles.
+// tool set, the inverted NoSkills toggle, and an explicit mcp= of either value (an
+// explicit False beats slim's inherit default).
 func TestAgentSlimKwargPlumbing(t *testing.T) {
 	rec := &recorder{}
 	_, err := runScript(t, "slimp", 2, echoLeaf(rec), `
 x = agent("p", vendor="v", profile="slim", tools=["Read", "Bash", "Read"][:2], skills=False, mcp=True)
+y = agent("p2", vendor="v", profile="slim", mcp=False)
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	c := rec.snapshot()[0]
+	byPrompt := map[string]leafCall{}
+	for _, c := range rec.snapshot() {
+		byPrompt[c.prompt] = c
+	}
+	c := byPrompt["p"]
 	if c.promptProfile != "slim" {
 		t.Errorf("PromptProfile = %q, want slim (the REQUESTED profile)", c.promptProfile)
 	}
@@ -32,22 +40,22 @@ x = agent("p", vendor="v", profile="slim", tools=["Read", "Bash", "Read"][:2], s
 	if !c.mcp {
 		t.Error("mcp=True must set MCP=true")
 	}
+	if byPrompt["p2"].mcp {
+		t.Error("explicit mcp=False on slim must set MCP=false (beats the inherit default)")
+	}
 }
 
-// TestAgentSlimDefaults: profile omitted is full, and a bare slim leaf gets skills on
-// (NoSkills=false) + mcp off + the RESOLVED profile default tool set fed to the leaf — so
-// the leaf execs exactly the set that was keyed (no nil-tools divergence).
+// TestAgentSlimDefaults: profile omitted is slim — skills on (NoSkills=false), mcp
+// inheriting (the slim per-profile default), and the RESOLVED profile default tool set
+// fed to the leaf, so the leaf execs exactly the set that was keyed (no nil-tools
+// divergence). A bare slim-ro leaf stays strict-mcp; an explicit full carries no slim
+// shape at all.
 func TestAgentSlimDefaults(t *testing.T) {
-	// Pin the effective profile to the requested one so the resolved default tool set is
-	// asserted deterministically regardless of the host claude version.
-	oldR := resolveProfile
-	resolveProfile = func(requested string) (string, string) { return requested, "" }
-	t.Cleanup(func() { resolveProfile = oldR })
-
 	rec := &recorder{}
 	_, err := runScript(t, "slimd", 2, echoLeaf(rec), `
 a = agent("a", vendor="v")
-b = agent("b", vendor="v", profile="slim")
+b = agent("b", vendor="v", profile="slim-ro")
+c = agent("c", vendor="v", profile="full")
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -56,30 +64,39 @@ b = agent("b", vendor="v", profile="slim")
 	for _, c := range rec.snapshot() {
 		byPrompt[c.prompt] = c
 	}
-	if a := byPrompt["a"]; a.promptProfile != subagent.ProfileFull {
-		t.Errorf("default profile = %q, want full", a.promptProfile)
+	wantSlim, _ := subagent.CanonicalizeTools(subagent.DefaultSlimTools(subagent.ProfileSlim, false))
+	if a := byPrompt["a"]; a.promptProfile != subagent.ProfileSlim || a.noSkills || !a.mcp ||
+		strings.Join(a.tools, ",") != strings.Join(wantSlim, ",") {
+		t.Errorf("bare leaf = %+v, want profile=slim NoSkills=false MCP=true Tools=%v", a, wantSlim)
 	}
-	wantTools, _ := subagent.CanonicalizeTools(subagent.DefaultSlimTools(subagent.ProfileSlim, false))
-	if b := byPrompt["b"]; b.noSkills || b.mcp || strings.Join(b.tools, ",") != strings.Join(wantTools, ",") {
-		t.Errorf("bare slim leaf = %+v, want NoSkills=false MCP=false Tools=%v", b, wantTools)
+	wantRO, _ := subagent.CanonicalizeTools(subagent.DefaultSlimTools(subagent.ProfileSlimRO, false))
+	if b := byPrompt["b"]; b.promptProfile != subagent.ProfileSlimRO || b.noSkills || b.mcp ||
+		strings.Join(b.tools, ",") != strings.Join(wantRO, ",") {
+		t.Errorf("bare slim-ro leaf = %+v, want NoSkills=false MCP=false Tools=%v", b, wantRO)
+	}
+	if c := byPrompt["c"]; c.promptProfile != subagent.ProfileFull || c.tools != nil || c.mcp {
+		t.Errorf("full leaf = %+v, want profile=full nil Tools MCP=false", c)
 	}
 }
 
 // TestAgentSlimValidationErrors: every front-loaded slim validation rejects with a
-// Starlark error (no leaf exec) — refinements with full, a bad profile, and a bad tool.
+// Starlark error (no leaf exec) — refinements with full (mcp= by PRESENCE, either
+// value), a bad profile, and a bad tool.
 func TestAgentSlimValidationErrors(t *testing.T) {
 	cases := []struct {
 		name, src, want string
 	}{
-		{"tools-with-full", `agent("p", vendor="v", tools=["Read"])`, "slim-only"},
-		{"skills-with-full", `agent("p", vendor="v", skills=False)`, "slim-only"},
-		{"mcp-with-full", `agent("p", vendor="v", mcp=True)`, "slim-only"},
+		{"tools-with-full", `agent("p", vendor="v", profile="full", tools=["Read"])`, "slim-only"},
+		{"skills-with-full", `agent("p", vendor="v", profile="full", skills=False)`, "slim-only"},
+		{"mcp-with-full", `agent("p", vendor="v", profile="full", mcp=True)`, "slim-only"},
+		{"mcp-false-with-full", `agent("p", vendor="v", profile="full", mcp=False)`, "slim-only"},
 		{"bad-profile", `agent("p", vendor="v", profile="turbo")`, "unknown prompt profile"},
 		{"unknown-tool", `agent("p", vendor="v", profile="slim", tools=["Nope"])`, "unknown tool"},
 		{"duplicate-tool", `agent("p", vendor="v", profile="slim", tools=["Read", "Read"])`, "duplicate tool"},
 		{"skill-with-skills-off", `agent("p", vendor="v", profile="slim", tools=["Read", "Skill"], skills=False)`, "contradictory with skills disabled"},
 		{"bad-tools-type", `agent("p", vendor="v", profile="slim", tools="Read")`, "must be a list"},
 		{"bad-profile-type", `agent("p", vendor="v", profile=7)`, "must be a string"},
+		{"bad-mcp-type", `agent("p", vendor="v", profile="slim", mcp=7)`, "must be a bool"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -161,5 +178,57 @@ func TestAgentSlimResumeKeysByEffective(t *testing.T) {
 	asFull := journalKey("v", "m", "p", "", "", subagent.ProfileFull, []string{"Bash", "Read"}, false, false)
 	if asSlim == asFull {
 		t.Fatal("a slim and a (downgraded) full resolution of the same request must key differently")
+	}
+}
+
+// TestSchemaAbsentStructuredOutputFails: an OK envelope WITHOUT the structured payload —
+// even when the prose Result happens to be valid JSON (the max_turns-starved shape) —
+// fails the schema leaf after exactly one exec; the prose is never a fallback.
+func TestSchemaAbsentStructuredOutputFails(t *testing.T) {
+	rec := &recorder{}
+	leaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
+		return subagent.Result{OK: true, Result: `{"answer": 5}`}
+	})
+	_, err := runScript(t, "slimso", 1, leaf,
+		`x = agent("q", vendor="v", schema={"required": ["answer"]})`)
+	if err == nil || !strings.Contains(err.Error(), "structured_output") {
+		t.Fatalf("err = %v, want a no-structured_output failure", err)
+	}
+	if n := len(rec.snapshot()); n != 1 {
+		t.Errorf("leaf ran %d times, want exactly 1", n)
+	}
+}
+
+// TestSchemaJournalsStructuredPayload: a schema leaf journals the STRUCTURED payload, not
+// the prose Result — what a resume replays is the validated object. Exercised through the
+// Execute path so the on-disk journal is wired.
+func TestSchemaJournalsStructuredPayload(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	rec := &recorder{}
+	old := runLeaf
+	runLeaf = fakeLeaf(rec, func(c leafCall) subagent.Result {
+		return subagent.Result{OK: true, Result: "prose words", StructuredOutput: json.RawMessage(`{"answer":7}`)}
+	})
+	t.Cleanup(func() { runLeaf = old })
+
+	_, script := writeScript(t, `x = agent("q", vendor="v", schema={"required": ["answer"]})`)
+	run, err := Prepare(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := Execute(context.Background(), script, run.RunID, Options{}); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	jp, _ := subagent.RunJournalPath(run.RunID)
+	data, err := os.ReadFile(jp)
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	var e journalEntry
+	if err := json.Unmarshal([]byte(firstLine(data)), &e); err != nil {
+		t.Fatalf("parse journal line: %v", err)
+	}
+	if !strings.Contains(e.Result, `{"answer":7}`) || strings.Contains(e.Result, "prose words") {
+		t.Errorf("journaled result = %q, want the structured payload, not the prose Result", e.Result)
 	}
 }

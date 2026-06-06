@@ -67,8 +67,9 @@ type jobMeta struct {
 	// JournalKey is the leaf's content-hash key, carried so finalizeSyncJob/StatusFor can
 	// stamp the terminal Result with it (the board needs it to restart this single leaf).
 	JournalKey string `json:"journal_key,omitempty"`
-	// Attempt is the 1-based schema-retry ordinal this job last ran at (>1 = re-ran on a
-	// schema mismatch); 0 backfills a legacy meta. Carried onto the reconstructed Result.
+	// Attempt is the 1-based exec ordinal this job last ran at (>1 occurs only in metas
+	// from engines that retried schema mismatches); 0 backfills a legacy meta. Carried
+	// onto the reconstructed Result.
 	Attempt int `json:"attempt,omitempty"`
 
 	// PersistIO records that this job opted into board drill-in, so finalizeSyncJob
@@ -987,9 +988,9 @@ func registerSyncJob(jobID string, req Request, model string, effective, downgra
 		// SettingsPath deliberately empty (see processAlive). Sync writes no .out
 		// file, so the deferred result cache is the authoritative done signal.
 	}
-	// A REUSED job id (the engine's queued→running flip, or a schema retry re-registering an
-	// already-finalized attempt) must start clean: drop any terminal cache + stale answer/activity
-	// so the board re-reads this attempt as running, not the prior done/answer. No-op for a fresh id.
+	// A REUSED job id (the engine's queued→running flip) must start clean: drop any terminal
+	// cache + stale answer/activity so the board re-reads this job as running, not a prior
+	// done/answer. No-op for a fresh id.
 	for _, ext := range []string{".result.json", ".answer", ".activity"} {
 		_ = os.Remove(filepath.Join(dir, jobID+ext))
 	}
@@ -1047,8 +1048,8 @@ func MintQueuedLeaf(req Request, model string) string {
 
 // FinalizeQueuedLeafFailed marks a leaf's (reused) job terminal-failed when the engine abandoned it
 // without a success: a queued placeholder cancelled before its slot or whose worktree failed, a
-// pre-flight vendor failure (subagent.Run returned before registering), or a schema-exhausted leaf
-// whose last attempt cached "done". A res carrying a real error class is preserved (so the board keeps
+// pre-flight vendor failure (subagent.Run returned before registering), or a schema-invalid leaf
+// whose exec cached "done". A res carrying a real error class is preserved (so the board keeps
 // e.g. INSUFFICIENT_BALANCE); otherwise a canonical SUBAGENT_FAILED is written. No-op for an empty id.
 func FinalizeQueuedLeafFailed(jobID string, res Result) {
 	if jobID == "" {

@@ -48,10 +48,11 @@ var runLeaf = subagent.Run
 var mintQueuedLeaf = subagent.MintQueuedLeaf
 
 // resolveProfile maps a REQUESTED prompt profile to the effective one (the version
-// gate), pre-keying. A seam so tests drive the downgrade path without a real claude
-// binary. Production loads the fingerprint the same way Run does and resolves the
-// version against THAT recipe's binary (process-cached per resolved path); a load
-// failure fails open to full with a reason, matching the resolver's own discipline.
+// gate). A seam so tests drive the downgrade path without a real claude binary.
+// Production loads the fingerprint the same way Run does and resolves the version
+// against THAT recipe's binary; a load failure fails open to full with a reason,
+// matching the resolver's own discipline. Called at most ONCE per engine (see
+// engine.effProfileFor), never per leaf.
 var resolveProfile = func(requested string) (string, string) {
 	if requested == "" || requested == subagent.ProfileFull {
 		return requested, ""

@@ -54,7 +54,8 @@ one = wait(agent("c", vendor="v", run_in_background=True))
 }
 
 // TestBackgroundSchemaRejected: schema= with run_in_background=True is an error (a
-// one-shot background leaf has no retry loop for schema enforcement).
+// background leaf's result is read back from its job file, and the structured payload
+// is in-process only).
 func TestBackgroundSchemaRejected(t *testing.T) {
 	rec := &recorder{}
 	_, err := runScript(t, "bgs", 2, echoLeaf(rec),
