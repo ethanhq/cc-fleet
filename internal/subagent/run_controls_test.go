@@ -47,10 +47,10 @@ func TestSyncJobPersistsIOOptIn(t *testing.T) {
 	}
 }
 
-// TestStopRunReuseGuardSpareForeignPID: StopRun must NOT kill a pid whose cmdline is not
-// this run's workflow engine (a recycled-pid guard). The test process's own pid stands in
-// for a "recycled" pid — its argv is the test binary, not `workflow run --run-id …`, so
-// the guard refuses the kill and the run is merely flipped to stopped.
+// TestStopRunReuseGuardSparesForeignPID: StopRun must NOT kill a pid whose cmdline is not
+// this run's workflow engine (a recycled-pid guard). The test process's own (live) pid stands
+// in for a "recycled" pid, with the argv seam driven to a non-engine argv so the guard reads it
+// as foreign on every platform, refuses the kill, and merely flips the run to stopped.
 func TestStopRunReuseGuardSparesForeignPID(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
@@ -60,6 +60,12 @@ func TestStopRunReuseGuardSparesForeignPID(t *testing.T) {
 		RunID: "stoprun", StartedAt: time.Now().UTC().Format(time.RFC3339),
 		Status: "running", EnginePID: os.Getpid(),
 	})
+	// Drive the argv seam to a readable non-engine argv so the recycled-pid guard reads this live
+	// pid as foreign deterministically — the real reader is platform-specific (and unreadable on
+	// Windows, where the liveness soft-fail would otherwise read an unverifiable live pid as ours).
+	orig := reuseGuardArgv
+	t.Cleanup(func() { reuseGuardArgv = orig })
+	reuseGuardArgv = func(int) ([]string, bool) { return []string{"some", "other", "proc"}, true }
 	run, err := StopRun("stoprun")
 	if err != nil {
 		t.Fatalf("StopRun: %v", err)
