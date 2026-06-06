@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -209,8 +210,9 @@ func TestBuildSlimArgv(t *testing.T) {
 		if serr != nil {
 			t.Fatalf("sidecar not written: %v", serr)
 		}
-		if info.Mode().Perm() != 0o600 {
-			t.Fatalf("sidecar mode = %v, want 0600", info.Mode().Perm())
+		// NTFS reports 0666; the 0600 contract is unix-only.
+		if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
+			t.Fatalf("sidecar mode = %v, want 0600", got)
 		}
 		data, _ := os.ReadFile(sa.promptFile)
 		if !strings.Contains(string(data), "You are powered by the model named vendor-m.") {
