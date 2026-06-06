@@ -83,7 +83,22 @@ func Prepare(scriptPath string) (subagent.WorkflowRun, error) {
 	if err != nil {
 		return subagent.WorkflowRun{}, err
 	}
+	// Resolve the whole script (not just meta) BEFORE minting: a resolve error — e.g. a reassigned
+	// top-level global — must fail with NO manifest left behind, not mint a 0-leaf run the board then
+	// lists forever. SourceProgramOptions resolves without executing the body.
+	if _, _, rerr := starlark.SourceProgramOptions(fileOptions, scriptPath, src, scriptPredeclared()); rerr != nil {
+		return subagent.WorkflowRun{}, rerr
+	}
 	return subagent.NewRunWithMeta(meta.Name, meta.Description, meta.WhenToUse, metaPhases(meta))
+}
+
+// scriptPredeclared reports the names a workflow script may reference without defining them — the
+// builtins() environment plus `args` (runtime-predeclared only with --args-json, but always allowed
+// here so the Prepare resolve doesn't reject a script that legitimately uses it). Universe builtins
+// (len/range/…) are resolved by the resolver itself.
+func scriptPredeclared() func(string) bool {
+	base := (&engine{}).builtins(Options{})
+	return func(name string) bool { return name == "args" || base.Has(name) }
 }
 
 // metaPhases converts a parsed script meta's phase plan into the manifest's RunPhase
