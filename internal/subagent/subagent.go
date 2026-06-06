@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -75,6 +76,12 @@ func (w *cappedWriter) Write(p []byte) (int, error) {
 // bundled default recipe (a fresh install needs no probe).
 var loadFP = fingerprint.LoadOrBundled
 
+// LoadFingerprint loads the spawn recipe the same way Run does (probed cache or the
+// bundled default). The workflow engine uses it to resolve the effective profile against
+// the SAME recipe binary Run will exec, so its pre-keying version gate can't read a
+// different executable.
+func LoadFingerprint() (*fingerprint.Fingerprint, error) { return loadFP() }
+
 // detectLeadSession is a seam so tests can inject a parent Claude session
 // without relying on the process tree they run under.
 var detectLeadSession = leadsession.Detect
@@ -83,6 +90,14 @@ var detectLeadSession = leadsession.Detect
 // Spawn it NEVER returns a Go error — every failure path produces a Result.
 // It builds its own timeout context (self-contained, like Spawn).
 func Run(req Request) Result {
+	// 0. Validate the prompt profile + slim refinements front-loaded, BEFORE any
+	//    exec or side effect (mirrors the CLI's front-loaded check; the workflow
+	//    engine never reaches here with bad args). Refinements (tools / skills-off
+	//    / mcp) are slim-only — combined with the full profile they are rejected.
+	if errRes := validateSlimArgs(req); errRes != nil {
+		return *errRes
+	}
+
 	// 1. Load vendor config.
 	cfg, err := config.Load()
 	if err != nil {
@@ -165,18 +180,40 @@ func Run(req Request) Result {
 		req.LeadSessionID = detectLeadSession()
 	}
 
-	// 6. Background mode: launch detached, return a job handle.
+	// 6. Resolve the EFFECTIVE profile (version gate, fail-open to full with a
+	//    reason). Done AFTER the fingerprint gate, against the SAME fp whose binary
+	//    path was just resolved above — no second fingerprint load, so the gate can't
+	//    read a different executable than the one this Run will exec.
+	effective, downgrade := ResolveEffectiveProfile(req.PromptProfile, fp)
+
+	// 7. Background mode: launch detached, return a job handle.
 	if req.Background {
-		return launchBackground(req, fp.BinaryPath, profilePath, model)
+		return launchBackground(req, fp.BinaryPath, profilePath, model, effective, downgrade)
 	}
 
-	// 7. Synchronous exec with a hard deadline.
+	// 8. Synchronous exec with a hard deadline.
 	timeout := req.Timeout
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
-	argv := buildArgv(fp.BinaryPath, profilePath, model, req)
+
+	// Mint the job id BEFORE buildArgv so a slim run can write its
+	// <jobID>.slimprompt sidecar and reference it via --system-prompt-file.
+	jobID := mintSyncJobID()
+
+	slim, slimErr := buildSlimArgv(effective, jobID, req, model)
+	if slimErr != nil {
+		res := fail(ErrCodeFailed, slimErr.Error(), req.Vendor, "")
+		res.PromptProfile, res.SlimDowngrade = effective, downgrade
+		res.LeadSessionID = req.LeadSessionID
+		res.RunID, res.Phase, res.Label = req.RunID, req.Phase, req.Label
+		return res
+	}
+	argv := buildArgv(fp.BinaryPath, profilePath, model, req, slim)
 	env := childenv.Clean(os.Environ())
+	if effective == ProfileSlimRO {
+		env = append(env, "CLAUDE_CODE_DISABLE_CLAUDE_MDS=1")
+	}
 
 	// Register this run on the agent-status board so a sync subagent is visible
 	// WHILE it runs, then flip it to done/failed on return via a deferred
@@ -184,14 +221,24 @@ func Run(req Request) Result {
 	// the recorded pid is this cc-fleet process and gets recycled once it exits.
 	// The returned res is unchanged (no JobID stamped), so CLI output is
 	// identical; board bookkeeping is purely a side channel.
-	jobID := registerSyncJob(req, model)
+	//
+	// When registration FAILS (no meta on disk) finalizeSyncJob is skipped — it
+	// would otherwise write an orphan .result.json with no backing meta — and a
+	// slim sidecar already written by buildSlimArgv is reaped after the child
+	// exits, since GC keys on the (absent) meta and would never find it.
+	registered := registerSyncJob(jobID, req, model, effective, downgrade)
 	var res Result
-	defer func() { finalizeSyncJob(jobID, res) }()
+	if registered {
+		defer func() { finalizeSyncJob(jobID, res) }()
+	} else if slim.promptFile != "" {
+		defer func() { _ = os.Remove(slim.promptFile) }()
+	}
 
 	// Capture per-leaf tool/usage activity to <jobID>.activity (stream-json) when the workflow
-	// engine opted in — content-privacy, gated like the prompt/answer side files.
+	// engine opted in — content-privacy, gated like the prompt/answer side files. Skipped when
+	// registration failed: with no meta the .activity file would orphan exactly like the cache.
 	var act *activityWriter
-	if req.StreamActivity && jobID != "" {
+	if registered && req.StreamActivity && jobID != "" {
 		if p, perr := leafActivityPath(jobID); perr == nil {
 			act = newActivityWriter(p)
 			act.inputSeed = estimatePromptTokens(req.IOPrompt) // live input floor until real usage arrives
@@ -212,6 +259,7 @@ func Run(req Request) Result {
 			req.Vendor, suggestionFor(ErrCodeOutputTooLarge))
 		res.LeadSessionID = req.LeadSessionID
 		res.RunID, res.Phase, res.Label = req.RunID, req.Phase, req.Label
+		res.PromptProfile, res.SlimDowngrade = effective, downgrade
 		res.ExitCode = exitCode
 		return res
 	}
@@ -227,6 +275,7 @@ func Run(req Request) Result {
 	res = classify(req, model, classifyOut, stderr, exitCode, timedOut, innerJSON)
 	res.LeadSessionID = req.LeadSessionID
 	res.RunID, res.Phase, res.Label = req.RunID, req.Phase, req.Label
+	res.PromptProfile, res.SlimDowngrade = effective, downgrade
 	res.Raw = stdout
 	res.ExitCode = exitCode
 	return res
@@ -237,7 +286,11 @@ func Run(req Request) Result {
 //
 // When PromptReader is set (--prompt-file / stdin) we emit "-p" with NO value
 // so claude reads the prompt from stdin and the prompt never enters argv.
-func buildArgv(binaryPath, profilePath, model string, req Request) []string {
+//
+// slim describes the slim-profile additions and is the empty zero value for a
+// full run, which keeps full's argv byte-identical to before. Its flags are
+// APPENDED after the full argv (claude is order-insensitive for them).
+func buildArgv(binaryPath, profilePath, model string, req Request, slim slimArgv) []string {
 	argv := []string{binaryPath}
 
 	// Permissions: default to --dangerously-skip-permissions (headless has no
@@ -274,7 +327,28 @@ func buildArgv(binaryPath, profilePath, model string, req Request) []string {
 	if req.MaxBudgetUSD > 0 {
 		argv = append(argv, "--max-budget-usd", strconv.FormatFloat(req.MaxBudgetUSD, 'f', -1, 64))
 	}
+
+	// Slim profiles: replace the main prompt with the rendered native-mirror
+	// sidecar, restrict the tool pool, disable thinking (native subagent
+	// behavior), and isolate MCP unless the caller asked to inherit the host
+	// config. Appended after the full argv so a full run stays byte-identical.
+	if slim.promptFile != "" {
+		argv = append(argv, "--system-prompt-file", slim.promptFile,
+			"--tools", strings.Join(slim.tools, ","),
+			"--thinking", "disabled")
+		if !req.MCP {
+			argv = append(argv, "--strict-mcp-config")
+		}
+	}
 	return argv
+}
+
+// slimArgv carries the slim-profile additions buildArgv appends. promptFile is
+// the absolute <jobID>.slimprompt sidecar path; empty means "full profile, no
+// slim flags". tools is the canonicalized (deduped + sorted) tool set.
+type slimArgv struct {
+	promptFile string
+	tools      []string
 }
 
 // runClaude execs the headless child with a process-group kill model so a

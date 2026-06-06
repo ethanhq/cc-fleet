@@ -42,6 +42,22 @@ var fileOptions = &syntax.FileOptions{
 // key-safe via apiKeyHelper, board-registered, tagged with run/phase/label).
 var runLeaf = subagent.Run
 
+// resolveProfile maps a REQUESTED prompt profile to the effective one (the version
+// gate), pre-keying. A seam so tests drive the downgrade path without a real claude
+// binary. Production loads the fingerprint the same way Run does and resolves the
+// version against THAT recipe's binary (process-cached per resolved path); a load
+// failure fails open to full with a reason, matching the resolver's own discipline.
+var resolveProfile = func(requested string) (string, string) {
+	if requested == "" || requested == subagent.ProfileFull {
+		return requested, ""
+	}
+	fp, err := subagent.LoadFingerprint()
+	if err != nil {
+		return subagent.ProfileFull, fmt.Sprintf("slim disabled: load fingerprint: %v", err)
+	}
+	return subagent.ResolveEffectiveProfile(requested, fp)
+}
+
 // Options configures a workflow run.
 type Options struct {
 	// RunID, when set, names an EXISTING manifest to execute (the detached child /

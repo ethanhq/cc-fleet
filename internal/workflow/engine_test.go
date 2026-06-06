@@ -25,6 +25,10 @@ type leafCall struct {
 	persistIO                                  bool
 	ioPrompt                                   string
 	workingDir                                 string
+	promptProfile                              string
+	tools                                      []string
+	noSkills                                   bool
+	mcp                                        bool
 }
 
 type recorder struct {
@@ -65,6 +69,7 @@ func fakeLeaf(r *recorder, respond func(leafCall) subagent.Result) func(subagent
 			vendor: req.Vendor, prompt: prompt, runID: req.RunID, phase: req.Phase, label: req.Label,
 			model: req.Model, timeout: req.Timeout, maxBudget: req.MaxBudgetUSD, maxTurns: req.MaxTurns,
 			persistIO: req.PersistIO, ioPrompt: req.IOPrompt, workingDir: req.WorkingDir,
+			promptProfile: req.PromptProfile, tools: req.Tools, noSkills: req.NoSkills, mcp: req.MCP,
 		}
 		r.record(c)
 		res := respond(c)

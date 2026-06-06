@@ -19,7 +19,7 @@ func TestSyncJobPersistsIOOptIn(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	jid := registerSyncJob(Request{Vendor: "v", PersistIO: true, IOPrompt: "the prompt"}, "m")
+	jid := regSyncJob(Request{Vendor: "v", PersistIO: true, IOPrompt: "the prompt"}, "m")
 	if jid == "" {
 		t.Fatal("registerSyncJob returned empty id")
 	}
@@ -34,7 +34,7 @@ func TestSyncJobPersistsIOOptIn(t *testing.T) {
 		t.Error("the result cache must stay answer-stripped (board table safety)")
 	}
 
-	jid2 := registerSyncJob(Request{Vendor: "v", PersistIO: false, IOPrompt: "secret"}, "m")
+	jid2 := regSyncJob(Request{Vendor: "v", PersistIO: false, IOPrompt: "secret"}, "m")
 	if jid2 == "" {
 		t.Fatal("registerSyncJob(2) returned empty id")
 	}

@@ -21,7 +21,7 @@ func TestRegisterAndFinalizeSyncJob(t *testing.T) {
 
 	// Register a sync job. PID is THIS (alive) process; SettingsPath empty so the
 	// board's StatusFor uses a bare liveness probe and sees it running.
-	jobID := registerSyncJob(Request{Vendor: "glm", JSON: true, LeadSessionID: "lead-sync-1"}, "glm-4.6")
+	jobID := regSyncJob(Request{Vendor: "glm", JSON: true, LeadSessionID: "lead-sync-1"}, "glm-4.6")
 	if jobID == "" {
 		t.Fatal("registerSyncJob returned an empty job id")
 	}

@@ -23,6 +23,14 @@ const smoke429BalanceJSON = `{"type":"result","subtype":"success","is_error":tru
  "result":"API Error: Request rejected (429) · [1113][余额不足或无可用资源包,请充值。]",
  "total_cost_usd":0,"modelUsage":{},"permission_denials":[],"terminal_reason":"completed"}`
 
+// regSyncJob mints a sync job id and registers it (full profile), returning the
+// id — the pre-split registerSyncJob shape the board tests rely on.
+func regSyncJob(req Request, model string) string {
+	jobID := mintSyncJobID()
+	registerSyncJob(jobID, req, model, "", "")
+	return jobID
+}
+
 // ----- argv assertion helpers -----
 
 func idxOf(argv []string, tok string) int {

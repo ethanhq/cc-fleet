@@ -8,8 +8,11 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"github.com/ethanhq/cc-fleet/internal/fileutil"
+	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
 // journal is a run's append-only content-hash cache of completed leaf results — the
@@ -180,6 +183,15 @@ func removeJournalKey(path, key string) (bool, error) {
 // in which case the vendor resolves its own default_model at runtime (the caveat below).
 // It is keyed as the script determines it, not the vendor-default it later resolves to.
 //
+// effProfile is the EFFECTIVE slim profile (post-version-gate, resolved in agent() before
+// keying) with its resolved tools/skills/mcp. When the effective profile is full ("" or
+// "full") the slim fields are NOT folded, so existing saved-run keys stay byte-identical —
+// only a slim leaf's key carries the extra shape. Folding the EFFECTIVE (not requested)
+// profile means a cross-machine resume whose claude resolves a different effective profile
+// recomputes a different key → cache miss + re-run, never a wrong-shape replay. Ambient
+// context (CLAUDE.md/gitStatus/host skills listing/MCP config) is intentionally NOT keyed —
+// the same ambient-context exclusion the full-profile journal already makes.
+//
 // Caveat: when BOTH model= and meta.model are omitted the key holds
 // the empty string, so a vendor-config change between a run and its resume — editing a
 // vendor's default_model or base_url — is NOT captured, and an omitted-model leaf could
@@ -193,11 +205,22 @@ func removeJournalKey(path, key string) (bool, error) {
 // byte: a prompt is an arbitrary Starlark string that may itself contain any byte, so a
 // sentinel-only framing (vendor\x00model\x00prompt…) could collide across field
 // boundaries; length-prefixing makes the preimage unambiguous for any content.
-func journalKey(vendor, model, prompt, schemaJSON, isolation string) string {
+func journalKey(vendor, model, prompt, schemaJSON, isolation, effProfile string, tools []string, noSkills, mcp bool) string {
 	h := sha256.New()
 	h.Write([]byte("v1"))
 	var n [8]byte
-	for _, part := range []string{vendor, model, prompt, schemaJSON, isolation} {
+	parts := []string{vendor, model, prompt, schemaJSON, isolation}
+	// Fold the slim determinants only for a non-full effective profile, with the same
+	// length-prefix discipline — so a full leaf's preimage is byte-identical to today's.
+	if effProfile != "" && effProfile != subagent.ProfileFull {
+		parts = append(parts,
+			effProfile,
+			strings.Join(tools, ","),
+			"skills="+strconv.FormatBool(!noSkills),
+			"mcp="+strconv.FormatBool(mcp),
+		)
+	}
+	for _, part := range parts {
 		binary.BigEndian.PutUint64(n[:], uint64(len(part)))
 		h.Write(n[:])
 		h.Write([]byte(part))

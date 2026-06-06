@@ -53,6 +53,44 @@ func TestVersionFromPath(t *testing.T) {
 	}
 }
 
+func TestAtLeast(t *testing.T) {
+	cases := []struct {
+		version, floor string
+		want           bool
+	}{
+		{"2.1.88", "2.1.88", true},    // boundary: equal
+		{"2.1.87", "2.1.88", false},   // below by patch
+		{"2.1.89", "2.1.88", true},    // above by patch
+		{"2.2.0", "2.1.88", true},     // above by minor
+		{"3.0.0", "2.1.88", true},     // above by major
+		{"1.9.99", "2.1.88", false},   // below by major
+		{"", "2.1.88", false},         // empty version → unknown → false
+		{"garbage", "2.1.88", false},  // unparseable → false
+		{"v2.1.88", "2.1.88", false},  // leading v → unparseable
+		{"2.1", "2.1.88", false},      // too few segments → unparseable
+		{"2.1.88.4", "2.1.88", false}, // too many segments → unparseable
+		{"2.1.88", "2.1", false},      // unparseable floor → false
+	}
+	for _, tc := range cases {
+		t.Run(tc.version+"_vs_"+tc.floor, func(t *testing.T) {
+			if got := AtLeast(tc.version, tc.floor); got != tc.want {
+				t.Fatalf("AtLeast(%q, %q) = %v, want %v", tc.version, tc.floor, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestVersionForPath(t *testing.T) {
+	// Layout basename resolves without exec.
+	if got := VersionForPath("/root/.local/share/claude/versions/2.1.150/claude"); got != "2.1.150" {
+		t.Fatalf("VersionForPath(layout) = %q, want 2.1.150", got)
+	}
+	// A path with no semver basename and no runnable binary → "".
+	if got := VersionForPath(filepath.Join(t.TempDir(), "claude")); got != "" {
+		t.Fatalf("VersionForPath(unknown) = %q, want \"\"", got)
+	}
+}
+
 // TestDetect_PathLookup writes a fake `claude` executable into a tempdir,
 // prepends it to PATH, and confirms Detect finds it. The fake doesn't need to
 // be runnable for versionFromPath to succeed, but we name its parent dir with

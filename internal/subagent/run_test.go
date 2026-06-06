@@ -88,13 +88,13 @@ func TestRunStatus_FiltersJobsByRunID(t *testing.T) {
 		t.Fatalf("NewRun: %v", err)
 	}
 	// Two jobs in this run, one in a different run — RunStatus must return only ours.
-	if registerSyncJob(Request{Vendor: "glm", RunID: run.RunID, Phase: "build", Label: "w1"}, "glm-4.6") == "" {
+	if regSyncJob(Request{Vendor: "glm", RunID: run.RunID, Phase: "build", Label: "w1"}, "glm-4.6") == "" {
 		t.Fatal("registerSyncJob w1 failed")
 	}
-	if registerSyncJob(Request{Vendor: "glm", RunID: run.RunID, Phase: "build", Label: "w2"}, "glm-4.6") == "" {
+	if regSyncJob(Request{Vendor: "glm", RunID: run.RunID, Phase: "build", Label: "w2"}, "glm-4.6") == "" {
 		t.Fatal("registerSyncJob w2 failed")
 	}
-	if registerSyncJob(Request{Vendor: "glm", RunID: "other-run", Phase: "x", Label: "x1"}, "glm-4.6") == "" {
+	if regSyncJob(Request{Vendor: "glm", RunID: "other-run", Phase: "x", Label: "x1"}, "glm-4.6") == "" {
 		t.Fatal("registerSyncJob other failed")
 	}
 
@@ -149,7 +149,7 @@ func TestSaveRun_PreservesSessionAndOptions(t *testing.T) {
 func TestSyncJob_PersistsJournalKey(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
-	jobID := registerSyncJob(Request{Vendor: "glm", RunID: "r1", Phase: "p", Label: "a", JournalKey: "key-abc"}, "glm-4.6")
+	jobID := regSyncJob(Request{Vendor: "glm", RunID: "r1", Phase: "p", Label: "a", JournalKey: "key-abc"}, "glm-4.6")
 	if jobID == "" {
 		t.Fatal("registerSyncJob returned an empty id")
 	}
@@ -167,7 +167,7 @@ func TestPurgeRun_RemovesRunAndJobs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRun: %v", err)
 	}
-	jobID := registerSyncJob(Request{Vendor: "v", RunID: run.RunID, Phase: "p", Label: "a"}, "m")
+	jobID := regSyncJob(Request{Vendor: "v", RunID: run.RunID, Phase: "p", Label: "a"}, "m")
 	finalizeSyncJob(jobID, Result{OK: true})
 	if got := StatusFor(jobID); got.RunID != run.RunID {
 		t.Fatalf("setup: job not tagged with the run, got %+v", got)

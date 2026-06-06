@@ -25,6 +25,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ethanhq/cc-fleet/internal/childenv"
 )
 
 // versionRegex extracts a semver-ish "MAJOR.MINOR.PATCH" out of a basename or
@@ -49,10 +51,7 @@ func Detect() (binaryPath, version string, err error) {
 	if err != nil {
 		return "", "", err
 	}
-	version = versionFromPath(binaryPath)
-	if version == "" {
-		version = versionFromExec(binaryPath)
-	}
+	version = VersionForPath(binaryPath)
 	return binaryPath, version, nil
 }
 
@@ -156,6 +155,38 @@ func parseSemver(name string) (out [3]int, ok bool) {
 	return out, true
 }
 
+// VersionForPath returns a best-effort version for the binary AT path: the
+// per-version layout basename first (cheap, no exec), else a bounded
+// `<path> --version`. Unlike Detect it never re-locates — the caller has
+// already chosen the exact executable, so its version is the one reported.
+// "" means "version unknown" (path not in the layout and exec failed).
+func VersionForPath(path string) string {
+	if v := versionFromPath(path); v != "" {
+		return v
+	}
+	return versionFromExec(path)
+}
+
+// AtLeast reports whether version is a parseable semver >= floor. An empty or
+// unparseable version returns false, letting a caller treat "unknown" as
+// below-floor (fail open to the conservative path). floor is assumed valid.
+func AtLeast(version, floor string) bool {
+	v, ok := parseSemver(version)
+	if !ok {
+		return false
+	}
+	f, ok := parseSemver(floor)
+	if !ok {
+		return false
+	}
+	for i := 0; i < 3; i++ {
+		if v[i] != f[i] {
+			return v[i] > f[i]
+		}
+	}
+	return true
+}
+
 // versionFromPath pulls a "X.Y.Z" out of the directory containing the binary
 // (the per-version install layout). It also handles the case where the binary
 // path itself ends with the version (less common but cheap to support).
@@ -184,7 +215,9 @@ func versionFromExec(binaryPath string) string {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), versionExecTimeout)
 	defer cancel()
-	out, err := exec.CommandContext(ctx, binaryPath, "--version").Output()
+	cmd := exec.CommandContext(ctx, binaryPath, "--version")
+	cmd.Env = childenv.Clean(os.Environ())
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}

@@ -96,6 +96,10 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 		turnsVal     starlark.Value
 		bgVal        starlark.Value
 		isolationVal starlark.Value
+		profileVal   starlark.Value
+		toolsVal     starlark.Value
+		skillsVal    starlark.Value
+		mcpVal       starlark.Value
 	)
 	// Every optional is unpacked as a Value so an explicit None (the documented
 	// "omitted" default) is accepted rather than rejected by Starlark's strict typing;
@@ -113,6 +117,10 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 		"max_turns?", &turnsVal,
 		"run_in_background?", &bgVal,
 		"isolation?", &isolationVal,
+		"profile?", &profileVal,
+		"tools?", &toolsVal,
+		"skills?", &skillsVal,
+		"mcp?", &mcpVal,
 	); err != nil {
 		return nil, err
 	}
@@ -154,6 +162,39 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 	if err != nil {
 		return nil, err
 	}
+	profile, err := optStringDefault(profileVal, "profile", subagent.ProfileFull)
+	if err != nil {
+		return nil, err
+	}
+	tools, err := optStringList(toolsVal, "tools")
+	if err != nil {
+		return nil, err
+	}
+	skills, err := optBoolDefault(skillsVal, "skills", true)
+	if err != nil {
+		return nil, err
+	}
+	mcp, err := optBoolDefault(mcpVal, "mcp", false)
+	if err != nil {
+		return nil, err
+	}
+	// Front-load the same slim validation the bare-CLI path uses, surfaced as Starlark
+	// errors (consistent with the other kwarg errors above): the profile enum, the
+	// slim-only refinements rejected when combined with full, and tool canonicalization.
+	if perr := subagent.ValidateProfile(profile); perr != nil {
+		return nil, fmt.Errorf("agent: %w", perr)
+	}
+	isFull := profile == "" || profile == subagent.ProfileFull
+	if isFull && (len(tools) > 0 || !skills || mcp) {
+		return nil, fmt.Errorf("agent: tools= / skills= / mcp= are slim-only; they require profile='slim' or 'slim-ro'")
+	}
+	canonTools, err := canonicalizeTools(tools)
+	if err != nil {
+		return nil, fmt.Errorf("agent: %w", err)
+	}
+	if err := subagent.ValidateToolsSkills(canonTools, !skills); err != nil {
+		return nil, fmt.Errorf("agent: %w", err)
+	}
 
 	// CONVERT-UNDER-LOCK: snapshot every Starlark input into Go data while the GIL is
 	// held, before releasing it for the blocking exec.
@@ -165,6 +206,24 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 	// journal key so the key reflects the EFFECTIVE model the leaf will use.
 	if model == "" {
 		model = e.metaModel
+	}
+	// Resolve the EFFECTIVE profile (post-version-gate) BEFORE keying, same as meta.model:
+	// a below-floor/unknown claude downgrades a slim request to full, and the key must fold
+	// the effective shape so a cross-machine resume can't replay a full answer under a slim
+	// key. The version detection is process-cached in the resolver.
+	effProfile, downgrade := resolveProfile(profile)
+	// Resolve the EFFECTIVE tool set against the effective profile BEFORE keying: an
+	// explicit tools= when given, else the profile default (DefaultSlimTools, canonicalized).
+	// Folding the resolved set — and passing the SAME set to the leaf via Request.Tools —
+	// keeps keying and execution from diverging (a bare slim leaf keys with nil tools while
+	// running DefaultSlimTools otherwise). For a full effective profile the slim fields don't
+	// fold and Run ignores Tools, so the resolved set is inert there.
+	keyTools := canonTools
+	if (effProfile == subagent.ProfileSlim || effProfile == subagent.ProfileSlimRO) && len(keyTools) == 0 {
+		keyTools, err = subagent.CanonicalizeTools(subagent.DefaultSlimTools(effProfile, !skills))
+		if err != nil {
+			return nil, fmt.Errorf("agent: %w", err)
+		}
 	}
 	var schemaJSON string
 	if schemaVal != nil && schemaVal != starlark.None {
@@ -180,11 +239,18 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 		return nil, fmt.Errorf("agent: schema= is not supported with run_in_background=True")
 	}
 
+	// Log the version-gate downgrade BEFORE the journal lookup, so it is visible even when
+	// a cache hit returns without executing (the only place the leaf shape would otherwise
+	// be invisible). Routed through log() — the engine's user-visible narrator line.
+	if downgrade != "" {
+		e.logf("agent(%s): %s; running full", vendor, downgrade)
+	}
+
 	// Resume replay: a journaled leaf returns its cached result with NO vendor exec, NO
 	// slot, and NO lifetime-admit — a cache hit is free. The key spans the result's full
-	// determinant (vendor / model / base prompt / schema). A schema leaf re-decodes +
-	// re-validates the cached raw answer (deterministic: it passed validation before).
-	key := journalKey(vendor, model, prompt, schemaJSON, isolation)
+	// determinant (vendor / model / base prompt / schema / effective slim shape). A schema
+	// leaf re-decodes + re-validates the cached raw answer (deterministic: it passed before).
+	key := journalKey(vendor, model, prompt, schemaJSON, isolation, effProfile, keyTools, !skills, mcp)
 	if cached, ok := e.journal.lookup(key); ok {
 		if runInBackground {
 			// A resolved handle: await() returns the cached result without spawning.
@@ -213,7 +279,8 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 	// Background leaf: launch detached, return a handle (NO live-pool slot; result is
 	// journaled at await time). launchBg does its own lifetime admit.
 	if runInBackground {
-		return e.launchBg(vendor, model, prompt, phaseTag, label, key, timeoutSec, maxBudget, maxTurns)
+		return e.launchBg(vendor, model, prompt, phaseTag, label, key, timeoutSec, maxBudget, maxTurns,
+			slimReq{profile: profile, tools: keyTools, noSkills: !skills, mcp: mcp})
 	}
 
 	if !e.sched.admit() {
@@ -274,6 +341,12 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 			StreamActivity: e.persistIO, // sync leaf streams tool/usage activity for the board (gated like PersistIO)
 			IOPrompt:       sendPrompt,  // persisted only when PersistIO (subagent gates)
 			WorkingDir:     workDir,     // empty unless isolation='worktree'
+			// Slim profile: Run re-resolves the EFFECTIVE profile (its own version gate); the
+			// REQUESTED profile is passed here, the engine's effProfile only keys + logs above.
+			PromptProfile: profile,
+			Tools:         keyTools, // the resolved key set — the leaf execs exactly what was keyed
+			NoSkills:      !skills,
+			MCP:           mcp,
 		}
 		var res subagent.Result
 		e.sched.runBlocking(func() { res = runLeaf(req) })
@@ -343,6 +416,66 @@ func optInt(v starlark.Value, name string) (int, error) {
 		return 0, fmt.Errorf("agent: %s must be an integer, got %s", name, v.Type())
 	}
 	return i, nil
+}
+
+// optStringDefault coerces an optional string kwarg, falling back to def when omitted
+// (nil) or None — so a non-empty documented default (profile='full') is applied without
+// a separate empty check.
+func optStringDefault(v starlark.Value, name, def string) (string, error) {
+	if v == nil || v == starlark.None {
+		return def, nil
+	}
+	s, ok := starlark.AsString(v)
+	if !ok {
+		return "", fmt.Errorf("agent: %s must be a string, got %s", name, v.Type())
+	}
+	return s, nil
+}
+
+// optBoolDefault coerces an optional bool kwarg, falling back to def when omitted (nil)
+// or None — so skills= (default true) and mcp= (default false) read their documented
+// default when the script omits them.
+func optBoolDefault(v starlark.Value, name string, def bool) (bool, error) {
+	if v == nil || v == starlark.None {
+		return def, nil
+	}
+	b, ok := v.(starlark.Bool)
+	if !ok {
+		return false, fmt.Errorf("agent: %s must be a bool, got %s", name, v.Type())
+	}
+	return bool(b), nil
+}
+
+// optStringList coerces an optional list-of-string kwarg to a Go slice; omitted (nil) or
+// None is nil. Every element must be a string.
+func optStringList(v starlark.Value, name string) ([]string, error) {
+	if v == nil || v == starlark.None {
+		return nil, nil
+	}
+	lst, ok := v.(*starlark.List)
+	if !ok {
+		return nil, fmt.Errorf("agent: %s must be a list of strings, got %s", name, v.Type())
+	}
+	out := make([]string, 0, lst.Len())
+	for i := 0; i < lst.Len(); i++ {
+		s, ok := starlark.AsString(lst.Index(i))
+		if !ok {
+			return nil, fmt.Errorf("agent: %s[%d] must be a string, got %s", name, i, lst.Index(i).Type())
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+// canonicalizeTools validates + canonicalizes an explicit tools= set (dedupe + sort) so
+// caller order never changes the journal key; an empty set stays nil (the profile default
+// applies in subagent.Run). Delegates to the single canonical validator so the engine and
+// bare-CLI paths reject identically.
+func canonicalizeTools(names []string) ([]string, error) {
+	if len(names) == 0 {
+		return nil, nil
+	}
+	return subagent.CanonicalizeTools(names)
 }
 
 // parallel runs every thunk concurrently, one goroutine + fresh thread each, and
@@ -431,6 +564,15 @@ func (e *engine) phase(thread *starlark.Thread, b *starlark.Builtin, args starla
 // channel. GIL-held callers only; nil-safe via the writer.
 func (e *engine) emitLeaf(status, phase, label, vendor, model string) {
 	e.events.emit(EventRecord{Kind: "leaf", Status: status, Phase: phase, Label: label, Vendor: vendor, Model: model})
+}
+
+// logf is the engine-internal narrator: a formatted line to stderr plus a `log`
+// live-event, the same surface the log() builtin exposes to scripts. Used for the slim
+// version-gate downgrade notice. GIL-held callers only.
+func (e *engine) logf(format string, a ...any) {
+	msg := fmt.Sprintf(format, a...)
+	fmt.Fprintln(os.Stderr, "[workflow] "+msg)
+	e.events.emit(EventRecord{Kind: "log", Msg: msg})
 }
 
 // emitGroupOpen records the start of a parallel/pipeline/workflow group and returns its

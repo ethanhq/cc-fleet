@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -38,6 +39,10 @@ func newSubagentCmd() *cobra.Command {
 		runID          string
 		phase          string
 		label          string
+		promptProfile  string
+		tools          string
+		skills         bool
+		mcp            bool
 	)
 
 	cmd := &cobra.Command{
@@ -50,6 +55,10 @@ a vendor id. No tmux pane, no team, no locks.
 
 Designed to be invoked by the cc-fleet skill via Bash with --json, which
 emits one machine-readable subagent.Result envelope the skill switches on.
+
+--profile slim (or slim-ro) trades the full session prompt for a native-mirror
+agent prompt + a restricted tool pool — much smaller first request on cache-less
+vendors. --tools / --skills / --mcp refine a slim run.
 
 For long-running or research tasks (web search, many turns — anything that may
 exceed the sync timeout), prefer --background: the job runs detached, returns a
@@ -95,6 +104,43 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 				return reportSubagent(res, asJSON)
 			}
 
+			// Front-load the prompt-profile + slim-refinement validation as
+			// SUBAGENT_BAD_ARGS before any side effect: the profile enum, the
+			// slim-only refinements rejected when combined with full, and the
+			// --tools parse + canonicalization.
+			if err := subagent.ValidateProfile(promptProfile); err != nil {
+				return reportSubagent(subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
+					ErrorMsg: err.Error(), Vendor: vendor}, asJSON)
+			}
+			isFull := promptProfile == "" || promptProfile == subagent.ProfileFull
+			toolList, err := splitToolsCSV(tools)
+			if err != nil {
+				return reportSubagent(subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
+					ErrorMsg: fmt.Sprintf("invalid --tools: %v", err), Vendor: vendor}, asJSON)
+			}
+			noSkills := !skills
+			if isFull && (len(toolList) > 0 || noSkills || mcp) {
+				return reportSubagent(subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
+					ErrorMsg: "--tools / --skills=false / --mcp are slim-only; pass --profile slim or slim-ro",
+					Vendor:   vendor}, asJSON)
+			}
+			if len(toolList) > 0 {
+				if _, err := subagent.CanonicalizeTools(toolList); err != nil {
+					return reportSubagent(subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
+						ErrorMsg: fmt.Sprintf("invalid --tools: %v", err), Vendor: vendor}, asJSON)
+				}
+			}
+			if err := subagent.ValidateToolsSkills(toolList, noSkills); err != nil {
+				return reportSubagent(subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
+					ErrorMsg: err.Error(), Vendor: vendor}, asJSON)
+			}
+			// A non-full profile across a resumed session silently swaps the agent's
+			// system prompt mid-conversation; warn but don't fail (profile consistency
+			// across turns is the caller's responsibility).
+			if resume != "" && !isFull {
+				fmt.Fprintf(os.Stderr, "subagent: warning: --resume with --profile %s swaps the system prompt mid-session; keep the profile constant across turns\n", promptProfile)
+			}
+
 			req := subagent.Request{
 				Vendor:         vendor,
 				Model:          model,
@@ -112,6 +158,10 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 				RunID:          runID,
 				Phase:          phase,
 				Label:          label,
+				PromptProfile:  promptProfile,
+				Tools:          toolList,
+				NoSkills:       noSkills,
+				MCP:            mcp,
 			}
 
 			if hasFile {
@@ -170,8 +220,35 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 		"Workflow phase label within the run (optional)")
 	cmd.Flags().StringVar(&label, "label", "",
 		"Human label for this agent within the run (optional)")
+	cmd.Flags().StringVar(&promptProfile, "profile", "",
+		"Prompt profile: full (default; today's argv) | slim (generic-subagent mirror) | slim-ro (read-only Explore mirror)")
+	cmd.Flags().StringVar(&tools, "tools", "",
+		"Comma/space-separated tool set (slim only; replaces the profile default)")
+	cmd.Flags().BoolVar(&skills, "skills", true,
+		"Include the Skill tool + host skill listing (slim only; default true, native parity)")
+	cmd.Flags().BoolVar(&mcp, "mcp", false,
+		"Inherit the host MCP config (slim only; default false = --strict-mcp-config)")
 
 	return cmd
+}
+
+// splitToolsCSV parses --tools, accepting comma- and/or space-separated names. A blank
+// value yields nil; an empty segment inside a non-blank value (e.g. "Read,,Grep" or a
+// trailing comma) is an error so a dropped tool can't pass unnoticed. Commas delimit
+// segments; whitespace within a segment further splits names ("Read Grep").
+func splitToolsCSV(s string) ([]string, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil
+	}
+	var out []string
+	for _, seg := range strings.Split(s, ",") {
+		names := strings.Fields(seg)
+		if len(names) == 0 {
+			return nil, fmt.Errorf("empty tool entry in %q", s)
+		}
+		out = append(out, names...)
+	}
+	return out, nil
 }
 
 // newSubagentStatusCmd builds `cc-fleet subagent-status <job_id>`.

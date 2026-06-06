@@ -129,7 +129,7 @@ func TestResumeDuplicateKeyCrashRecovery(t *testing.T) {
 
 	const runID = "resume-dup"
 	jp, _ := subagent.RunJournalPath(runID)
-	loadJournal(jp).append(journalKey("v", "", "same", "", ""), "ok:same") // 1 of 3 done before the kill
+	loadJournal(jp).append(journalKey("v", "", "same", "", "", "", nil, false, false), "ok:same") // 1 of 3 done before the kill
 
 	g, err := newEngineFor(t, runID, 1).run("d.star",
 		`r = [agent("same", vendor="v"), agent("same", vendor="v"), agent("same", vendor="v")]`, Options{})
@@ -157,7 +157,7 @@ func TestResumeCrashRecoveryPartialJournal(t *testing.T) {
 	jp, _ := subagent.RunJournalPath(runID)
 	// Seed the journal as if the run finished "a" then was killed (key MUST match the
 	// engine's: vendor "v", model "", prompt "a", no schema).
-	loadJournal(jp).append(journalKey("v", "", "a", "", ""), "ok:a")
+	loadJournal(jp).append(journalKey("v", "", "a", "", "", "", nil, false, false), "ok:a")
 
 	g, err := newEngineFor(t, runID, 4).run("r.star",
 		`r = [agent("a", vendor="v"), agent("b", vendor="v"), agent("c", vendor="v")]`, Options{})

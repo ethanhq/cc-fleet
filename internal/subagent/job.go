@@ -72,6 +72,13 @@ type jobMeta struct {
 	// writes the answer side file (<id>.answer) on completion. The result CACHE stays
 	// answer-stripped regardless; the side files are the separate opt-in drill-in source.
 	PersistIO bool `json:"persist_io,omitempty"`
+
+	// PromptProfile is the EFFECTIVE profile this job ran (post-version-gate);
+	// SlimDowngrade is non-empty when a slim request ran full instead (the reason).
+	// Both are backfilled onto every reconstructed Result so a re-classified
+	// background leaf keeps the profile/downgrade signal.
+	PromptProfile string `json:"prompt_profile,omitempty"`
+	SlimDowngrade string `json:"slim_downgrade,omitempty"`
 }
 
 func jobsDir() (string, error) {
@@ -106,7 +113,7 @@ var materializePromptFn = materializePromptReader
 // Any failure between cmd.Start and the final Release triggers a process-group
 // SIGTERM (200ms grace) → SIGKILL → Wait → file cleanup so we never leak a
 // detached vendor child + orphan .out/.err files.
-func launchBackground(req Request, binaryPath, profilePath, model string) Result {
+func launchBackground(req Request, binaryPath, profilePath, model, effective, downgrade string) Result {
 	dir, err := jobsDir()
 	if err != nil {
 		return fail(ErrCodeFailed, fmt.Sprintf("resolve jobs dir: %v", err), req.Vendor, "")
@@ -124,6 +131,7 @@ func launchBackground(req Request, binaryPath, profilePath, model string) Result
 	jobID := uuid.NewString()
 	outPath := filepath.Join(dir, jobID+".out")
 	errPath := filepath.Join(dir, jobID+".err")
+	slimPath := filepath.Join(dir, jobID+".slimprompt")
 
 	outF, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
@@ -137,11 +145,22 @@ func launchBackground(req Request, binaryPath, profilePath, model string) Result
 	}
 	defer errF.Close()
 
-	argv := buildArgv(binaryPath, profilePath, model, innerReq)
+	// Render the slim prompt sidecar after the jobID mint, before cmd.Start.
+	slim, slimErr := buildSlimArgv(effective, jobID, req, model)
+	if slimErr != nil {
+		_ = os.Remove(outPath)
+		_ = os.Remove(errPath)
+		return fail(ErrCodeFailed, slimErr.Error(), req.Vendor, "")
+	}
+
+	argv := buildArgv(binaryPath, profilePath, model, innerReq, slim)
 	// Fresh exec.Command (no context) → no deadline; child outlives parent.
 	cmd := exec.Command(binaryPath)
 	cmd.Args = argv
 	cmd.Env = childenv.Clean(os.Environ())
+	if effective == ProfileSlimRO {
+		cmd.Env = append(cmd.Env, "CLAUDE_CODE_DISABLE_CLAUDE_MDS=1")
+	}
 	cmd.Stdout = outF
 	cmd.Stderr = errF
 	setGroupAttr(cmd)
@@ -168,6 +187,7 @@ func launchBackground(req Request, binaryPath, profilePath, model string) Result
 				_ = os.Remove(outPath)
 				_ = os.Remove(errPath)
 				_ = os.Remove(pf)
+				_ = os.Remove(slimPath)
 				return fail(ErrCodeFailed,
 					fmt.Sprintf("materialize prompt: %v", merr), req.Vendor, "")
 			}
@@ -180,6 +200,7 @@ func launchBackground(req Request, binaryPath, profilePath, model string) Result
 		_ = os.Remove(outPath)
 		_ = os.Remove(errPath)
 		_ = os.Remove(filepath.Join(dir, jobID+".prompt"))
+		_ = os.Remove(slimPath)
 		return fail(ErrCodeFailed, fmt.Sprintf("start background subagent: %v", err), req.Vendor, "")
 	}
 	pid := cmd.Process.Pid
@@ -209,6 +230,8 @@ func launchBackground(req Request, binaryPath, profilePath, model string) Result
 		Phase:         req.Phase,
 		Label:         req.Label,
 		JournalKey:    req.JournalKey,
+		PromptProfile: effective,
+		SlimDowngrade: downgrade,
 	}
 	if err := writeMetaFn(dir, meta); err != nil {
 		// meta write failed AFTER cmd.Start. Without cleanup the detached vendor
@@ -220,6 +243,7 @@ func launchBackground(req Request, binaryPath, profilePath, model string) Result
 		_ = os.Remove(outPath)
 		_ = os.Remove(errPath)
 		_ = os.Remove(filepath.Join(dir, jobID+".prompt"))
+		_ = os.Remove(slimPath)
 		return fail(ErrCodeFailed, fmt.Sprintf("write job meta: %v", err), req.Vendor, "")
 	}
 
@@ -240,6 +264,8 @@ func launchBackground(req Request, binaryPath, profilePath, model string) Result
 		Phase:         meta.Phase,
 		Label:         meta.Label,
 		JournalKey:    meta.JournalKey,
+		PromptProfile: meta.PromptProfile,
+		SlimDowngrade: meta.SlimDowngrade,
 	}
 }
 
@@ -356,6 +382,10 @@ func StatusFor(jobID string) Result {
 			if r.JournalKey == "" {
 				r.JournalKey = meta.JournalKey
 			}
+			if r.PromptProfile == "" {
+				r.PromptProfile = meta.PromptProfile
+				r.SlimDowngrade = meta.SlimDowngrade
+			}
 			return r
 		}
 	}
@@ -375,6 +405,8 @@ func StatusFor(jobID string) Result {
 			Phase:         meta.Phase,
 			Label:         meta.Label,
 			JournalKey:    meta.JournalKey,
+			PromptProfile: meta.PromptProfile,
+			SlimDowngrade: meta.SlimDowngrade,
 		}
 	}
 
@@ -393,6 +425,8 @@ func StatusFor(jobID string) Result {
 	res.Phase = meta.Phase
 	res.Label = meta.Label
 	res.JournalKey = meta.JournalKey
+	res.PromptProfile = meta.PromptProfile
+	res.SlimDowngrade = meta.SlimDowngrade
 	if res.OK {
 		res.Status = "done"
 	} else {
@@ -834,9 +868,9 @@ func readMeta(dir, jobID string) (jobMeta, error) {
 }
 
 // removeJob deletes every file in a job's group (best-effort), including the opt-in
-// drill-in side files (.prompt / .answer).
+// drill-in side files (.prompt / .answer) and a slim run's prompt sidecar (.slimprompt).
 func removeJob(dir, jobID string) {
-	for _, suffix := range []string{".json", ".out", ".err", ".prompt", ".answer", ".activity", ".result.json"} {
+	for _, suffix := range []string{".json", ".out", ".err", ".prompt", ".answer", ".activity", ".slimprompt", ".result.json"} {
 		_ = os.Remove(filepath.Join(dir, jobID+suffix))
 	}
 }
@@ -853,16 +887,22 @@ func leafActivityPath(jobID string) (string, error) {
 	return filepath.Join(dir, jobID+".activity"), nil
 }
 
-// registerSyncJob records a SYNCHRONOUS Run on the agent-status board so it is
-// visible WHILE it executes. It writes only a running jobMeta — NO prompt /
-// answer text (key-safety, same discipline as background). PID is the
-// current cc-fleet process, so StatusFor's bare kill(0) reports "running" until
-// finalizeSyncJob caches the terminal result; SettingsPath is intentionally
-// empty so processAlive does NOT apply the claude-cmdline reuse guard to a pid
-// that is cc-fleet, not a claude child. best-effort: any error yields an empty
-// jobID and the run proceeds unrecorded — board bookkeeping must never fail the
-// run or change its returned Result.
-func registerSyncJob(req Request, model string) string {
+// slimPromptPath returns <jobID>.slimprompt in the jobs dir — the per-job sidecar
+// holding a slim run's rendered system prompt (consumed via --system-prompt-file
+// and reaped with the job). Mirrors leafActivityPath.
+func slimPromptPath(jobID string) (string, error) {
+	dir, err := jobsDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, jobID+".slimprompt"), nil
+}
+
+// mintSyncJobID creates the jobs dir and returns a fresh job id, BEFORE buildArgv
+// so a slim sync run can write its <jobID>.slimprompt sidecar and reference it.
+// Best-effort: "" on any error, like registerSyncJob — board bookkeeping never
+// fails the run.
+func mintSyncJobID() string {
 	dir, err := jobsDir()
 	if err != nil {
 		return ""
@@ -870,7 +910,31 @@ func registerSyncJob(req Request, model string) string {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return ""
 	}
-	jobID := uuid.NewString()
+	return uuid.NewString()
+}
+
+// registerSyncJob records a SYNCHRONOUS Run on the agent-status board so it is
+// visible WHILE it executes. It writes only a running jobMeta — NO prompt /
+// answer text (key-safety, same discipline as background). PID is the
+// current cc-fleet process, so StatusFor's bare kill(0) reports "running" until
+// finalizeSyncJob caches the terminal result; SettingsPath is intentionally
+// empty so processAlive does NOT apply the claude-cmdline reuse guard to a pid
+// that is cc-fleet, not a claude child. jobID is minted by mintSyncJobID before
+// buildArgv; an empty jobID (mint failed) leaves the run unrecorded. best-effort:
+// any error proceeds unrecorded — board bookkeeping must never fail the run or
+// change its returned Result.
+//
+// It returns whether the meta was written: a FAILED registration must skip
+// finalizeSyncJob (which would otherwise write an orphan .result.json with no
+// backing meta) and let Run reap the slim sidecar instead.
+func registerSyncJob(jobID string, req Request, model string, effective, downgrade string) bool {
+	if jobID == "" {
+		return false
+	}
+	dir, err := jobsDir()
+	if err != nil {
+		return false
+	}
 	meta := jobMeta{
 		JobID:         jobID,
 		PID:           os.Getpid(),
@@ -887,11 +951,13 @@ func registerSyncJob(req Request, model string) string {
 		Label:         req.Label,
 		JournalKey:    req.JournalKey,
 		PersistIO:     req.PersistIO,
+		PromptProfile: effective,
+		SlimDowngrade: downgrade,
 		// SettingsPath deliberately empty (see processAlive). Sync writes no .out
 		// file, so the deferred result cache is the authoritative done signal.
 	}
-	if err := writeMeta(dir, meta); err != nil {
-		return ""
+	if err := writeMetaFn(dir, meta); err != nil {
+		return false
 	}
 	// Opt-in board drill-in: persist the prompt to a 0600 side file. Content-privacy,
 	// not key-safety (the vendor key never enters the prompt). Best-effort — a write
@@ -899,7 +965,7 @@ func registerSyncJob(req Request, model string) string {
 	if req.PersistIO && req.IOPrompt != "" {
 		_ = os.WriteFile(filepath.Join(dir, jobID+".prompt"), []byte(req.IOPrompt), 0o600)
 	}
-	return jobID
+	return true
 }
 
 // finalizeSyncJob flips a sync job from running → done/failed by writing a
@@ -948,6 +1014,8 @@ func finalizeSyncJob(jobID string, res Result) {
 		Phase:          meta.Phase,
 		Label:          meta.Label,
 		JournalKey:     meta.JournalKey,
+		PromptProfile:  meta.PromptProfile,
+		SlimDowngrade:  meta.SlimDowngrade,
 	}
 	if res.OK {
 		cached.Status = "done"

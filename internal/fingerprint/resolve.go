@@ -5,6 +5,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/ethanhq/cc-fleet/internal/ccver"
 )
@@ -32,6 +33,40 @@ func ResolveBinaryPath(fp *Fingerprint) (string, error) {
 		return "", fmt.Errorf("%w: no claude binary found: %v", ErrFingerprintStale, err)
 	}
 	return binPath, nil
+}
+
+// versionForPath resolves the version of the binary at path. A var so tests can
+// count invocations and prove the cache below short-circuits repeat calls.
+var versionForPath = ccver.VersionForPath
+
+var (
+	versionCacheMu sync.Mutex
+	versionCache   = map[string]string{}
+)
+
+// ResolveBinaryPathVersion resolves the binary to spawn with — identical
+// semantics to ResolveBinaryPath — and ALSO the version OF THAT resolved path:
+// the per-version basename if present, else a bounded `<path> --version`. This
+// is the version of the executable that will actually run, never the PATH
+// claude's version for a fingerprint-cached path.
+//
+// The (path → version) result is cached for the process lifetime, so repeated
+// calls cost nothing. Version may legitimately be "" (unknown) — returned with
+// no error; only a missing binary is an error (ErrFingerprintStale, via
+// ResolveBinaryPath).
+func ResolveBinaryPathVersion(fp *Fingerprint) (string, string, error) {
+	path, err := ResolveBinaryPath(fp)
+	if err != nil {
+		return "", "", err
+	}
+	versionCacheMu.Lock()
+	defer versionCacheMu.Unlock()
+	if v, ok := versionCache[path]; ok {
+		return path, v, nil
+	}
+	v := versionForPath(path)
+	versionCache[path] = v
+	return path, v, nil
 }
 
 // CurrentVersionExceedsRecipe reports whether the live Claude Code version is

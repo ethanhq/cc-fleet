@@ -49,10 +49,19 @@ func (h *bgHandle) Freeze()               {}
 func (h *bgHandle) Truth() starlark.Bool  { return starlark.True }
 func (h *bgHandle) Hash() (uint32, error) { return 0, fmt.Errorf("agent-handle is unhashable") }
 
+// slimReq carries the slim-profile knobs from agent() into launchBg: the REQUESTED
+// profile (subagent.Run re-resolves the effective one) and its resolved refinements.
+type slimReq struct {
+	profile  string
+	tools    []string
+	noSkills bool
+	mcp      bool
+}
+
 // launchBg starts a leaf detached (subagent --background) and returns a handle. It admits
 // against the lifetime cap but takes NO live-pool slot (a detached leaf isn't bounded by
 // the in-process pool); its result is journaled at await time, not now. GIL-held caller.
-func (e *engine) launchBg(vendor, model, prompt, phaseTag, label, key string, timeoutSec, maxBudget float64, maxTurns int) (starlark.Value, error) {
+func (e *engine) launchBg(vendor, model, prompt, phaseTag, label, key string, timeoutSec, maxBudget float64, maxTurns int, slim slimReq) (starlark.Value, error) {
 	if !e.sched.admit() {
 		return nil, fmt.Errorf("agent: run exceeded the %d-leaf lifetime cap", maxLifetimeAgents)
 	}
@@ -60,20 +69,24 @@ func (e *engine) launchBg(vendor, model, prompt, phaseTag, label, key string, ti
 	var res subagent.Result
 	e.sched.runBlocking(func() {
 		res = runLeaf(subagent.Request{
-			Vendor:       vendor,
-			Model:        model,
-			PromptReader: strings.NewReader(prompt),
-			JSON:         true,
-			Background:   true,
-			Timeout:      time.Duration(timeoutSec * float64(time.Second)),
-			MaxTurns:     maxTurns,
-			MaxBudgetUSD: maxBudget,
-			RunID:        e.runID,
-			Phase:        phaseTag,
-			Label:        label,
-			JournalKey:   key, // persisted so the board can restart THIS leaf (invalidate + resume)
-			PersistIO:    e.persistIO,
-			IOPrompt:     prompt,
+			Vendor:        vendor,
+			Model:         model,
+			PromptReader:  strings.NewReader(prompt),
+			JSON:          true,
+			Background:    true,
+			Timeout:       time.Duration(timeoutSec * float64(time.Second)),
+			MaxTurns:      maxTurns,
+			MaxBudgetUSD:  maxBudget,
+			RunID:         e.runID,
+			Phase:         phaseTag,
+			Label:         label,
+			JournalKey:    key, // persisted so the board can restart THIS leaf (invalidate + resume)
+			PersistIO:     e.persistIO,
+			IOPrompt:      prompt,
+			PromptProfile: slim.profile, // Run re-resolves the effective profile; engine keys it separately
+			Tools:         slim.tools,
+			NoSkills:      slim.noSkills,
+			MCP:           slim.mcp,
 		})
 	})
 	if !res.OK {

@@ -553,8 +553,8 @@ func TestE2ECrashRecovery(t *testing.T) {
 	// Their keys are the engine's exact content keys (vendor fake, no model, base prompt).
 	jp, _ := subagent.RunJournalPath(runID)
 	j := loadJournal(jp)
-	j.append(journalKey("fake", "", "alpha", "", ""), "LEAF:alpha")
-	j.append(journalKey("fake", "", "beta", "", ""), "LEAF:beta")
+	j.append(journalKey("fake", "", "alpha", "", "", "", nil, false, false), "LEAF:alpha")
+	j.append(journalKey("fake", "", "beta", "", "", "", nil, false, false), "LEAF:beta")
 
 	if err := Execute(context.Background(), mainPath, runID, Options{BudgetUSD: 100}); err != nil {
 		t.Fatalf("resume: %v", err)

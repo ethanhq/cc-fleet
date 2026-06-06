@@ -14,7 +14,7 @@ func TestSyncJobCarriesRunGrouping(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 
-	jobID := registerSyncJob(Request{Vendor: "glm", RunID: "run-1", Phase: "build", Label: "w1"}, "glm-4.6")
+	jobID := regSyncJob(Request{Vendor: "glm", RunID: "run-1", Phase: "build", Label: "w1"}, "glm-4.6")
 	if jobID == "" {
 		t.Fatal("registerSyncJob returned an empty job id")
 	}

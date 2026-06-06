@@ -28,6 +28,101 @@ func TestSemverGreater(t *testing.T) {
 	}
 }
 
+// withVersionForPath swaps the version resolver seam for the test and restores
+// it after, also clearing the process-lifetime cache on both ends so cases
+// don't leak resolved versions into each other.
+func withVersionForPath(t *testing.T, f func(string) string) {
+	t.Helper()
+	prev := versionForPath
+	versionForPath = f
+	resetVersionCache()
+	t.Cleanup(func() {
+		versionForPath = prev
+		resetVersionCache()
+	})
+}
+
+func resetVersionCache() {
+	versionCacheMu.Lock()
+	defer versionCacheMu.Unlock()
+	versionCache = map[string]string{}
+}
+
+// TestResolveBinaryPathVersion_CachesPerProcess: the version of a resolved path
+// is computed once; a second call hits the cache and never re-resolves.
+func TestResolveBinaryPathVersion_CachesPerProcess(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "claude")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var calls int
+	withVersionForPath(t, func(string) string {
+		calls++
+		return "2.1.150"
+	})
+
+	fp := &Fingerprint{BinaryPath: bin}
+	for i := 0; i < 3; i++ {
+		gotPath, gotVer, err := ResolveBinaryPathVersion(fp)
+		if err != nil {
+			t.Fatalf("call %d: %v", i, err)
+		}
+		if gotPath != bin || gotVer != "2.1.150" {
+			t.Fatalf("call %d = (%q, %q), want (%q, 2.1.150)", i, gotPath, gotVer, bin)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("versionForPath called %d times, want 1 (cache hit on repeat)", calls)
+	}
+}
+
+// TestResolveBinaryPathVersion_FromPath: the resolved path's version comes from
+// the version resolver applied to THAT path, not from a re-detect.
+func TestResolveBinaryPathVersion_FromPath(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "claude")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var seen string
+	withVersionForPath(t, func(p string) string {
+		seen = p
+		return "2.1.88"
+	})
+	gotPath, gotVer, err := ResolveBinaryPathVersion(&Fingerprint{BinaryPath: bin})
+	if err != nil {
+		t.Fatalf("ResolveBinaryPathVersion: %v", err)
+	}
+	if seen != bin {
+		t.Fatalf("version resolved for %q, want the resolved path %q", seen, bin)
+	}
+	if gotPath != bin || gotVer != "2.1.88" {
+		t.Fatalf("= (%q, %q), want (%q, 2.1.88)", gotPath, gotVer, bin)
+	}
+}
+
+// TestResolveBinaryPathVersion_EmptyVersionPropagates: an unknown version ("")
+// is returned with no error — only a missing binary is an error.
+func TestResolveBinaryPathVersion_EmptyVersionPropagates(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "claude")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	withVersionForPath(t, func(string) string { return "" })
+	gotPath, gotVer, err := ResolveBinaryPathVersion(&Fingerprint{BinaryPath: bin})
+	if err != nil {
+		t.Fatalf("ResolveBinaryPathVersion: %v", err)
+	}
+	if gotPath != bin {
+		t.Fatalf("path = %q, want %q", gotPath, bin)
+	}
+	if gotVer != "" {
+		t.Fatalf("version = %q, want \"\" (unknown propagates)", gotVer)
+	}
+}
+
 // TestResolveBinaryPath_KeepsExisting: a cached path that still exists on disk
 // is returned verbatim (no needless live lookup; keeps test fakes + matched
 // recipe/binary working).

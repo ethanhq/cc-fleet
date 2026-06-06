@@ -7,17 +7,17 @@ import (
 )
 
 func TestJournalKeyDeterministicAndDistinct(t *testing.T) {
-	base := journalKey("v", "m", "prompt", `{"required":["x"]}`, "")
-	if base != journalKey("v", "m", "prompt", `{"required":["x"]}`, "") {
+	base := journalKey("v", "m", "prompt", `{"required":["x"]}`, "", "", nil, false, false)
+	if base != journalKey("v", "m", "prompt", `{"required":["x"]}`, "", "", nil, false, false) {
 		t.Error("same inputs must hash to the same key (determinism is the whole point)")
 	}
 	// Each component changes the key.
 	cases := map[string]string{
-		"vendor":    journalKey("v2", "m", "prompt", `{"required":["x"]}`, ""),
-		"model":     journalKey("v", "m2", "prompt", `{"required":["x"]}`, ""),
-		"prompt":    journalKey("v", "m", "prompt2", `{"required":["x"]}`, ""),
-		"schema":    journalKey("v", "m", "prompt", `{"required":["y"]}`, ""),
-		"isolation": journalKey("v", "m", "prompt", `{"required":["x"]}`, "worktree"),
+		"vendor":    journalKey("v2", "m", "prompt", `{"required":["x"]}`, "", "", nil, false, false),
+		"model":     journalKey("v", "m2", "prompt", `{"required":["x"]}`, "", "", nil, false, false),
+		"prompt":    journalKey("v", "m", "prompt2", `{"required":["x"]}`, "", "", nil, false, false),
+		"schema":    journalKey("v", "m", "prompt", `{"required":["y"]}`, "", "", nil, false, false),
+		"isolation": journalKey("v", "m", "prompt", `{"required":["x"]}`, "worktree", "", nil, false, false),
 	}
 	for name, k := range cases {
 		if k == base {
@@ -25,7 +25,7 @@ func TestJournalKeyDeterministicAndDistinct(t *testing.T) {
 		}
 	}
 	// No framing collision: ("a","b",..) must not equal ("ab","",..).
-	if journalKey("a", "b", "p", "", "") == journalKey("ab", "", "p", "", "") {
+	if journalKey("a", "b", "p", "", "", "", nil, false, false) == journalKey("ab", "", "p", "", "", "", nil, false, false) {
 		t.Error("component boundaries must be unambiguous (length-prefixed framing)")
 	}
 }

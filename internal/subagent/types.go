@@ -71,6 +71,20 @@ type Request struct {
 	// record so the board can target THIS leaf for restart — drop its journal entry and resume,
 	// which re-runs only it (+ its dependents). It is a sha256 hex, never a secret.
 	JournalKey string
+
+	// PromptProfile selects the prompt shape: "" / "full" (today's full claude -p
+	// session, byte-identical argv) | "slim" (native generic-subagent mirror) |
+	// "slim-ro" (native Explore/Plan read-only mirror). The zero value is full.
+	PromptProfile string
+	// Tools replaces a slim profile's default tool set (validated + canonicalized).
+	// Empty → the profile's default set. Ignored for full.
+	Tools []string
+	// NoSkills drops the Skill tool + host skill listing from a slim profile. The
+	// zero value (false) is the documented default: skills ON (native parity).
+	NoSkills bool
+	// MCP, when true, inherits the host MCP config (native parity) for a slim
+	// profile. The zero value (false) is the documented default: --strict-mcp-config.
+	MCP bool
 }
 
 // Usage mirrors the token-usage subset of claude's inner envelope we surface.
@@ -109,6 +123,11 @@ type Result struct {
 	// JournalKey is the leaf's content-hash key, persisted so the board can restart THIS leaf
 	// (invalidate its journal entry + resume). A sha256 hex — never a secret.
 	JournalKey string `json:"journal_key,omitempty"`
+
+	// PromptProfile is the EFFECTIVE profile this run used (post-version-gate);
+	// SlimDowngrade is non-empty when a slim request ran full instead (the reason).
+	PromptProfile string `json:"prompt_profile,omitempty"`
+	SlimDowngrade string `json:"slim_downgrade,omitempty"`
 
 	// Async / background job fields. Present on --background launch and
 	// subagent-status / subagent-gc results.

@@ -99,7 +99,7 @@ func TestActivitySink_CapOverflowStillFires(t *testing.T) {
 // (the board needs them) but never the answer text.
 func TestFinalizeSyncJob_KeepsSafeMetricsStripsAnswer(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	jobID := registerSyncJob(Request{Vendor: "glm", PersistIO: true}, "glm-4.6")
+	jobID := regSyncJob(Request{Vendor: "glm", PersistIO: true}, "glm-4.6")
 	if jobID == "" {
 		t.Fatal("registerSyncJob returned empty id")
 	}

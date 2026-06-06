@@ -14,30 +14,30 @@ func TestBuildArgv(t *testing.T) {
 	const model = "glm-4.6"
 
 	t.Run("text prompt mode", func(t *testing.T) {
-		argv := buildArgv(bin, prof, model, Request{Prompt: "do it"})
+		argv := buildArgv(bin, prof, model, Request{Prompt: "do it"}, slimArgv{})
 		assertSeq(t, argv, bin, "--dangerously-skip-permissions", "--settings", prof, "--model", model, "-p", "do it")
 		assertAbsent(t, argv, "--output-format")
 		assertAbsent(t, argv, "--permission-mode")
 	})
 
 	t.Run("json forces output-format", func(t *testing.T) {
-		argv := buildArgv(bin, prof, model, Request{Prompt: "x", JSON: true})
+		argv := buildArgv(bin, prof, model, Request{Prompt: "x", JSON: true}, slimArgv{})
 		assertPairAfter(t, argv, "--output-format", "json")
 	})
 
 	t.Run("output-format json without --json", func(t *testing.T) {
-		argv := buildArgv(bin, prof, model, Request{Prompt: "x", OutputFormat: "json"})
+		argv := buildArgv(bin, prof, model, Request{Prompt: "x", OutputFormat: "json"}, slimArgv{})
 		assertPairAfter(t, argv, "--output-format", "json")
 	})
 
 	t.Run("permission-mode overrides skip-permissions", func(t *testing.T) {
-		argv := buildArgv(bin, prof, model, Request{Prompt: "x", PermissionMode: "plan"})
+		argv := buildArgv(bin, prof, model, Request{Prompt: "x", PermissionMode: "plan"}, slimArgv{})
 		assertPairAfter(t, argv, "--permission-mode", "plan")
 		assertAbsent(t, argv, "--dangerously-skip-permissions")
 	})
 
 	t.Run("resume before settings", func(t *testing.T) {
-		argv := buildArgv(bin, prof, model, Request{Prompt: "x", Resume: "sess-123"})
+		argv := buildArgv(bin, prof, model, Request{Prompt: "x", Resume: "sess-123"}, slimArgv{})
 		assertPairAfter(t, argv, "--resume", "sess-123")
 		if idxOf(argv, "--resume") > idxOf(argv, "--settings") {
 			t.Fatalf("--resume should precede --settings: %v", argv)
@@ -45,13 +45,13 @@ func TestBuildArgv(t *testing.T) {
 	})
 
 	t.Run("max-turns and max-budget", func(t *testing.T) {
-		argv := buildArgv(bin, prof, model, Request{Prompt: "x", MaxTurns: 8, MaxBudgetUSD: 0.5})
+		argv := buildArgv(bin, prof, model, Request{Prompt: "x", MaxTurns: 8, MaxBudgetUSD: 0.5}, slimArgv{})
 		assertPairAfter(t, argv, "--max-turns", "8")
 		assertPairAfter(t, argv, "--max-budget-usd", "0.5")
 	})
 
 	t.Run("prompt-file keeps -p value out of argv", func(t *testing.T) {
-		argv := buildArgv(bin, prof, model, Request{Prompt: "SECRET", PromptReader: strings.NewReader("from stdin")})
+		argv := buildArgv(bin, prof, model, Request{Prompt: "SECRET", PromptReader: strings.NewReader("from stdin")}, slimArgv{})
 		// -p must be present but its value (the prompt) must NOT be in argv.
 		if idxOf(argv, "-p") < 0 {
 			t.Fatalf("expected -p in argv: %v", argv)
