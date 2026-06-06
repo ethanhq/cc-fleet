@@ -71,9 +71,14 @@ not JS.
 - `workflow(script_path, args=None)` — run another `.star` inline on the same engine
   (shared pool/journal/budget), **one level deep** only. Returns the child's module global
   `result` (Starlark module bodies have no top-level `return`), or `None`.
-- `budget` — `budget.total` (the `--budget-usd` cap, or `None`), `budget.spent()`,
-  `budget.remaining()` (`+inf` when uncapped). `agent()` raises once `spent() >= total`; a
-  `for`-loop guarded by `budget.remaining()` scales depth to the cap.
+- `budget` — two parallel cap surfaces. **USD:** `budget.total` (the `--budget-usd` cap in USD,
+  or `None`), `budget.spent()`, `budget.remaining()` (`+inf` when uncapped) — all USD floats (an
+  Anthropic list-price estimate). **Tokens:** `budget.tokens_total` (the `--budget-tokens` cap, or
+  `None`), `budget.tokens_spent()`, `budget.tokens_remaining()` — all ints (input+output, cache-read
+  excluded). `agent()` raises once **either** cap is reached; a `for`-loop guarded by
+  `budget.remaining()` or `budget.tokens_remaining()` scales depth to the cap. (Native's
+  `budget.total` is a token target; here it is **USD** — `--budget-usd` is the cross-vendor cap since
+  vendors price tokens differently — and tokens are the separate `tokens_*` surface.)
 - `phase(title, detail=None)` — name the current phase (tags subsequent agents lacking an
   explicit `phase=`; the detail shows on the board row). `log(msg)` — a narrator line (board
   live log + stderr).
