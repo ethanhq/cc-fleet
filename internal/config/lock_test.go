@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -123,13 +124,15 @@ func TestWithTeamLock_SerializesGoroutines(t *testing.T) {
 	}
 }
 
-// TestWithTeamLock_DifferentTeamsConcurrent verifies the lock is per-team,
-// not global — two distinct teams can run in parallel.
+// TestWithTeamLock_DifferentTeamsConcurrent verifies the lock is per-team, not
+// global — two distinct teams can hold their locks at the same time. It asserts
+// OVERLAP (the peak count of simultaneous holders reaches 2), not wall-clock
+// time, so it is independent of scheduler jitter (a slow CI runner can't flake
+// it): a global lock would block the second holder on acquire, pinning the peak
+// at 1.
 func TestWithTeamLock_DifferentTeamsConcurrent(t *testing.T) {
 	isolateHome(t)
-	const hold = 100 * time.Millisecond
-
-	start := time.Now()
+	var inside, peak atomic.Int32
 	var wg sync.WaitGroup
 	for _, team := range []string{"teamA", "teamB"} {
 		team := team
@@ -137,19 +140,23 @@ func TestWithTeamLock_DifferentTeamsConcurrent(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			_ = WithTeamLock(team, func() error {
-				time.Sleep(hold)
+				n := inside.Add(1)
+				for { // raise the high-water mark to this holder's count
+					p := peak.Load()
+					if n <= p || peak.CompareAndSwap(p, n) {
+						break
+					}
+				}
+				time.Sleep(100 * time.Millisecond) // hold long enough for the sibling to enter its own lock
+				inside.Add(-1)
 				return nil
 			})
 		}()
 	}
 	wg.Wait()
-	elapsed := time.Since(start)
-	// Two parallel 100ms holders on different locks should finish in well
-	// under 2*hold. We allow up to 1.5*hold for scheduler overhead.
-	max := 3 * hold / 2
-	if elapsed > max {
-		t.Fatalf("two parallel 100ms holders on different teams took %v, want < %v (locks not per-team)",
-			elapsed, max)
+	if peak.Load() < 2 {
+		t.Fatalf("two different-team holders never overlapped (peak concurrency %d) — the per-team lock serialized them like a global lock",
+			peak.Load())
 	}
 }
 
