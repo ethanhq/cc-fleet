@@ -332,23 +332,26 @@ func runAgentCounts(g runGroup) (done, total int) {
 	return
 }
 
-// renderRunHeader is the persistent native header: the run name (bold) + description (faint) on the
-// left, and the right-aligned "<done>/<total> agents · <elapsed>".
+// renderRunHeader is the persistent native header, TWO lines: the bold run name on line 1 (bounded to the
+// box width so a long name can't wrap onto a third row and shift the fixed-height box down); the faint
+// description (left) + the right-aligned "<done>/<total> agents · <elapsed>" on line 2 (just the counts
+// when there's no description).
 func (m Model) renderRunHeader(g runGroup) string {
 	done, total := runAgentCounts(g)
-	left := titleStyle.Render(m.runLabel(g))
-	if g.description != "" {
-		left += faintStyle.Render("  " + trunc(sessiontitle.CleanTitle(g.description), 60))
-	}
+	name := titleStyle.Render(truncCols(m.runLabel(g), m.boardWidth()))
 	right := faintStyle.Render(fmt.Sprintf("%d/%d agents · %s", done, total, g.elapsed()))
+	left := ""
+	if g.description != "" {
+		left = faintStyle.Render(trunc(sessiontitle.CleanTitle(g.description), 80))
+	}
 	gap := m.boardWidth() - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
-		// A long name+description must not wrap the header onto a second line — that would shift the
-		// fixed-height box down. Truncate the left side to fit one line beside the right summary.
+		// A long description must not wrap line 2 onto a third line — that would shift the fixed-height
+		// box down. Truncate the description to fit beside the right summary.
 		left = boxCell(left, m.boardWidth()-lipgloss.Width(right)-1)
 		gap = 1
 	}
-	return left + strings.Repeat(" ", gap) + right
+	return name + "\n" + left + strings.Repeat(" ", gap) + right
 }
 
 // boardBodyHeight is the inner row budget for the master-detail box (drives right-pane scroll). It
@@ -358,7 +361,7 @@ func (m Model) boardBodyHeight() int {
 	if h < 12 {
 		h = 24
 	}
-	avail := h - 8 // header + blank + box top/bottom + status + footer + margin
+	avail := h - 9 // header (2 lines) + blank + box top/bottom + status + footer + margin
 	if avail < 5 {
 		avail = 5
 	}
@@ -504,7 +507,7 @@ func (m Model) viewWfPicker() string {
 	for i, g := range m.wfGroups() {
 		if g.sessionID != lastSession {
 			lastSession = g.sessionID
-			b.WriteString(sessionHdrStyle.Render("◆ "+m.sessionLabel(g.sessionID)) + "\n")
+			b.WriteString(sessionHdrStyle.Render("◆ "+m.sessionLabelFull(g.sessionID)) + "\n")
 		}
 		marker := "  "
 		name := trunc(m.runLabel(g), 42)
@@ -742,9 +745,13 @@ func (m Model) agentDetailLines(rightW int) []string {
 		} else {
 			total := promptLineCount(m.wfDetailPrompt)
 			lines = append(lines, faintStyle.Render(fmt.Sprintf("Prompt · %d lines · ⏎ expand", total)))
-			lines = append(lines, ioLines(firstLogicalLines(m.wfDetailPrompt, promptPreviewLines), rightW, contentStyle)...)
+			prev := ioLines(firstLogicalLines(m.wfDetailPrompt, promptPreviewLines), rightW, contentStyle)
+			for len(prev) > 0 && strings.TrimSpace(prev[len(prev)-1]) == "" {
+				prev = prev[:len(prev)-1] // drop a trailing blank preview row so "… N more lines" doesn't gap
+			}
+			lines = append(lines, prev...)
 			if more := total - promptPreviewLines; more > 0 {
-				lines = append(lines, faintStyle.Render(fmt.Sprintf("… %d more lines", more)))
+				lines = append(lines, " "+faintStyle.Render(fmt.Sprintf("… %d more lines", more))) // body-aligned (indent 1)
 			}
 		}
 		lines = append(lines, "", faintStyle.Render("Output"))
@@ -1248,6 +1255,20 @@ func (m Model) sessionLabel(id string) string {
 		return trunc(title, 48) + " (" + short + ")"
 	}
 	return short
+}
+
+// sessionLabelFull is sessionLabel for the run-picker header (a free-standing line, not boxed): the
+// /rename title first when known, then the FULL session id in parens (not truncated) so a run is
+// findable by its id. Both stay CleanTitle-scrubbed.
+func (m Model) sessionLabelFull(id string) string {
+	if id == "" {
+		return "(no session)"
+	}
+	full := sessiontitle.CleanTitle(id)
+	if title := sessiontitle.CleanTitle(m.sessionTitles[id]); title != "" {
+		return trunc(title, 48) + " (" + full + ")"
+	}
+	return full
 }
 
 func shortSessionID(id string) string {

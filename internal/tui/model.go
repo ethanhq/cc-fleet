@@ -399,11 +399,13 @@ func boardTick(epoch int) tea.Cmd {
 // (owningScreen → screenWorkflows) AND carries the workflowsEpoch that scheduled it, so a stale
 // refresh from a prior visit is dropped on re-entry (epoch++) or leaving.
 type workflowsMsg struct {
-	jobs     []subagent.Result
-	runs     []subagent.WorkflowRun
-	activity map[string]activitySnapshot // job id → per-leaf tool snapshot (+ live usage while running)
-	epoch    int
-	err      error
+	jobs           []subagent.Result
+	runs           []subagent.WorkflowRun
+	activity       map[string]activitySnapshot // job id → per-leaf tool snapshot (+ live usage while running)
+	sessionTitles  map[string]string           // launching-session id → /rename title (for the picker headers)
+	titlesResolved bool                        // set only on entry / manual-refresh loads; a live tick leaves m.sessionTitles untouched
+	epoch          int
+	err            error
 }
 
 func (workflowsMsg) owningScreen() screen { return screenWorkflows }
@@ -417,7 +419,7 @@ type workflowsTickMsg struct{ epoch int }
 // manifests, and — for each leaf — its activity snapshot (tool calls + a running leaf's live tokens
 // from the <jobID>.activity sidecar). ALL disk reads happen here on the refresh goroutine; render
 // helpers stay pure. It carries the first non-nil manifest/jobs error so a data-source failure surfaces.
-func loadWorkflows(epoch int) tea.Cmd {
+func loadWorkflows(epoch int, resolve bool) tea.Cmd {
 	return func() tea.Msg {
 		all, jErr := subagent.ListJobs()
 		var jobs []subagent.Result
@@ -441,7 +443,23 @@ func loadWorkflows(epoch int) tea.Cmd {
 		if err == nil {
 			err = rErr
 		}
-		return workflowsMsg{jobs: jobs, runs: runs, activity: activity, epoch: epoch, err: err}
+		// Resolve the runs' launching-session /rename titles so the picker shows the conversation name
+		// (the agent-status board resolves only teammate sessions, not workflow-only ones). Each Lookup
+		// scans the projects tree and titles change rarely, so only the entry / manual-refresh loads
+		// resolve; a live tick carries no titles and leaves m.sessionTitles as the last resolve left it.
+		var titles map[string]string
+		if resolve {
+			var sids []string
+			seen := map[string]bool{}
+			for _, r := range runs {
+				if r.SessionID != "" && !seen[r.SessionID] {
+					seen[r.SessionID] = true
+					sids = append(sids, r.SessionID)
+				}
+			}
+			titles = sessiontitle.Resolve(sids)
+		}
+		return workflowsMsg{jobs: jobs, runs: runs, activity: activity, sessionTitles: titles, titlesResolved: resolve, epoch: epoch, err: err}
 	}
 }
 
@@ -801,6 +819,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.workflowRuns = msg.runs
 		m.workflowsErr = msg.err
 		m.wfActivity = msg.activity
+		// Only a resolve load carries titles; a live tick leaves the last-resolved map in place so an
+		// out-of-order tick can't clobber a fresh resolve back to a pre-resolve snapshot.
+		if msg.titlesResolved {
+			m.sessionTitles = msg.sessionTitles
+		}
 		// Re-derive focus on a run-set change (a GC'd focused run, the 0/1/>1 routing) and
 		// clamp the run/phase/agent cursors to the new data.
 		m.rerootWorkflows(false)
@@ -831,7 +854,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.workflowStatusErr = false
 			m.workflowStatus = fmt.Sprintf("%s %s: ok", msg.verb, runID)
 		}
-		return m, loadWorkflows(m.workflowsEpoch)
+		return m, loadWorkflows(m.workflowsEpoch, true)
 
 	case wfDetailMsg:
 		// Drop a read that answers a prior focused leaf (a slow leaf-A read landing after the
@@ -847,7 +870,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case workflowsTickMsg:
 		if m.screen == screenWorkflows && msg.epoch == m.workflowsEpoch {
-			return m, tea.Batch(loadWorkflows(msg.epoch), workflowsTick(msg.epoch, m.workflowsTickInterval()))
+			return m, tea.Batch(loadWorkflows(msg.epoch, false), workflowsTick(msg.epoch, m.workflowsTickInterval()))
 		}
 		return m, nil
 
@@ -1066,7 +1089,7 @@ func (m Model) toWorkflows() (tea.Model, tea.Cmd) {
 	m.wfActivity = nil
 	m.wfRunCursor, m.wfPhaseCursor, m.wfAgentCursor = 0, 0, 0
 	m.rerootWorkflows(true) // fresh 0/1/>1 routing on entry
-	return m, tea.Batch(loadWorkflows(m.workflowsEpoch), workflowsTick(m.workflowsEpoch, m.workflowsTickInterval()))
+	return m, tea.Batch(loadWorkflows(m.workflowsEpoch, true), workflowsTick(m.workflowsEpoch, m.workflowsTickInterval()))
 }
 
 // wfGroups is the board's run→phase→agent tree (newest-first) — the single source the picker, phases,
@@ -1190,7 +1213,7 @@ func (m Model) updateWorkflows(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "R", "ctrl+r":
 		m.loading = true
-		return m, loadWorkflows(m.workflowsEpoch)
+		return m, loadWorkflows(m.workflowsEpoch, true)
 	case "tab":
 		return m.toList()
 	case "q":

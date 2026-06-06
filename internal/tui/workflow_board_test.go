@@ -523,3 +523,107 @@ func TestBoxCell_CJKExactWidth(t *testing.T) {
 		t.Fatalf("boxCell must pad to 6 columns, got %d", w)
 	}
 }
+
+// TestWfPromptPreview_BlankLineAndIndent: the collapsed prompt's "… N more lines" trailer is body-
+// indented (one column, like the preview) with no blank-line gap when a preview line is blank.
+func TestWfPromptPreview_BlankLineAndIndent(t *testing.T) {
+	jobs, runs := oneRun()
+	m := workflowsModel(t, jobs, runs, nil)
+	m, _ = press(t, m, "enter") // → agent detail
+	leaf, _ := m.selectedLeaf()
+	// A prompt whose 2nd logical line is blank (a paragraph break): 4 logical lines, preview = 2.
+	m.wfDetailJob, m.wfDetailPrompt, m.wfDetailAnswer, m.wfDetailIO = leaf, "title line\n\nbody one\nbody two", "", true
+	lines := m.agentDetailLines(m.wfAgentRightWidth())
+	ti := -1
+	for i, l := range lines {
+		if strings.Contains(l, "… 2 more lines") {
+			ti = i
+			break
+		}
+	}
+	if ti < 0 {
+		t.Fatalf("trailer '… 2 more lines' missing:\n%q", lines)
+	}
+	if !strings.HasPrefix(lines[ti], " ") {
+		t.Fatalf("the trailer must be body-indented (leading space), got %q", lines[ti])
+	}
+	if strings.TrimSpace(lines[ti-1]) == "" {
+		t.Fatalf("a blank line precedes the trailer (gap not trimmed): %q", lines[ti-1])
+	}
+}
+
+// TestWfRunHeader_TwoLines: the run header is two lines — the bold name on line 1, the description +
+// right-aligned counts on line 2.
+func TestWfRunHeader_TwoLines(t *testing.T) {
+	jobs, runs := oneRun()
+	m := workflowsModel(t, jobs, runs, nil)
+	g, _ := m.focusedGroup()
+	parts := strings.Split(m.renderRunHeader(g), "\n")
+	if len(parts) != 2 {
+		t.Fatalf("run header must be 2 lines, got %d", len(parts))
+	}
+	if !strings.Contains(parts[0], "sweep") || strings.Contains(parts[0], "agents") {
+		t.Fatalf("line 1 must be the name with no counts: %q", parts[0])
+	}
+	if !strings.Contains(parts[1], "a sweep run") || !strings.Contains(parts[1], "agents") {
+		t.Fatalf("line 2 must be the description + counts: %q", parts[1])
+	}
+}
+
+// TestWfRunHeader_NameBounded: a run name wider than the box must not let header line 1 overflow the box
+// width — an over-width line 1 soft-wraps onto a third row and shifts the fixed-height box down.
+func TestWfRunHeader_NameBounded(t *testing.T) {
+	long := strings.Repeat("very-long-workflow-name-", 4) // ~96 cols, past any narrow box
+	runs := []subagent.WorkflowRun{{
+		RunID: "run-1", Name: long, Description: "d",
+		StartedAt: "2026-06-01T00:00:00Z", UpdatedAt: "2026-06-01T00:00:30Z",
+		Phases: []subagent.RunPhase{{Title: "map"}},
+	}}
+	jobs := []subagent.Result{{RunID: "run-1", Phase: "map", Label: "m1", Status: "running", JobID: "job-m1"}}
+	m := workflowsModel(t, jobs, runs, nil)
+	m.width = 50 // boardWidth == 50
+	g, _ := m.focusedGroup()
+	line1 := strings.Split(m.renderRunHeader(g), "\n")[0]
+	if w := ansi.StringWidth(line1); w > m.boardWidth() {
+		t.Fatalf("header line 1 width %d exceeds box width %d: %q", w, m.boardWidth(), line1)
+	}
+	if !strings.Contains(line1, "…") {
+		t.Fatalf("an over-width name must be truncated with an ellipsis: %q", line1)
+	}
+}
+
+// TestWfTickKeepsResolvedTitles: a live-tick refresh (titlesResolved=false) carries no titles and must NOT
+// overwrite the map a prior resolve produced — only a resolve load replaces it. Guards against an
+// out-of-order tick clobbering freshly resolved picker titles back to a pre-resolve snapshot.
+func TestWfTickKeepsResolvedTitles(t *testing.T) {
+	jobs, runs := oneRun()
+	m := workflowsModel(t, jobs, runs, nil)
+	resolved := map[string]string{"sess-x": "My Chat"}
+	m, _ = step(t, m, workflowsMsg{jobs: jobs, runs: runs, sessionTitles: resolved, titlesResolved: true, epoch: m.workflowsEpoch})
+	if m.sessionTitles["sess-x"] != "My Chat" {
+		t.Fatalf("a resolve load must set titles, got %v", m.sessionTitles)
+	}
+	m, _ = step(t, m, workflowsMsg{jobs: jobs, runs: runs, sessionTitles: nil, titlesResolved: false, epoch: m.workflowsEpoch})
+	if m.sessionTitles["sess-x"] != "My Chat" {
+		t.Fatalf("a live tick must not clobber resolved titles, got %v", m.sessionTitles)
+	}
+}
+
+// TestWfPicker_FullSessionIdAndTitle: the run-picker session header shows the /rename title first + the
+// FULL session id in parens (not truncated to 8 + …).
+func TestWfPicker_FullSessionIdAndTitle(t *testing.T) {
+	full := "347597cf-1234-5678-9abc-def012345678"
+	runs := []subagent.WorkflowRun{
+		{RunID: "r1", Name: "research", SessionID: full, StartedAt: "2026-06-01T00:00:20Z"},
+		{RunID: "r2", Name: "other", SessionID: "sess-untitled-long", StartedAt: "2026-06-01T00:00:10Z"},
+	}
+	m := workflowsModel(t, nil, runs, nil)
+	m.sessionTitles = map[string]string{full: "my conversation"}
+	out := m.viewWorkflows()
+	if !strings.Contains(out, "my conversation ("+full+")") {
+		t.Fatalf("picker header should show title + full session id:\n%s", out)
+	}
+	if !strings.Contains(out, "sess-untitled-long") {
+		t.Fatalf("an untitled session should show its full id (not truncated):\n%s", out)
+	}
+}
