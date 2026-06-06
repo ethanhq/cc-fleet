@@ -22,25 +22,40 @@ not JS.
   before the run → the board shows the named, phase-skeletoned run immediately.
 - `agent(prompt, vendor=…, model=None, schema=None, label=None, phase=None, timeout=None,
   max_budget_usd=None, max_turns=None, run_in_background=False, isolation=None,
-  profile="full", tools=None, skills=True, mcp=False)` — runs ONE
+  profile="slim", tools=None, skills=True, mcp=None)` — runs ONE
   vendor subagent leaf and **blocks** until it returns the answer **string**. With `schema=`
-  (a dict) it asks for JSON and validates it against a real (recursive) JSON-Schema subset —
+  (a dict) the schema goes to the claude child via `--json-schema`: claude injects a forced
+  `StructuredOutput` tool and enforces that it is CALLED (the native mechanism — no JSON
+  instruction is added to the prompt); `agent()` returns the parsed structured payload.
+  Client-side validation stays as a backstop — a real (recursive) JSON-Schema subset:
   `type` (object/array/string/number/integer/boolean/null; `integer` accepts `5.0`),
-  `required`, nested `properties`, array `items`, scalar `enum` — **retrying up to twice**,
-  then returns the parsed value. (Composition keywords `$ref`/`allOf`/`oneOf` are NOT
-  enforced.) On a leaf failure it **raises** — a bare top-level `agent()` aborts the run;
-  inside `parallel`/`pipeline` it becomes `None`. Omitting `model` uses `meta.model` then the
-  vendor's `default_model`; `timeout=` (seconds) and `max_budget_usd=` accept int or float.
-  `run_in_background=True` returns a **handle** immediately (await it with `wait()`); not
-  combinable with `schema=`. `isolation="worktree"` runs the leaf with cwd = a fresh git
-  worktree (torn down after), so parallel file-editing leaves don't collide (requires a git repo).
-  `profile="slim"` (generic-subagent mirror; keeps CLAUDE.md) or `"slim-ro"` (read-only
-  Explore mirror; no CLAUDE.md) swaps the full session prompt for the native subagent shape —
-  a far smaller first request per leaf; rule of thumb: writes files → `slim`, read-only
-  research → `slim-ro`. `tools=` (whitelist), `skills=` (default `True`), `mcp=` (default
-  `False`) refine a slim leaf and are rejected with `profile="full"`. The run journal folds
-  the effective profile + tools, so a `--resume` re-runs a leaf whose shape changed; on a
-  claude below 2.1.88 the leaf fails open to `full` (notice logged before the journal lookup).
+  `required`, nested `properties`, array `items`, scalar `enum` (composition keywords
+  `$ref`/`allOf`/`oneOf` are NOT enforced). A validation failure — or a result envelope
+  without a structured payload — FAILS the leaf; there is no automatic retry. The forced
+  `StructuredOutput` call costs turns: give a schema'd leaf `max_turns` ≥ 3 headroom (a
+  budget of 1 starves it). `schema=` needs claude ≥ 2.1.88 (the slim-profile floor); an
+  older claude fails the leaf with a classified usage error. On a leaf failure it
+  **raises** — a bare top-level `agent()` aborts the run; inside `parallel`/`pipeline` it
+  becomes `None`. Omitting `model` uses `meta.model` then the vendor's `default_model`;
+  `timeout=` (seconds) and `max_budget_usd=` accept int or float. `run_in_background=True`
+  returns a **handle** immediately (await it with `wait()`); not combinable with `schema=`.
+  `isolation="worktree"` runs the leaf with cwd = a fresh git worktree (torn down after),
+  so parallel file-editing leaves don't collide (requires a git repo). `profile="slim"`
+  (the default: generic-subagent mirror; keeps CLAUDE.md) or `"slim-ro"` (read-only Explore
+  mirror; no CLAUDE.md) swaps the full session prompt for the native subagent shape — a far
+  smaller first request per leaf; rule of thumb: writes files → `slim`, read-only research
+  → `slim-ro`; `profile="full"` restores the full session prompt — use it ONLY to compare
+  behavior against a full session or to diagnose a suspected slim regression. Default tool
+  sets — slim: Bash, Edit, Glob, Grep, Read, Skill, Write; slim-ro: Bash, Glob, Grep, Read,
+  Skill. Any tool beyond the whitelist (e.g. WebSearch / WebFetch) must be passed
+  explicitly via `tools=`, and `tools=` REPLACES the whole set, never appends —
+  `tools=["WebSearch"]` gives the leaf ONLY WebSearch. `tools=`, `skills=` (default `True`)
+  and `mcp=` refine a slim leaf and are rejected with `profile="full"`; `mcp=` defaults per
+  profile — slim inherits the host MCP config (native parity), slim-ro runs
+  `--strict-mcp-config` — and an explicit `mcp=` (either value) overrides. The run journal
+  folds the effective profile + tools, so a `--resume` re-runs a leaf whose shape changed;
+  on a claude below 2.1.88 the leaf fails open to `full` (notice logged before the journal
+  lookup).
 - `wait(handle | [handles])` — block for one background handle (returns its string) or a
   list of them (returns a list, order preserved). **Named `wait`, not `await`** — Starlark
   reserves `await` as a keyword.
@@ -121,8 +136,10 @@ produce the same keys. A **failed** leaf is never journaled, so resume re-runs i
 ## Non-goals (state plainly, don't oversell)
 - **No pause.** A running `claude -p` can't be cleanly suspended; use `workflow stop` (reaps
   the run) + `run --resume` (cheap restart via the journal) instead.
-- **`schema=` is a practical subset** — `type`/`required`/nested `properties`/array
-  `items`/scalar `enum`, not the full JSON-Schema spec (`$ref`/`allOf`/`oneOf` are ignored).
+- **Client-side `schema=` validation is a practical subset** — `type`/`required`/nested
+  `properties`/array `items`/scalar `enum`, not the full JSON-Schema spec
+  (`$ref`/`allOf`/`oneOf` are ignored). claude enforces that `StructuredOutput` is called;
+  this backstop checks what it was filled with, and a failure is terminal (no retry).
 - **No deep `$ref`/composition.** Keep schemas concrete.
 - Key-safety is unchanged: the vendor key flows only via `apiKeyHelper`; prompts go to the
   leaf via stdin, never argv; the journal/events/board carry no key.
@@ -167,6 +184,6 @@ loop-until-dry — all sequenced by the script in a cc-fleet process, off your c
 - Thunks that append to a shared list instead of returning values → they hit the frozen
   guard and become `None`; collect return values instead.
 - Trusting `schema=` as deep validation, or `.result` as JSON without `schema=`.
-- Unbounded ambition: the runtime hard-caps 1000 `agent()` calls/run (a schema agent may
-  do up to 3 vendor calls across its retries) and pools concurrency at `min(16, cores-2)`;
-  a single `parallel`/`pipeline` list is likewise capped at 1000 elements.
+- Unbounded ambition: the runtime hard-caps 1000 `agent()` calls/run and pools
+  concurrency at `min(16, cores-2)`; a single `parallel`/`pipeline` list is likewise
+  capped at 1000 elements.
