@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -166,7 +167,8 @@ func TestSaveKeySet_MigratesLegacyAndIsAtomic0600(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat keys.json: %v", err)
 	}
-	if perm := info.Mode().Perm(); perm != 0o600 {
+	// NTFS reports 0666; the 0600 contract is unix-only.
+	if perm := info.Mode().Perm(); runtime.GOOS != "windows" && perm != 0o600 {
 		t.Fatalf("keys.json perm = %o, want 600", perm)
 	}
 

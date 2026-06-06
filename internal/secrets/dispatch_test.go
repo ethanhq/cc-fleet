@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -230,6 +231,9 @@ func backendVendor(name, backend, ref string) *config.Config {
 // assert the exact argv the backend invoked.
 func fakeCLI(t *testing.T, name string) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("keyget CLI-backend tests use a #!/bin/sh fake binary not runnable on windows")
+	}
 	dir := t.TempDir()
 	argsPath := filepath.Join(dir, "args.log")
 	script := `#!/bin/sh

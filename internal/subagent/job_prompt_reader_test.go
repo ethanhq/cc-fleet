@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -56,8 +57,9 @@ func TestMaterializePromptReader_HappyPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat dst: %v", err)
 	}
-	if st.Mode().Perm() != 0o600 {
-		t.Errorf("dst mode = %o, want 0o600", st.Mode().Perm())
+	// NTFS reports 0666; the 0600 contract is unix-only.
+	if perm := st.Mode().Perm(); runtime.GOOS != "windows" && perm != 0o600 {
+		t.Errorf("dst mode = %o, want 0o600", perm)
 	}
 }
 

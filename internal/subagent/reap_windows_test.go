@@ -53,20 +53,23 @@ func TestRunClaude_TimeoutKillsProcessTree(t *testing.T) {
 	t.Cleanup(func() { waitGrace = orig })
 
 	gpidFile := filepath.Join(t.TempDir(), "grandchild.pid")
-	// The batch leader spawns a detached grandchild: a child cmd that records its
-	// own PID then sleeps for a long time via ping (a portable sleep). The leader
-	// itself then sleeps. Only a tree kill reaps the grandchild — a kill of the
-	// leader alone would leave it running.
+	// The batch leader spawns a detached grandchild — a powershell that records its
+	// own PID ($PID, a reliable source cmd.exe lacks) then sleeps. The leader itself
+	// then sleeps via ping. Only a tree kill reaps the grandchild; killing the leader
+	// alone would leave it running.
 	script := "@echo off\r\n" +
-		"start /b cmd /c \"echo %^PID% > \"" + gpidFile + "\" & ping -n 60 127.0.0.1 > nul\"\r\n" +
+		"start \"\" /b powershell -NoProfile -ExecutionPolicy Bypass -Command " +
+		"\"$PID | Out-File -Encoding ascii -FilePath '" + gpidFile + "'; Start-Sleep -Seconds 60\"\r\n" +
 		"ping -n 60 127.0.0.1 > nul\r\n"
 	bin := writeFakeBinWindows(t, script)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	// PowerShell cold-start needs headroom to spawn and record its pid before the
+	// deadline reaps the tree, so the run hangs for 5s.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	start := time.Now()
 	_, _, _, _ = runClaude(ctx, bin, []string{bin}, os.Environ(), nil, "", nil)
-	if elapsed := time.Since(start); elapsed > 6*time.Second {
+	if elapsed := time.Since(start); elapsed > 12*time.Second {
 		t.Fatalf("runClaude took %v with a sleeping grandchild; tree-kill model broken", elapsed)
 	}
 

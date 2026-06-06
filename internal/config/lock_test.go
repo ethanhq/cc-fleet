@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,7 +47,8 @@ func TestWithTeamLock_CreatesLockFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat lock file: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
+	// NTFS reports 0666; the 0600 contract is unix-only.
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
 		t.Fatalf("lock file mode = %o, want 0600", got)
 	}
 }
@@ -246,7 +248,8 @@ func TestWithVendorsConfigLock_CreatesLockFileInConfigDir(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat lock file: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
+	// NTFS reports 0666; the 0600 contract is unix-only.
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
 		t.Fatalf("lock file mode = %o, want 0600", got)
 	}
 }
