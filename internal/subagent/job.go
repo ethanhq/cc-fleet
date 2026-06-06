@@ -64,6 +64,9 @@ type jobMeta struct {
 	RunID string `json:"run_id,omitempty"`
 	Phase string `json:"phase,omitempty"`
 	Label string `json:"label,omitempty"`
+	// JournalKey is the leaf's content-hash key, carried so finalizeSyncJob/StatusFor can
+	// stamp the terminal Result with it (the board needs it to restart this single leaf).
+	JournalKey string `json:"journal_key,omitempty"`
 
 	// PersistIO records that this job opted into board drill-in, so finalizeSyncJob
 	// writes the answer side file (<id>.answer) on completion. The result CACHE stays
@@ -205,6 +208,7 @@ func launchBackground(req Request, binaryPath, profilePath, model string) Result
 		RunID:         req.RunID,
 		Phase:         req.Phase,
 		Label:         req.Label,
+		JournalKey:    req.JournalKey,
 	}
 	if err := writeMetaFn(dir, meta); err != nil {
 		// meta write failed AFTER cmd.Start. Without cleanup the detached vendor
@@ -235,6 +239,7 @@ func launchBackground(req Request, binaryPath, profilePath, model string) Result
 		RunID:         meta.RunID,
 		Phase:         meta.Phase,
 		Label:         meta.Label,
+		JournalKey:    meta.JournalKey,
 	}
 }
 
@@ -348,6 +353,9 @@ func StatusFor(jobID string) Result {
 				r.Phase = meta.Phase
 				r.Label = meta.Label
 			}
+			if r.JournalKey == "" {
+				r.JournalKey = meta.JournalKey
+			}
 			return r
 		}
 	}
@@ -366,6 +374,7 @@ func StatusFor(jobID string) Result {
 			RunID:         meta.RunID,
 			Phase:         meta.Phase,
 			Label:         meta.Label,
+			JournalKey:    meta.JournalKey,
 		}
 	}
 
@@ -383,6 +392,7 @@ func StatusFor(jobID string) Result {
 	res.RunID = meta.RunID
 	res.Phase = meta.Phase
 	res.Label = meta.Label
+	res.JournalKey = meta.JournalKey
 	if res.OK {
 		res.Status = "done"
 	} else {
@@ -827,9 +837,21 @@ func readMeta(dir, jobID string) (jobMeta, error) {
 // removeJob deletes every file in a job's group (best-effort), including the opt-in
 // drill-in side files (.prompt / .answer).
 func removeJob(dir, jobID string) {
-	for _, suffix := range []string{".json", ".out", ".err", ".prompt", ".answer", ".result.json"} {
+	for _, suffix := range []string{".json", ".out", ".err", ".prompt", ".answer", ".activity", ".result.json"} {
 		_ = os.Remove(filepath.Join(dir, jobID+suffix))
 	}
+}
+
+// leafActivityPath returns <jobID>.activity in the jobs dir — where a SYNC leaf streams its
+// per-tool/usage activity when StreamActivity (the board reads it for the Activity feed). The id
+// is a freshly-minted uuid from registerSyncJob; the board validates it via ids.ValidateJobID
+// before reading.
+func leafActivityPath(jobID string) (string, error) {
+	dir, err := jobsDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, jobID+".activity"), nil
 }
 
 // registerSyncJob records a SYNCHRONOUS Run on the agent-status board so it is
@@ -864,6 +886,7 @@ func registerSyncJob(req Request, model string) string {
 		RunID:         req.RunID,
 		Phase:         req.Phase,
 		Label:         req.Label,
+		JournalKey:    req.JournalKey,
 		PersistIO:     req.PersistIO,
 		// SettingsPath deliberately empty (see processAlive). Sync writes no .out
 		// file, so the deferred result cache is the authoritative done signal.
@@ -881,12 +904,14 @@ func registerSyncJob(req Request, model string) string {
 }
 
 // finalizeSyncJob flips a sync job from running → done/failed by writing a
-// SANITIZED terminal result cache: status + vendor/model/started + canonical
-// error fields only, with the answer text (res.Result) and Raw STRIPPED so no
-// vendor reply is ever persisted to disk for a sync run (the caller already got
-// it on stdout). A subsequent StatusFor/ListJobs serves this cache. jobID==""
-// (register failed) is a no-op; it is called from a defer so it runs on the
-// normal return path that produced res.
+// SANITIZED terminal result cache: status + vendor/model/started + the SAFE
+// metrics (Usage / cost / turns / duration — claude's own metering, which the
+// board's Workflows view needs to show a done leaf's tokens + "done · N turns"
+// outcome) + canonical error fields, with the answer text (res.Result) and Raw
+// STRIPPED so no vendor reply is ever persisted to disk for a sync run (the caller
+// already got it on stdout). A subsequent StatusFor/ListJobs serves this cache.
+// jobID=="" (register failed) is a no-op; it is called from a defer so it runs on
+// the normal return path that produced res.
 func finalizeSyncJob(jobID string, res Result) {
 	if jobID == "" {
 		return
@@ -903,11 +928,18 @@ func finalizeSyncJob(jobID string, res Result) {
 		_ = os.WriteFile(filepath.Join(dir, jobID+".answer"), []byte(res.Result), 0o600)
 	}
 	cached := Result{
-		OK:             res.OK,
-		Vendor:         meta.Vendor,
-		Model:          meta.Model,
-		JobID:          jobID,
-		StartedAt:      meta.StartedAt,
+		OK:        res.OK,
+		Vendor:    meta.Vendor,
+		Model:     meta.Model,
+		JobID:     jobID,
+		StartedAt: meta.StartedAt,
+		// Safe final metrics (claude's own metering, NOT the answer) — the board needs them
+		// for a done leaf's token/cost/turns columns and the "done · N turns" outcome.
+		Usage:          res.Usage,
+		CostUSD:        res.CostUSD,
+		NumTurns:       res.NumTurns,
+		DurationMs:     res.DurationMs,
+		StopReason:     res.StopReason,
 		ErrorCode:      res.ErrorCode,
 		ErrorMsg:       res.ErrorMsg,
 		Suggestion:     res.Suggestion,
@@ -916,6 +948,7 @@ func finalizeSyncJob(jobID string, res Result) {
 		RunID:          meta.RunID,
 		Phase:          meta.Phase,
 		Label:          meta.Label,
+		JournalKey:     meta.JournalKey,
 	}
 	if res.OK {
 		cached.Status = "done"

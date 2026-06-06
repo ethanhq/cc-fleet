@@ -30,15 +30,17 @@ type engine struct {
 	// built without one (the leaf unit tests) simply never caches. Read/written only
 	// under the GIL (lookup before a leaf's exec; append after runBlocking re-locks).
 	journal *journal
-	// events is the run's live-event channel (board live log / DAG). Nil-safe. Emitted
-	// only under the GIL — the seq counter needs no atomic and lines never interleave.
-	// One-way producer→board; never read back by the engine; never feeds journalKey.
+	// events is the run's live-event channel that `workflow watch` renders. Nil-safe. Emitted
+	// only under the GIL — the seq counter needs no atomic and lines never interleave. One-way
+	// producer→watcher; never read back by the engine, never feeds journalKey.
 	events    *eventWriter
 	groupSeq  int    // monotonic id source for parallel/pipeline/workflow group brackets
-	persistIO bool   // persist each leaf's prompt+answer for board drill-in (default on; --no-persist-io off)
+	persistIO bool   // persist each leaf's prompt+answer for the board's inline detail (default on; --no-persist-io off)
 	enginePID int    // os.Getpid() of the DETACHED engine — recorded so `workflow stop` can reap it
 	metaModel string // meta.model: default model for agents that omit model= (applied before journalKey)
 	whenToUse string // meta.whenToUse: display/board text
+	sessionID string // parent Claude session (board grouping); seeded from the manifest, re-persisted every save
+	argsJSON  string // --args-json, re-persisted so a restart resumes with the SAME args (else leaf keys shift)
 	// Budget accounting (USD), GIL-protected. budgetTotal<=0 means uncapped. budgetSpent
 	// accumulates each completed leaf's CostUSD; agent() raises once spent>=total.
 	budgetTotal float64
@@ -256,19 +258,21 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 	var lastErr error
 	for i := 0; i < attempts; i++ {
 		req := subagent.Request{
-			Vendor:       vendor,
-			Model:        model,
-			PromptReader: strings.NewReader(sendPrompt), // stdin, not argv
-			JSON:         true,                          // force inner json → res.Result is the answer text
-			Timeout:      time.Duration(timeoutSec * float64(time.Second)),
-			MaxTurns:     maxTurns,
-			MaxBudgetUSD: maxBudget,
-			RunID:        e.runID,
-			Phase:        phaseTag,
-			Label:        label,
-			PersistIO:    e.persistIO,
-			IOPrompt:     sendPrompt, // persisted only when PersistIO (subagent gates)
-			WorkingDir:   workDir,    // empty unless isolation='worktree'
+			Vendor:         vendor,
+			Model:          model,
+			PromptReader:   strings.NewReader(sendPrompt), // stdin, not argv
+			JSON:           true,                          // force inner json → res.Result is the answer text
+			Timeout:        time.Duration(timeoutSec * float64(time.Second)),
+			MaxTurns:       maxTurns,
+			MaxBudgetUSD:   maxBudget,
+			RunID:          e.runID,
+			Phase:          phaseTag,
+			Label:          label,
+			JournalKey:     key, // persisted so the board can restart THIS leaf (invalidate + resume)
+			PersistIO:      e.persistIO,
+			StreamActivity: e.persistIO, // sync leaf streams tool/usage activity for the board (gated like PersistIO)
+			IOPrompt:       sendPrompt,  // persisted only when PersistIO (subagent gates)
+			WorkingDir:     workDir,     // empty unless isolation='worktree'
 		}
 		var res subagent.Result
 		e.sched.runBlocking(func() { res = runLeaf(req) })
@@ -353,8 +357,9 @@ func (e *engine) parallel(thread *starlark.Thread, b *starlark.Builtin, args sta
 		return nil, err
 	}
 	// Bracket the fan-out with group-open/close events (GIL-held, before/after fanout) so
-	// the board reconstructs the DAG by seq-nesting — every leaf event lands between this
-	// group's open and close, without threading a group id through the hot fanout path.
+	// `workflow watch` shows it as a bracketed group (▸ open … ◂ close) in the live stream —
+	// every leaf event lands between this group's open and close, without threading a group id
+	// through the hot fanout path.
 	gid := e.emitGroupOpen("parallel")
 	results := make([]starlark.Value, len(thunks))
 	e.fanout(thread, len(thunks), func(i int, th *starlark.Thread) {
@@ -428,9 +433,9 @@ func (e *engine) emitLeaf(status, phase, label, vendor, model string) {
 }
 
 // emitGroupOpen records the start of a parallel/pipeline/workflow group and returns its
-// id; emitGroupClose records its end. The board reconstructs the DAG by seq-nesting:
-// every event between an open and its matching close belongs to that group, and nested
-// groups (e.g. a parallel inside a pipeline stage) nest by bracket order — so no group id
+// id; emitGroupClose records its end. `workflow watch` brackets the group in its live stream
+// by seq order: every event between an open and its matching close belongs to that group, and
+// nested groups (e.g. a parallel inside a pipeline stage) bracket by order — so no group id
 // has to be threaded through fanout/callOrNone. GIL-held callers only (open before
 // fanout, close after it joins).
 func (e *engine) emitGroupOpen(groupType string) string {
@@ -461,13 +466,19 @@ func (e *engine) saveManifest(status, errText string) {
 		Status:      status,
 		Error:       errText,
 		EnginePID:   e.enginePID,
+		// Carried in engine state so every whole-file overwrite preserves them (the board
+		// groups by SessionID; a restart resumes with the same args/persistIO/budget).
+		SessionID:   e.sessionID,
+		ArgsJSON:    e.argsJSON,
+		NoPersistIO: !e.persistIO,
+		BudgetUSD:   e.budgetTotal,
 	})
 }
 
 // log writes a narrator line to stderr (diagnostic — discarded when the run is detached,
-// visible with --foreground) AND emits a live-event record that the board and `workflow
-// watch` render. stdout stays clean for the run id the launcher prints; the stderr stream
-// itself is not persisted.
+// visible with --foreground) AND emits a live-event record that `workflow watch` renders.
+// stdout stays clean for the run id the launcher prints; the stderr stream itself is not
+// persisted.
 func (e *engine) log(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 	var msg string
 	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "msg", &msg); err != nil {

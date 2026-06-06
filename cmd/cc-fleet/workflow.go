@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ethanhq/cc-fleet/internal/leadsession"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 	"github.com/ethanhq/cc-fleet/internal/workflow"
 )
@@ -20,16 +21,17 @@ import (
 // CLI's own envelope (one per invocation), deliberately separate from
 // subagent.Result so a workflow shape change never bloats that contract.
 type workflowEnvelope struct {
-	OK        bool                   `json:"ok"`
-	RunID     string                 `json:"run_id,omitempty"`
-	Name      string                 `json:"name,omitempty"`
-	Phases    []subagent.RunPhase    `json:"phases,omitempty"`
-	Status    string                 `json:"status,omitempty"`
-	StartedAt string                 `json:"started_at,omitempty"`
-	Runs      []subagent.WorkflowRun `json:"runs,omitempty"`
-	Jobs      []subagent.Result      `json:"jobs,omitempty"`
-	RunError  string                 `json:"run_error,omitempty"` // a failed run's cause (distinct from the command-level Error)
-	Error     string                 `json:"error,omitempty"`
+	OK        bool                     `json:"ok"`
+	RunID     string                   `json:"run_id,omitempty"`
+	Name      string                   `json:"name,omitempty"`
+	Phases    []subagent.RunPhase      `json:"phases,omitempty"`
+	Status    string                   `json:"status,omitempty"`
+	StartedAt string                   `json:"started_at,omitempty"`
+	Runs      []subagent.WorkflowRun   `json:"runs,omitempty"`
+	Jobs      []subagent.Result        `json:"jobs,omitempty"`
+	Saved     []subagent.SavedWorkflow `json:"saved,omitempty"`
+	RunError  string                   `json:"run_error,omitempty"` // a failed run's cause (distinct from the command-level Error)
+	Error     string                   `json:"error,omitempty"`
 }
 
 // newWorkflowCmd builds `cc-fleet workflow` — run orchestration over subagent
@@ -46,7 +48,7 @@ so they group into one run tree on the board. List runs and inspect a run's jobs
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
-	cmd.AddCommand(newWorkflowNewCmd(), newWorkflowListCmd(), newWorkflowStatusCmd(), newWorkflowRunCmd(), newWorkflowStopCmd(), newWorkflowWatchCmd())
+	cmd.AddCommand(newWorkflowNewCmd(), newWorkflowListCmd(), newWorkflowStatusCmd(), newWorkflowRunCmd(), newWorkflowStopCmd(), newWorkflowWatchCmd(), newWorkflowSavedCmd())
 	return cmd
 }
 
@@ -123,6 +125,8 @@ func newWorkflowRunCmd() *cobra.Command {
 		argsJSON       string
 		noPersistIO    bool
 		budgetUSD      float64
+		leadSessionID  string
+		saved          string
 		asJSON         bool
 	)
 	cmd := &cobra.Command{
@@ -133,12 +137,34 @@ plan executes in a cc-fleet process, NOT the main Claude context: it declares a 
 dict and calls agent()/parallel()/pipeline()/phase()/log(). By default the run is
 launched detached and this prints the bare run id; poll it with 'workflow status' or
 watch the board. --foreground runs inline to completion instead.`,
-		Args:          cobra.ExactArgs(1),
+		Args:          cobra.MaximumNArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			script := args[0]
+			// Resolve the script: --saved <name> re-runs a saved workflow, else the positional path (one
+			// is required — cobra allows 0 args so --saved can stand alone; the default case enforces it).
+			var script string
+			switch {
+			case saved != "":
+				p, serr := subagent.SavedWorkflowScript(saved)
+				if serr != nil {
+					return reportWorkflowErr(serr, asJSON)
+				}
+				script = p
+			case len(args) == 1:
+				script = args[0]
+			default:
+				return reportWorkflowErr(fmt.Errorf("workflow run needs a script path or --saved <name>"), asJSON)
+			}
 			opts := workflow.Options{RunID: runID, Resume: resume, Concurrency: maxConcurrency, ArgsJSON: argsJSON, NoPersistIO: noPersistIO, BudgetUSD: budgetUSD}
+			// Capture the launching Claude session on a genuine FRESH launch only (the detached
+			// --run-id re-exec reads it back off the manifest; a --resume preserves it), so the
+			// board groups runs by session like the teammates board. An explicit flag wins.
+			if runID == "" && resume == "" {
+				if opts.LeadSessionID = leadSessionID; opts.LeadSessionID == "" {
+					opts.LeadSessionID = leadsession.Detect()
+				}
+			}
 			// SIGINT (Ctrl-C on a --foreground run) and SIGTERM (a kill of the detached
 			// child, e.g. by teardown) cancel the run: queued leaves stop launching and
 			// the manifest is finalized off "running" instead of being stranded. An
@@ -185,6 +211,38 @@ watch the board. --foreground runs inline to completion instead.`,
 		"Don't persist leaf prompts/answers for board drill-in (persistence is default-on)")
 	cmd.Flags().Float64Var(&budgetUSD, "budget-usd", 0,
 		"Cap total vendor spend in USD; agent() fails once reached (0 = uncapped)")
+	cmd.Flags().StringVar(&leadSessionID, "lead-session-id", "",
+		"Parent Claude session id for board grouping (default: auto-detect)")
+	cmd.Flags().StringVar(&saved, "saved", "",
+		"Re-run a saved workflow by name (instead of a script path)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit a machine-readable JSON envelope")
+	return cmd
+}
+
+// newWorkflowSavedCmd builds `cc-fleet workflow saved` — list the named workflows saved from the board
+// (newest first), so an agent can discover + re-run one with `workflow run --saved <name>`.
+func newWorkflowSavedCmd() *cobra.Command {
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:           "saved",
+		Short:         "List saved workflows (newest first)",
+		Args:          cobra.NoArgs,
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			saved, err := subagent.ListSavedWorkflows()
+			if err != nil {
+				return reportWorkflowErr(err, asJSON)
+			}
+			if asJSON {
+				return emitWorkflow(workflowEnvelope{OK: true, Saved: saved})
+			}
+			for _, s := range saved {
+				fmt.Printf("%s\t%s\t%s\n", s.Name, s.SessionID, s.SavedAt)
+			}
+			return nil
+		},
+	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit a machine-readable JSON envelope")
 	return cmd
 }

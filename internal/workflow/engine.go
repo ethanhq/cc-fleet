@@ -55,7 +55,7 @@ type Options struct {
 	// a fresh run. Used only at Launch — the detached child carries the id via RunID and
 	// resumes transparently (the journal load keys on the id, not this flag).
 	Resume string
-	// NoPersistIO opts OUT of board prompt/answer drill-in (persistence is DEFAULT ON).
+	// NoPersistIO opts OUT of the board's inline prompt/answer detail (persistence is DEFAULT ON).
 	// When set, leaves persist no <jobID>.prompt/.answer side files; the result cache is
 	// answer-stripped either way, so the board table is unaffected. Propagated to the
 	// detached child so the whole run honors it.
@@ -63,6 +63,10 @@ type Options struct {
 	// BudgetUSD caps total vendor spend (sum of leaf CostUSD); agent() raises once the cap
 	// is reached. <=0 is uncapped. Propagated to the detached child.
 	BudgetUSD float64
+	// LeadSessionID is the parent Claude session this run was launched from (detected at
+	// `workflow run`). Stored on the manifest at mint so the board groups runs by session.
+	// Used only by Launch's fresh-mint path; a resume reads it back off the manifest.
+	LeadSessionID string
 }
 
 // Prepare parses a script, extracts + validates its `meta` literal, and mints a run
@@ -145,11 +149,13 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 	eng := &engine{
 		sched: newScheduler(ctx, concurrency), runID: runID,
 		name: meta.Name, description: meta.Description, startedAt: startedAt, phases: phases,
-		persistIO:   !opts.NoPersistIO, // board prompt/answer drill-in is default-on
+		persistIO:   !opts.NoPersistIO, // the board's inline prompt/answer detail is default-on
 		enginePID:   detachedEnginePID(opts),
 		metaModel:   meta.Model, // default model for agents that omit model=
 		whenToUse:   meta.WhenToUse,
 		budgetTotal: opts.BudgetUSD,
+		sessionID:   prepared.SessionID, // from the minted manifest; re-persisted on every save
+		argsJSON:    opts.ArgsJSON,
 	}
 	// Load the run's content-hash journal (resume). The path is derived from the
 	// already-validated runID; a missing file (a fresh run) yields an empty cache that
@@ -164,12 +170,12 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 	if jp, jerr := subagent.RunJournalPath(runID); jerr == nil {
 		eng.journal = loadJournal(jp)
 	}
-	// Open the run's live-event channel (board live log / DAG). Best-effort: a path
+	// Open the run's live-event channel that `workflow watch` renders. Best-effort: a path
 	// error leaves events nil → emits no-op. The file is TRUNCATED at the start of every
-	// invocation (incl. a resume), so the live stream + DAG always represent exactly the
-	// CURRENT invocation rather than a concatenation of per-invocation event streams (the
-	// board's DAG would otherwise double on resume). Safe because events are observability
-	// only — never read back by the engine, never journaled.
+	// invocation (incl. a resume), so the live stream always represents exactly the CURRENT
+	// invocation rather than a concatenation of per-invocation event streams (it would otherwise
+	// double on resume). Safe because events are observability only — never read back by the
+	// engine, never journaled.
 	if ep, eerr := subagent.RunEventsPath(runID); eerr == nil {
 		_ = os.Remove(ep)
 		eng.events = newEventWriter(ep)
@@ -245,6 +251,21 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 			return "", fmt.Errorf("workflow: cannot resume: %w", rerr)
 		}
 		run = existing
+		// Replay the run's original launch options on resume so a leaf's content key — and thus
+		// its journal-cache validity — doesn't shift. A non-zero/non-empty opts value overrides
+		// (e.g. resuming with a larger --budget-usd); a zero/empty one reads as "not set" and
+		// inherits the manifest. The corollary — you can't override TO the zero value on resume
+		// (uncap a capped run, blank the args) — is a faithful-continuation tradeoff, not a real
+		// use case (the CLI can't express it and Restart wants the inherit).
+		if opts.ArgsJSON == "" {
+			opts.ArgsJSON = existing.ArgsJSON
+		}
+		if !opts.NoPersistIO {
+			opts.NoPersistIO = existing.NoPersistIO
+		}
+		if opts.BudgetUSD == 0 {
+			opts.BudgetUSD = existing.BudgetUSD
+		}
 		// Restamp liveness + flip to running BEFORE detaching, so a concurrent GC can't
 		// prune this (possibly old) run's manifest + journal in the window before the
 		// resumed engine writes its first heartbeat (GC recency keys on the later of
@@ -261,6 +282,15 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 			return "", perr
 		}
 		run = minted
+		// Stamp the session + replay options onto the manifest BEFORE the child reads it, so
+		// the board can group by session and a later restart resumes with the same inputs.
+		run.SessionID = opts.LeadSessionID
+		run.ArgsJSON = opts.ArgsJSON
+		run.NoPersistIO = opts.NoPersistIO
+		run.BudgetUSD = opts.BudgetUSD
+		if serr := subagent.SaveRun(run); serr != nil {
+			return "", fmt.Errorf("workflow: persist run options: %w", serr)
+		}
 	}
 	// Persist the script as runs/<id>.star (the saved-script slice of native save-script)
 	// so a stopped run can be restarted from the board (`workflow run --resume <id>`).

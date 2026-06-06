@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+
+	"github.com/ethanhq/cc-fleet/internal/fileutil"
 )
 
 // journal is a run's append-only content-hash cache of completed leaf results — the
@@ -120,6 +122,53 @@ func (j *journal) append(key, result string) {
 	}
 	defer f.Close()
 	_, _ = f.Write(append(data, '\n'))
+}
+
+// removeJournalKey rewrites a run's journal file, dropping EVERY entry whose key matches —
+// the board's single-leaf restart primitive. A leaf's content key can appear more than once
+// (identical agent() calls share it; they are interchangeable by construction), so dropping
+// all matching entries re-runs that whole interchangeable set rather than corrupting the
+// FIFO queue by removing a positional one. On the next resume the dropped leaf finds no cache
+// and re-runs live; content-addressing then re-runs any downstream leaf whose input shifted.
+//
+// A missing journal (nothing cached yet) or an absent key (e.g. a leaf that failed last time,
+// never journaled) is a no-op success — the leaf re-runs on resume regardless. The rewrite
+// goes through the atomic-write outlet; the CALLER must have confirmed the engine is dead
+// first (a live O_APPEND would race this whole-file replace). Returns whether anything was
+// dropped. Malformed/torn lines are preserved verbatim (loadJournal skips them on reload).
+func removeJournalKey(path, key string) (bool, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil // nothing journaled → the leaf re-runs anyway
+		}
+		return false, err
+	}
+	var kept []byte
+	removed := false
+	r := bufio.NewReader(f)
+	for {
+		line, rerr := r.ReadBytes('\n')
+		if len(line) > 0 {
+			var e journalEntry
+			if json.Unmarshal(line, &e) == nil && e.Key == key {
+				removed = true // drop this entry
+			} else {
+				kept = append(kept, line...)
+			}
+		}
+		if rerr != nil {
+			break // io.EOF or a read fault — stop with whatever loaded
+		}
+	}
+	f.Close()
+	if !removed {
+		return false, nil // key absent → no rewrite needed
+	}
+	if werr := fileutil.AtomicWrite(path, kept, 0o600); werr != nil {
+		return false, werr
+	}
+	return true, nil
 }
 
 // journalKey is the content hash of a leaf's result determinant: vendor, model, the

@@ -28,7 +28,7 @@ func TestRunClaude_OutputCapKillsGroup(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	stdout, _, _, err := runClaude(ctx, bin, []string{bin}, os.Environ(), nil, "")
+	stdout, _, _, err := runClaude(ctx, bin, []string{bin}, os.Environ(), nil, "", nil)
 	elapsed := time.Since(start)
 
 	if !errors.Is(err, errOutputTooLarge) {
@@ -61,7 +61,7 @@ func TestRunClaude_OutputCapBothStreams(t *testing.T) {
 	defer cancel()
 
 	start := time.Now()
-	stdout, stderr, _, err := runClaude(ctx, bin, []string{bin}, os.Environ(), nil, "")
+	stdout, stderr, _, err := runClaude(ctx, bin, []string{bin}, os.Environ(), nil, "", nil)
 	if !errors.Is(err, errOutputTooLarge) {
 		t.Fatalf("err = %v, want errOutputTooLarge", err)
 	}

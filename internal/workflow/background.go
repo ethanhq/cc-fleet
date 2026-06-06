@@ -64,6 +64,7 @@ func (e *engine) launchBg(vendor, model, prompt, phaseTag, label, key string, ti
 			RunID:        e.runID,
 			Phase:        phaseTag,
 			Label:        label,
+			JournalKey:   key, // persisted so the board can restart THIS leaf (invalidate + resume)
 			PersistIO:    e.persistIO,
 			IOPrompt:     prompt,
 		})

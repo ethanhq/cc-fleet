@@ -114,3 +114,34 @@ func TestJournalNilSafe(t *testing.T) {
 	}
 	j.append("k", "r") // must not panic
 }
+
+// TestRemoveJournalKey: dropping a key removes ALL its entries (interchangeable duplicate leaves
+// re-run together — FIFO-safe), leaves other keys intact, and no-ops on an absent key / missing file.
+func TestRemoveJournalKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "run.journal")
+	lines := `{"key":"keyA","result":"a1"}
+{"key":"keyB","result":"b1"}
+{"key":"keyA","result":"a2"}
+`
+	if err := os.WriteFile(path, []byte(lines), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	removed, err := removeJournalKey(path, "keyA")
+	if err != nil || !removed {
+		t.Fatalf("removeJournalKey(keyA) = (%v, %v), want (true, nil)", removed, err)
+	}
+	j := loadJournal(path)
+	if _, ok := j.lookup("keyA"); ok {
+		t.Fatal("keyA should be gone after removal")
+	}
+	if v, ok := j.lookup("keyB"); !ok || v != "b1" {
+		t.Fatalf("keyB must survive removal, got (%q, %v)", v, ok)
+	}
+	if removed, err := removeJournalKey(path, "absent"); removed || err != nil {
+		t.Fatalf("removeJournalKey(absent) = (%v, %v), want (false, nil)", removed, err)
+	}
+	if removed, err := removeJournalKey(filepath.Join(dir, "nope.journal"), "x"); removed || err != nil {
+		t.Fatalf("removeJournalKey(missing-file) = (%v, %v), want (false, nil)", removed, err)
+	}
+}

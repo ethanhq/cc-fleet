@@ -61,6 +61,16 @@ type Request struct {
 	// prompt via PromptReader/stdin, which is consumed by the child, so it passes the text
 	// here separately for the side file). Empty → no prompt side file.
 	IOPrompt string
+	// StreamActivity opts the SYNC leaf into `--output-format stream-json --verbose` so its
+	// per-leaf tool calls + running token usage stream to <jobID>.activity for the board's
+	// Activity feed WHILE it runs. Workflow-engine-only (agent() sets it = PersistIO);
+	// content-privacy, gated like PersistIO. Bare `cc-fleet subagent` leaves it false → the
+	// `--output-format json` envelope, the byte-cap, and the Result stay byte-identical.
+	StreamActivity bool
+	// JournalKey is the leaf's content-hash key (workflow-engine-only). Persisted on the job
+	// record so the board can target THIS leaf for restart — drop its journal entry and resume,
+	// which re-runs only it (+ its dependents). It is a sha256 hex, never a secret.
+	JournalKey string
 }
 
 // Usage mirrors the token-usage subset of claude's inner envelope we surface.
@@ -96,6 +106,9 @@ type Result struct {
 	RunID string `json:"run_id,omitempty"`
 	Phase string `json:"phase,omitempty"`
 	Label string `json:"label,omitempty"`
+	// JournalKey is the leaf's content-hash key, persisted so the board can restart THIS leaf
+	// (invalidate its journal entry + resume). A sha256 hex — never a secret.
+	JournalKey string `json:"journal_key,omitempty"`
 
 	// Async / background job fields. Present on --background launch and
 	// subagent-status / subagent-gc results.

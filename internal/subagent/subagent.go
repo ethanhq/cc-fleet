@@ -188,9 +188,19 @@ func Run(req Request) Result {
 	var res Result
 	defer func() { finalizeSyncJob(jobID, res) }()
 
+	// Capture per-leaf tool/usage activity to <jobID>.activity (stream-json) when the workflow
+	// engine opted in — content-privacy, gated like the prompt/answer side files.
+	var act *activityWriter
+	if req.StreamActivity && jobID != "" {
+		if p, perr := leafActivityPath(jobID); perr == nil {
+			act = newActivityWriter(p)
+			act.inputSeed = estimatePromptTokens(req.IOPrompt) // live input floor until real usage arrives
+		}
+	}
+
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	stdout, stderr, exitCode, runErr := runClaude(ctx, fp.BinaryPath, argv, env, req.PromptReader, req.WorkingDir)
+	stdout, stderr, exitCode, runErr := runClaude(ctx, fp.BinaryPath, argv, env, req.PromptReader, req.WorkingDir, act)
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 
 	// A genuine deadline wins over an overflow that fired during the kill (the
@@ -206,9 +216,15 @@ func Run(req Request) Result {
 		return res
 	}
 
-	// 8. Classify into the outer envelope, plus stash the raw passthrough.
-	innerJSON := req.JSON || req.OutputFormat == "json"
-	res = classify(req, model, stdout, stderr, exitCode, timedOut, innerJSON)
+	// 8. Classify into the outer envelope, plus stash the raw passthrough. A stream-json run is
+	//    inner-JSON: classify the single terminal type:"result" line (byte-identical to the
+	//    --output-format json envelope), not the whole multi-line transcript.
+	innerJSON := req.JSON || req.OutputFormat == "json" || req.StreamActivity
+	classifyOut := stdout
+	if req.StreamActivity {
+		classifyOut = extractResultLine(stdout)
+	}
+	res = classify(req, model, classifyOut, stderr, exitCode, timedOut, innerJSON)
 	res.LeadSessionID = req.LeadSessionID
 	res.RunID, res.Phase, res.Label = req.RunID, req.Phase, req.Label
 	res.Raw = stdout
@@ -244,7 +260,12 @@ func buildArgv(binaryPath, profilePath, model string, req Request) []string {
 		argv = append(argv, req.Prompt)
 	}
 
-	if req.JSON || req.OutputFormat == "json" {
+	switch {
+	case req.StreamActivity:
+		// stream-json (requires --verbose) so per-message tool_use + usage can be tailed live;
+		// the terminal type:"result" line is byte-identical to --output-format json for classify.
+		argv = append(argv, "--output-format", "stream-json", "--verbose")
+	case req.JSON || req.OutputFormat == "json":
 		argv = append(argv, "--output-format", "json")
 	}
 	if req.MaxTurns > 0 {
@@ -261,7 +282,7 @@ func buildArgv(binaryPath, profilePath, model string, req Request) []string {
 // standalone func so tests can drive it with a fake binary. It never streams to
 // the parent's stdio: stdout/stderr are captured to byte-capped buffers, and a
 // stream that overflows maxChildOutput kills the group and returns errOutputTooLarge.
-func runClaude(ctx context.Context, binaryPath string, argv, env []string, stdin io.Reader, workingDir string) (stdout, stderr []byte, exitCode int, err error) {
+func runClaude(ctx context.Context, binaryPath string, argv, env []string, stdin io.Reader, workingDir string, act *activityWriter) (stdout, stderr []byte, exitCode int, err error) {
 	cmd := exec.CommandContext(ctx, binaryPath)
 	cmd.Args = argv // argv[0] == binaryPath by construction
 	cmd.Env = env
@@ -296,7 +317,16 @@ func runClaude(ctx context.Context, binaryPath string, argv, env []string, stdin
 	}
 	outW := &cappedWriter{limit: maxChildOutput, onOverflow: killGroup}
 	errW := &cappedWriter{limit: maxChildOutput, onOverflow: killGroup}
-	cmd.Stdout = outW
+	// Activity capture (opt-in) wraps stdout CAP-FIRST + non-blocking: every write hits the
+	// byte-cap first (overflow→kill timing unchanged), then a copy is handed to a parser over a
+	// bounded channel that drops on pressure — it can never block the copy goroutine or delay kill.
+	var sink *activitySink
+	if act != nil {
+		sink = newActivitySink(outW, act)
+		cmd.Stdout = sink
+	} else {
+		cmd.Stdout = outW
+	}
 	cmd.Stderr = errW
 
 	// Make the child the group/tree root (Setpgid on unix; CREATE_NEW_PROCESS_GROUP
@@ -332,6 +362,11 @@ func runClaude(ctx context.Context, binaryPath string, argv, env []string, stdin
 	// group is fine.
 	if ctx.Err() != nil && cmd.Process != nil {
 		pg.killGroupHard(cmd.Process.Pid)
+	}
+	// Stop + flush the activity parser AFTER cmd.Wait joined the copy goroutine (every captured
+	// byte was tee'd); a no-op when there was no sink.
+	if sink != nil {
+		sink.close()
 	}
 
 	exitCode = 0

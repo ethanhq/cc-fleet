@@ -7,7 +7,7 @@ import (
 )
 
 // EventRecord is one line of a run's live-event channel (runs/<id>.events). It is PURE
-// OBSERVABILITY: the board tails it for a flowing live log and the DAG view —
+// OBSERVABILITY: `cc-fleet workflow watch` tails it for a scrubbed live status stream —
 // the engine NEVER reads it back and it NEVER feeds journalKey, so it cannot perturb
 // resume determinism (the load-bearing rule). It is key-safe BY CONSTRUCTION: there is
 // no prompt or answer field, so a vendor reply (and the never-present vendor key) cannot
@@ -21,9 +21,9 @@ type EventRecord struct {
 	Label  string `json:"label,omitempty"`
 	Vendor string `json:"vendor,omitempty"`
 	Model  string `json:"model,omitempty"`
-	// Group fields (DAG): a parallel/pipeline/workflow group's id and (on group-open) its
-	// kind. The board reconstructs nesting by seq bracket order (open…close), so no
-	// explicit parent id is needed. Empty for plain leaves.
+	// Group fields: a parallel/pipeline/workflow group's id and (on group-open) its kind.
+	// `workflow watch` brackets the group by seq order (open…close), so no explicit parent
+	// id is needed. Empty for plain leaves.
 	GroupID string `json:"group_id,omitempty"`
 	GroupTy string `json:"group_type,omitempty"`
 	Msg     string `json:"msg,omitempty"` // phase title / log narrator line

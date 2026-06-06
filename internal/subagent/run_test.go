@@ -118,3 +118,70 @@ func TestRunStatus_FiltersJobsByRunID(t *testing.T) {
 		t.Fatal("RunStatus on an unknown run should error")
 	}
 }
+
+// TestSaveRun_PreservesSessionAndOptions: the session id + replay options round-trip the manifest
+// (the board groups by session; a restart resumes with the same args/persistIO/budget).
+func TestSaveRun_PreservesSessionAndOptions(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	run, err := NewRun("r", nil)
+	if err != nil {
+		t.Fatalf("NewRun: %v", err)
+	}
+	run.SessionID = "sess-xyz"
+	run.ArgsJSON = `{"q":"hi"}`
+	run.NoPersistIO = true
+	run.BudgetUSD = 2.5
+	if err := SaveRun(run); err != nil {
+		t.Fatalf("SaveRun: %v", err)
+	}
+	got, err := ReadRun(run.RunID)
+	if err != nil {
+		t.Fatalf("ReadRun: %v", err)
+	}
+	if got.SessionID != "sess-xyz" || got.ArgsJSON != `{"q":"hi"}` || !got.NoPersistIO || got.BudgetUSD != 2.5 {
+		t.Fatalf("manifest lost the session/replay options: %+v", got)
+	}
+}
+
+// TestSyncJob_PersistsJournalKey: a sync leaf's journal key survives register → finalize → StatusFor
+// so the board can target that single leaf for a restart.
+func TestSyncJob_PersistsJournalKey(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	jobID := registerSyncJob(Request{Vendor: "glm", RunID: "r1", Phase: "p", Label: "a", JournalKey: "key-abc"}, "glm-4.6")
+	if jobID == "" {
+		t.Fatal("registerSyncJob returned an empty id")
+	}
+	finalizeSyncJob(jobID, Result{OK: true, NumTurns: 1})
+	if got := StatusFor(jobID); got.JournalKey != "key-abc" {
+		t.Fatalf("JournalKey lost through the job lifecycle, got %q", got.JournalKey)
+	}
+}
+
+// TestPurgeRun_RemovesRunAndJobs: PurgeRun deletes the manifest and every job tagged with the run.
+func TestPurgeRun_RemovesRunAndJobs(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	run, err := NewRun("r", nil)
+	if err != nil {
+		t.Fatalf("NewRun: %v", err)
+	}
+	jobID := registerSyncJob(Request{Vendor: "v", RunID: run.RunID, Phase: "p", Label: "a"}, "m")
+	finalizeSyncJob(jobID, Result{OK: true})
+	if got := StatusFor(jobID); got.RunID != run.RunID {
+		t.Fatalf("setup: job not tagged with the run, got %+v", got)
+	}
+	if err := PurgeRun(run.RunID); err != nil {
+		t.Fatalf("PurgeRun: %v", err)
+	}
+	if _, err := ReadRun(run.RunID); err == nil {
+		t.Fatal("manifest should be gone after PurgeRun")
+	}
+	jobs, _ := ListJobs()
+	for _, j := range jobs {
+		if j.RunID == run.RunID {
+			t.Fatalf("job %s for the purged run should be gone", j.JobID)
+		}
+	}
+}

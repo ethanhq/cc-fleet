@@ -58,6 +58,16 @@ type WorkflowRun struct {
 	// status`. It is a canonical/script-level message (agent() failures carry
 	// subagent's canonical error_msg, never raw vendor body), so it is key-safe.
 	Error string `json:"error,omitempty"`
+	// SessionID is the parent Claude session this run was launched from (leadsession.Detect
+	// at `workflow run`, or a --lead-session-id override) — so the board groups runs by
+	// session like the teammates board. Empty when launched outside a Claude session.
+	SessionID string `json:"session_id,omitempty"`
+	// Launch options replayed on restart (resume re-execs with the SAME inputs, else a leaf's
+	// key — and thus its cache validity — would shift). Persisted at mint; the engine carries
+	// them so every manifest overwrite preserves them. ArgsJSON is the script's `args` input.
+	ArgsJSON    string  `json:"args_json,omitempty"`
+	NoPersistIO bool    `json:"no_persist_io,omitempty"`
+	BudgetUSD   float64 `json:"budget_usd,omitempty"`
 }
 
 // runsDir is ConfigDir/subagent-jobs/runs.
@@ -161,7 +171,7 @@ func runSidecarPath(runID, ext string) (string, error) {
 func RunJournalPath(runID string) (string, error) { return runSidecarPath(runID, ".journal") }
 
 // RunEventsPath returns the live-event channel path runs/<id>.events — the one-way
-// engine→board stream the board tails for a flowing live log.
+// engine→watcher stream `cc-fleet workflow watch` tails for a flowing live log.
 func RunEventsPath(runID string) (string, error) { return runSidecarPath(runID, ".events") }
 
 // RunScriptPath returns the saved-script path runs/<id>.star — the run's source,
@@ -347,6 +357,69 @@ func EngineAlive(run WorkflowRun) bool {
 		return true // argv unavailable → can't disprove it's our engine; trust pidAlive
 	}
 	return argvIsRunEngine(argv, run.RunID)
+}
+
+// PurgeRun deletes a run entirely — the board's manual "delete" (the board never auto-clears, so runs
+// accumulate). A VERIFIABLY-LIVE detached engine is stopped AND confirmed dead before any file is
+// removed: the engine is recreate-safe (it rewrites a dropped manifest on its next save), so deleting
+// under a live engine would not stick and could race its writes; if it can't be confirmed dead, the
+// delete is aborted. A "running" manifest whose engine is GONE — crashed, or finished without
+// finalizing — is exactly the accumulated junk this is for, so it is removed as-is. The id is
+// validated before it becomes any path component.
+//
+// When no engine pid is recorded but the run is genuinely still writing — a --foreground
+// run, or a detached run in the moment between mint and its child stamping EnginePID — reads as
+// not-alive, so its files are removed and the recreate-safe engine harmlessly rewrites the manifest
+// (it reappears on the next refresh; atomic writes keep it consistent — no corruption). Blocking that
+// would also block deleting freshly-minted and crashed runs, which is the whole point.
+func PurgeRun(runID string) error {
+	if err := ids.ValidateJobID(runID); err != nil {
+		return err
+	}
+	if run, rerr := ReadRun(runID); rerr == nil && EngineAlive(run) {
+		if _, serr := StopRun(runID); serr != nil {
+			return serr
+		}
+		if !WaitEngineStopped(runID, 5*time.Second) {
+			return fmt.Errorf("subagent: run %s engine did not stop in time; delete aborted", runID)
+		}
+	}
+	dir, err := jobsDir()
+	if err != nil {
+		return err
+	}
+	if entries, rerr := os.ReadDir(dir); rerr == nil {
+		for _, e := range entries {
+			name := e.Name()
+			if e.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".result.json") {
+				continue
+			}
+			jobID := strings.TrimSuffix(name, ".json")
+			if meta, merr := readMeta(dir, jobID); merr == nil && meta.RunID == runID {
+				removeJob(dir, jobID)
+			}
+		}
+	}
+	removeRun(filepath.Join(dir, runsDirName), runID)
+	return nil
+}
+
+// WaitEngineStopped polls a run's engine liveness until it is gone or the deadline passes (true once
+// EngineAlive is false / the manifest is unreadable, false on timeout). EngineAlive fails SOFT (an
+// unreadable argv reads as alive), so a stuck poll times out into the caller's fail-closed path rather
+// than touching files under a still-live engine. Shared by PurgeRun (delete) and workflow.Restart.
+func WaitEngineStopped(runID string, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		run, err := ReadRun(runID)
+		if err != nil || !EngineAlive(run) {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // RunStatus returns a run's manifest plus the Results of the jobs tagged with it.

@@ -136,8 +136,8 @@ func finalLine(run subagent.WorkflowRun) string {
 
 // RenderEventLine formats one event for the live stream. Every opaque field (status / label /
 // vendor / model / phase / msg / group type) is CleanTitle-scrubbed before it reaches the
-// terminal; the event carries no key or answer by construction (events.go). It is the single
-// renderer shared by `workflow watch` and the TUI board's live log.
+// terminal; the event carries no key or answer by construction (events.go). It is the renderer for
+// the `cc-fleet workflow watch` live status stream.
 func RenderEventLine(ev EventRecord) string {
 	clean := sessiontitle.CleanTitle
 	switch ev.Kind {
