@@ -2,6 +2,7 @@ package subagent
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -166,5 +167,37 @@ func TestGCKeepsQueuedPlaceholderUntilTerminal(t *testing.T) {
 	GC(0)
 	if st := StatusFor(jobID); st.OK || st.ErrorCode != ErrCodeBadArgs {
 		t.Errorf("a finalized queued leaf should be GC-reaped; StatusFor = {status:%q code:%q}, want unknown-job", st.Status, st.ErrorCode)
+	}
+}
+
+// TestStatusForDeadBackgroundWritesAnswer: the dead-background terminal classification is a
+// detached job's only finalizer — when the job opted into PersistIO it must persist the
+// .answer side file alongside the result cache, or the board's detail card has no Output.
+func TestStatusForDeadBackgroundWritesAnswer(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir, err := jobsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const jobID = "deadbg00-0000-0000-0000-000000000000"
+	meta := jobMeta{JobID: jobID, PID: 1 << 30, PGID: 1 << 30, Vendor: "v", Model: "m",
+		StartedAt: "2026-06-01T00:00:00Z", Status: "running", JSON: true, PersistIO: true}
+	if err := writeMetaFn(dir, meta); err != nil {
+		t.Fatal(err)
+	}
+	envelope := `{"type":"result","subtype":"success","is_error":false,"result":"BG-ANSWER","num_turns":1}`
+	if err := os.WriteFile(filepath.Join(dir, jobID+".out"), []byte(envelope+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st := StatusFor(jobID)
+	if st.Status != "done" || st.Result != "BG-ANSWER" {
+		t.Fatalf("dead-bg classification = %q/%q, want done/BG-ANSWER", st.Status, st.Result)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, jobID+".answer"))
+	if err != nil || string(b) != "BG-ANSWER" {
+		t.Fatalf(".answer side file = %q, err=%v — the dead-bg finalizer must persist it", b, err)
 	}
 }

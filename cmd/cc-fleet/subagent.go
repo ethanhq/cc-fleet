@@ -43,6 +43,7 @@ func newSubagentCmd() *cobra.Command {
 		tools          string
 		skills         bool
 		mcp            bool
+		noPersistIO    bool
 	)
 
 	cmd := &cobra.Command{
@@ -170,6 +171,18 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 				Tools:          toolList,
 				NoSkills:       noSkills,
 				MCP:            mcp,
+				PersistIO:      !noPersistIO,
+			}
+			if req.PersistIO {
+				// The .prompt sidecar needs the text in hand; a --prompt-file /
+				// stdin prompt streams to claude and is not captured.
+				req.IOPrompt = prompt
+				// Live tool/usage activity flips claude to stream-json, which would
+				// replace the raw output every non---json path passes through verbatim
+				// (plain text AND --output-format json) — stream only on the --json
+				// skill path, whose envelope is distilled, not passed through (and
+				// never for a detached background job, mirroring workflow leaves).
+				req.StreamActivity = !background && asJSON
 			}
 
 			if hasFile {
@@ -236,6 +249,8 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 		"Include the Skill tool + host skill listing (slim only; default true, native parity)")
 	cmd.Flags().BoolVar(&mcp, "mcp", false,
 		"Inherit the host MCP config (slim only; default: slim inherits, slim-ro stays strict)")
+	cmd.Flags().BoolVar(&noPersistIO, "no-persist-io", false,
+		"Skip persisting the prompt/answer (and live activity) sidecars the board's detail card reads")
 
 	return cmd
 }

@@ -157,6 +157,12 @@ func launchBackground(req Request, binaryPath, profilePath, model, effective, do
 		return fail(ErrCodeFailed, slimErr.Error(), req.Vendor, "")
 	}
 
+	// Board drill-in: persist the prompt side file before the start (every failure
+	// path below already removes it).
+	if req.PersistIO && req.IOPrompt != "" {
+		_ = os.WriteFile(filepath.Join(dir, jobID+".prompt"), []byte(req.IOPrompt), 0o600)
+	}
+
 	argv := buildArgv(binaryPath, profilePath, model, innerReq, slim)
 	// Fresh exec.Command (no context) → no deadline; child outlives parent.
 	cmd := exec.Command(binaryPath)
@@ -218,6 +224,7 @@ func launchBackground(req Request, binaryPath, profilePath, model, effective, do
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
 		Status:    "running",
 		Resume:    req.Resume,
+		PersistIO: req.PersistIO, // finalize (via StatusFor) writes .answer only when carried here
 		// Persist the outer (user-facing) format flags so subagent-status can
 		// still render the operator's preferred shape (text vs JSON).
 		// OutputFormat stays as the caller asked; JSON is force-set true below
@@ -469,6 +476,11 @@ func StatusFor(jobID string) Result {
 		res.Status = "done"
 	} else {
 		res.Status = "failed"
+	}
+	// Board drill-in: persist the answer side file (mirror finalizeSyncJob, which never
+	// sees a detached background job — this dead-classification is its only finalizer).
+	if meta.PersistIO && res.Result != "" {
+		_ = os.WriteFile(filepath.Join(dir, jobID+".answer"), []byte(res.Result), 0o600)
 	}
 	// Cache the terminal result (best-effort; a failed cache just re-classifies).
 	if data, merr := json.Marshal(res); merr == nil {

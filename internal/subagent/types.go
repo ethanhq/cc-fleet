@@ -62,21 +62,25 @@ type Request struct {
 	Attempt int
 
 	// PersistIO opts this job into board drill-in: persist the prompt + answer to
-	// per-job 0600 side files (<id>.prompt / <id>.answer) for the Workflows detail card.
+	// per-job 0600 side files (<id>.prompt / <id>.answer) for the boards' detail cards.
 	// It is CONTENT-PRIVACY, not key-safety — the vendor key never enters the prompt or
-	// answer (it flows via apiKeyHelper). The terminal result CACHE stays answer-stripped
-	// regardless (so the board TABLE never shows a reply); these side files are a separate,
-	// opt-in surface the engine sets default-on with a --no-persist-io opt-out.
+	// answer (it flows via apiKeyHelper). The sync finalizer's result cache stays
+	// answer-stripped; a background job's cache keeps the answer (subagent-status serves
+	// it from there), and board ROWS never show a reply by the render-side rule that
+	// Result.Result is never drawn. Both the workflow engine and the subagent CLI set
+	// this default-on with a --no-persist-io opt-out.
 	PersistIO bool
-	// IOPrompt is the prompt text to persist when PersistIO (the workflow engine feeds the
-	// prompt via PromptReader/stdin, which is consumed by the child, so it passes the text
-	// here separately for the side file). Empty → no prompt side file.
+	// IOPrompt is the prompt text to persist when PersistIO. A prompt fed via
+	// PromptReader/stdin is consumed by the child, so callers holding the text (the
+	// workflow engine; the CLI's --prompt) pass it here separately for the side file.
+	// Empty → no prompt side file.
 	IOPrompt string
-	// StreamActivity opts the SYNC leaf into `--output-format stream-json --verbose` so its
-	// per-leaf tool calls + running token usage stream to <jobID>.activity for the board's
-	// Activity feed WHILE it runs. Workflow-engine-only (agent() sets it = PersistIO);
-	// content-privacy, gated like PersistIO. Bare `cc-fleet subagent` leaves it false → the
-	// `--output-format json` envelope, the byte-cap, and the Result stay byte-identical.
+	// StreamActivity opts a SYNC run into `--output-format stream-json --verbose` so its
+	// per-job tool calls + running token usage stream to <jobID>.activity for the boards'
+	// Activity feed WHILE it runs. Content-privacy, gated like PersistIO; set only where
+	// the caller consumes a distilled envelope rather than passing claude's output through
+	// (workflow sync leaves; the CLI's --json path), so every passthrough run — plain text
+	// AND --output-format json — stays byte-identical.
 	StreamActivity bool
 	// JournalKey is the leaf's content-hash key (workflow-engine-only). Persisted on the job
 	// record so the board can target THIS leaf for restart — drop its journal entry and resume,
