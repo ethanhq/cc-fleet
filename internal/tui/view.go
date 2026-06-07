@@ -2047,6 +2047,33 @@ func detailField(lines *[]string, k, v string, rightW int) {
 	}
 }
 
+// detailKV is one Overview field, paired two-per-line by detailFieldPairs.
+type detailKV struct{ k, v string }
+
+// detailFieldPairs renders Overview fields two per line (halving the card's field-block
+// height); each value truncates to its half-cell — long free-text fields stay on
+// detailField's full-width wrapping lines instead. An odd tail leaves the right cell empty.
+func detailFieldPairs(lines *[]string, fields []detailKV, rightW int) {
+	half := (rightW - 1) / 2
+	cell := func(f detailKV, w int) string {
+		if f.k == "" {
+			return strings.Repeat(" ", w)
+		}
+		v := f.v
+		if v == "" {
+			v = "—"
+		}
+		return boxCell(" "+faintStyle.Render(fmt.Sprintf("%-8s", f.k))+"  "+contentStyle.Render(truncCols(v, w-12)), w)
+	}
+	for i := 0; i < len(fields); i += 2 {
+		right := detailKV{}
+		if i+1 < len(fields) {
+			right = fields[i+1]
+		}
+		*lines = append(*lines, cell(fields[i], half)+" "+cell(right, rightW-half-1))
+	}
+}
+
 // teammateStatusToken is the card's status line token: ok → green, error → red dot + the
 // canonical class, unknown → faint.
 func teammateStatusToken(t teardown.Teammate) string {
@@ -2066,29 +2093,32 @@ func (m Model) teammateDetailLines(t teardown.Teammate, rightW int) []string {
 		status += faintStyle.Render(" · " + trunc(model, 28))
 	}
 	lines := []string{status, "", faintStyle.Render("Overview")}
-	detailField(&lines, "team", sessiontitle.CleanTitle(displayTeam(t.Team)), rightW)
-	detailField(&lines, "vendor", sessiontitle.CleanTitle(t.Vendor), rightW)
-	detailField(&lines, "model", sessiontitle.CleanTitle(t.Model), rightW)
+	// Two fields per line (the status line already carries the model).
 	pane := t.PaneID
 	if t.Socket != "" {
 		pane += " · " + sessiontitle.CleanTitle(t.Socket)
-	}
-	detailField(&lines, "pane", pane, rightW)
-	detailField(&lines, "pid", fmt.Sprintf("%d", t.PID), rightW)
-	if up := teammateUptime(t); up != "" {
-		detailField(&lines, "up", up, rightW)
-	}
-	detailField(&lines, "status", teammateStatusWord(t), rightW)
-	if t.Detail != "" {
-		detailField(&lines, "detail", t.Detail, rightW)
 	}
 	hidden := "no"
 	if t.Hidden {
 		hidden = "yes"
 	}
-	detailField(&lines, "hidden", hidden, rightW)
+	fields := []detailKV{
+		{"team", sessiontitle.CleanTitle(displayTeam(t.Team))},
+		{"vendor", sessiontitle.CleanTitle(t.Vendor)},
+		{"pane", pane},
+		{"pid", fmt.Sprintf("%d", t.PID)},
+		{"status", teammateStatusWord(t)},
+		{"hidden", hidden},
+	}
+	if up := teammateUptime(t); up != "" {
+		fields = append(fields, detailKV{"up", up})
+	}
 	if t.LeadSessionID != "" {
-		detailField(&lines, "session", shortSessionID(sessiontitle.CleanTitle(t.LeadSessionID)), rightW)
+		fields = append(fields, detailKV{"session", shortSessionID(sessiontitle.CleanTitle(t.LeadSessionID))})
+	}
+	detailFieldPairs(&lines, fields, rightW)
+	if t.Detail != "" {
+		detailField(&lines, "detail", t.Detail, rightW)
 	}
 	// Messages → Activity → Output, fed from the nonce-gated transcript/inbox load. The
 	// text reaches ONLY this focused card — rows, rails, and headers never carry it.
@@ -2209,36 +2239,39 @@ func (m Model) jobDetailLines(j subagent.Result, rightW int) []string {
 		status += faintStyle.Render(fmt.Sprintf(" · attempt %d", j.Attempt))
 	}
 	lines := []string{status, "", faintStyle.Render("Overview")}
+	// Two fields per line (the status line already carries the model). The job id keeps
+	// its own full-width wrapping line — it is the one field that must stay findable.
 	detailField(&lines, "job", sessiontitle.CleanTitle(j.JobID), rightW)
-	// The status line clips the model; the Overview carries it in full (the vendor is
-	// implied by the profile/model and lives in the CLI surfaces).
-	detailField(&lines, "model", sessiontitle.CleanTitle(j.Model), rightW)
+	var fields []detailKV
 	if profile := sessiontitle.CleanTitle(j.PromptProfile); profile != "" {
 		if d := sessiontitle.CleanTitle(j.SlimDowngrade); d != "" {
 			profile += " (ran full: " + d + ")"
 		}
-		detailField(&lines, "profile", profile, rightW)
+		fields = append(fields, detailKV{"profile", profile})
 	}
-	detailField(&lines, "started", sessiontitle.CleanTitle(j.StartedAt), rightW)
+	started := sessiontitle.CleanTitle(j.StartedAt)
+	if ts, err := time.Parse(time.RFC3339, j.StartedAt); err == nil {
+		started = ts.Format("01-02 15:04")
+	}
+	fields = append(fields, detailKV{"started", started})
 	if el := jobElapsed(j); el != "" {
-		detailField(&lines, "elapsed", el, rightW)
+		fields = append(fields, detailKV{"elapsed", el})
 	}
-	in, out := m.jobTokens(j)
-	if in > 0 || out > 0 {
-		detailField(&lines, "tokens", fmt.Sprintf("↑ %s ctx · ↓ %s out",
-			humanTokens(in), humanTokens(out)), rightW)
+	if in, out := m.jobTokens(j); in > 0 || out > 0 {
+		fields = append(fields, detailKV{"tokens", fmt.Sprintf("↑ %s · ↓ %s", humanTokens(in), humanTokens(out))})
 	}
 	if isTerminalLeaf(j.Status) {
 		if j.CostUSD > 0 {
-			detailField(&lines, "cost", fmt.Sprintf("~$%.4f est", j.CostUSD), rightW)
+			fields = append(fields, detailKV{"cost", fmt.Sprintf("~$%.4f est", j.CostUSD)})
 		}
 		if j.NumTurns > 0 {
-			detailField(&lines, "turns", fmt.Sprintf("%d", j.NumTurns), rightW)
+			fields = append(fields, detailKV{"turns", fmt.Sprintf("%d", j.NumTurns)})
 		}
 		if stop := sessiontitle.CleanTitle(j.StopReason); stop != "" {
-			detailField(&lines, "stop", stop, rightW)
+			fields = append(fields, detailKV{"stop", stop})
 		}
 	}
+	detailFieldPairs(&lines, fields, rightW)
 	// Prompt → Activity → Output → Outcome, the wf agent card's order, fed from the
 	// nonce-gated io load. The Output reads the .answer side file (focused-single-job
 	// surface, CleanTitle-scrubbed) — NEVER Result.Result.
