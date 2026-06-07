@@ -611,25 +611,10 @@ func (m Model) viewWfPhases() string {
 	var leftLines []string
 	for i, p := range g.phases {
 		marker := "  "
-		done, total := phaseAgentCounts(p)
-		st := phaseStatus(done, total)
-		title := trunc(sessiontitle.CleanTitle(p.title), 28)
-		// A completed phase shows a green ✔ where its index would be; otherwise the 1-based index.
-		glyph := fmt.Sprintf("%d", i+1)
-		if st == "done" {
-			glyph = statusDot("done")
-		}
 		if i == m.wfPhaseCursor {
 			marker = cursorStyle.Render("❯ ")
-			title = selectedStyle.Render(title)
-		} else {
-			title = labelStyle(st).Render(title)
 		}
-		counts := ""
-		if total > 0 {
-			counts = "  " + faintStyle.Render(fmt.Sprintf("%d/%d", done, total))
-		}
-		leftLines = append(leftLines, fmt.Sprintf("%s%s %s%s", marker, glyph, title, counts))
+		leftLines = append(leftLines, marker+phaseRow(p, i, i == m.wfPhaseCursor))
 	}
 	leftW, rightW := m.paneWidths(leftWidth("Phases", leftLines, m.boardInner()))
 	rightTitle, rightLines := m.phaseAgentLines(rightW)
@@ -637,6 +622,29 @@ func (m Model) viewWfPhases() string {
 	leftLines = windowLines(leftLines, m.wfPhaseCursor, bodyH)
 	return indentBox(m.renderRunHeader(g), boardMargin) + "\n" + m.headerRule() + "\n" +
 		indentBox(renderBoard("Phases", leftLines, rightTitle, rightLines, leftW, rightW, bodyH, 0), boardMargin)
+}
+
+// phaseRow is one phase line — a green ✔ (done) or the 1-based index, the title, and the
+// done/total agent counts; selected swaps the title to the selection tone. Shared by the
+// Phases drill rail and the Dynamic Workflows box preview.
+func phaseRow(p runPhaseGroup, i int, selected bool) string {
+	done, total := phaseAgentCounts(p)
+	st := phaseStatus(done, total)
+	title := trunc(sessiontitle.CleanTitle(p.title), 28)
+	glyph := fmt.Sprintf("%d", i+1)
+	if st == "done" {
+		glyph = statusDot("done")
+	}
+	if selected {
+		title = selectedStyle.Render(title)
+	} else {
+		title = labelStyle(st).Render(title)
+	}
+	counts := ""
+	if total > 0 {
+		counts = "  " + faintStyle.Render(fmt.Sprintf("%d/%d", done, total))
+	}
+	return fmt.Sprintf("%s %s%s", glyph, title, counts)
 }
 
 // phaseAgentLines returns the title + full agent rows (right pane) for the focused phase ("Not started
@@ -1452,8 +1460,9 @@ func (m Model) jobTokens(j subagent.Result) (in, out int) {
 	return in, out
 }
 
-// viewAsBoxes is L2: the session header above the stacked boxes — Dynamic Workflows (run
-// rows), Agent Teams (master-detail: team rail | the cursored team's member rows), and
+// viewAsBoxes is L2: the session header above the stacked boxes — Dynamic Workflows
+// (master-detail: run rail | the previewed run's phase rows), Agent Teams (master-detail:
+// team rail | the cursored team's member rows), and
 // Subagents. One ↑/↓ cursor walks all three (see updateAsBoxes). With the cursor on a JOB row
 // the Subagents box is itself a master-detail (job rail | the job's inline card — no descend
 // needed) and takes the height; on a team row it stays the flat row list. A session missing
@@ -1496,8 +1505,8 @@ func emptyKindBox(title string, innerW int) string {
 }
 
 // splitBoxHeights divides the body budget across the session's three boxes (an empty kind
-// shows a slim one-row placeholder): the Dynamic Workflows box gets its content up to a
-// quarter, the Agent Teams box its content up to half of the rest — only up to a quarter
+// shows a slim one-row placeholder): the Dynamic Workflows box fits its run rail and the
+// previewed run's phases up to a quarter, the Agent Teams box its content up to half of the rest — only up to a quarter
 // while the cursor sits on a job row, whose inline card then takes the remainder; an empty
 // Subagents kind hands its remainder back to the teams box. The second and third boxes
 // cost their two border rows each.
@@ -1508,7 +1517,11 @@ func (m Model) splitBoxHeights(s asSession) (runs, teams, jobs int) {
 	}
 	runs = 1
 	if len(s.runs) > 0 {
-		runs = len(s.runs)
+		need := len(s.runs)
+		if ri := m.boxRunIdx(s); ri >= 0 && len(s.runs[ri].phases) > need {
+			need = len(s.runs[ri].phases)
+		}
+		runs = need
 		if cap := avail / 4; runs > cap {
 			runs = cap
 		}
@@ -1605,25 +1618,52 @@ func (m Model) renderTeamsBox(s asSession, bodyH int) string {
 	return renderBoard("Agent Teams", leftLines, rightTitle, rightLines, leftW, rightW, bodyH, 0)
 }
 
-// renderRunsBox is the Dynamic Workflows box: the session's run rows (newest first), the
-// continuum cursor marking the active row; ⏎ opens the run's Phases level.
+// boxRunIdx is the run the Dynamic Workflows box previews: the cursored run while the L2
+// cursor sits in the runs range, else the last run (the cursor moved below the box).
+func (m Model) boxRunIdx(s asSession) int {
+	if len(s.runs) == 0 {
+		return -1
+	}
+	if m.asBoxCursor < len(s.runs) {
+		return m.asBoxCursor
+	}
+	return len(s.runs) - 1
+}
+
+// renderRunsBox is the Dynamic Workflows master-detail box: run rail (newest first) | the
+// previewed run's phase rows; ⏎ opens the cursored run's Phases level.
 func (m Model) renderRunsBox(s asSession, bodyH int) string {
-	innerW := m.boardInner() - 6
-	var lines []string
+	listTitle := fmt.Sprintf("Dynamic Workflows · %d", len(s.runs))
+	var leftLines []string
 	for i, g := range s.runs {
-		// Both shapes span innerW with a 2-col marker slot, so the dot column and the
-		// right-aligned metrics never shift as the cursor moves.
+		marker := "  "
+		name := trunc(m.runLabel(g), 32)
 		if i == m.asBoxCursor {
-			lines = append(lines, m.renderRunRow(g, innerW, true))
+			marker = cursorStyle.Render("❯ ")
+			name = selectedStyle.Render(name)
 		} else {
-			lines = append(lines, "  "+m.renderRunRow(g, innerW-2, false))
+			name = labelStyle(g.status).Render(name)
+		}
+		done, total := runAgentCounts(g)
+		leftLines = append(leftLines, fmt.Sprintf("%s%s %s  %s", marker, statusDot(g.status), name,
+			faintStyle.Render(fmt.Sprintf("%d/%d", done, total))))
+	}
+	leftW, rightW := m.paneWidths(leftWidth(listTitle, leftLines, m.boardInner()))
+	rightTitle := "phases"
+	var rightLines []string
+	if ri := m.boxRunIdx(s); ri >= 0 {
+		g := s.runs[ri]
+		done, total := runAgentCounts(g)
+		rightTitle = fmt.Sprintf("%s · %d/%d agents", trunc(m.runLabel(g), 24), done, total)
+		for i, p := range g.phases {
+			rightLines = append(rightLines, phaseRow(p, i, false))
 		}
 	}
-	cursor := m.asBoxCursor
-	if cursor >= len(s.runs) {
-		cursor = len(s.runs) - 1
+	if len(rightLines) == 0 {
+		rightLines = []string{faintStyle.Render("(no phases)")}
 	}
-	return renderBox(fmt.Sprintf("Dynamic Workflows · %d", len(s.runs)), windowLines(lines, cursor, bodyH), innerW, bodyH)
+	leftLines = windowLines(leftLines, m.boxRunIdx(s), bodyH)
+	return renderBoard(listTitle, leftLines, rightTitle, rightLines, leftW, rightW, bodyH, 0)
 }
 
 // jobsBoxLeftLines is the Subagents box's compact job rail (dot + short id), cursor-marked
