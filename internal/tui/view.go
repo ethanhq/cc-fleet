@@ -171,10 +171,10 @@ func (m Model) viewList() string {
 	return b.String()
 }
 
-// viewSpawn renders the Agent-status board: a project-first master-detail in the Dynamic
-// Workflows board's design language. asMode re-roots four levels under one shared
-// header+rule chrome — projects → sessions → the session's Agent Teams + Subagents boxes →
-// entity detail. Rows and cards show only field-source-safe data — canonical `ps --check`
+// viewSpawn renders the Agent-status board: a project-first master-detail. asMode re-roots
+// the levels under one shared header+rule chrome — projects → sessions → the session's Dynamic
+// Workflows + Agent Teams + Subagents boxes → entity detail, plus the run drill below the
+// boxes. Rows and cards show only field-source-safe data — canonical `ps --check`
 // health vocabulary, CleanTitle-scrubbed names/models/ids, integer token counts — NEVER a
 // job's answer text (Result.Result), an ErrorMsg body, or raw pane capture; the detail
 // card's Output reads the focused job's .answer side file alone.
@@ -234,8 +234,8 @@ func (m Model) viewSpawn() string {
 	return b.String()
 }
 
-// spawnTitle is the Agent-status app title + tab hint (picker / empty / loading / error
-// states; the groups and entity levels show the session header instead).
+// spawnTitle is the Agent-status app title + tab hint, used in the loading / empty / error
+// fallbacks and as the first chrome line every board level renders above its header.
 func (m Model) spawnTitle() string {
 	return titleStyle.Render("cc-fleet · Agent status") + faintStyle.Render("    tab → Vendors")
 }
@@ -566,7 +566,7 @@ func (m Model) paneWidths(leftW int) (left, right int) {
 }
 
 // renderRunRow is one run row: "<dot> <name (short id)>" left; "<done>/<total> agents ·
-// <elapsed>[ · <started MM-DD HH:MM>]" right-aligned. selected marks the picker's cursored row.
+// <elapsed>[ · <started MM-DD HH:MM>]" right-aligned. selected marks the cursored row.
 func (m Model) renderRunRow(g runGroup, width int, selected bool) string {
 	marker := ""
 	name := trunc(m.runLabel(g), 42)
@@ -586,8 +586,9 @@ func (m Model) renderRunRow(g runGroup, width int, selected bool) string {
 	return joinRowEnds(left, faintStyle.Render(metrics), width)
 }
 
-// viewWfPhases is L1: the run header above one box — "Phases | the selected phase's agents". The box
-// is a FIXED height (fills the screen) so the bottom border stays put; the left rail is content-sized.
+// viewWfPhases is the run drill's Phases level: the run header above one box — "Phases | the selected
+// phase's agents". The box is a FIXED height (fills the screen) so the bottom border stays put; the
+// left rail is content-sized.
 func (m Model) viewWfPhases() string {
 	g, ok := m.focusedGroup()
 	if !ok {
@@ -641,9 +642,9 @@ func (m Model) phaseAgentLines(width int) (title string, lines []string) {
 	return title, lines
 }
 
-// agentLeftLines builds the COMPACT agent list shown in the L2 left rail (status + label only; the
-// metrics live in the detail pane), plus its title. Shared by viewWfAgent and wfAgentRightWidth so the
-// scroll clamp and the render agree on the right pane width.
+// agentLeftLines builds the COMPACT agent list shown in the run drill's agent left rail (status +
+// label only; the metrics live in the detail pane), plus its title. Shared by viewWfAgent and
+// wfAgentRightWidth so the scroll clamp and the render agree on the right pane width.
 func (m Model) agentLeftLines() (title string, lines []string) {
 	p, ok := m.focusedPhase()
 	if !ok {
@@ -656,16 +657,17 @@ func (m Model) agentLeftLines() (title string, lines []string) {
 	return title, lines
 }
 
-// wfAgentRightWidth is the L2 right pane width (mirrors viewWfAgent's content-sized split) so the
-// scroll clamp wraps the detail to the same column budget the render uses.
+// wfAgentRightWidth is the run drill's agent right pane width (mirrors viewWfAgent's content-sized
+// split) so the scroll clamp wraps the detail to the same column budget the render uses.
 func (m Model) wfAgentRightWidth() int {
 	title, lines := m.agentLeftLines()
 	_, rightW := m.paneWidths(leftWidth(title, lines, m.boardInner()))
 	return rightW
 }
 
-// viewWfAgent is L2: the run header above one box — "agent list | the focused agent's inline detail"
-// (the right pane scrolls with j/k via wfCardScroll). Fixed-height box; content-sized left rail.
+// viewWfAgent is the run drill's Agent level: the run header above one box — "agent list | the focused
+// agent's inline detail" (the right pane scrolls with j/k via wfCardScroll). Fixed-height box;
+// content-sized left rail.
 func (m Model) viewWfAgent() string {
 	g, ok := m.focusedGroup()
 	if !ok {
@@ -729,7 +731,7 @@ func joinRowEnds(left, right string, width int) string {
 	return left + strings.Repeat(" ", gap) + right
 }
 
-// renderAgentRowCompact is one agent row for the L2 left rail: marker + status + label only (narrow).
+// renderAgentRowCompact is one agent row for the run drill's agent left rail: marker + status + label only (narrow).
 func (m Model) renderAgentRowCompact(j subagent.Result, selected bool) string {
 	marker := "  "
 	label := sessiontitle.CleanTitle(j.Label)
@@ -777,7 +779,7 @@ func (m Model) leafCounts(j subagent.Result) (in, out, tools int) {
 	return in, out, snap.toolCount()
 }
 
-// agentDetailLines is the focused agent's inline detail (the L2 right pane, scrollable): status/model
+// agentDetailLines is the focused agent's inline detail (the run drill's agent right pane, scrollable): status/model
 // (with an "attempt N" marker when a legacy record carries one) and ↑ ctx · ↓ out · tool-calls, then a fixed
 // Prompt → Activity → Output → Outcome order — the Prompt, the Activity
 // feed (last 3 tool signatures), the Output (when the io files are loaded for THIS leaf via the PersistIO
@@ -1173,8 +1175,8 @@ func (m Model) viewAsSessions() string {
 }
 
 // sessionOverviewLines is the L1 right pane: the cursored session's ACTUAL rows under
-// separate Agent Teams / Subagents sections — what ⏎ will open, previewed in place
-// (renderBoard clips overflow to the box height; created/project live in the header).
+// separate Dynamic Workflows / Agent Teams / Subagents sections — what ⏎ will open, previewed
+// in place (renderBoard clips overflow to the box height; created/project live in the header).
 func (m Model) sessionOverviewLines(p asProject, rightW int) []string {
 	if m.asSessionCursor >= len(p.sessions) {
 		return []string{faintStyle.Render("(none)")}
@@ -1316,10 +1318,8 @@ func (m Model) headerEntityStats() string {
 			return m.jobStats(j)
 		}
 	case asModeBoxes:
-		if s, ok := m.focusedSession(); ok {
-			if i := m.asBoxCursor - len(s.teams); i >= 0 && i < len(s.jobs) {
-				return m.jobStats(s.jobs[i])
-			}
+		if j, ok := m.boxJob(); ok {
+			return m.jobStats(j)
 		}
 	}
 	return ""
@@ -1369,12 +1369,12 @@ func (m Model) jobTokens(j subagent.Result) (in, out int) {
 	return in, out
 }
 
-// viewAsBoxes is L2: the session header above the two stacked boxes — Agent Teams
-// (master-detail: team rail | the cursored team's member rows) and Subagents. One ↑/↓
-// cursor walks both (see updateAsBoxes). With the cursor on a JOB row the Subagents box
-// is itself a master-detail (job rail | the job's inline card — no descend needed) and
-// takes the height; on a team row it stays the flat row list. A session missing one kind
-// simply omits that box.
+// viewAsBoxes is L2: the session header above the stacked boxes — Dynamic Workflows (run
+// rows), Agent Teams (master-detail: team rail | the cursored team's member rows), and
+// Subagents. One ↑/↓ cursor walks all three (see updateAsBoxes). With the cursor on a JOB row
+// the Subagents box is itself a master-detail (job rail | the job's inline card — no descend
+// needed) and takes the height; on a team row it stays the flat row list. A session missing
+// one kind simply omits that box.
 func (m Model) viewAsBoxes() string {
 	s, ok := m.focusedSession()
 	if !ok {
@@ -1509,7 +1509,7 @@ func (m Model) renderTeamsBox(s asSession, bodyH int) string {
 			rightLines = append(rightLines, m.renderTeammateRowFull(mem, rightW))
 		}
 	}
-	leftLines = windowLines(leftLines, m.asBoxCursor, bodyH)
+	leftLines = windowLines(leftLines, m.boxTeamIdx(s), bodyH)
 	return renderBoard("Agent Teams", leftLines, rightTitle, rightLines, leftW, rightW, bodyH, 0)
 }
 
@@ -1889,7 +1889,7 @@ func (m Model) asEntityBodyHeight() int {
 	return m.boardBodyHeight()
 }
 
-// entityDetailLines is the focused entity's inline detail card (the L2 right pane): the
+// entityDetailLines is the focused entity's inline detail card (the L3 right pane): the
 // teammate card mirrors `ps --check` (canonical fields only, no raw pane text); the job card
 // renders from the already-loaded Result — usage/cost/turns appear once terminal, and a
 // failure shows the canonical ErrorCode ONLY (ErrorMsg never renders on this board).
@@ -2179,7 +2179,7 @@ type runGroup struct {
 	runID       string
 	name        string
 	description string
-	sessionID   string // launching Claude session (picker grouping); "" when launched outside one
+	sessionID   string // launching Claude session (the board grouping key); "" when launched outside one
 	cwd         string // launching project dir (shown right-aligned on the run header); "" when unknown
 	status      string
 	startedAt   string
@@ -2312,7 +2312,7 @@ func groupByRun(jobs []subagent.Result, runs []subagent.WorkflowRun) []runGroup 
 		return false
 	})
 	// Then group sessions contiguously (a session ranked by its newest run), preserving the
-	// newest-first order within each — so the picker headers each session exactly once.
+	// newest-first order within each — so each session's runs stay adjacent in the tree.
 	newestPerSession := map[string]string{}
 	for _, g := range out {
 		if g.startedAt > newestPerSession[g.sessionID] {

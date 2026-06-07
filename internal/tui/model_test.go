@@ -691,7 +691,7 @@ func TestBoardMultiSessionList(t *testing.T) {
 }
 
 // TestBoardBoxContinuumAndEntityNavigation: one ↑/↓ cursor walks the teams then the job
-// rows across the two boxes, clamping at both ends; →/⏎ descends into entity mode where h/s
+// rows across the boxes, clamping at both ends; →/⏎ descends into entity mode where h/s
 // issue commands for the selected teammate; ←/esc return to the boxes without leaving the
 // board.
 func TestBoardBoxContinuumAndEntityNavigation(t *testing.T) {
@@ -898,7 +898,7 @@ func TestBoardBoxReanchorsTypedIdentity(t *testing.T) {
 	}
 }
 
-// TestBoardSessionHeaderUsesResolvedTitle: the groups header shows the resolved /rename
+// TestBoardSessionHeaderUsesResolvedTitle: the session header shows the resolved /rename
 // title for the focused session.
 func TestBoardSessionHeaderUsesResolvedTitle(t *testing.T) {
 	m := boardModel(t,
@@ -949,7 +949,7 @@ func TestBoardEntityDetailCard(t *testing.T) {
 	}
 }
 
-// TestBoardEnterNoOpWhenEmpty: enter with no rows stays on the (empty) groups level.
+// TestBoardEnterNoOpWhenEmpty: enter with no rows stays on the (empty) boxes level.
 func TestBoardEnterNoOpWhenEmpty(t *testing.T) {
 	m := boardModel(t, nil, nil)
 	m, _ = press(t, m, "enter")
@@ -1410,7 +1410,7 @@ func TestAgentBoardNewSurfacesKeySafe(t *testing.T) {
 	alice := teardown.Teammate{Name: "alice", Team: "t1", PaneID: "%1", LeadSessionID: "s"}
 	tms := []teardown.Teammate{alice, {Name: "bob", Team: "t1", PaneID: "%2", LeadSessionID: "s"}}
 	mm := boardModel(t, tms, []subagent.Result{{JobID: "j0000000", Status: "done", LeadSessionID: "s", StartedAt: "2026-05-26T01:00:00Z"}})
-	boxes := mm.View()            // L2: the two stacked boxes — no detail payload loaded yet
+	boxes := mm.View()            // L2: the stacked boxes — no detail payload loaded yet
 	mm, _ = press(t, mm, "enter") // descend onto t1's members (cursor on alice)
 	mm, _ = step(t, mm, asMateMsg{
 		nonce: mm.asDetailNonce, epoch: mm.boardEpoch, key: mateKey(alice), found: true,
@@ -2355,9 +2355,14 @@ func TestBoardEndedTeamRenders(t *testing.T) {
 func TestBoardEndedTeamHideShowNoOp(t *testing.T) {
 	m := endedBoard(t, map[string]time.Time{"gone": time.Now()},
 		[]teardown.Teammate{endedMate("gone", "bob", "s")})
-	// A single ended team auto-focuses straight into its entity (member) view.
+	// An ended team never skips the boxes level (its d×2 record delete lives there);
+	// ⏎ on the team row opens the member view.
+	if m.asMode != asModeBoxes {
+		t.Fatalf("single ended team should keep the boxes level, mode=%d", m.asMode)
+	}
+	m, _ = press(t, m, "enter")
 	if m.asMode != asModeEntity {
-		t.Fatalf("single ended team should focus its member view, mode=%d", m.asMode)
+		t.Fatalf("⏎ on the ended team row should open its member view, mode=%d", m.asMode)
 	}
 	t2, ok := m.selectedTeammate()
 	if !ok || t2.Status != endedStatus {

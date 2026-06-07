@@ -13,7 +13,7 @@ import (
 // This file holds the board's per-leaf data projections: the live tool-call + token activity read
 // from a leaf's <jobID>.activity sidecar, and the prompt/answer io for the focused agent's inline
 // detail. The on-disk event-stream type / parser / renderer / tailer live in internal/workflow; the
-// native-mirror board renders per-leaf activity + the final Result metrics, not the raw stream.
+// board renders per-leaf activity + the final Result metrics, not the raw stream.
 
 // activitySnapshot is one leaf's live activity, read from its <jobID>.activity sidecar: the ordered
 // tool-call signatures ("Tool(arg)") and the latest running token snapshot. It is what makes the

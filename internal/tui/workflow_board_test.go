@@ -232,7 +232,9 @@ func TestWfControlsTargetRun(t *testing.T) {
 		t.Fatal("x should stop the focused run even with no agents in the phase")
 	}
 	// lowercase r at the Phases level is the workflow restart, NOT the board reload: it must
-	// dispatch a restart and leave m.loading false.
+	// dispatch a restart and leave m.loading false. A fresh board: the x press above marked
+	// the run busy in the in-flight map, which is shared across model copies.
+	m = drillRun(t, runsModel(t, nil, runs, nil))
 	mr, cmd := press(t, m, "r")
 	if cmd == nil {
 		t.Fatal("r should restart the focused run even with no agents")
