@@ -101,11 +101,11 @@ The TUI also lists your vendors, lets you edit them, and manage multiple keys pe
 
 <p align="center"><img src="docs/assets/tui-vendors.png" alt="cc-fleet TUI — vendor list" width="760" /></p>
 
-Press `tab` to switch to the **Agent status** board — it shows every live teammate grouped by
+Press `tab` to switch to the **Agents Board** — it shows every live teammate grouped by
 session → team, with its vendor, model, pane, PID, health, and hidden state, plus a list of
 subagent jobs. From here you can hide (`h`) / show (`s`) a teammate pane or refresh (`r`).
 
-<p align="center"><img src="docs/assets/tui-agent-status.png" alt="cc-fleet TUI — agent status board" width="760" /></p>
+<p align="center"><img src="docs/assets/tui-agent-status.png" alt="cc-fleet TUI — Agents Board" width="760" /></p>
 
 Once at least one vendor is registered, just talk to Claude Code in plain language. The
 skill reads your request and picks how to run the work — there are two execution modes.

@@ -10,7 +10,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/teardown"
 )
 
-// runsModel parks a model on the Agent-status board with the given workflow jobs/runs/activity
+// runsModel parks a model on the Agents Board with the given workflow jobs/runs/activity
 // loaded (via a fresh-epoch boardMsg), bypassing disk. A session with runs always lands at the
 // boxes level, so the Dynamic Workflows box (run rows) is visible.
 func runsModel(t *testing.T, jobs []subagent.Result, runs []subagent.WorkflowRun, activity map[string]activitySnapshot) Model {
@@ -686,7 +686,7 @@ func TestWfRunHeader_Layout(t *testing.T) {
 		t.Fatalf("run header must be 3 lines (app title / blank / run summary), got %d", len(parts))
 	}
 	// Line 1 is the fixed app title + the run cwd; it does NOT carry the run name or the counts.
-	if !strings.Contains(parts[0], "cc-fleet · Agent status") || !strings.Contains(parts[0], "/tmp/projects/my-app") {
+	if !strings.Contains(parts[0], "cc-fleet · Agents Board") || !strings.Contains(parts[0], "/tmp/projects/my-app") {
 		t.Fatalf("line 1 must be the app title with the run cwd right-aligned: %q", parts[0])
 	}
 	if strings.Contains(parts[0], "sweep") || strings.Contains(parts[0], "agents") {

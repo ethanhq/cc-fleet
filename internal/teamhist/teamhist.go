@@ -1,5 +1,5 @@
 // Package teamhist persists a board-observed snapshot of every live team so a
-// team cleaned up by its lead keeps a presence on the agent-status board until
+// team cleaned up by its lead keeps a presence on the Agents Board until
 // the user deletes the record. The records are pure observability shadow data:
 // no locks, last-write-wins between concurrent boards, AtomicWrite for crash
 // safety. Live teams always render from live discovery — a record is consulted

@@ -130,7 +130,7 @@ Either way you drive it with native `SendMessage` and receive results via `SendM
 
 ## Reference files (read on demand)
 
-- **`references/teammates.md`** — lane 1 full workflow: spawn + examples, vendor/model pick, getting results, stuck-teammate monitoring + `error_class` table, hide/show + the Agent status board, vendor cheat sheet.
+- **`references/teammates.md`** — lane 1 full workflow: spawn + examples, vendor/model pick, getting results, stuck-teammate monitoring + `error_class` table, hide/show + the Agents Board, vendor cheat sheet.
 - **`references/subagent.md`** — lane 2 full manual: when, calling, flags, envelopes, batch fan-out, `--background`, `--resume`, cleanup.
 - **`references/workflow.md`** — the workflow runtime: a Starlark script (`cc-fleet workflow run`) run OFF this context that fans out vendor subagents via `meta`/`agent`/`parallel`/`pipeline`/`phase`/`log`, with an enforced pool + board run-tree; `schema=` rides claude's native forced-StructuredOutput mechanism (client validation is a practical-subset backstop).
 - **`references/cli-reference.md`** — every `cc-fleet` command (user + Claude layer), spawn flags + permission inheritance, JSON envelopes, native-`Agent`-vs-vendor table.

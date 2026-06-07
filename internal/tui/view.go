@@ -126,7 +126,7 @@ func (m Model) viewKeys() string {
 func (m Model) viewList() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("cc-fleet · Vendors") +
-		faintStyle.Render("    tab → Agent status") + "\n\n")
+		faintStyle.Render("    tab → Agents Board") + "\n\n")
 	switch {
 	case m.loading:
 		b.WriteString("loading…\n")
@@ -167,11 +167,11 @@ func (m Model) viewList() string {
 		}
 		b.WriteString(addCursor + addLabel + "\n")
 	}
-	b.WriteString("\n" + footer("↑/↓ move · enter edit · d delete · tab agent status · q quit"))
+	b.WriteString("\n" + footer("↑/↓ move · enter edit · d delete · tab agents board · q quit"))
 	return b.String()
 }
 
-// viewSpawn renders the Agent-status board: a project-first master-detail. asMode re-roots
+// viewSpawn renders the Agents Board: a project-first master-detail. asMode re-roots
 // the levels under one shared header+rule chrome — projects → sessions → the session's Dynamic
 // Workflows + Agent Teams + Subagents boxes → entity detail, plus the run drill below the
 // boxes. Rows and cards show only field-source-safe data — canonical `ps --check`
@@ -235,10 +235,10 @@ func (m Model) viewSpawn() string {
 	return b.String()
 }
 
-// spawnTitle is the Agent-status app title + tab hint, used in the loading / empty / error
+// spawnTitle is the Agents Board app title + tab hint, used in the loading / empty / error
 // fallbacks and as the first chrome line every board level renders above its header.
 func (m Model) spawnTitle() string {
-	return titleStyle.Render("cc-fleet · Agent status") + faintStyle.Render("    tab → Vendors")
+	return titleStyle.Render("cc-fleet · Agents Board") + faintStyle.Render("    tab → Vendors")
 }
 
 // renderAsFooter is the contextual footer per asMode; the boxes level swaps in the card
@@ -885,7 +885,7 @@ const promptPreviewLines = 4
 // collapsed "Prompt · N lines · ⏎ expand" header + the leading preview. The fold counts
 // DISPLAY lines (post-wrap), so a single long paragraph folds too; a prompt that already
 // fits the preview shows in full with no expand hint. Shared by the Workflows agent card
-// and the Agent-status job card so the two read identically.
+// and the Agents Board job card so the two read identically.
 func promptSection(prompt string, expanded bool, rightW int) []string {
 	full := ioLines(prompt, rightW, contentStyle)
 	if expanded || len(full) <= promptPreviewLines {
@@ -1147,7 +1147,7 @@ func (m Model) viewAsProjects() string {
 		indentBox(renderBoard("Projects", leftLines, rightTitle, rightLines, leftW, rightW, bodyH, 0), boardMargin)
 }
 
-// appTitleLine is the chrome's FIRST line at every Agent-status level: the fixed app title
+// appTitleLine is the chrome's FIRST line at every Agents Board level: the fixed app title
 // + tab hint, with the level's directory (when it has one) right-aligned in faint — so the
 // top anchor never changes as the user drills.
 func (m Model) appTitleLine(dir string) string {

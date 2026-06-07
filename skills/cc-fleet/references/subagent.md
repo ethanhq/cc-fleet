@@ -29,7 +29,7 @@ cc-fleet subagent deepseek --model deepseek-reasoner \
   --prompt "Analyze the worst-case complexity of quicksort in src/sort.go; give a triggering input" --json
 ```
 
-**Session grouping:** `cc-fleet subagent` auto-detects the current parent Claude session when it is launched from a Claude Bash tool, so standalone subagents normally group under the current Agent status board session without any extra flag. When you are working inside a known team, you may still pass the explicit team session id from `~/.claude/teams/<team>/config.json` (`leadSessionId`); explicit `--lead-session-id` wins over auto-detection and is the safest way to force a job to match that team's teammates. Auto-detection is fail-closed: if the parent session registry cannot be validated, the job appears under `(no session)` instead of guessing.
+**Session grouping:** `cc-fleet subagent` auto-detects the current parent Claude session when it is launched from a Claude Bash tool, so standalone subagents normally group under the current Agents Board session without any extra flag. When you are working inside a known team, you may still pass the explicit team session id from `~/.claude/teams/<team>/config.json` (`leadSessionId`); explicit `--lead-session-id` wins over auto-detection and is the safest way to force a job to match that team's teammates. Auto-detection is fail-closed: if the parent session registry cannot be validated, the job appears under `(no session)` instead of guessing.
 
 ```bash
 # Optional explicit override in cc-fleet context, with a known team:
@@ -101,7 +101,7 @@ cc-fleet subagent <vendor> --resume <session_id> --prompt "<follow-up>" --json
 `<session_id>` is the `.session_id` from the previous turn's envelope. A default-profile (slim) resume is silent; an explicitly passed `--profile` over `--resume` warns on stderr — it swaps the system prompt mid-session. Keep the profile constant across a session's turns.
 
 ## Cleanup vs. resume — they're independent
-A one-shot **sync** subagent is just a process that exits — no pane, no team, **nothing to tear down**. "Cleanup" only ever concerns **`--background` job records** on the Agent-status board:
+A one-shot **sync** subagent is just a process that exits — no pane, no team, **nothing to tear down**. "Cleanup" only ever concerns **`--background` job records** on the Agents Board:
 
 - **Finished → safe to prune.** `cc-fleet subagent-gc --json` removes *finished* background job files (default: only those older than 24h; **`cc-fleet subagent-gc --older-than 0s` clears all finished now**). Running jobs are always kept.
 - **Pruning does NOT end the conversation.** gc only deletes cc-fleet's bookkeeping under `~/.config/cc-fleet/subagent-jobs/`; it never touches Claude's session transcript (`~/.claude/projects/…`). So **`--resume <session_id>` still works after gc** — *as long as you kept the `session_id`*. That id lives in the result envelope, which gc removes with the job, so **if a follow-up is likely, capture `.session_id` before pruning** (or just leave the job until you're done resuming).

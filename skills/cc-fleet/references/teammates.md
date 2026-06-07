@@ -7,7 +7,7 @@ Read this when you've decided on a **long-lived vendor teammate** (lane 1). The 
 - Spawn workflow (the happy path) + two worked examples
 - Getting a teammate's result back (SendMessage, then capture-pane)
 - Watching for stuck vendor teammates (the one runtime difference from native)
-- Hiding / showing a teammate's pane + the Agent status board
+- Hiding / showing a teammate's pane + the Agents Board
 - Vendor cheat sheet
 
 ---
@@ -150,10 +150,10 @@ cc-fleet show <target> --json    # pane → back to its origin window, re-tiled 
 - **Dispatch on `error_code`** (don't parse prose): `SWARM_UNSUPPORTED` (out-of-tmux swarm teammate) / `TEAM_NOT_FOUND` / `MEMBER_NOT_FOUND` / `PANE_NOT_FOUND` / `NOT_HIDDEN` (show on a visible pane) / `NO_ORIGIN` (no recorded origin) / `TMUX_FAILED`. Hiding an already-hidden pane is idempotent `ok`. `--json` emits one object for a single target, an array when a bare team expands to several.
 - **Best-effort layout**: a reflow hiccup never fails the op — `show` only fails if the load-bearing `join-pane` itself fails.
 
-You usually won't need this programmatically — it's mainly for the Agent status board below.
+You usually won't need this programmatically — it's mainly for the Agents Board below.
 
-### Agent status board (interactive TUI — for the human)
-Run bare `cc-fleet` in a terminal → press `Tab` from **Vendors** to **Agent status**: a live board of every teammate across **all teams** (with `ps --check` health + a `HIDDEN` column) plus subagent jobs, grouped by parent Claude session then team. Session headers show the Claude `/rename` title when available while keeping the short UUID. Keys: `↑/↓` select · `h` hide / `s` show the selected teammate · `r` refresh · auto-refreshes every 3s. The job table shows only id/vendor/model/status/started — never answer text. This is a human-facing view; you (the orchestrator) use `cc-fleet ps --json --check` for teammate data programmatically.
+### Agents Board (interactive TUI — for the human)
+Run bare `cc-fleet` in a terminal → press `Tab` from **Vendors** to **Agents Board**: a live board of every teammate across **all teams** (with `ps --check` health + a `HIDDEN` column) plus subagent jobs, grouped by parent Claude session then team. Session headers show the Claude `/rename` title when available while keeping the short UUID. Keys: `↑/↓` select · `h` hide / `s` show the selected teammate · `r` refresh · auto-refreshes every 3s. The job table shows only id/vendor/model/status/started — never answer text. This is a human-facing view; you (the orchestrator) use `cc-fleet ps --json --check` for teammate data programmatically.
 
 ---
 

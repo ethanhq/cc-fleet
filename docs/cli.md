@@ -8,7 +8,7 @@ drive it through plain language, but every command also works directly. Run `cc-
 
 | Command | What it does |
 |---------|--------------|
-| `cc-fleet` | Open the interactive TUI (vendors hub + agent-status board). |
+| `cc-fleet` | Open the interactive TUI (vendors hub + Agents Board). |
 | `init` | Create the config tree and optionally add a first vendor (runs the health checks). |
 | `add <vendor>` | Register a vendor and probe its `/v1/models` endpoint. |
 | `edit <vendor>` | Modify fields on an existing vendor. |

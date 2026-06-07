@@ -998,7 +998,7 @@ func mintSyncJobID() string {
 	return uuid.NewString()
 }
 
-// registerSyncJob records a SYNCHRONOUS Run on the agent-status board so it is
+// registerSyncJob records a SYNCHRONOUS Run on the Agents Board so it is
 // visible WHILE it executes. It writes only a running jobMeta — NO prompt /
 // answer text (key-safety, same discipline as background). PID is the
 // current cc-fleet process, so StatusFor's bare kill(0) reports "running" until

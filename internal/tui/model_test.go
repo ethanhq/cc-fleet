@@ -134,9 +134,9 @@ func TestQuitKeys(t *testing.T) {
 	}
 }
 
-// TestTabTogglesSpawnStatus: tab from the list opens the agent-status board (and
+// TestTabTogglesSpawnStatus: tab from the list opens the Agents Board (and
 // loads it); tab from the board returns to the Vendors list — the cycle is now
-// List ↔ Spawn (the Dynamic Workflows screen folded into the Agent-status board).
+// List ↔ Spawn (the Dynamic Workflows screen folded into the Agents Board).
 func TestTabTogglesSpawnStatus(t *testing.T) {
 	m := withVendors(t, userops.VendorView{Name: "glm"})
 	m, cmd := press(t, m, "tab")
@@ -611,7 +611,7 @@ func TestModelPickerFilterResetsOnReopen(t *testing.T) {
 	}
 }
 
-// boardModel enters the agent-status board with the given teammates + jobs
+// boardModel enters the Agents Board with the given teammates + jobs
 // already loaded (screen=screenSpawn, boardEpoch=1, loading=false).
 func boardModel(t *testing.T, tms []teardown.Teammate, jobs []subagent.Result) Model {
 	t.Helper()
@@ -2098,7 +2098,7 @@ func TestKeyMgr_SaveSuccessDoesNotReload(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Dynamic Workflows (run boxes folded into the Agent-status board, screenSpawn)
+// Dynamic Workflows (run boxes folded into the Agents Board, screenSpawn)
 // ---------------------------------------------------------------------------
 
 // TestGroupByRun_PhaseOrderAndRunOrder: phases render in manifest order first,
@@ -2212,7 +2212,7 @@ func TestPartition_RunTaggedJobNotOnSpawnBoard(t *testing.T) {
 	m, _ = step(t, m, boardMsg{jobs: []subagent.Result{tagged, plain}, runs: runs, epoch: m.boardEpoch})
 	out := m.View()
 	if strings.Contains(out, "tagged00") {
-		t.Errorf("RunID-tagged job leaked into the Subagents box on the agent-status board:\n%s", out)
+		t.Errorf("RunID-tagged job leaked into the Subagents box on the Agents Board:\n%s", out)
 	}
 	if !strings.Contains(out, "plain000") {
 		t.Errorf("ungrouped job should appear in the Subagents box:\n%s", out)

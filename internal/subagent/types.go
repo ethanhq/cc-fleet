@@ -41,7 +41,7 @@ type Request struct {
 	WorkingDir     string  // child's cwd (empty = inherit); used for git-worktree isolation
 	MaxTurns       int     // --max-turns (claude graceful cap); 0 → omit
 	MaxBudgetUSD   float64 // --max-budget-usd (claude graceful cap); 0 → omit
-	LeadSessionID  string  // parent Claude session id for agent-status board grouping
+	LeadSessionID  string  // parent Claude session id for Agents Board grouping
 
 	// Workflow run grouping (all optional). A workflow orchestrator tags each
 	// subagent with the run it belongs to, the phase within that run, and a human

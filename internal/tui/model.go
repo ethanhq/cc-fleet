@@ -55,7 +55,7 @@ const (
 	modeEdit
 )
 
-// asMode is the active level of the Agent-status master-detail board — all WITHIN
+// asMode is the active level of the master-detail Agents Board — all WITHIN
 // screenSpawn, so the refresh/tick msg ownership stays on one screen.
 // →/enter descend a level; ← ascends but CLAMPS at the board's top level; esc ascends too
 // and only leaves for Vendors at the top — so the entity-level detail card always RETURNS
@@ -88,7 +88,7 @@ type Model struct {
 	// Add-wizard template picker.
 	tmplCursor int
 
-	// Agent-status board (screenSpawn): live teammates, workflow runs, and async subagent
+	// Agents Board (screenSpawn): live teammates, workflow runs, and async subagent
 	// jobs in one master-detail board. asMode re-roots the levels (projects → sessions →
 	// the session's Dynamic Workflows + Agent Teams + Subagents boxes → entity detail, and
 	// the run drill below the boxes) WITHIN this one screen; focusedProject/focusedSessionID
@@ -295,7 +295,7 @@ type vendorsMsg struct {
 
 func (vendorsMsg) owningScreen() screen { return screenList }
 
-// boardMsg carries one agent-status board refresh: the discovered teammates
+// boardMsg carries one Agents Board refresh: the discovered teammates
 // (health + hidden annotated) and the async subagent jobs. It opts into
 // screenOwnedAsyncMsg (owningScreen → screenSpawn) AND carries the boardEpoch
 // that scheduled it, so a stale refresh from a prior board visit is dropped
@@ -588,7 +588,7 @@ func groupByTeam(ts []teardown.Teammate) []teardown.Teammate {
 	return out
 }
 
-// asSession is one Claude session's slice of the Agent-status board: its teams (each with
+// asSession is one Claude session's slice of the Agents Board: its teams (each with
 // the session's teammates, in groupByTeam order) and its standalone (RunID == "") subagent
 // jobs — the single tree every level indexes. earliest (the first teammate SpawnTime / job
 // StartedAt) is the "created" display; latest is the newest-first sort key.
@@ -1527,7 +1527,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// updateSpawn drives the Agent-status master-detail board, branching on asMode (projects,
+// updateSpawn drives the master-detail Agents Board, branching on asMode (projects,
 // sessions, the session's boxes, an entity's inline detail, or a run drill). r reloads
 // everywhere except the run drill, where it is restart and R/ctrl+r reload; tab returns to
 // Vendors; q quits. The per-mode handlers own ↑/↓, →/⏎ (descend), ←/esc (ascend — esc

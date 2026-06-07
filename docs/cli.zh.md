@@ -7,7 +7,7 @@
 
 | 命令 | 作用 |
 |------|------|
-| `cc-fleet` | 打开交互式 TUI（vendors 中心 + agent-status 看板）。 |
+| `cc-fleet` | 打开交互式 TUI（vendors 中心 + Agents Board 看板）。 |
 | `init` | 创建配置目录树，可选添加第一个 vendor（会执行健康检查）。 |
 | `add <vendor>` | 注册一个 vendor 并探测其 `/v1/models` 端点。 |
 | `edit <vendor>` | 修改已有 vendor 的字段。 |

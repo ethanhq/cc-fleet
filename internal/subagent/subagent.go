@@ -223,7 +223,7 @@ func Run(req Request) Result {
 		env = append(env, "CLAUDE_CODE_DISABLE_CLAUDE_MDS=1")
 	}
 
-	// Register this run on the agent-status board so a sync subagent is visible
+	// Register this run on the Agents Board so a sync subagent is visible
 	// WHILE it runs, then flip it to done/failed on return via a deferred
 	// sanitized result cache. Done-detection rides the cache, NOT pid liveness —
 	// the recorded pid is this cc-fleet process and gets recycled once it exits.
