@@ -26,10 +26,24 @@ type titleEntry struct {
 	AITitle     string `json:"aiTitle"`
 }
 
+// cwdEntry is the minimal shape of a transcript line that records the
+// session's working directory.
+type cwdEntry struct {
+	SessionID string `json:"sessionId"`
+	Cwd       string `json:"cwd"`
+}
+
 type candidate struct {
 	path    string
 	mtime   time.Time
 	current bool
+}
+
+// Meta is one session's resolved display metadata: its /rename (or AI) title
+// and the working directory its transcript records. Either field may be empty.
+type Meta struct {
+	Title string
+	Cwd   string
 }
 
 // Resolve returns title metadata for ids. custom-title entries written by
@@ -37,6 +51,18 @@ type candidate struct {
 // omit that session from the returned map.
 func Resolve(ids []string) map[string]string {
 	out := map[string]string{}
+	for id, meta := range ResolveMeta(ids) {
+		if meta.Title != "" {
+			out[id] = meta.Title
+		}
+	}
+	return out
+}
+
+// ResolveMeta returns title + working-directory metadata for ids. A session
+// with neither a title nor a cwd is omitted from the returned map.
+func ResolveMeta(ids []string) map[string]Meta {
+	out := map[string]Meta{}
 	seen := map[string]struct{}{}
 	for _, id := range ids {
 		if id == "" {
@@ -46,8 +72,8 @@ func Resolve(ids []string) map[string]string {
 			continue
 		}
 		seen[id] = struct{}{}
-		if title := Lookup(id); title != "" {
-			out[id] = title
+		if meta := LookupMeta(id); meta != (Meta{}) {
+			out[id] = meta
 		}
 	}
 	return out
@@ -55,15 +81,30 @@ func Resolve(ids []string) map[string]string {
 
 // Lookup returns the best display title for one Claude session id.
 func Lookup(sessionID string) string {
+	return LookupMeta(sessionID).Title
+}
+
+// LookupMeta returns the best display title + recorded working directory for
+// one Claude session id, merging across transcript candidates first-wins per
+// field and stopping once both are known.
+func LookupMeta(sessionID string) Meta {
 	if sessionID == "" {
-		return ""
+		return Meta{}
 	}
+	var out Meta
 	for _, c := range transcriptCandidates(sessionID) {
-		if title := readTranscriptTitle(c.path, sessionID); title != "" {
-			return title
+		got := readTranscriptMeta(c.path, sessionID)
+		if out.Title == "" {
+			out.Title = got.Title
+		}
+		if out.Cwd == "" {
+			out.Cwd = got.Cwd
+		}
+		if out.Title != "" && out.Cwd != "" {
+			break
 		}
 	}
-	return ""
+	return out
 }
 
 func transcriptCandidates(sessionID string) []candidate {
@@ -109,16 +150,16 @@ func transcriptCandidates(sessionID string) []candidate {
 	return out
 }
 
-func readTranscriptTitle(path, sessionID string) string {
+func readTranscriptMeta(path, sessionID string) Meta {
 	f, err := os.Open(path)
 	if err != nil {
-		return ""
+		return Meta{}
 	}
 	defer f.Close()
 
 	st, err := f.Stat()
 	if err != nil || st.IsDir() || st.Size() <= 0 {
-		return ""
+		return Meta{}
 	}
 
 	size := st.Size()
@@ -150,10 +191,11 @@ func readTranscriptTitle(path, sessionID string) string {
 		readChunk(tailStart, tailLen)
 	}
 
+	title := state.ai
 	if state.custom != "" {
-		return state.custom
+		title = state.custom
 	}
-	return state.ai
+	return Meta{Title: title, Cwd: state.cwd}
 }
 
 // seekToNewline returns the offset just past the nearest preceding '\n' before
@@ -215,10 +257,22 @@ func seekToNewline(f *os.File, start int64, maxLookback int64) int64 {
 type titleState struct {
 	custom string
 	ai     string
+	cwd    string
 }
 
 func (s *titleState) scan(chunk, sessionID string) {
 	for _, line := range strings.Split(chunk, "\n") {
+		// The session's working directory rides on ordinary transcript lines;
+		// the first match wins (the head chunk scans before the tail).
+		if s.cwd == "" && strings.Contains(line, `"cwd"`) {
+			var entry cwdEntry
+			if json.Unmarshal([]byte(line), &entry) == nil &&
+				entry.SessionID == sessionID && entry.Cwd != "" {
+				// Sanitized like the titles: a transcript-supplied cwd must not carry
+				// control bytes into display or grouping keys.
+				s.cwd = cleanTitle(entry.Cwd)
+			}
+		}
 		if !strings.Contains(line, `"type"`) ||
 			(!strings.Contains(line, "custom-title") && !strings.Contains(line, "ai-title")) {
 			continue

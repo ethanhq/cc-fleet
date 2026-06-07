@@ -21,18 +21,17 @@ type screenHandler struct {
 // package must appear exactly once; TestHandlersRegistry_AllScreensRegistered
 // enumerates the constants and fails if any are missing.
 var handlers = map[screen]screenHandler{
-	screenList:           {update: Model.updateList, view: Model.viewList},
-	screenSpawn:          {update: Model.updateSpawn, view: Model.viewSpawn},
-	screenWorkflows:      {update: Model.updateWorkflows, view: Model.viewWorkflows},
-	screenPickTemplate:   {update: Model.updatePickTemplate, view: Model.viewPickTemplate},
-	screenForm:           {update: Model.updateForm, view: viewFormFooter},
-	screenModelPick:      {update: Model.updateModelPick, view: Model.viewModelPick},
-	screenRemoveConfirm:  {update: Model.updateRemoveConfirm, view: Model.viewRemoveConfirm},
-	screenResult:         {update: Model.updateResult, view: Model.viewResult},
-	screenKeys:           {update: Model.updateKeys, view: Model.viewKeys},
-	screenTeammateDetail: {update: Model.updateTeammateDetail, view: Model.viewTeammateDetail},
-	screenSetupTmux:      {update: Model.updateSetupTmux, view: Model.viewSetupTmux},
-	screenSetup:          {update: Model.updateSetup, view: Model.viewSetup},
+	screenList:          {update: Model.updateList, view: Model.viewList},
+	screenSpawn:         {update: Model.updateSpawn, view: Model.viewSpawn},
+	screenWorkflows:     {update: Model.updateWorkflows, view: Model.viewWorkflows},
+	screenPickTemplate:  {update: Model.updatePickTemplate, view: Model.viewPickTemplate},
+	screenForm:          {update: Model.updateForm, view: viewFormFooter},
+	screenModelPick:     {update: Model.updateModelPick, view: Model.viewModelPick},
+	screenRemoveConfirm: {update: Model.updateRemoveConfirm, view: Model.viewRemoveConfirm},
+	screenResult:        {update: Model.updateResult, view: Model.viewResult},
+	screenKeys:          {update: Model.updateKeys, view: Model.viewKeys},
+	screenSetupTmux:     {update: Model.updateSetupTmux, view: Model.viewSetupTmux},
+	screenSetup:         {update: Model.updateSetup, view: Model.viewSetup},
 }
 
 // viewFormFooter mirrors Model.View()'s screenForm branch (the form has no
@@ -55,7 +54,6 @@ func allScreens() []screen {
 		screenRemoveConfirm,
 		screenResult,
 		screenKeys,
-		screenTeammateDetail,
 		screenSetupTmux,
 		screenSetup,
 	}

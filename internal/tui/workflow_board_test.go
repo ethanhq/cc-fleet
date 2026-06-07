@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/ethanhq/cc-fleet/internal/sessiontitle"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
@@ -355,22 +356,22 @@ func TestWfPromptFold_TogglesOnEnter(t *testing.T) {
 	if !ok {
 		t.Fatal("setup: no focused leaf at the agent level")
 	}
-	// Simulate the focused leaf's io load completing (bypassing disk).
-	m.wfDetailJob, m.wfDetailPrompt, m.wfDetailAnswer, m.wfDetailIO = leaf, "line one\nline two\nline three\nline four", "the output", true
+	// Simulate the focused leaf's io load completing (bypassing disk). Six display lines
+	// exceed the 4-line preview, so the tail folds.
+	m.wfDetailJob, m.wfDetailPrompt, m.wfDetailAnswer, m.wfDetailIO = leaf, "line one\nline two\nline three\nline four\nline five\nline six", "the output", true
 	out := m.viewWorkflows()
-	// Collapsed: header + a 2-line preview + "… N more lines"; the tail stays hidden until expand.
-	if !strings.Contains(out, "Prompt · 4 lines · ⏎ expand") || !strings.Contains(out, "… 2 more lines") {
+	if !strings.Contains(out, "Prompt · 6 lines · ⏎ expand") || !strings.Contains(out, "… 2 more lines") {
 		t.Fatalf("the prompt should collapse to a preview + more-lines trailer:\n%s", out)
 	}
-	if !strings.Contains(out, "line one") || strings.Contains(out, "line four") {
-		t.Fatalf("collapsed should preview the head (line one) but hide the tail (line four):\n%s", out)
+	if !strings.Contains(out, "line one") || strings.Contains(out, "line six") {
+		t.Fatalf("collapsed should preview the head (line one) but hide the tail (line six):\n%s", out)
 	}
 	m, _ = press(t, m, "enter") // expand
-	if !strings.Contains(m.viewWorkflows(), "line four") {
-		t.Fatalf("⏎ should expand to the full prompt (line four):\n%s", m.viewWorkflows())
+	if !strings.Contains(m.viewWorkflows(), "line six") {
+		t.Fatalf("⏎ should expand to the full prompt (line six):\n%s", m.viewWorkflows())
 	}
 	m, _ = press(t, m, "enter") // collapse again
-	if strings.Contains(m.viewWorkflows(), "line four") {
+	if strings.Contains(m.viewWorkflows(), "line six") {
 		t.Fatalf("a second ⏎ should collapse the prompt again:\n%s", m.viewWorkflows())
 	}
 }
@@ -401,8 +402,8 @@ func TestWfSingleBox_DividerJoins(t *testing.T) {
 	}
 }
 
-// TestWfSessionGrouping: >1 run groups under one "◆ session" header each, runs contiguous per session
-// (a session ranked by its newest run).
+// TestWfSessionGrouping: runs stay session-contiguous in the tree (a session ranked by its
+// newest run), and the picker's overview pane names the cursored run's session.
 func TestWfSessionGrouping(t *testing.T) {
 	runs := []subagent.WorkflowRun{
 		{RunID: "r1", Name: "alpha", SessionID: "sessA", StartedAt: "2026-06-01T00:00:20Z"},
@@ -413,8 +414,8 @@ func TestWfSessionGrouping(t *testing.T) {
 	if m.wfMode != wfModePicker {
 		t.Fatalf(">1 run should show the picker, got mode=%d", m.wfMode)
 	}
-	if out := m.viewWorkflows(); strings.Count(out, "◆") != 2 {
-		t.Fatalf("expected one header per session (2 ◆), got:\n%s", out)
+	if out := m.viewWorkflows(); !strings.Contains(out, "sessA") {
+		t.Fatalf("the cursored run's overview should name its session:\n%s", out)
 	}
 	g := m.wfGroups()
 	if g[0].sessionID != "sessA" || g[1].sessionID != "sessA" || g[2].sessionID != "sessB" {
@@ -560,18 +561,19 @@ func TestWfPromptPreview_BlankLineAndIndent(t *testing.T) {
 	m := workflowsModel(t, jobs, runs, nil)
 	m, _ = press(t, m, "enter") // → agent detail
 	leaf, _ := m.selectedLeaf()
-	// A prompt whose 2nd logical line is blank (a paragraph break): 4 logical lines, preview = 2.
-	m.wfDetailJob, m.wfDetailPrompt, m.wfDetailAnswer, m.wfDetailIO = leaf, "title line\n\nbody one\nbody two", "", true
+	// A prompt whose preview window ends in blank lines (a paragraph break): the blanks
+	// are trimmed before the trailer, and the trailer counts everything still hidden.
+	m.wfDetailJob, m.wfDetailPrompt, m.wfDetailAnswer, m.wfDetailIO = leaf, "title line\n\n\n\nbody one\nbody two", "", true
 	lines := m.agentDetailLines(m.wfAgentRightWidth())
 	ti := -1
 	for i, l := range lines {
-		if strings.Contains(l, "… 2 more lines") {
+		if strings.Contains(l, "… 5 more lines") {
 			ti = i
 			break
 		}
 	}
 	if ti < 0 {
-		t.Fatalf("trailer '… 2 more lines' missing:\n%q", lines)
+		t.Fatalf("trailer '… 5 more lines' missing:\n%q", lines)
 	}
 	if !strings.HasPrefix(lines[ti], " ") {
 		t.Fatalf("the trailer must be body-indented (leading space), got %q", lines[ti])
@@ -630,14 +632,14 @@ func TestWfRunHeader_NameBounded(t *testing.T) {
 func TestWfTickKeepsResolvedTitles(t *testing.T) {
 	jobs, runs := oneRun()
 	m := workflowsModel(t, jobs, runs, nil)
-	resolved := map[string]string{"sess-x": "My Chat"}
-	m, _ = step(t, m, workflowsMsg{jobs: jobs, runs: runs, sessionTitles: resolved, titlesResolved: true, epoch: m.workflowsEpoch})
-	if m.sessionTitles["sess-x"] != "My Chat" {
-		t.Fatalf("a resolve load must set titles, got %v", m.sessionTitles)
+	resolved := map[string]sessiontitle.Meta{"sess-x": {Title: "My Chat"}}
+	m, _ = step(t, m, workflowsMsg{jobs: jobs, runs: runs, sessionMeta: resolved, titlesResolved: true, epoch: m.workflowsEpoch})
+	if m.sessionMeta["sess-x"].Title != "My Chat" {
+		t.Fatalf("a resolve load must set titles, got %v", m.sessionMeta)
 	}
-	m, _ = step(t, m, workflowsMsg{jobs: jobs, runs: runs, sessionTitles: nil, titlesResolved: false, epoch: m.workflowsEpoch})
-	if m.sessionTitles["sess-x"] != "My Chat" {
-		t.Fatalf("a live tick must not clobber resolved titles, got %v", m.sessionTitles)
+	m, _ = step(t, m, workflowsMsg{jobs: jobs, runs: runs, sessionMeta: nil, titlesResolved: false, epoch: m.workflowsEpoch})
+	if m.sessionMeta["sess-x"].Title != "My Chat" {
+		t.Fatalf("a live tick must not clobber resolved titles, got %v", m.sessionMeta)
 	}
 }
 
@@ -704,8 +706,9 @@ func TestRunElapsed_LiveVsTerminal(t *testing.T) {
 	}
 }
 
-// TestWfPicker_FullSessionIdAndTitle: the run-picker session header shows the /rename title first + the
-// FULL session id in parens (not truncated to 8 + …).
+// TestWfPicker_FullSessionIdAndTitle: the picker's overview shows the cursored run's
+// /rename title AND its FULL session id (wrapped, never truncated to 8 + …) — the run stays
+// findable by id.
 func TestWfPicker_FullSessionIdAndTitle(t *testing.T) {
 	full := "347597cf-1234-5678-9abc-def012345678"
 	runs := []subagent.WorkflowRun{
@@ -713,12 +716,15 @@ func TestWfPicker_FullSessionIdAndTitle(t *testing.T) {
 		{RunID: "r2", Name: "other", SessionID: "sess-untitled-long", StartedAt: "2026-06-01T00:00:10Z"},
 	}
 	m := workflowsModel(t, nil, runs, nil)
-	m.sessionTitles = map[string]string{full: "my conversation"}
-	out := m.viewWorkflows()
-	if !strings.Contains(out, "my conversation ("+full+")") {
-		t.Fatalf("picker header should show title + full session id:\n%s", out)
+	m.sessionMeta = map[string]sessiontitle.Meta{full: {Title: "my conversation"}}
+	// The overview pane wraps long values, so assert on its raw line set.
+	g := m.wfGroups()[0]
+	overview := strings.Join(m.runOverviewLines(g, 200), "\n")
+	if !strings.Contains(overview, "my conversation ("+full+")") {
+		t.Fatalf("overview should show title + full session id:\n%s", overview)
 	}
-	if !strings.Contains(out, "sess-untitled-long") {
+	m, _ = press(t, m, "down") // → r2 (untitled): its full id shows, untruncated
+	if out := strings.Join(m.runOverviewLines(m.wfGroups()[1], 200), "\n"); !strings.Contains(out, "sess-untitled-long") {
 		t.Fatalf("an untitled session should show its full id (not truncated):\n%s", out)
 	}
 }

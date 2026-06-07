@@ -41,10 +41,9 @@ const (
 	screenModelPick
 	screenRemoveConfirm
 	screenResult
-	screenKeys           // EDIT form → "Manage API keys →": per-vendor multi-key manager
-	screenTeammateDetail // board → enter on a teammate: full-field detail card
-	screenSetupTmux      // first-run tmux setup nudge; shown before agent-teams/hub
-	screenSetup          // first-run agent-teams setup nudge; shown before the hub
+	screenKeys      // EDIT form → "Manage API keys →": per-vendor multi-key manager
+	screenSetupTmux // first-run tmux setup nudge; shown before agent-teams/hub
+	screenSetup     // first-run agent-teams setup nudge; shown before the hub
 )
 
 // formMode records whether the active form is an add or an edit so submit
@@ -63,9 +62,25 @@ const (
 type wfMode int
 
 const (
-	wfModePicker wfMode = iota // run picker; shown only when >1 run
-	wfModePhases               // L1: Phases | the selected phase's agents
-	wfModeAgent                // L2: agent list | the selected agent's inline detail (j/k scroll)
+	wfModePicker   wfMode = iota // run picker (scoped to the focused project); shown only when its project has >1 run
+	wfModePhases                 // L1: Phases | the selected phase's agents
+	wfModeAgent                  // L2: agent list | the selected agent's inline detail (j/k scroll)
+	wfModeProjects               // L0: project rail | the cursored project's runs; shown only when >1 project
+)
+
+// asMode is the active level of the Agent-status master-detail board — all WITHIN
+// screenSpawn (the wfMode pattern, so the refresh/tick msg ownership stays on one screen).
+// →/enter descend a level; ← ascends but CLAMPS at the board's top level; esc ascends too
+// and only leaves for Vendors at the top — so the entity-level detail card always RETURNS
+// on esc, never exits the board. Single-choice levels collapse: one project skips L0, one
+// session skips L1 too.
+type asMode int
+
+const (
+	asModeProjects asMode = iota // L0: project rail | the cursored project's sessions (>1 project)
+	asModeSessions               // L1: session rail | the cursored session's overview (>1 session)
+	asModeBoxes                  // L2: the focused session's two stacked boxes — Agent Teams + Subagents
+	asModeEntity                 // L3: entity list | the focused entity's inline detail card (j/k scroll)
 )
 
 // Model is the root bubbletea model.
@@ -84,21 +99,48 @@ type Model struct {
 	// Add-wizard template picker.
 	tmplCursor int
 
-	// Agent-status board (screenSpawn): live teammates + async subagent jobs.
-	// spawnCursor selects a teammate row (h/s act on it); job rows are read-only.
-	// boardEpoch tags each auto-refresh tick chain so re-entering the board
-	// supersedes a stale chain instead of stacking a second one.
-	teammates     []teardown.Teammate
-	spawnErr      error
-	jobs          []subagent.Result
-	sessionTitles map[string]string
-	spawnCursor   int
-	boardEpoch    int
+	// Agent-status board (screenSpawn): live teammates + async subagent jobs in a
+	// master-detail mirror of the Workflows board. asMode re-roots the levels (projects
+	// → sessions → the session's Agent Teams + Subagents boxes → entity detail) WITHIN
+	// this one screen; focusedProject/focusedSessionID root the deeper levels. boardEpoch
+	// tags each auto-refresh tick chain so re-entering the board supersedes a stale
+	// chain instead of stacking a second one. sessionMeta carries each session's
+	// resolved /rename title + recorded working directory (the project grouping key).
+	teammates        []teardown.Teammate
+	spawnErr         error
+	jobs             []subagent.Result
+	sessionMeta      map[string]sessiontitle.Meta
+	boardEpoch       int
+	asMode           asMode
+	focusedProject   string
+	focusedSessionID string
+	asProjectCursor  int       // L0 rail row
+	asSessionCursor  int       // L1 rail row
+	asBoxCursor      int       // L2 continuum row: the session's teams, then its jobs
+	asEntitySrc      asRailRef // the collection L3 lists (set on descend from L2)
+	asEntityCursor   int       // L3 entity row
+	asCardScroll     int       // L3 detail-card scroll offset (j/k); reset on entity change
+	// Focused-job inline detail (the L3 jobs collection): the job's prompt/answer io +
+	// activity snapshot, read off the Update goroutine (the wf board's wfDetail* pattern).
+	// asDetailJobID records WHICH job the loaded io belongs to, so a render only shows it
+	// when it matches the focused job; asDetailNonce drops a slow read for a previously-
+	// focused job; asPromptExpanded mirrors wfPromptExpanded.
+	asDetailJobID    string
+	asDetailPrompt   string
+	asDetailAnswer   string
+	asDetailIO       bool
+	asDetailSnap     activitySnapshot
+	asDetailNonce    int
+	asDetailTerminal bool // the focused job was terminal when its io load was issued
+	asPromptExpanded bool
 	// boardStatus is a one-line outcome of the last inline hide/show (so a failed
 	// h/s surfaces its reason instead of relying on the next silent refresh);
-	// boardStatusErr styles it as an error vs an ok confirmation.
+	// boardStatusErr styles it as an error vs an ok confirmation. boardJobsErr is the
+	// last refresh's jobs-scan failure, rendered on its OWN line — it never overwrites
+	// boardStatus, which keeps its survive-the-refresh semantics.
 	boardStatus    string
 	boardStatusErr bool
+	boardJobsErr   error
 
 	// Workflows board (screenWorkflows): a native-mirror master-detail. wfMode re-roots
 	// the two panes (run picker → Phases overview → agent detail) WITHIN this one screen;
@@ -114,6 +156,8 @@ type Model struct {
 	workflowsEpoch    int
 	wfMode            wfMode
 	focusedRunID      string
+	focusedWfProject  string // project dir the run picker is scoped to (asNoFocus when none)
+	wfProjectCursor   int    // L0 rail row
 	wfRunCursor       int
 	wfPhaseCursor     int
 	wfAgentCursor     int
@@ -252,11 +296,12 @@ func (vendorsMsg) owningScreen() screen { return screenList }
 // that scheduled it, so a stale refresh from a prior board visit is dropped
 // when the user re-enters (epoch++) or leaves the board.
 type boardMsg struct {
-	teammates     []teardown.Teammate
-	teamErr       error
-	jobs          []subagent.Result
-	sessionTitles map[string]string
-	epoch         int
+	teammates   []teardown.Teammate
+	teamErr     error
+	jobs        []subagent.Result
+	jobsErr     error
+	sessionMeta map[string]sessiontitle.Meta
+	epoch       int
 }
 
 func (boardMsg) owningScreen() screen { return screenSpawn }
@@ -293,9 +338,10 @@ func loadVendors() tea.Msg {
 // loadBoard returns a tea.Cmd that assembles a board refresh tagged with the
 // caller's epoch: discover teammates, annotate them with pane-scan health + the
 // hidden flag from team config, and list subagent jobs. A discovery error
-// skips annotation (we can't enrich an empty list); a jobs error degrades to
-// no jobs — the board never crashes on a data-source failure. The epoch carries
-// through to boardMsg so Update can drop a stale refresh from a prior visit.
+// skips annotation (we can't enrich an empty list) and is fatal to the board; a
+// jobs error degrades to no jobs and surfaces on its own line — the board never
+// crashes on a data-source failure. The epoch carries through to boardMsg so
+// Update can drop a stale refresh from a prior visit.
 func loadBoard(epoch int) tea.Cmd {
 	return func() tea.Msg {
 		items, err := teardown.DiscoverTeammates()
@@ -304,13 +350,14 @@ func loadBoard(epoch int) tea.Cmd {
 			items = teardown.AnnotateHidden(items)
 			items = teardown.AnnotateLeadSession(items)
 		}
-		jobs, _ := subagent.ListJobs()
+		jobs, jobsErr := subagent.ListJobs()
 		return boardMsg{
-			teammates:     items,
-			teamErr:       err,
-			jobs:          jobs,
-			sessionTitles: sessiontitle.Resolve(leadSessionIDs(items, jobs)),
-			epoch:         epoch,
+			teammates:   items,
+			teamErr:     err,
+			jobs:        jobs,
+			jobsErr:     jobsErr,
+			sessionMeta: sessiontitle.ResolveMeta(leadSessionIDs(items, jobs)),
+			epoch:       epoch,
 		}
 	}
 }
@@ -330,12 +377,11 @@ func leadSessionIDs(teammates []teardown.Teammate, jobs []subagent.Result) []str
 	return ids
 }
 
-// groupByTeam returns ts stably sorted by LeadSessionID, then Team, so the board
-// renders session → team → members. Session order is the earliest
-// teammate SpawnTime observed for that session; empty sessions sort last. Team
-// order is the earliest SpawnTime within that session. Stable sorting preserves
-// input order as the final tiebreaker, and the cursor remains a flat teammate
-// index into the returned order.
+// groupByTeam returns ts stably sorted by LeadSessionID, then Team, so the
+// session tree buckets contiguous runs of one team. Session order is the
+// earliest teammate SpawnTime observed for that session; empty sessions sort
+// last. Team order is the earliest SpawnTime within that session. Stable
+// sorting preserves input order as the final tiebreaker.
 func groupByTeam(ts []teardown.Teammate) []teardown.Teammate {
 	out := make([]teardown.Teammate, len(ts))
 	copy(out, ts)
@@ -390,6 +436,146 @@ func groupByTeam(ts []teardown.Teammate) []teardown.Teammate {
 	return out
 }
 
+// asSession is one Claude session's slice of the Agent-status board: its teams (each with
+// the session's teammates, in groupByTeam order) and its standalone (RunID == "") subagent
+// jobs — the single tree every level indexes. earliest (the first teammate SpawnTime / job
+// StartedAt) is the "created" display; latest is the newest-first sort key.
+type asSession struct {
+	sessionID string
+	teams     []asTeam
+	jobs      []subagent.Result
+	earliest  time.Time // first activity — the "created" display
+	latest    time.Time // most recent activity — the newest-first sort key
+	hasTime   bool
+}
+
+// asTeam is one team's members within a session.
+type asTeam struct {
+	name    string
+	members []teardown.Teammate
+}
+
+// asRailRef identifies an entity collection by TYPE — a team (by name) or the session's
+// subagent jobs — so a real team named "jobs" can never be confused with the jobs
+// collection.
+type asRailRef struct {
+	jobs bool
+	team string
+}
+
+// asProject is one project directory's slice of the board: the sessions whose transcripts
+// record that working directory ("" = unresolvable, the "(no project)" bucket).
+type asProject struct {
+	dir      string
+	sessions []asSession
+}
+
+// groupProjects buckets the (already newest-first) sessions by their recorded working
+// directory. First-seen project order therefore follows each project's most recently
+// active session; the unknown bucket sorts last.
+func groupProjects(sessions []asSession, meta map[string]sessiontitle.Meta) []asProject {
+	order := []string{}
+	byDir := map[string]*asProject{}
+	for _, s := range sessions {
+		dir := meta[s.sessionID].Cwd
+		p, ok := byDir[dir]
+		if !ok {
+			p = &asProject{dir: dir}
+			byDir[dir] = p
+			order = append(order, dir)
+		}
+		p.sessions = append(p.sessions, s)
+	}
+	out := make([]asProject, 0, len(order))
+	for _, dir := range order {
+		out = append(out, *byDir[dir])
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if (out[i].dir == "") != (out[j].dir == "") {
+			return out[j].dir == ""
+		}
+		return false
+	})
+	return out
+}
+
+// asBoxRef identifies an L2 continuum row by typed identity — a team by name, a job by id —
+// so the cursor can re-find its row after a refresh shifts the indices. isTeam carries the
+// kind explicitly: "" is a VALID team name (the "(no team)" bucket), so it can't double as
+// the not-a-team marker.
+type asBoxRef struct {
+	isTeam bool
+	team   string
+	jobID  string
+}
+
+// groupSessions builds the board's session tree: teammates (pre-ordered by groupByTeam)
+// bucket into session → team in encounter order; RunID-tagged jobs are excluded (they belong
+// to the Workflows board). Sessions sort NEWEST-FIRST by latest activity — defined for
+// teammate-only, job-only, and mixed sessions; a session with no parseable timestamp sorts
+// after timed ones, and "" (no session) always last.
+func groupSessions(teammates []teardown.Teammate, jobs []subagent.Result) []asSession {
+	order := []string{}
+	byID := map[string]*asSession{}
+	ensure := func(id string) *asSession {
+		if s, ok := byID[id]; ok {
+			return s
+		}
+		s := &asSession{sessionID: id}
+		byID[id] = s
+		order = append(order, id)
+		return s
+	}
+	noteTime := func(s *asSession, t time.Time) {
+		if !s.hasTime || t.Before(s.earliest) {
+			s.earliest = t
+		}
+		if !s.hasTime || t.After(s.latest) {
+			s.latest = t
+		}
+		s.hasTime = true
+	}
+	for _, t := range groupByTeam(teammates) {
+		s := ensure(t.LeadSessionID)
+		if n := len(s.teams); n == 0 || s.teams[n-1].name != t.Team {
+			s.teams = append(s.teams, asTeam{name: t.Team})
+		}
+		tm := &s.teams[len(s.teams)-1]
+		tm.members = append(tm.members, t)
+		if t.SpawnTime > 0 {
+			noteTime(s, time.UnixMilli(t.SpawnTime))
+		}
+	}
+	for _, j := range jobs {
+		if j.RunID != "" {
+			continue
+		}
+		s := ensure(j.LeadSessionID)
+		s.jobs = append(s.jobs, j)
+		if ts, err := time.Parse(time.RFC3339, j.StartedAt); err == nil {
+			noteTime(s, ts)
+		}
+	}
+	out := make([]asSession, 0, len(order))
+	for _, id := range order {
+		out = append(out, *byID[id])
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		a, b := out[i], out[j]
+		if (a.sessionID == "") != (b.sessionID == "") {
+			return b.sessionID == "" // "(no session)" always last
+		}
+		if a.hasTime != b.hasTime {
+			return a.hasTime
+		}
+		if a.hasTime && !a.latest.Equal(b.latest) {
+			return a.latest.After(b.latest)
+		}
+		return false // stable: encounter order as the tiebreaker
+	})
+	return out
+}
+
 // boardTick schedules the next auto-refresh tick for the given epoch.
 func boardTick(epoch int) tea.Cmd {
 	return tea.Tick(boardRefreshInterval, func(time.Time) tea.Msg {
@@ -405,9 +591,9 @@ func boardTick(epoch int) tea.Cmd {
 type workflowsMsg struct {
 	jobs           []subagent.Result
 	runs           []subagent.WorkflowRun
-	activity       map[string]activitySnapshot // job id → per-leaf tool snapshot (+ live usage while running)
-	sessionTitles  map[string]string           // launching-session id → /rename title (for the picker headers)
-	titlesResolved bool                        // set only on entry / manual-refresh loads; a live tick leaves m.sessionTitles untouched
+	activity       map[string]activitySnapshot  // job id → per-leaf tool snapshot (+ live usage while running)
+	sessionMeta    map[string]sessiontitle.Meta // launching-session id → /rename title (for the picker headers)
+	titlesResolved bool                         // set only on entry / manual-refresh loads; a live tick leaves m.sessionMeta untouched
 	epoch          int
 	err            error
 }
@@ -450,8 +636,8 @@ func loadWorkflows(epoch int, resolve bool) tea.Cmd {
 		// Resolve the runs' launching-session /rename titles so the picker shows the conversation name
 		// (the agent-status board resolves only teammate sessions, not workflow-only ones). Each Lookup
 		// scans the projects tree and titles change rarely, so only the entry / manual-refresh loads
-		// resolve; a live tick carries no titles and leaves m.sessionTitles as the last resolve left it.
-		var titles map[string]string
+		// resolve; a live tick carries no titles and leaves m.sessionMeta as the last resolve left it.
+		var titles map[string]sessiontitle.Meta
 		if resolve {
 			var sids []string
 			seen := map[string]bool{}
@@ -461,9 +647,9 @@ func loadWorkflows(epoch int, resolve bool) tea.Cmd {
 					sids = append(sids, r.SessionID)
 				}
 			}
-			titles = sessiontitle.Resolve(sids)
+			titles = sessiontitle.ResolveMeta(sids)
 		}
-		return workflowsMsg{jobs: jobs, runs: runs, activity: activity, sessionTitles: titles, titlesResolved: resolve, epoch: epoch, err: err}
+		return workflowsMsg{jobs: jobs, runs: runs, activity: activity, sessionMeta: titles, titlesResolved: resolve, epoch: epoch, err: err}
 	}
 }
 
@@ -587,6 +773,32 @@ func hideTeammateCmd(t teardown.Teammate) tea.Cmd {
 // showTeammateCmd is the show-side analog of hideTeammateCmd.
 func showTeammateCmd(t teardown.Teammate) tea.Cmd {
 	return func() tea.Msg { return paneVisMsg{res: panevis.ShowRef(t.Team, t.Name, t.Socket, t.PaneID)} }
+}
+
+// asDetailMsg carries the focused standalone job's io + activity read for the entity detail
+// card (mirror wfDetailMsg). Owned by screenSpawn; nonce gates out a stale read so a slow
+// job-A read landing after the user moved to job-B is dropped.
+type asDetailMsg struct {
+	nonce   int
+	epoch   int
+	jobID   string
+	prompt  string
+	answer  string
+	present bool
+	snap    activitySnapshot
+}
+
+func (asDetailMsg) owningScreen() screen { return screenSpawn }
+
+// loadJobIOCmd reads the job's prompt/answer side files + activity sidecar off the Update
+// goroutine (mirror loadLeafIOCmd). The answer text reaches ONLY the focused job's inline
+// detail card — never a board row.
+func loadJobIOCmd(jobID string, nonce, epoch int) tea.Cmd {
+	return func() tea.Msg {
+		prompt, answer, present := readLeafIO(jobID)
+		snap, _ := readLeafActivity(jobID)
+		return asDetailMsg{nonce: nonce, epoch: epoch, jobID: jobID, prompt: prompt, answer: answer, present: present, snap: snap}
+	}
 }
 
 func addVendorCmd(req userops.AddRequest) tea.Cmd {
@@ -774,20 +986,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.epoch != m.boardEpoch {
 			return m, nil
 		}
+		// Capture the L2 cursor row's TYPED identity before the data changes, so the
+		// cursor can re-find it (a team by name, a job by id) after the refresh.
+		prevBox, hadBox := m.boxRowRef()
 		m.loading = false
-		// Group rows by team so each team's members render contiguously under one
-		// header. spawnCursor stays a FLAT teammate index; sorting here (every
-		// board update path, including tests) lets the view assume grouping.
+		// Pre-group session → team so the session tree (recomputed per render off these
+		// slices, mirror wfGroups) renders contiguously on every update path, tests included.
 		m.teammates = groupByTeam(msg.teammates)
 		m.spawnErr = msg.teamErr
 		m.jobs = msg.jobs
-		m.sessionTitles = msg.sessionTitles
-		// Keep the teammate cursor in range as the row count changes.
-		if m.spawnCursor >= len(m.teammates) {
-			m.spawnCursor = len(m.teammates) - 1
+		m.boardJobsErr = msg.jobsErr
+		m.sessionMeta = msg.sessionMeta
+		// Preserve the drill state: re-route if the focus chain broke, re-find the L2 row
+		// by identity, index-clamp the entity cursor, re-clamp the card scroll.
+		m.rerootSpawn()
+		if hadBox {
+			m.reanchorBox(prevBox)
 		}
-		if m.spawnCursor < 0 {
-			m.spawnCursor = 0
+		m.clampAsCursors()
+		m.asCardScroll = m.clampAsCardScroll(m.asCardScroll)
+		// Load (or live-refresh) the focused job's io + activity: a reroot can land the
+		// board straight on the jobs detail view; a non-terminal focused job re-reads
+		// each refresh so its Activity feed climbs; and the load that FIRST sees the job
+		// terminal still runs once, so the final .answer lands after the running→done flip.
+		if m.asMode == asModeEntity && m.asEntitySrc.jobs {
+			if j, ok := m.selectedJob(); ok &&
+				(j.JobID != m.asDetailJobID || !isTerminalLeaf(j.Status) || !m.asDetailTerminal) {
+				m.asDetailNonce++
+				m.asDetailTerminal = isTerminalLeaf(j.Status)
+				return m, loadJobIOCmd(j.JobID, m.asDetailNonce, m.boardEpoch)
+			}
 		}
 		return m, nil
 
@@ -827,14 +1055,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.workflowRuns = msg.runs
 		m.workflowsErr = msg.err
 		m.wfActivity = msg.activity
-		// Only a resolve load carries titles; a live tick leaves the last-resolved map in place so an
-		// out-of-order tick can't clobber a fresh resolve back to a pre-resolve snapshot.
+		// Only a resolve load carries titles; a live tick leaves m.sessionMeta as the last
+		// resolve left it, so an out-of-order tick can't clobber a fresh resolve.
 		if msg.titlesResolved {
-			m.sessionTitles = msg.sessionTitles
+			m.sessionMeta = msg.sessionMeta
 		}
 		// Re-derive focus on a run-set change (a GC'd focused run, the 0/1/>1 routing) and
 		// clamp the run/phase/agent cursors to the new data.
-		m.rerootWorkflows(false)
+		m.rerootWorkflows()
 		return m, nil
 
 	case workflowCtlMsg:
@@ -864,6 +1092,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.workflowStatus = fmt.Sprintf("%s %s: ok", msg.verb, runID)
 		}
 		return m, loadWorkflows(m.workflowsEpoch, true)
+
+	case asDetailMsg:
+		// Drop a read that answers a prior focused job or a prior board visit (the
+		// wfDetailMsg nonce gate + the board's epoch gate).
+		if msg.nonce != m.asDetailNonce || msg.epoch != m.boardEpoch {
+			return m, nil
+		}
+		m.asDetailJobID = msg.jobID
+		m.asDetailPrompt = msg.prompt
+		m.asDetailAnswer = msg.answer
+		m.asDetailIO = msg.present
+		m.asDetailSnap = msg.snap
+		return m, nil
 
 	case wfDetailMsg:
 		// Drop a read that answers a prior focused leaf (a slow leaf-A read landing after the
@@ -964,8 +1205,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateResult(msg)
 		case screenKeys:
 			return m.updateKeys(msg)
-		case screenTeammateDetail:
-			return m.updateTeammateDetail(msg)
 		case screenSetup:
 			return m.updateSetup(msg)
 		case screenSetupTmux:
@@ -996,8 +1235,14 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab":
 		m.screen = screenSpawn
 		m.loading = true
-		m.spawnCursor = 0
 		m.boardStatus = "" // clear any stale hide/show line from a prior visit
+		m.boardJobsErr = nil
+		m.asDetailJobID, m.asDetailPrompt, m.asDetailAnswer, m.asDetailIO = "", "", "", false
+		m.asDetailSnap, m.asPromptExpanded = activitySnapshot{}, false
+		m.asProjectCursor, m.asSessionCursor, m.asBoxCursor, m.asEntityCursor, m.asCardScroll = 0, 0, 0, 0, 0
+		// Park unfocused so the FIRST accepted refresh routes by the freshly loaded
+		// project/session counts — never by the previous visit's cached data.
+		m.focusedProject, m.focusedSessionID, m.asMode = asNoFocus, asNoFocus, asModeBoxes
 		// Bump the epoch so a tick still pending from a previous board visit
 		// can't double the refresh rate; start a fresh load + tick chain. The
 		// epoch is also stamped on boardMsg so a refresh scheduled BEFORE the
@@ -1034,56 +1279,508 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// updateSpawn drives the agent-status board. ↑/↓ move the teammate cursor; h/s
-// hide/show the selected teammate (no-op when the list is empty); r reloads;
-// tab/esc return to the Vendors list; q quits. The auto-refresh tick chain runs
-// independently (see boardTickMsg).
+// updateSpawn drives the Agent-status master-detail board, branching on asMode (projects,
+// sessions, the session's boxes, or an entity's inline detail). r/R reloads; tab advances
+// the 3-way cycle to Dynamic Workflows; q quits. The per-mode handlers own ↑/↓, →/⏎
+// (descend), ←/esc (ascend — esc additionally leaves for Vendors at the board's top level),
+// and h/s (entity mode, teammate rows). The auto-refresh tick chain runs independently (see
+// boardTickMsg).
 func (m Model) updateSpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
-	case "up", "k":
-		if m.spawnCursor > 0 {
-			m.spawnCursor--
-		}
-	case "down", "j":
-		if m.spawnCursor < len(m.teammates)-1 {
-			m.spawnCursor++
-		}
-	case "h":
-		if len(m.teammates) == 0 {
-			return m, nil
-		}
-		// Pass the discovered Teammate row (with its live Socket + PaneID) so
-		// HideRef can scope tmux ops to the right server and double-check the
-		// pane id against config.
-		return m, hideTeammateCmd(m.teammates[m.spawnCursor])
-	case "s":
-		if len(m.teammates) == 0 {
-			return m, nil
-		}
-		return m, showTeammateCmd(m.teammates[m.spawnCursor])
-	case "enter":
-		// Open the full-field detail card for the selected teammate: lets the
-		// operator read values the table truncates (vendor/model/detail).
-		if len(m.teammates) == 0 {
-			return m, nil
-		}
-		m.screen = screenTeammateDetail
-		return m, nil
-	case "r":
+	case "r", "R", "ctrl+r":
 		m.loading = true
 		return m, loadBoard(m.boardEpoch)
 	case "tab":
-		// Advance the 3-way cycle: Agent status → Workflows. Bump the epoch so a
-		// tick still pending from a previous Workflows visit can't double the
-		// refresh rate, and start a fresh load + tick chain (mirror updateList→spawn).
+		// Bump the epoch so a tick still pending from a previous Workflows visit can't
+		// double the refresh rate, and start a fresh load + tick chain.
 		return m.toWorkflows()
-	case "esc":
-		return m.toList()
 	case "q":
 		m.quitting = true
 		return m, tea.Quit
 	}
+	switch m.asMode {
+	case asModeProjects:
+		return m.updateAsProjects(msg)
+	case asModeSessions:
+		return m.updateAsSessions(msg)
+	case asModeEntity:
+		return m.updateAsEntity(msg)
+	default:
+		return m.updateAsBoxes(msg)
+	}
+}
+
+// updateAsProjects (L0, >1 project): ↑/↓ choose a project (the right pane previews its
+// sessions), →/⏎ descend; esc → Vendors (← clamps at this top level).
+func (m Model) updateAsProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	projects := m.asProjects()
+	switch msg.String() {
+	case "up":
+		m.asProjectCursor = clampIndex(m.asProjectCursor-1, len(projects))
+	case "down":
+		m.asProjectCursor = clampIndex(m.asProjectCursor+1, len(projects))
+	case "right", "enter":
+		return m.asDescend()
+	case "esc":
+		return m.asAscend(true)
+	case "left":
+		return m.asAscend(false)
+	}
 	return m, nil
+}
+
+// updateAsSessions (L1, >1 session in the focused project): ↑/↓ choose a session (the right
+// pane shows its overview), →/⏎ descend into its boxes; ←/esc ascend.
+func (m Model) updateAsSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	p, ok := m.focusedProjectGroup()
+	switch msg.String() {
+	case "up":
+		if ok {
+			m.asSessionCursor = clampIndex(m.asSessionCursor-1, len(p.sessions))
+		}
+	case "down":
+		if ok {
+			m.asSessionCursor = clampIndex(m.asSessionCursor+1, len(p.sessions))
+		}
+	case "right", "enter":
+		return m.asDescend()
+	case "esc":
+		return m.asAscend(true)
+	case "left":
+		return m.asAscend(false)
+	}
+	return m, nil
+}
+
+// updateAsBoxes (L2): a single ↑/↓ cursor walks the continuum — the session's team rows
+// (the Agent Teams box rail), then its job rows (the Subagents box) — so focus flows across
+// the two boxes without a dedicated switch key. →/⏎ descends into the row's detail; ←/esc
+// ascend.
+func (m Model) updateAsBoxes(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	s, ok := m.focusedSession()
+	n := 0
+	if ok {
+		n = len(s.teams) + len(s.jobs)
+	}
+	switch msg.String() {
+	case "up":
+		m.asBoxCursor = clampIndex(m.asBoxCursor-1, n)
+	case "down":
+		m.asBoxCursor = clampIndex(m.asBoxCursor+1, n)
+	case "right", "enter":
+		return m.asDescend()
+	case "esc":
+		return m.asAscend(true)
+	case "left":
+		return m.asAscend(false)
+	}
+	return m, nil
+}
+
+// updateAsEntity (L3): ↑/↓ walk the collection's rows (resetting the card scroll), j/k
+// scroll the inline detail card, h/s hide/show a teammate row (job rows have no actions);
+// ←/esc ascend to the boxes — esc RETURNS from the detail card, it never exits the board
+// from here.
+func (m Model) updateAsEntity(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	members, jobs := m.railEntities()
+	n := len(members) + len(jobs) // one of the two is always nil
+	switch msg.String() {
+	case "up":
+		m.asEntityCursor = clampIndex(m.asEntityCursor-1, n)
+		if m.asEntitySrc.jobs {
+			return m.focusJobIO()
+		}
+		m.asCardScroll = 0
+	case "down":
+		m.asEntityCursor = clampIndex(m.asEntityCursor+1, n)
+		if m.asEntitySrc.jobs {
+			return m.focusJobIO()
+		}
+		m.asCardScroll = 0
+	case "enter":
+		// Fold/unfold the focused job's prompt (collapsed by default); re-clamp the
+		// scroll since the card height changes. A teammate card has no prompt — no-op.
+		if m.asEntitySrc.jobs {
+			m.asPromptExpanded = !m.asPromptExpanded
+			m.asCardScroll = m.clampAsCardScroll(m.asCardScroll)
+		}
+		return m, nil
+	case "j":
+		m.asCardScroll = m.clampAsCardScroll(m.asCardScroll + 1)
+	case "k":
+		m.asCardScroll = m.clampAsCardScroll(m.asCardScroll - 1)
+	case "h":
+		// Pass the discovered Teammate row (with its live Socket + PaneID) so HideRef can
+		// scope tmux ops to the right server and double-check the pane id against config.
+		if t, ok := m.selectedTeammate(); ok {
+			return m, hideTeammateCmd(t)
+		}
+	case "s":
+		if t, ok := m.selectedTeammate(); ok {
+			return m, showTeammateCmd(t)
+		}
+	case "esc":
+		return m.asAscend(true)
+	case "left":
+		return m.asAscend(false)
+	}
+	return m, nil
+}
+
+// singleKindSrc reports the one entity collection of a session whose boxes level would
+// disambiguate nothing — only jobs, or a single team and no jobs — so navigation skips
+// straight to the detail view in both directions.
+func singleKindSrc(s asSession) (asRailRef, bool) {
+	if len(s.teams) == 0 && len(s.jobs) > 0 {
+		return asRailRef{jobs: true}, true
+	}
+	if len(s.jobs) == 0 && len(s.teams) == 1 {
+		return asRailRef{team: s.teams[0].name}, true
+	}
+	return asRailRef{}, false
+}
+
+// enterSession focuses a session and lands on its boxes — or straight on the entity view
+// for a single-kind session (see singleKindSrc).
+func (m *Model) enterSession(s asSession) {
+	m.focusedSessionID = s.sessionID
+	m.asBoxCursor, m.asEntityCursor, m.asCardScroll = 0, 0, 0
+	if src, ok := singleKindSrc(s); ok {
+		m.asEntitySrc = src
+		m.asMode = asModeEntity
+		return
+	}
+	m.asMode = asModeBoxes
+}
+
+// asDescend drops one level: projects → sessions (or straight into a sole session),
+// sessions → the session's boxes (or its detail view when single-kind), boxes → the
+// cursored row's entity detail. The entity level is the deepest.
+func (m Model) asDescend() (tea.Model, tea.Cmd) {
+	switch m.asMode {
+	case asModeProjects:
+		projects := m.asProjects()
+		if m.asProjectCursor >= len(projects) {
+			return m, nil
+		}
+		p := projects[m.asProjectCursor]
+		m.focusedProject = p.dir
+		m.asSessionCursor = 0
+		if len(p.sessions) == 1 {
+			m.enterSession(p.sessions[0])
+		} else {
+			m.asMode = asModeSessions
+		}
+	case asModeSessions:
+		p, ok := m.focusedProjectGroup()
+		if !ok || m.asSessionCursor >= len(p.sessions) {
+			return m, nil
+		}
+		m.enterSession(p.sessions[m.asSessionCursor])
+	case asModeBoxes:
+		s, ok := m.focusedSession()
+		if !ok {
+			return m, nil
+		}
+		switch {
+		case m.asBoxCursor < len(s.teams):
+			m.asEntitySrc = asRailRef{team: s.teams[m.asBoxCursor].name}
+			m.asEntityCursor = 0
+		case m.asBoxCursor-len(s.teams) < len(s.jobs):
+			// Descending from a job row keeps THAT job focused in the entity list.
+			m.asEntitySrc = asRailRef{jobs: true}
+			m.asEntityCursor = m.asBoxCursor - len(s.teams)
+		default:
+			return m, nil
+		}
+		m.asMode = asModeEntity
+		m.asCardScroll = 0
+	}
+	if m.asMode == asModeEntity && m.asEntitySrc.jobs {
+		return m.focusJobIO()
+	}
+	return m, nil
+}
+
+// focusJobIO resets the card scroll/expand state and loads the focused job's io + activity
+// into the inline detail, nonce-gated (mirror focusLeafIO). Called whenever the entity
+// cursor lands on a job.
+func (m Model) focusJobIO() (tea.Model, tea.Cmd) {
+	m.asCardScroll = 0
+	m.asPromptExpanded = false
+	j, ok := m.selectedJob()
+	if !ok {
+		m.asDetailJobID, m.asDetailPrompt, m.asDetailAnswer, m.asDetailIO = "", "", "", false
+		m.asDetailSnap = activitySnapshot{}
+		return m, nil
+	}
+	m.asDetailNonce++
+	m.asDetailTerminal = isTerminalLeaf(j.Status)
+	return m, loadJobIOCmd(j.JobID, m.asDetailNonce, m.boardEpoch)
+}
+
+// asAscend climbs one level: entity → boxes, boxes → sessions (multi-session project) or
+// projects (multi-project), sessions → projects. At the board's TOP level there's nowhere
+// to climb: exitAtTop leaves for Vendors (esc) vs stays put (←) — so repeated ← can't fall
+// out of the board (mirror wfAscend).
+func (m Model) asAscend(exitAtTop bool) (tea.Model, tea.Cmd) {
+	projects := m.asProjects()
+	switch m.asMode {
+	case asModeEntity:
+		// A single-kind session skipped the boxes level on the way down; skip it on the
+		// way up too.
+		if s, ok := m.focusedSession(); ok {
+			if _, single := singleKindSrc(s); !single {
+				m.asMode = asModeBoxes
+				return m, nil
+			}
+		} else {
+			m.asMode = asModeBoxes
+			return m, nil
+		}
+		fallthrough
+	case asModeBoxes:
+		if p, ok := m.focusedProjectGroup(); ok && len(p.sessions) > 1 {
+			m.asMode = asModeSessions
+			return m, nil
+		}
+		if len(projects) > 1 {
+			m.asMode = asModeProjects
+			return m, nil
+		}
+	case asModeSessions:
+		if len(projects) > 1 {
+			m.asMode = asModeProjects
+			return m, nil
+		}
+	}
+	if exitAtTop {
+		return m.toList()
+	}
+	return m, nil
+}
+
+// asSessions is the board's session tree — recomputed per call off the loaded slices
+// (mirror wfGroups).
+func (m Model) asSessions() []asSession { return groupSessions(m.teammates, m.jobs) }
+
+// asProjects is the session tree bucketed by recorded working directory.
+func (m Model) asProjects() []asProject { return groupProjects(m.asSessions(), m.sessionMeta) }
+
+// focusedProjectGroup returns the project the sessions/boxes levels are rooted on.
+func (m Model) focusedProjectGroup() (asProject, bool) {
+	if m.focusedProject == asNoFocus {
+		return asProject{}, false
+	}
+	for _, p := range m.asProjects() {
+		if p.dir == m.focusedProject {
+			return p, true
+		}
+	}
+	return asProject{}, false
+}
+
+// focusedSession returns the session the boxes/entity levels are rooted on; ok=false when
+// nothing is focused yet or its session vanished.
+func (m Model) focusedSession() (asSession, bool) {
+	if m.focusedSessionID == asNoFocus {
+		return asSession{}, false
+	}
+	for _, s := range m.asSessions() {
+		if s.sessionID == m.focusedSessionID {
+			return s, true
+		}
+	}
+	return asSession{}, false
+}
+
+// railEntities returns the L3 collection's rows per asEntitySrc: a team's members (jobs
+// nil) or the session's standalone jobs (members nil).
+func (m Model) railEntities() (members []teardown.Teammate, jobs []subagent.Result) {
+	s, ok := m.focusedSession()
+	if !ok {
+		return nil, nil
+	}
+	if m.asEntitySrc.jobs {
+		return nil, s.jobs
+	}
+	for _, t := range s.teams {
+		if t.name == m.asEntitySrc.team {
+			return t.members, nil
+		}
+	}
+	return nil, nil
+}
+
+// selectedTeammate returns the teammate under asEntityCursor (ok=false on the jobs rail).
+func (m Model) selectedTeammate() (teardown.Teammate, bool) {
+	members, _ := m.railEntities()
+	if m.asEntityCursor < 0 || m.asEntityCursor >= len(members) {
+		return teardown.Teammate{}, false
+	}
+	return members[m.asEntityCursor], true
+}
+
+// selectedJob returns the job under asEntityCursor (ok=false on a team rail).
+func (m Model) selectedJob() (subagent.Result, bool) {
+	_, jobs := m.railEntities()
+	if m.asEntityCursor < 0 || m.asEntityCursor >= len(jobs) {
+		return subagent.Result{}, false
+	}
+	return jobs[m.asEntityCursor], true
+}
+
+// asNoFocus marks "no project/session focused" — "" can't serve as the sentinel because it
+// is the real id of the "(no session)" / "(no project)" buckets. The control byte keeps it
+// impossible as a real value; it never renders.
+const asNoFocus = "\x00unfocused"
+
+// rerootSpawn re-derives the board's focus after a refresh lands (mirror rerootWorkflows):
+// a still-valid focus chain keeps its drill state; a broken one (a fresh entry parks on
+// asNoFocus so the first load routes, or the focused project/session vanished) re-routes by
+// the loaded counts — 0 sessions → empty boxes, 1 session → enterSession (its boxes, or its
+// detail view when single-kind), 1 project → its session list, >1 project → the project
+// list.
+func (m *Model) rerootSpawn() {
+	sessions := m.asSessions()
+	projects := groupProjects(sessions, m.sessionMeta)
+
+	switch m.asMode {
+	case asModeEntity:
+		if s, ok := m.focusedSession(); ok {
+			// The session's recorded cwd can resolve late; keep the project link true.
+			m.focusedProject = m.sessionMeta[s.sessionID].Cwd
+			m.clampAsCursors()
+			// The focused collection can vanish mid-watch (clamp demotes to boxes); a
+			// now-single-kind session skips that level, as descend would.
+			if m.asMode == asModeBoxes {
+				if _, single := singleKindSrc(s); single {
+					m.enterSession(s)
+					m.clampAsCursors()
+				}
+			}
+			return
+		}
+	case asModeBoxes:
+		if s, ok := m.focusedSession(); ok {
+			m.focusedProject = m.sessionMeta[s.sessionID].Cwd
+			// The boxes level can turn degenerate mid-watch (the session lost its last
+			// team or its last job): skip to the detail view, as descend would.
+			if _, single := singleKindSrc(s); single {
+				m.enterSession(s)
+			}
+			m.clampAsCursors()
+			return
+		}
+	case asModeSessions:
+		if p, ok := m.focusedProjectGroup(); ok && len(p.sessions) > 1 {
+			m.clampAsCursors()
+			return
+		}
+	case asModeProjects:
+		if len(projects) > 1 {
+			m.clampAsCursors()
+			return
+		}
+	}
+
+	m.asProjectCursor, m.asSessionCursor, m.asBoxCursor, m.asEntityCursor, m.asCardScroll = 0, 0, 0, 0, 0
+	m.focusedProject, m.focusedSessionID = asNoFocus, asNoFocus
+	switch {
+	case len(sessions) == 0:
+		m.asMode = asModeBoxes // renders the empty state
+	case len(sessions) == 1:
+		m.focusedProject = projects[0].dir
+		m.enterSession(sessions[0])
+	case len(projects) == 1:
+		m.focusedProject = projects[0].dir
+		m.asMode = asModeSessions
+	default:
+		m.asMode = asModeProjects
+	}
+	m.clampAsCursors()
+}
+
+// clampAsCursors bounds every level's cursor to the live tree and drops out of entity mode
+// when its collection emptied, so render can never index past the end.
+func (m *Model) clampAsCursors() {
+	m.asProjectCursor = clampIndex(m.asProjectCursor, len(m.asProjects()))
+	if p, ok := m.focusedProjectGroup(); ok {
+		m.asSessionCursor = clampIndex(m.asSessionCursor, len(p.sessions))
+	} else {
+		m.asSessionCursor = 0
+	}
+	s, ok := m.focusedSession()
+	if !ok {
+		m.asBoxCursor, m.asEntityCursor = 0, 0
+		if m.asMode == asModeEntity {
+			m.asMode = asModeBoxes
+		}
+		return
+	}
+	m.asBoxCursor = clampIndex(m.asBoxCursor, len(s.teams)+len(s.jobs))
+	members, jobs := m.railEntities()
+	n := len(members) + len(jobs)
+	m.asEntityCursor = clampIndex(m.asEntityCursor, n)
+	if m.asMode == asModeEntity && n == 0 {
+		m.asMode = asModeBoxes
+	}
+}
+
+// boxRowRef returns the typed identity of the L2 row under asBoxCursor.
+func (m Model) boxRowRef() (asBoxRef, bool) {
+	s, ok := m.focusedSession()
+	if !ok {
+		return asBoxRef{}, false
+	}
+	switch {
+	case m.asBoxCursor < len(s.teams):
+		return asBoxRef{isTeam: true, team: s.teams[m.asBoxCursor].name}, true
+	case m.asBoxCursor-len(s.teams) < len(s.jobs):
+		return asBoxRef{jobID: s.jobs[m.asBoxCursor-len(s.teams)].JobID}, true
+	}
+	return asBoxRef{}, false
+}
+
+// reanchorBox re-finds the previously cursored L2 row by its typed identity after a
+// refresh; a vanished row leaves the index-clamped cursor in place.
+func (m *Model) reanchorBox(prev asBoxRef) {
+	s, ok := m.focusedSession()
+	if !ok {
+		return
+	}
+	if prev.isTeam {
+		for i, t := range s.teams {
+			if t.name == prev.team {
+				m.asBoxCursor = i
+				return
+			}
+		}
+		return
+	}
+	for i, j := range s.jobs {
+		if prev.jobID != "" && j.JobID == prev.jobID {
+			m.asBoxCursor = len(s.teams) + i
+			return
+		}
+	}
+}
+
+// clampAsCardScroll bounds the entity detail-card scroll to [0, lines-viewport] so j/k never
+// scroll past the content (mirror clampCardScroll).
+func (m Model) clampAsCardScroll(v int) int {
+	max := len(m.entityDetailLines(m.asEntityRightWidth())) - m.asEntityBodyHeight()
+	if max < 0 {
+		max = 0
+	}
+	switch {
+	case v < 0:
+		return 0
+	case v > max:
+		return max
+	default:
+		return v
+	}
 }
 
 // toWorkflows enters the Workflows board: bump the epoch so a tick pending from a
@@ -1097,8 +1794,10 @@ func (m Model) toWorkflows() (tea.Model, tea.Cmd) {
 	m.workflowStatus = ""
 	m.wfRestarting = map[string]bool{}
 	m.wfActivity = nil
-	m.wfRunCursor, m.wfPhaseCursor, m.wfAgentCursor = 0, 0, 0
-	m.rerootWorkflows(true) // fresh 0/1/>1 routing on entry
+	m.wfProjectCursor, m.wfRunCursor, m.wfPhaseCursor, m.wfAgentCursor = 0, 0, 0, 0
+	// Park unfocused so the FIRST accepted refresh routes by the freshly loaded
+	// run/project counts — never by the previous visit's cached data.
+	m.focusedRunID, m.focusedWfProject, m.wfMode = "", asNoFocus, wfModePhases
 	return m, tea.Batch(loadWorkflows(m.workflowsEpoch, true), workflowsTick(m.workflowsEpoch, m.workflowsTickInterval()))
 }
 
@@ -1143,29 +1842,98 @@ func (m Model) selectedRunID() (string, bool) {
 	return "", false
 }
 
-// rerootWorkflows re-derives focus + clamps the cursors after the run set changes. On entry
-// (initial=true) it routes by run count: 0 → empty Phases, 1 → auto-focus the sole run, >1 → the run
-// picker. On a refresh (initial=false) it preserves the user's drill state unless the focused run was
-// GC'd, then re-routes the same way.
-func (m *Model) rerootWorkflows(initial bool) {
-	groups := m.wfGroups()
-	focusExists := false
+// wfProject is one project directory's slice of the Workflows board: the runs whose
+// manifests record that launch cwd ("" = unrecorded, the "(no project)" bucket).
+type wfProject struct {
+	dir    string
+	groups []runGroup
+}
+
+// groupWfProjects buckets the (already newest-first) run groups by recorded cwd.
+// First-seen project order therefore follows each project's newest run; the unrecorded
+// bucket sorts last.
+func groupWfProjects(groups []runGroup) []wfProject {
+	order := []string{}
+	byDir := map[string]*wfProject{}
 	for _, g := range groups {
-		if g.runID == m.focusedRunID {
-			focusExists = true
-			break
+		p, ok := byDir[g.cwd]
+		if !ok {
+			p = &wfProject{dir: g.cwd}
+			byDir[g.cwd] = p
+			order = append(order, g.cwd)
+		}
+		p.groups = append(p.groups, g)
+	}
+	out := make([]wfProject, 0, len(order))
+	for _, dir := range order {
+		out = append(out, *byDir[dir])
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if (out[i].dir == "") != (out[j].dir == "") {
+			return out[j].dir == ""
+		}
+		return false
+	})
+	return out
+}
+
+// wfProjects is the run tree bucketed by recorded launch cwd.
+func (m Model) wfProjects() []wfProject { return groupWfProjects(m.wfGroups()) }
+
+// focusedWfProjectGroup returns the project the run picker is scoped to.
+func (m Model) focusedWfProjectGroup() (wfProject, bool) {
+	if m.focusedWfProject == asNoFocus {
+		return wfProject{}, false
+	}
+	for _, p := range m.wfProjects() {
+		if p.dir == m.focusedWfProject {
+			return p, true
 		}
 	}
-	if initial || !focusExists {
-		switch {
-		case len(groups) == 0:
-			m.focusedRunID, m.wfMode = "", wfModePhases
-		case len(groups) == 1:
-			m.focusedRunID, m.wfMode = groups[0].runID, wfModePhases
-		default:
-			m.focusedRunID, m.wfMode = "", wfModePicker
+	return wfProject{}, false
+}
+
+// rerootWorkflows re-derives focus + clamps the cursors after a refresh lands: a
+// still-valid, still-meaningful drill state is preserved; a broken or DEGENERATE one (a
+// GC'd focused run, a vanished project, a picker whose project dropped to one run — a level
+// the descend/ascend skip rules would never park on) re-routes by the loaded counts:
+// 0 runs → empty Phases, 1 run → auto-focus it, 1 project → its run picker, >1 project →
+// the project rail. A fresh entry parks unfocused (toWorkflows), so the first load always
+// routes.
+func (m *Model) rerootWorkflows() {
+	groups := m.wfGroups()
+	projects := groupWfProjects(groups)
+	switch m.wfMode {
+	case wfModePhases, wfModeAgent:
+		for _, g := range groups {
+			if g.runID == m.focusedRunID {
+				m.focusedWfProject = g.cwd // a manifest can record its cwd late
+				m.clampWfCursors()
+				return
+			}
 		}
-		m.wfPhaseCursor, m.wfAgentCursor = 0, 0
+	case wfModePicker:
+		if p, ok := m.focusedWfProjectGroup(); ok && len(p.groups) > 1 {
+			m.clampWfCursors()
+			return
+		}
+	case wfModeProjects:
+		if len(projects) > 1 {
+			m.clampWfCursors()
+			return
+		}
+	}
+	m.wfProjectCursor, m.wfPhaseCursor, m.wfAgentCursor = 0, 0, 0
+	m.focusedRunID, m.focusedWfProject = "", asNoFocus
+	switch {
+	case len(groups) == 0:
+		m.wfMode = wfModePhases
+	case len(groups) == 1:
+		m.focusedRunID, m.focusedWfProject, m.wfMode = groups[0].runID, groups[0].cwd, wfModePhases
+	case len(projects) == 1:
+		m.focusedWfProject, m.wfMode = projects[0].dir, wfModePicker
+	default:
+		m.wfMode = wfModeProjects
 	}
 	m.clampWfCursors()
 }
@@ -1173,8 +1941,12 @@ func (m *Model) rerootWorkflows(initial bool) {
 // clampWfCursors bounds the run/phase/agent cursors to the live data and drops out of agent mode when
 // the focused phase has no agents, so Enter/render can never index past the end.
 func (m *Model) clampWfCursors() {
-	groups := m.wfGroups()
-	m.wfRunCursor = clampIndex(m.wfRunCursor, len(groups))
+	m.wfProjectCursor = clampIndex(m.wfProjectCursor, len(m.wfProjects()))
+	if p, ok := m.focusedWfProjectGroup(); ok {
+		m.wfRunCursor = clampIndex(m.wfRunCursor, len(p.groups))
+	} else {
+		m.wfRunCursor = 0
+	}
 	g, ok := m.focusedGroup()
 	if !ok {
 		m.wfPhaseCursor, m.wfAgentCursor = 0, 0
@@ -1231,6 +2003,8 @@ func (m Model) updateWorkflows(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 	switch m.wfMode {
+	case wfModeProjects:
+		return m.updateWfProjects(msg)
 	case wfModePicker:
 		return m.updateWfPicker(msg)
 	case wfModeAgent:
@@ -1243,22 +2017,41 @@ func (m Model) updateWorkflows(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // updateWfPicker (run picker, >1 run): ↑/↓ choose a run, →/enter descend into it; esc/tab → Vendors
 // (← clamps here — it never leaves the board).
 func (m Model) updateWfPicker(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	groups := m.wfGroups()
+	p, _ := m.focusedWfProjectGroup()
 	switch msg.String() {
 	case "up":
-		m.wfRunCursor = clampIndex(m.wfRunCursor-1, len(groups))
+		m.wfRunCursor = clampIndex(m.wfRunCursor-1, len(p.groups))
 	case "down":
-		m.wfRunCursor = clampIndex(m.wfRunCursor+1, len(groups))
+		m.wfRunCursor = clampIndex(m.wfRunCursor+1, len(p.groups))
 	case "right", "enter":
 		return m.wfDescend()
 	case "esc":
 		return m.wfAscend(true)
 	case "left":
-		return m.wfAscend(false) // ← clamps at the picker (top level); esc/tab leave
+		return m.wfAscend(false) // ← ascends to the project rail (multi-project) or clamps; esc/tab leave
 	case "d":
-		if m.wfRunCursor < len(groups) {
-			return m.armOrDelete(groups[m.wfRunCursor].runID)
+		if m.wfRunCursor < len(p.groups) {
+			return m.armOrDelete(p.groups[m.wfRunCursor].runID)
 		}
+	}
+	return m, nil
+}
+
+// updateWfProjects (L0, >1 project): ↑/↓ choose a project (the right pane previews its
+// runs), →/⏎ descend into its run picker (or its sole run); esc → Vendors (← clamps).
+func (m Model) updateWfProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	projects := m.wfProjects()
+	switch msg.String() {
+	case "up":
+		m.wfProjectCursor = clampIndex(m.wfProjectCursor-1, len(projects))
+	case "down":
+		m.wfProjectCursor = clampIndex(m.wfProjectCursor+1, len(projects))
+	case "right", "enter":
+		return m.wfDescend()
+	case "esc":
+		return m.wfAscend(true)
+	case "left":
+		return m.wfAscend(false)
 	}
 	return m, nil
 }
@@ -1354,10 +2147,25 @@ func (m Model) updateWfAgent(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // the focused phase has agents, loading the first agent's io). The agent level is the deepest.
 func (m Model) wfDescend() (tea.Model, tea.Cmd) {
 	switch m.wfMode {
+	case wfModeProjects:
+		projects := m.wfProjects()
+		if m.wfProjectCursor >= len(projects) {
+			return m, nil
+		}
+		p := projects[m.wfProjectCursor]
+		m.focusedWfProject = p.dir
+		m.wfRunCursor = 0
+		if len(p.groups) == 1 {
+			m.focusedRunID = p.groups[0].runID
+			m.wfMode = wfModePhases
+			m.wfPhaseCursor, m.wfAgentCursor = 0, 0
+		} else {
+			m.wfMode = wfModePicker
+		}
 	case wfModePicker:
-		groups := m.wfGroups()
-		if m.wfRunCursor < len(groups) {
-			m.focusedRunID = groups[m.wfRunCursor].runID
+		p, ok := m.focusedWfProjectGroup()
+		if ok && m.wfRunCursor < len(p.groups) {
+			m.focusedRunID = p.groups[m.wfRunCursor].runID
 			m.wfMode = wfModePhases
 			m.wfPhaseCursor, m.wfAgentCursor = 0, 0
 		}
@@ -1375,13 +2183,23 @@ func (m Model) wfDescend() (tea.Model, tea.Cmd) {
 // (the picker, or single-run Phases) there's nowhere to climb: exitAtTop leaves for Vendors (esc/tab)
 // vs stays put (←), so repeated ← can't fall out of the board.
 func (m Model) wfAscend(exitAtTop bool) (tea.Model, tea.Cmd) {
+	projects := m.wfProjects()
 	switch m.wfMode {
 	case wfModeAgent:
 		m.wfMode = wfModePhases
 		return m, nil
 	case wfModePhases:
-		if len(m.wfGroups()) > 1 {
+		if p, ok := m.focusedWfProjectGroup(); ok && len(p.groups) > 1 {
 			m.wfMode, m.focusedRunID = wfModePicker, ""
+			return m, nil
+		}
+		if len(projects) > 1 {
+			m.wfMode, m.focusedRunID = wfModeProjects, ""
+			return m, nil
+		}
+	case wfModePicker:
+		if len(projects) > 1 {
+			m.wfMode = wfModeProjects
 			return m, nil
 		}
 	}
@@ -1538,20 +2356,6 @@ func saveWorkflowCmd(runID, name, sessionID, description string, epoch int) tea.
 		err := subagent.SaveWorkflow(runID, name, sessionID, description)
 		return workflowCtlMsg{verb: "save", runID: runID, err: err, epoch: epoch}
 	}
-}
-
-// updateTeammateDetail drives the read-only teammate detail card (board → enter).
-// esc/enter/tab return to the board (cursor + data preserved, no reload); q
-// quits. The card has no actions of its own — h/s still live on the board.
-func (m Model) updateTeammateDetail(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "q":
-		m.quitting = true
-		return m, tea.Quit
-	case "esc", "enter", "tab":
-		m.screen = screenSpawn
-	}
-	return m, nil
 }
 
 func (m Model) updatePickTemplate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

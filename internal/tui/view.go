@@ -13,6 +13,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/secrets"
 	"github.com/ethanhq/cc-fleet/internal/sessiontitle"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
+	"github.com/ethanhq/cc-fleet/internal/teardown"
 )
 
 // Shared lipgloss styles. Colors are ANSI 256 indices so they degrade
@@ -58,8 +59,6 @@ func (m Model) View() string {
 		return m.viewResult()
 	case screenKeys:
 		return m.viewKeys()
-	case screenTeammateDetail:
-		return m.viewTeammateDetail()
 	case screenSetup:
 		return m.viewSetup()
 	case screenSetupTmux:
@@ -174,17 +173,39 @@ func (m Model) viewList() string {
 	return b.String()
 }
 
+// viewSpawn renders the Agent-status board: a project-first master-detail in the Dynamic
+// Workflows board's design language. asMode re-roots four levels under one shared
+// header+rule chrome — projects → sessions → the session's Agent Teams + Subagents boxes →
+// entity detail. Rows and cards show only field-source-safe data — canonical `ps --check`
+// health vocabulary, CleanTitle-scrubbed names/models/ids, integer token counts — NEVER a
+// job's answer text (Result.Result), an ErrorMsg body, or raw pane capture; the detail
+// card's Output reads the focused job's .answer side file alone.
 func (m Model) viewSpawn() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("cc-fleet · Agent status") + faintStyle.Render("    tab → Dynamic Workflows") + "\n\n")
 	switch {
 	case m.loading:
-		b.WriteString("discovering…\n")
+		b.WriteString(m.spawnTitle() + "\n\ndiscovering…")
 	case m.spawnErr != nil:
-		b.WriteString(errStyle.Render("error: "+m.spawnErr.Error()) + "\n")
+		b.WriteString(m.spawnTitle() + "\n\n" + errStyle.Render("error: "+m.spawnErr.Error()))
+	case m.asMode == asModeProjects:
+		b.WriteString(m.viewAsProjects())
+	case m.asMode == asModeSessions:
+		b.WriteString(m.viewAsSessions())
+	case m.asMode == asModeEntity:
+		b.WriteString(m.viewAsEntity())
 	default:
-		b.WriteString(m.viewTeammateTable())
-		b.WriteString("\n" + m.viewJobTable())
+		if _, ok := m.focusedSession(); !ok {
+			b.WriteString(m.spawnTitle() + "\n\n" +
+				faintStyle.Render("(no live agents — none spawned, and no subagent jobs)"))
+		} else {
+			b.WriteString(m.viewAsBoxes())
+		}
+	}
+	// The jobs-scan failure renders on its OWN line so it never overwrites a surfaced
+	// hide/show outcome (boardStatus keeps its survive-the-refresh semantics).
+	if m.boardJobsErr != nil {
+		b.WriteString("\n" + faintStyle.Render("jobs unavailable: "+
+			sessiontitle.CleanTitle(m.boardJobsErr.Error())))
 	}
 	// Inline hide/show outcome: a failed h/s shows its reason here rather than
 	// silently relying on the next refresh.
@@ -195,8 +216,28 @@ func (m Model) viewSpawn() string {
 		}
 		b.WriteString("\n" + style.Render(m.boardStatus))
 	}
-	b.WriteString("\n" + footer("↑/↓ move · enter detail · h hide · s show · r refresh · tab dynamic workflows · esc vendors · q quit"))
+	b.WriteString("\n" + renderAsFooter(m.asMode))
 	return b.String()
+}
+
+// spawnTitle is the Agent-status app title + tab hint (picker / empty / loading / error
+// states; the groups and entity levels show the session header instead).
+func (m Model) spawnTitle() string {
+	return titleStyle.Render("cc-fleet · Agent status") + faintStyle.Render("    tab → Dynamic Workflows")
+}
+
+// renderAsFooter is the contextual footer per asMode.
+func renderAsFooter(mode asMode) string {
+	switch mode {
+	case asModeProjects:
+		return footer("↑/↓ project · →/⏎ open · esc vendors · tab dynamic workflows · r refresh · q quit")
+	case asModeSessions:
+		return footer("↑/↓ session · →/⏎ open · ← back · r refresh · tab dynamic workflows · esc vendors · q quit")
+	case asModeEntity:
+		return footer("↑/↓ row · j/k scroll · ⏎ prompt · h hide · s show · ←/esc back · r refresh · q quit")
+	default:
+		return footer("↑/↓ row · →/⏎ detail · ← back · r refresh · tab dynamic workflows · esc vendors · q quit")
+	}
 }
 
 // viewWorkflows renders the native-mirror Workflows board: a persistent run header + ONE enclosing
@@ -214,6 +255,8 @@ func (m Model) viewWorkflows() string {
 	case m.workflowsErr != nil:
 		b.WriteString(titleStyle.Render("cc-fleet · Dynamic Workflows") + "\n\n" +
 			errStyle.Render("error: "+sessiontitle.CleanTitle(m.workflowsErr.Error())))
+	case m.wfMode == wfModeProjects:
+		b.WriteString(m.viewWfProjects())
 	case m.wfMode == wfModePicker:
 		b.WriteString(m.viewWfPicker())
 	case m.wfMode == wfModeAgent:
@@ -573,31 +616,159 @@ func (m Model) paneWidths(leftW int) (left, right int) {
 	return leftW, avail - leftW
 }
 
-// viewWfPicker is the run picker (shown only when >1 run): runs grouped under their launching
-// session like the teammates board (groupByRun orders runs session-contiguous), the cursor walking
-// the flat run list. Each session prints one "◆ <session>" header.
-func (m Model) viewWfPicker() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("cc-fleet · Dynamic Workflows") + faintStyle.Render("    tab → Vendors") + "\n\n")
-	lastSession := "\x00" // sentinel so the first header always prints (even for a "" session)
-	for i, g := range m.wfGroups() {
-		if g.sessionID != lastSession {
-			lastSession = g.sessionID
-			b.WriteString(sessionHdrStyle.Render("◆ "+m.sessionLabelFull(g.sessionID)) + "\n")
-		}
+// renderWfAppHeader is the project rail's header — the same THREE-line + rule chrome the
+// deeper levels show (the run header), so changing levels never reshapes the screen.
+func (m Model) renderWfAppHeader() string {
+	bw := m.boardInner()
+	projects := m.wfProjects()
+	left, right := "", ""
+	if m.wfProjectCursor < len(projects) {
+		p := projects[m.wfProjectCursor]
+		left = sessiontitle.CleanTitle(projectLabel(p.dir))
+		right = fmt.Sprintf("%d runs", len(p.groups))
+	}
+	return titleStyle.Render("cc-fleet · Dynamic Workflows") + faintStyle.Render("    tab → Vendors") +
+		"\n\n" + headerSummaryLine(left, right, bw)
+}
+
+// viewWfProjects is L0 (>1 project): the app header above one box — the project rail | the
+// cursored project's run rows.
+func (m Model) viewWfProjects() string {
+	projects := m.wfProjects()
+	var leftLines []string
+	for i, p := range projects {
 		marker := "  "
-		name := trunc(m.runLabel(g), 42)
+		label := leftTruncCols(sessiontitle.CleanTitle(projectLabel(p.dir)), 28)
+		if i == m.wfProjectCursor {
+			marker = cursorStyle.Render("❯ ")
+			label = selectedStyle.Render(label)
+		} else {
+			label = liveStyle.Render(label)
+		}
+		leftLines = append(leftLines, fmt.Sprintf("%s%s  %s", marker, label,
+			faintStyle.Render(fmt.Sprintf("%d", len(p.groups)))))
+	}
+	leftW, rightW := m.paneWidths(leftWidth("Projects", leftLines, m.boardInner()))
+	rightTitle := "runs"
+	rightLines := []string{faintStyle.Render("(none)")}
+	if m.wfProjectCursor < len(projects) {
+		p := projects[m.wfProjectCursor]
+		rightTitle = fmt.Sprintf("%s · %d runs", leftTruncCols(sessiontitle.CleanTitle(projectLabel(p.dir)), 24), len(p.groups))
+		rightLines = nil
+		for _, g := range p.groups {
+			rightLines = append(rightLines, m.renderRunRow(g, rightW, false))
+		}
+	}
+	bodyH := m.boardBodyHeight()
+	leftLines = windowLines(leftLines, m.wfProjectCursor, bodyH)
+	return indentBox(m.renderWfAppHeader(), boardMargin) + "\n" + m.headerRule() + "\n" +
+		indentBox(renderBoard("Projects", leftLines, rightTitle, rightLines, leftW, rightW, bodyH, 0), boardMargin)
+}
+
+// renderRunRow is one run row: "<dot> <name (short id)>" left; "<done>/<total> agents ·
+// <elapsed>[ · <started MM-DD HH:MM>]" right-aligned. selected marks the picker's cursored row.
+func (m Model) renderRunRow(g runGroup, width int, selected bool) string {
+	marker := ""
+	name := trunc(m.runLabel(g), 42)
+	switch {
+	case selected:
+		marker = cursorStyle.Render("❯ ")
+		name = selectedStyle.Render(name)
+	default:
+		name = labelStyle(g.status).Render(name)
+	}
+	done, total := runAgentCounts(g)
+	left := marker + statusDot(g.status) + " " + name
+	metrics := fmt.Sprintf("%d/%d agents · %s", done, total, g.elapsed())
+	if t, err := time.Parse(time.RFC3339, g.startedAt); err == nil {
+		metrics += " · " + t.Format("01-02 15:04")
+	}
+	return joinRowEnds(left, faintStyle.Render(metrics), width)
+}
+
+// renderWfProjectHeader is the run picker's header — the CONTAINER the user descended into:
+// the project label (full path right-aligned) over its run count. The cursored run names
+// only the right pane (the preview), never the header.
+func (m Model) renderWfProjectHeader(p wfProject) string {
+	bw := m.boardInner()
+	line1 := titleStyle.Render("cc-fleet · Dynamic Workflows") + faintStyle.Render("    tab → Vendors")
+	if p.dir != "" {
+		d := faintStyle.Render(leftTruncCols(sessiontitle.CleanTitle(prettyDir(p.dir)), bw/2))
+		gap := bw - lipgloss.Width(line1) - lipgloss.Width(d)
+		if gap < 1 {
+			gap = 1
+		}
+		line1 += strings.Repeat(" ", gap) + d
+	}
+	// Fixed on the container label, like the agent board's project header.
+	return line1 + "\n\n" + headerSummaryLine(sessiontitle.CleanTitle(projectLabel(p.dir)),
+		fmt.Sprintf("%d runs", len(p.groups)), bw)
+}
+
+// viewWfPicker is the run picker (the focused project's runs, shown only when it has >1):
+// the PROJECT's header above one box — the run rail | the cursored run's overview (session,
+// started, phases).
+func (m Model) viewWfPicker() string {
+	p, ok := m.focusedWfProjectGroup()
+	if !ok {
+		return titleStyle.Render("cc-fleet · Dynamic Workflows") + faintStyle.Render("    tab → Vendors") +
+			"\n\n" + faintStyle.Render("(no workflow runs)")
+	}
+	var leftLines []string
+	for i, g := range p.groups {
+		marker := "  "
+		name := trunc(m.runLabel(g), 36)
 		if i == m.wfRunCursor {
 			marker = cursorStyle.Render("❯ ")
 			name = selectedStyle.Render(name)
 		} else {
 			name = labelStyle(g.status).Render(name)
 		}
-		done, total := runAgentCounts(g)
-		b.WriteString(fmt.Sprintf("  %s%s %s  %s\n", marker, statusDot(g.status), name,
-			faintStyle.Render(fmt.Sprintf("%d/%d agents · %s", done, total, g.elapsed()))))
+		leftLines = append(leftLines, marker+statusDot(g.status)+" "+name)
 	}
-	return b.String()
+	leftW, rightW := m.paneWidths(leftWidth("Runs", leftLines, m.boardInner()))
+	rightTitle := "overview"
+	var rightLines []string
+	if m.wfRunCursor < len(p.groups) {
+		g := p.groups[m.wfRunCursor]
+		rightTitle = trunc(m.runLabel(g), rightW-6)
+		rightLines = m.runOverviewLines(g, rightW)
+	}
+	bodyH := m.boardBodyHeight()
+	leftLines = windowLines(leftLines, m.wfRunCursor, bodyH)
+	return indentBox(m.renderWfProjectHeader(p), boardMargin) + "\n" + m.headerRule() + "\n" +
+		indentBox(renderBoard("Runs", leftLines, rightTitle, rightLines, leftW, rightW, bodyH, 0), boardMargin)
+}
+
+// runOverviewLines is the picker's right pane: the cursored run's session + phase rollup —
+// what ⏎ will open, previewed in place.
+func (m Model) runOverviewLines(g runGroup, rightW int) []string {
+	var lines []string
+	if g.sessionID != "" {
+		// The FULL session id (sessionLabelFull) keeps the run findable by id; detailField
+		// wraps an over-wide value instead of truncating it.
+		detailField(&lines, "session", m.sessionLabelFull(g.sessionID), rightW)
+	}
+	if g.startedAt != "" {
+		detailField(&lines, "started", sessiontitle.CleanTitle(g.startedAt), rightW)
+	}
+	if len(g.phases) > 0 {
+		lines = append(lines, "", faintStyle.Render(fmt.Sprintf("Phases · %d", len(g.phases))))
+		for i, ph := range g.phases {
+			done, total := phaseAgentCounts(ph)
+			glyph := fmt.Sprintf("%d", i+1)
+			if st := phaseStatus(done, total); st == "done" {
+				glyph = statusDot("done")
+			}
+			counts := ""
+			if total > 0 {
+				counts = faintStyle.Render(fmt.Sprintf("  %d/%d", done, total))
+			}
+			lines = append(lines, " "+glyph+" "+
+				contentStyle.Render(trunc(sessiontitle.CleanTitle(ph.title), 28))+counts)
+		}
+	}
+	return lines
 }
 
 // viewWfPhases is L1: the run header above one box — "Phases | the selected phase's agents". The box
@@ -724,15 +895,20 @@ func (m Model) renderAgentRowFull(j subagent.Result, width int) string {
 	if d := leafDuration(j); d != "" {
 		metrics += " · " + d
 	}
-	right := faintStyle.Render(metrics)
+	return joinRowEnds(left, faintStyle.Render(metrics), width)
+}
+
+// joinRowEnds right-aligns the metrics beside the label within width: a tight row shrinks
+// the label to fit, a pathologically narrow one keeps the metrics alone, truncated.
+func joinRowEnds(left, right string, width int) string {
 	rw := ansi.StringWidth(right)
 	gap := width - ansi.StringWidth(left) - rw
 	if gap < 1 {
 		if avail := width - rw - 1; avail >= 1 {
-			left = boxCell(left, avail) // tight: shrink the label to fit beside the metrics
+			left = boxCell(left, avail)
 			gap = 1
 		} else {
-			return boxCell(right, width) // pathologically narrow: metrics alone, truncated
+			return boxCell(right, width)
 		}
 	}
 	return left + strings.Repeat(" ", gap) + right
@@ -823,31 +999,11 @@ func (m Model) agentDetailLines(rightW int) []string {
 		lines = append(lines, "", faintStyle.Render("(prompt/output not persisted — run with default persist-io)"))
 	default:
 		lines = append(lines, "")
-		if m.wfPromptExpanded {
-			lines = append(lines, faintStyle.Render("Prompt"))
-			lines = append(lines, ioLines(m.wfDetailPrompt, rightW, contentStyle)...)
-		} else {
-			total := promptLineCount(m.wfDetailPrompt)
-			lines = append(lines, faintStyle.Render(fmt.Sprintf("Prompt · %d lines · ⏎ expand", total)))
-			prev := ioLines(firstLogicalLines(m.wfDetailPrompt, promptPreviewLines), rightW, contentStyle)
-			for len(prev) > 0 && strings.TrimSpace(prev[len(prev)-1]) == "" {
-				prev = prev[:len(prev)-1] // drop a trailing blank preview row so "… N more lines" doesn't gap
-			}
-			lines = append(lines, prev...)
-			if more := total - promptPreviewLines; more > 0 {
-				lines = append(lines, " "+faintStyle.Render(fmt.Sprintf("… %d more lines", more))) // body-aligned (indent 1)
-			}
-		}
+		lines = append(lines, promptSection(m.wfDetailPrompt, m.wfPromptExpanded, rightW)...)
 	}
 	// Then the Activity feed.
-	lines = append(lines, "", faintStyle.Render(fmt.Sprintf("Activity · last 3 of %d tool calls", tools)))
-	sigs := snap.lastSigs(3)
-	if len(sigs) == 0 {
-		lines = append(lines, faintStyle.Render(" (no tool calls)"))
-	}
-	for _, s := range sigs {
-		lines = append(lines, " "+contentStyle.Render(truncCols(sessiontitle.CleanTitle(s), rightW-2)))
-	}
+	lines = append(lines, "")
+	lines = append(lines, activityLines(snap, rightW)...)
 	// Then the Output, when this leaf's io files are loaded.
 	if m.wfDetailJob.JobID == j.JobID && m.wfDetailIO {
 		lines = append(lines, "", faintStyle.Render("Output"))
@@ -883,29 +1039,41 @@ func ioLines(s string, width int, style lipgloss.Style) []string {
 	return out
 }
 
-// promptLineCount counts the prompt's logical (newline-delimited) lines for the collapsed
-// "Prompt · N lines · ⏎ expand" summary — counted on the RAW text (before CleanTitle, which collapses
-// the newlines), mirroring native's logical-line view and matching what ioLines renders on expand.
-func promptLineCount(s string) int {
-	s = strings.TrimRight(s, "\n")
-	if strings.TrimSpace(s) == "" {
-		return 0
+// promptPreviewLines is how many DISPLAY lines a collapsed fold section shows before "… N more".
+const promptPreviewLines = 4
+
+// promptSection renders the detail card's Prompt block: the full text when expanded, else a
+// collapsed "Prompt · N lines · ⏎ expand" header + the leading preview. The fold counts
+// DISPLAY lines (post-wrap), so a single long paragraph folds too; a prompt that already
+// fits the preview shows in full with no expand hint. Shared by the Workflows agent card
+// and the Agent-status job card so the two read identically.
+func promptSection(prompt string, expanded bool, rightW int) []string {
+	full := ioLines(prompt, rightW, contentStyle)
+	if expanded || len(full) <= promptPreviewLines {
+		return append([]string{faintStyle.Render("Prompt")}, full...)
 	}
-	return strings.Count(s, "\n") + 1
+	lines := []string{faintStyle.Render(fmt.Sprintf("Prompt · %d lines · ⏎ expand", len(full)))}
+	prev := full[:promptPreviewLines]
+	for len(prev) > 0 && strings.TrimSpace(prev[len(prev)-1]) == "" {
+		prev = prev[:len(prev)-1] // drop a trailing blank preview row so "… N more lines" doesn't gap
+	}
+	lines = append(lines, prev...)
+	lines = append(lines, " "+faintStyle.Render(fmt.Sprintf("… %d more lines", len(full)-len(prev)))) // body-aligned (indent 1)
+	return lines
 }
 
-// promptPreviewLines is how many leading logical lines the collapsed prompt shows before "… N more".
-const promptPreviewLines = 2
-
-// firstLogicalLines returns the first n newline-delimited lines of s (raw, pre-scrub), so the collapsed
-// prompt preview slices on the same boundaries promptLineCount counts.
-func firstLogicalLines(s string, n int) string {
-	s = strings.TrimRight(s, "\n")
-	parts := strings.SplitN(s, "\n", n+1)
-	if len(parts) > n {
-		parts = parts[:n]
+// activityLines renders a detail card's Activity section: the tool-call header + the last
+// 3 signatures ("(no tool calls)" when none). Shared by all three detail cards.
+func activityLines(snap activitySnapshot, rightW int) []string {
+	lines := []string{faintStyle.Render(fmt.Sprintf("Activity · last 3 of %d tool calls", snap.toolCount()))}
+	sigs := snap.lastSigs(3)
+	if len(sigs) == 0 {
+		lines = append(lines, faintStyle.Render(" (no tool calls)"))
 	}
-	return strings.Join(parts, "\n")
+	for _, s := range sigs {
+		lines = append(lines, " "+contentStyle.Render(truncCols(sessiontitle.CleanTitle(s), rightW-2)))
+	}
+	return lines
 }
 
 // truncCols truncates a plain (un-styled) string to w DISPLAY columns with an "…" tail (CJK-aware), so
@@ -1000,8 +1168,10 @@ func (m Model) renderOutcome(j subagent.Result) string {
 // non-goal (vendor leaves have no cooperative-pause protocol).
 func renderWfFooter(mode wfMode) string {
 	switch mode {
+	case wfModeProjects:
+		return footer("↑/↓ project · →/⏎ open · esc/tab vendors · R refresh · q quit")
 	case wfModePicker:
-		return footer("↑/↓ select · →/⏎ open · d delete · esc/tab vendors · R refresh · q quit")
+		return footer("↑/↓ run · →/⏎ open · d delete · ← back · esc/tab vendors · R refresh · q quit")
 	case wfModeAgent:
 		return footer("↑/↓ agent · j/k scroll · ⏎ prompt · r restart agent · x stop · s save · ← back · q quit")
 	default:
@@ -1044,150 +1214,883 @@ func shortRunID(id string) string {
 	return id
 }
 
-// viewTeammateTable renders the upper board table grouped by Claude session and
-// then team: session header, team header, indented members. The cursor stays a
-// FLAT teammate index — header lines are purely visual and never take a cursor
-// slot, so `i == m.spawnCursor` highlights the right member regardless of how
-// many headers precede it (teammates are pre-grouped in groupByTeam). The plain
-// name is padded BEFORE styling so the selected row's ANSI codes don't break
-// column alignment (same discipline as viewList).
-func (m Model) viewTeammateTable() string {
-	var b strings.Builder
-	// Column legend, indented (marker 2 + member indent 8 = 10) to align with the
-	// session/team-grouped member rows below.
-	b.WriteString(faintStyle.Render("          "+fmt.Sprintf("%-14s %-9s %-16s %-7s %-7s %-8s %-6s",
-		"NAME", "VENDOR", "MODEL", "PANE", "PID", "STATUS", "HIDDEN")) + "\n")
-	if len(m.teammates) == 0 {
-		b.WriteString(faintStyle.Render("  no live teammates (none spawned, or tmux not running)") + "\n")
-		return b.String()
+// headerSummaryLine is the chrome's third line: the CURSORED child's label on the left (the
+// live preview context, the slot the wf run header gives its description) + the container
+// rollup right-aligned. The left side truncates so the line never wraps and shifts the
+// fixed-height boxes down.
+func headerSummaryLine(left, right string, bw int) string {
+	r := liveStyle.Render(right)
+	if left == "" {
+		gap := bw - lipgloss.Width(r)
+		if gap < 0 {
+			gap = 0
+		}
+		return strings.Repeat(" ", gap) + r
 	}
-	lastLeadSession := ""
-	lastTeam := ""
-	first := true
-	for i, t := range m.teammates {
-		if first || t.LeadSessionID != lastLeadSession {
-			b.WriteString(sessionHdrStyle.Render("◆ session: "+m.sessionLabel(t.LeadSessionID)) + "\n")
-			lastLeadSession = t.LeadSessionID
-			lastTeam = ""
+	l := liveStyle.Render(trunc(left, 80))
+	gap := bw - lipgloss.Width(l) - lipgloss.Width(r)
+	if gap < 1 {
+		l = boxCell(l, bw-lipgloss.Width(r)-1)
+		gap = 1
+	}
+	return l + strings.Repeat(" ", gap) + r
+}
+
+// projectCounts is one project's "N sessions[ · T teammates][ · J subagents]" rollup.
+func projectCounts(p asProject) string {
+	mates, jobs := 0, 0
+	for _, sess := range p.sessions {
+		for _, t := range sess.teams {
+			mates += len(t.members)
 		}
-		team := t.Team
-		if team == "" {
-			team = "(no team)"
-		}
-		if first || team != lastTeam {
-			b.WriteString("  " + teamHdrStyle.Render("▸ team: "+team) + "\n")
-			lastTeam = team
-			first = false
-		}
+		jobs += len(sess.jobs)
+	}
+	out := fmt.Sprintf("%d sessions", len(p.sessions))
+	if mates > 0 {
+		out += fmt.Sprintf(" · %d teammates", mates)
+	}
+	if jobs > 0 {
+		out += fmt.Sprintf(" · %d subagents", jobs)
+	}
+	return out
+}
+
+// renderAppHeader is the L0 header — the same THREE-line + rule chrome every deeper level
+// uses, so changing levels never reshapes the screen: the app title + tab hint on line 1, a
+// blank spacer, then the cursored project beside ITS rollup (the project total is the
+// rail's own row count).
+func (m Model) renderAppHeader() string {
+	bw := m.boardInner()
+	projects := m.asProjects()
+	left, right := "", ""
+	if m.asProjectCursor < len(projects) {
+		p := projects[m.asProjectCursor]
+		left = sessiontitle.CleanTitle(projectLabel(p.dir))
+		right = projectCounts(p)
+	}
+	return m.spawnTitle() + "\n\n" + headerSummaryLine(left, right, bw)
+}
+
+// viewAsProjects is L0 (>1 project): the app header above one box — the project rail | the
+// cursored project's session rows (title, separated teammate/subagent counts, created time).
+func (m Model) viewAsProjects() string {
+	projects := m.asProjects()
+	var leftLines []string
+	for i, p := range projects {
 		marker := "  "
-		nameCol := fmt.Sprintf("%-14s", trunc(t.Name, 14))
-		if i == m.spawnCursor {
-			marker = cursorStyle.Render("> ")
-			if !t.Hidden { // a hidden row stays faint even when selected (see below)
-				nameCol = selectedStyle.Render(nameCol)
-			}
+		label := leftTruncCols(sessiontitle.CleanTitle(projectLabel(p.dir)), 28)
+		if i == m.asProjectCursor {
+			marker = cursorStyle.Render("❯ ")
+			label = selectedStyle.Render(label)
+		} else {
+			label = liveStyle.Render(label)
 		}
-		status := t.Status
-		if status == "" {
-			status = "-"
-		}
-		hidden := ""
-		if t.Hidden {
-			hidden = "yes"
-		}
-		// marker(2) + member indent(8) = 10: deeper than both session and team
-		// headers. A hidden teammate renders its whole row faint so it visibly
-		// recedes; the cursor marker stays bright so a selected hidden row is
-		// still obvious.
-		cols := nameCol + " " + fmt.Sprintf("%-9s %-16s %-7s %-7d %-8s %-6s",
-			trunc(t.Vendor, 9), trunc(t.Model, 16),
-			trunc(t.PaneID, 7), t.PID, trunc(status, 8), hidden)
-		if t.Hidden {
-			cols = faintStyle.Render(cols)
-		}
-		b.WriteString(marker + "        " + cols + "\n")
+		leftLines = append(leftLines, fmt.Sprintf("%s%s  %s", marker, label,
+			faintStyle.Render(fmt.Sprintf("%d", len(p.sessions)))))
 	}
-	return b.String()
+	leftW, rightW := m.paneWidths(leftWidth("Projects", leftLines, m.boardInner()))
+	rightTitle := "sessions"
+	rightLines := []string{faintStyle.Render("(none)")}
+	if m.asProjectCursor < len(projects) {
+		p := projects[m.asProjectCursor]
+		rightTitle = fmt.Sprintf("%s · %d sessions", leftTruncCols(sessiontitle.CleanTitle(projectLabel(p.dir)), 24), len(p.sessions))
+		rightLines = nil
+		for _, s := range p.sessions {
+			rightLines = append(rightLines, m.renderSessionRow(s, rightW))
+		}
+	}
+	bodyH := m.boardBodyHeight()
+	leftLines = windowLines(leftLines, m.asProjectCursor, bodyH)
+	return indentBox(m.renderAppHeader(), boardMargin) + "\n" + m.headerRule() + "\n" +
+		indentBox(renderBoard("Projects", leftLines, rightTitle, rightLines, leftW, rightW, bodyH, 0), boardMargin)
 }
 
-// viewJobTable renders the lower board table: subagent jobs grouped by Claude
-// session. It shows only status columns (JOB/VENDOR/MODEL/STATUS/STARTED) —
-// NEVER the job's answer text (Result.Result) or captured output, so no vendor
-// reply can leak onto the board.
-func (m Model) viewJobTable() string {
+// appTitleLine is the chrome's FIRST line at every Agent-status level: the fixed app title
+// + tab hint, with the level's directory (when it has one) right-aligned in faint — so the
+// top anchor never changes as the user drills.
+func (m Model) appTitleLine(dir string) string {
+	left := m.spawnTitle()
+	if dir == "" {
+		return left
+	}
+	bw := m.boardInner()
+	d := faintStyle.Render(leftTruncCols(sessiontitle.CleanTitle(prettyDir(dir)), bw/2))
+	gap := bw - lipgloss.Width(left) - lipgloss.Width(d)
+	if gap < 1 {
+		gap = 1
+	}
+	return left + strings.Repeat(" ", gap) + d
+}
+
+// renderProjectHeader is the L1 header — the fixed app title line over the CONTAINER's
+// label + rollup. The cursored session names only the right pane (the preview).
+func (m Model) renderProjectHeader(p asProject) string {
+	bw := m.boardInner()
+	line1 := m.appTitleLine(p.dir)
+	// The left slot stays FIXED on the container label (the cursored session already
+	// shows in the rail highlight + the right pane title; a moving header reads jumpy).
+	return line1 + "\n\n" + headerSummaryLine(sessiontitle.CleanTitle(projectLabel(p.dir)), projectCounts(p), bw)
+}
+
+// viewAsSessions is L1 (>1 session in the focused project): the PROJECT's header (the
+// container the user descended into) above one box — the session rail | the cursored
+// session's row preview.
+func (m Model) viewAsSessions() string {
+	p, ok := m.focusedProjectGroup()
+	if !ok {
+		return m.spawnTitle() + "\n\n" + faintStyle.Render("(no live agents)")
+	}
+	var leftLines []string
+	for i, s := range p.sessions {
+		marker := "  "
+		label := trunc(m.sessionLabel(s.sessionID), 40)
+		if i == m.asSessionCursor {
+			marker = cursorStyle.Render("❯ ")
+			label = selectedStyle.Render(label)
+		} else {
+			label = liveStyle.Render(label)
+		}
+		leftLines = append(leftLines, marker+sessionHdrStyle.Render("◆ ")+label)
+	}
+	leftW, rightW := m.paneWidths(leftWidth("Sessions", leftLines, m.boardInner()))
+	rightTitle := "overview"
+	if m.asSessionCursor < len(p.sessions) {
+		rightTitle = trunc(m.sessionLabel(p.sessions[m.asSessionCursor].sessionID), rightW-6)
+	}
+	rightLines := m.sessionOverviewLines(p, rightW)
+	bodyH := m.boardBodyHeight()
+	leftLines = windowLines(leftLines, m.asSessionCursor, bodyH)
+	return indentBox(m.renderProjectHeader(p), boardMargin) + "\n" + m.headerRule() + "\n" +
+		indentBox(renderBoard("Sessions", leftLines, rightTitle, rightLines, leftW, rightW, bodyH, 0), boardMargin)
+}
+
+// sessionOverviewLines is the L1 right pane: the cursored session's ACTUAL rows under
+// separate Agent Teams / Subagents sections — what ⏎ will open, previewed in place
+// (renderBoard clips overflow to the box height; created/project live in the header).
+func (m Model) sessionOverviewLines(p asProject, rightW int) []string {
+	if m.asSessionCursor >= len(p.sessions) {
+		return []string{faintStyle.Render("(none)")}
+	}
+	s := p.sessions[m.asSessionCursor]
+	var lines []string
+	if len(s.teams) > 0 {
+		lines = append(lines, "", faintStyle.Render("Agent Teams"))
+		for _, t := range s.teams {
+			okN := 0
+			for _, mem := range t.members {
+				if mem.Status == "ok" {
+					okN++
+				}
+			}
+			lines = append(lines, " "+teamAggregateDot(t.members)+" "+
+				contentStyle.Render(trunc(sessiontitle.CleanTitle(displayTeam(t.name)), 24))+
+				faintStyle.Render(fmt.Sprintf("  %d/%d", okN, len(t.members))))
+			for _, mem := range t.members {
+				lines = append(lines, "   "+m.renderTeammateRowFull(mem, rightW-3))
+			}
+		}
+	}
+	if len(s.jobs) > 0 {
+		lines = append(lines, "", faintStyle.Render(fmt.Sprintf("Subagents · %d", len(s.jobs))))
+		for _, j := range s.jobs {
+			lines = append(lines, " "+m.renderJobRowFull(j, rightW-1))
+		}
+	}
+	if len(lines) > 0 && lines[0] == "" {
+		lines = lines[1:] // the first section needs no leading spacer
+	}
+	return lines
+}
+
+// renderSessionRow is one session row in the L0 right pane: "◆ <title (short id)>" left,
+// the separated counts + created time right-aligned.
+func (m Model) renderSessionRow(s asSession, width int) string {
+	left := sessionHdrStyle.Render("◆ ") + liveStyle.Render(trunc(m.sessionLabel(s.sessionID), 44))
+	right := asSessionCounts(s)
+	if c := asCreated(s); c != "" {
+		right += " · " + c
+	}
+	return joinRowEnds(left, faintStyle.Render(right), width)
+}
+
+// asSessionCounts is a session's rollup with the two kinds separated: "N teammates
+// [(K hidden)] · M subagents"; "empty" when it has neither.
+func asSessionCounts(s asSession) string {
+	mates, hidden := 0, 0
+	for _, t := range s.teams {
+		for _, mem := range t.members {
+			mates++
+			if mem.Hidden {
+				hidden++
+			}
+		}
+	}
+	var parts []string
+	if mates > 0 {
+		seg := fmt.Sprintf("%d teammates", mates)
+		if hidden > 0 {
+			seg += fmt.Sprintf(" (%d hidden)", hidden)
+		}
+		parts = append(parts, seg)
+	}
+	if len(s.jobs) > 0 {
+		parts = append(parts, fmt.Sprintf("%d subagents", len(s.jobs)))
+	}
+	if len(parts) == 0 {
+		return "empty"
+	}
+	return strings.Join(parts, " · ")
+}
+
+// asCreated is the session's first-activity timestamp ("" when unrecorded).
+func asCreated(s asSession) string {
+	if !s.hasTime {
+		return ""
+	}
+	return s.earliest.Format("01-02 15:04")
+}
+
+// projectLabel renders a project dir as its LAST TWO path segments (a deep absolute path
+// doesn't fit a rail and the tail is the identifying part); "(no project)" when unresolved.
+func projectLabel(dir string) string {
+	if dir == "" {
+		return "(no project)"
+	}
+	segs := strings.Split(strings.Trim(dir, "/"), "/")
+	if n := len(segs); n > 2 {
+		segs = segs[n-2:]
+	}
+	return strings.Join(segs, "/")
+}
+
+// renderSessionHeader is the persistent header above the L2/L3 boxes, THREE lines: the
+// FIXED app title (the session's dir right-aligned); a blank spacer; then the session title
+// beside the right slot — the CURSORED agent's own stats when the cursor sits on a single
+// job/teammate (its tokens/elapsed live where the eye already is), else the session's
+// counts + created rollup. Width-bounded so a long title can't wrap and shift the
+// fixed-height boxes down.
+func (m Model) renderSessionHeader(s asSession) string {
+	bw := m.boardInner()
+	line1 := m.appTitleLine(m.sessionMeta[s.sessionID].Cwd)
+	right := m.headerEntityStats()
+	if right == "" {
+		right = asSessionCounts(s)
+		if c := asCreated(s); c != "" {
+			right += " · created " + c
+		}
+	}
+	return line1 + "\n\n" + headerSummaryLine(m.sessionLabel(s.sessionID), right, bw)
+}
+
+// headerEntityStats is the cursored agent's own stat summary for the session header: a
+// job's tokens + elapsed + started time, a teammate's uptime + spawn time. "" when the
+// cursored row isn't a single agent (an L2 team row, an empty collection) — the header
+// falls back to the session rollup.
+func (m Model) headerEntityStats() string {
+	switch m.asMode {
+	case asModeEntity:
+		if t, ok := m.selectedTeammate(); ok {
+			return teammateStats(t)
+		}
+		if j, ok := m.selectedJob(); ok {
+			return m.jobStats(j)
+		}
+	case asModeBoxes:
+		if s, ok := m.focusedSession(); ok {
+			if i := m.asBoxCursor - len(s.teams); i >= 0 && i < len(s.jobs) {
+				return m.jobStats(s.jobs[i])
+			}
+		}
+	}
+	return ""
+}
+
+// jobStats is one job's header summary: "↑ <ctx> ctx · ↓ <out> out · <elapsed> · <started>"
+// with the token segment omitted until usage exists (a running unfocused job reports none).
+func (m Model) jobStats(j subagent.Result) string {
+	var parts []string
+	if in, out := m.jobTokens(j); in > 0 || out > 0 {
+		parts = append(parts, fmt.Sprintf("↑ %s ctx · ↓ %s out", humanTokens(in), humanTokens(out)))
+	}
+	if el := jobElapsed(j); el != "" {
+		parts = append(parts, el)
+	}
+	if ts, err := time.Parse(time.RFC3339, j.StartedAt); err == nil {
+		parts = append(parts, ts.Format("01-02 15:04"))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// teammateStats is one teammate's header summary: its uptime + spawn time.
+func teammateStats(t teardown.Teammate) string {
+	var parts []string
+	if up := teammateUptime(t); up != "" {
+		parts = append(parts, "up "+up)
+	}
+	if t.SpawnTime > 0 {
+		parts = append(parts, time.UnixMilli(t.SpawnTime).Format("01-02 15:04"))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// jobTokens is the job's (peak-context, cumulative-output) token pair: the final Result
+// usage, overridden by the live activity snapshot while the focused job still runs.
+func (m Model) jobTokens(j subagent.Result) (in, out int) {
+	if j.Usage != nil {
+		in, out = j.Usage.InputTokens, j.Usage.OutputTokens
+	}
+	if j.Status == "running" && m.asDetailJobID == j.JobID && m.asDetailSnap.hasUsage {
+		in, out = m.asDetailSnap.inTok, m.asDetailSnap.outTok
+	}
+	return in, out
+}
+
+// viewAsBoxes is L2: the session header above the two stacked boxes — Agent Teams
+// (master-detail: team rail | the cursored team's member rows) and Subagents (the session's
+// job rows). One ↑/↓ cursor walks both (see updateAsBoxes); a session missing one kind
+// simply omits that box.
+func (m Model) viewAsBoxes() string {
+	s, ok := m.focusedSession()
+	if !ok {
+		return m.spawnTitle() + "\n\n" +
+			faintStyle.Render("(no live agents — none spawned, and no subagent jobs)")
+	}
+	header := indentBox(m.renderSessionHeader(s), boardMargin) + "\n" + m.headerRule() + "\n"
+	teamsBody, jobsBody := m.splitBoxHeights(s)
+	var parts []string
+	if len(s.teams) > 0 {
+		parts = append(parts, indentBox(m.renderTeamsBox(s, teamsBody), boardMargin))
+	}
+	if len(s.jobs) > 0 {
+		parts = append(parts, indentBox(m.renderJobsBox(s, jobsBody), boardMargin))
+	}
+	return header + strings.Join(parts, "\n")
+}
+
+// splitBoxHeights divides the body budget between the two boxes: the Agent Teams box gets
+// what its content needs up to half, the Subagents box the rest; a missing kind hands its
+// share to the other. The two extra border rows of the second box come off the budget.
+func (m Model) splitBoxHeights(s asSession) (teams, jobs int) {
+	total := m.boardBodyHeight()
+	if len(s.teams) == 0 {
+		return 0, total
+	}
+	if len(s.jobs) == 0 {
+		return total, 0
+	}
+	avail := total - 2
+	if avail < 4 {
+		avail = 4
+	}
+	need := len(s.teams)
+	if ti := m.boxTeamIdx(s); ti >= 0 && len(s.teams[ti].members) > need {
+		need = len(s.teams[ti].members)
+	}
+	teams = need
+	if cap := avail / 2; teams > cap {
+		teams = cap
+	}
+	if teams < 2 {
+		teams = 2
+	}
+	return teams, avail - teams
+}
+
+// boxTeamIdx is the team the Agent Teams box previews: the cursored team while the L2
+// cursor sits in the teams range, else the last team (the cursor moved into the Subagents
+// box).
+func (m Model) boxTeamIdx(s asSession) int {
+	if len(s.teams) == 0 {
+		return -1
+	}
+	if m.asBoxCursor < len(s.teams) {
+		return m.asBoxCursor
+	}
+	return len(s.teams) - 1
+}
+
+// renderTeamsBox is the Agent Teams master-detail box: team rail | the previewed team's
+// member rows.
+func (m Model) renderTeamsBox(s asSession, bodyH int) string {
+	var leftLines []string
+	for i, t := range s.teams {
+		marker := "  "
+		okN := 0
+		for _, mem := range t.members {
+			if mem.Status == "ok" {
+				okN++
+			}
+		}
+		title := trunc(sessiontitle.CleanTitle(displayTeam(t.name)), 20)
+		if i == m.asBoxCursor {
+			marker = cursorStyle.Render("❯ ")
+			title = selectedStyle.Render(title)
+		} else {
+			title = liveStyle.Render(title)
+		}
+		leftLines = append(leftLines, fmt.Sprintf("%s%s %s  %s", marker, teamAggregateDot(t.members), title,
+			faintStyle.Render(fmt.Sprintf("%d/%d", okN, len(t.members)))))
+	}
+	leftW, rightW := m.paneWidths(leftWidth("Agent Teams", leftLines, m.boardInner()))
+	rightTitle := "teammates"
+	var rightLines []string
+	if ti := m.boxTeamIdx(s); ti >= 0 {
+		t := s.teams[ti]
+		rightTitle = fmt.Sprintf("%s · %d teammates",
+			trunc(sessiontitle.CleanTitle(displayTeam(t.name)), 20), len(t.members))
+		for _, mem := range t.members {
+			rightLines = append(rightLines, m.renderTeammateRowFull(mem, rightW))
+		}
+	}
+	leftLines = windowLines(leftLines, m.asBoxCursor, bodyH)
+	return renderBoard("Agent Teams", leftLines, rightTitle, rightLines, leftW, rightW, bodyH, 0)
+}
+
+// renderJobsBox is the Subagents box: the session's job rows, full width, the continuum
+// cursor marking the active row.
+func (m Model) renderJobsBox(s asSession, bodyH int) string {
+	innerW := m.boardInner() - 6
+	cursor := m.asBoxCursor - len(s.teams)
+	var lines []string
+	for i, j := range s.jobs {
+		marker := "  "
+		if i == cursor {
+			marker = cursorStyle.Render("❯ ")
+		}
+		lines = append(lines, marker+m.renderJobRowFull(j, innerW-2))
+	}
+	if cursor < 0 {
+		cursor = 0
+	}
+	return renderBox(fmt.Sprintf("Subagents · %d", len(s.jobs)), windowLines(lines, cursor, bodyH), innerW, bodyH)
+}
+
+// renderBox draws a full-width single-pane rounded box with a title segment — the
+// one-column sibling of renderBoard.
+func renderBox(title string, lines []string, innerW, bodyH int) string {
 	var b strings.Builder
-	b.WriteString(faintStyle.Render("Subagent Jobs") + "\n")
-	b.WriteString(faintStyle.Render("  "+fmt.Sprintf("%-10s %-9s %-16s %-8s %-20s",
-		"JOB", "VENDOR", "MODEL", "STATUS", "STARTED")) + "\n")
-	// RunID-tagged jobs belong to the Workflows board; show only ungrouped
-	// (RunID == "") jobs here so a workflow job never double-renders.
-	var jobs []subagent.Result
-	for _, j := range m.jobs {
-		if j.RunID == "" {
-			jobs = append(jobs, j)
+	head := "  " + title + " "
+	fill := innerW + 4 - ansi.StringWidth(head)
+	if fill < 0 {
+		fill = 0
+	}
+	b.WriteString(borderStyle.Render("╭"+head+strings.Repeat("─", fill)+"╮") + "\n")
+	bar := borderStyle.Render("│")
+	for i := 0; i < bodyH; i++ {
+		l := ""
+		if i < len(lines) {
+			l = lines[i]
 		}
+		b.WriteString(bar + "  " + boxCell(l, innerW) + "  " + bar + "\n")
 	}
-	if len(jobs) == 0 {
-		b.WriteString(faintStyle.Render("  (no subagent jobs)") + "\n")
-		return b.String()
-	}
-	for _, bucket := range groupedJobsBySession(jobs) {
-		b.WriteString(sessionHdrStyle.Render("◆ session: "+m.sessionLabel(bucket.leadSessionID)) + "\n")
-		for _, j := range bucket.jobs {
-			b.WriteString("  " + fmt.Sprintf("%-10s %-9s %-16s %-8s %-20s",
-				shortJobID(j.JobID), trunc(j.Vendor, 9), trunc(j.Model, 16),
-				trunc(j.Status, 8), trunc(j.StartedAt, 20)) + "\n")
-		}
-	}
+	b.WriteString(borderStyle.Render("╰" + strings.Repeat("─", innerW+4) + "╯"))
 	return b.String()
 }
 
-type jobBucket struct {
-	leadSessionID string
-	jobs          []subagent.Result
-	firstIdx      int
-	startedAt     time.Time
-	hasStartedAt  bool
+// displayTeam renders a team name, "(no team)" when empty.
+func displayTeam(team string) string {
+	if team == "" {
+		return "(no team)"
+	}
+	return team
 }
 
-func groupedJobsBySession(jobs []subagent.Result) []jobBucket {
-	bySession := map[string]int{}
-	var buckets []jobBucket
-	for _, j := range jobs {
-		idx, ok := bySession[j.LeadSessionID]
-		if !ok {
-			idx = len(buckets)
-			bySession[j.LeadSessionID] = idx
-			buckets = append(buckets, jobBucket{leadSessionID: j.LeadSessionID, firstIdx: idx})
-		}
-		b := &buckets[idx]
-		b.jobs = append(b.jobs, j)
-		if started, err := time.Parse(time.RFC3339, j.StartedAt); err == nil {
-			if !b.hasStartedAt || started.Before(b.startedAt) {
-				b.startedAt = started
-				b.hasStartedAt = true
-			}
+// teammateDot maps teammate health to the board glyph: ok ● (green), error ● (err),
+// unknown/unscanned ◌ (faint).
+func teammateDot(t teardown.Teammate) string {
+	switch t.Status {
+	case "ok":
+		return okStyle.Render("●")
+	case "error":
+		return errStyle.Render("●")
+	default:
+		return faintStyle.Render("◌")
+	}
+}
+
+// teammateStatusWord is the row's canonical health word — the classified error class when
+// present (rate_limit / insufficient_balance / auth / api_error, the `ps --check`
+// vocabulary), else the scan status.
+func teammateStatusWord(t teardown.Teammate) string {
+	if t.ErrorClass != "" {
+		return t.ErrorClass
+	}
+	if t.Status == "" {
+		return "unknown"
+	}
+	return t.Status
+}
+
+// teammateUptime renders how long the teammate has been up, from its JoinedAt-derived
+// SpawnTime (unix ms); "" when unrecorded.
+func teammateUptime(t teardown.Teammate) string {
+	if t.SpawnTime <= 0 {
+		return ""
+	}
+	d := time.Since(time.UnixMilli(t.SpawnTime))
+	switch {
+	case d < 0:
+		return ""
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%dh %dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+}
+
+// teamAggregateDot rolls a team's health up to the rail: any error → ● (err), all ok → ●
+// (green), else ◌ (faint — unscanned/unknown somewhere).
+func teamAggregateDot(members []teardown.Teammate) string {
+	okN := 0
+	for _, t := range members {
+		switch t.Status {
+		case "error":
+			return errStyle.Render("●")
+		case "ok":
+			okN++
 		}
 	}
-	sort.SliceStable(buckets, func(i, j int) bool {
-		a, b := buckets[i], buckets[j]
-		if a.leadSessionID != b.leadSessionID {
-			if a.leadSessionID == "" {
-				return false
+	if len(members) > 0 && okN == len(members) {
+		return okStyle.Render("●")
+	}
+	return faintStyle.Render("◌")
+}
+
+// jobsAggregateDot rolls the session's jobs up to the rail — a failure is never masked:
+// any failed → ● (err), else any running → ● (accent), else all done → ● (green), else ◌.
+func jobsAggregateDot(jobs []subagent.Result) string {
+	running, done := false, 0
+	for _, j := range jobs {
+		switch j.Status {
+		case "failed":
+			return errStyle.Render("●")
+		case "running":
+			running = true
+		case "done":
+			done++
+		}
+	}
+	switch {
+	case running:
+		return cursorStyle.Render("●")
+	case len(jobs) > 0 && done == len(jobs):
+		return okStyle.Render("●")
+	default:
+		return faintStyle.Render("◌")
+	}
+}
+
+// renderTeammateRowFull is one teammate row (right pane): "<dot> <name>  <model>" left,
+// "<status>[ · hidden] · up <uptime>" right-aligned. The status word stays canonical even on
+// a hidden row (every row carries its `ps --check` health); hidden adds the suffix and the
+// whole row renders faint so it visibly recedes.
+func (m Model) renderTeammateRowFull(t teardown.Teammate, width int) string {
+	name := sessiontitle.CleanTitle(t.Name)
+	if name == "" {
+		name = "teammate"
+	}
+	nameStyle := liveStyle
+	if t.Hidden {
+		nameStyle = faintStyle
+	}
+	left := teammateDot(t) + " " + nameStyle.Render(trunc(name, 24))
+	if model := sessiontitle.CleanTitle(t.Model); model != "" {
+		left += "  " + faintStyle.Render(trunc(model, 22))
+	}
+	status := teammateStatusWord(t)
+	if t.Hidden {
+		status += " · hidden"
+	}
+	if up := teammateUptime(t); up != "" {
+		status += " · up " + up
+	}
+	return joinRowEnds(left, faintStyle.Render(status), width)
+}
+
+// renderJobRowFull is one subagent-job row (right pane): "<dot> <jobID>  <model>" left,
+// "<status> · <elapsed>" right-aligned — status columns only, NEVER answer text.
+func (m Model) renderJobRowFull(j subagent.Result, width int) string {
+	left := statusDot(j.Status) + " " +
+		labelStyle(j.Status).Render(shortJobID(sessiontitle.CleanTitle(j.JobID)))
+	if model := sessiontitle.CleanTitle(j.Model); model != "" {
+		left += "  " + faintStyle.Render(trunc(model, 22))
+	}
+	metrics := j.Status
+	if metrics == "" {
+		metrics = "unknown"
+	}
+	if el := jobElapsed(j); el != "" {
+		metrics += " · " + el
+	}
+	return joinRowEnds(left, faintStyle.Render(metrics), width)
+}
+
+// jobElapsed is the job's wall-clock: the recorded duration once terminal, a live
+// since-StartedAt while in progress; "" when unparseable — and never a live, growing figure
+// for a terminal job whose record carries no duration.
+func jobElapsed(j subagent.Result) string {
+	if d := leafDuration(j); d != "" {
+		return d
+	}
+	if isTerminalLeaf(j.Status) {
+		return ""
+	}
+	start, err := time.Parse(time.RFC3339, j.StartedAt)
+	if err != nil {
+		return ""
+	}
+	d := time.Since(start)
+	if d < 0 {
+		d = 0
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	return fmt.Sprintf("%dm %ds", int(d/time.Minute), int(d.Seconds())%60)
+}
+
+// asEntityLeftLines builds the COMPACT entity list for the L3 left rail (dot + name only),
+// plus its title — shared by viewAsEntity and asEntityRightWidth so the scroll clamp and the
+// render agree on the right pane width (mirror agentLeftLines).
+func (m Model) asEntityLeftLines() (title string, lines []string) {
+	members, jobs := m.railEntities()
+	if m.asEntitySrc.jobs {
+		title = fmt.Sprintf("Subagents · %d", len(jobs))
+		for i, j := range jobs {
+			marker := "  "
+			label := shortJobID(sessiontitle.CleanTitle(j.JobID))
+			if i == m.asEntityCursor {
+				marker = cursorStyle.Render("❯ ")
+				label = selectedStyle.Render(label)
+			} else {
+				label = labelStyle(j.Status).Render(label)
 			}
-			if b.leadSessionID == "" {
-				return true
+			lines = append(lines, marker+statusDot(j.Status)+" "+label)
+		}
+		return title, lines
+	}
+	title = fmt.Sprintf("%s · %d teammates",
+		trunc(sessiontitle.CleanTitle(displayTeam(m.asEntitySrc.team)), 20), len(members))
+	for i, t := range members {
+		marker := "  "
+		label := sessiontitle.CleanTitle(t.Name)
+		if label == "" {
+			label = "teammate"
+		}
+		label = trunc(label, 24)
+		switch {
+		case i == m.asEntityCursor:
+			marker = cursorStyle.Render("❯ ")
+			label = selectedStyle.Render(label)
+		case t.Hidden:
+			label = faintStyle.Render(label)
+		default:
+			label = liveStyle.Render(label)
+		}
+		lines = append(lines, marker+teammateDot(t)+" "+label)
+	}
+	return title, lines
+}
+
+// asEntityRightWidth is the L3 right pane width (mirror wfAgentRightWidth) so the scroll
+// clamp wraps the detail to the same column budget the render uses.
+func (m Model) asEntityRightWidth() int {
+	title, lines := m.asEntityLeftLines()
+	_, rightW := m.paneWidths(leftWidth(title, lines, m.boardInner()))
+	return rightW
+}
+
+// viewAsEntity is L3: the session header above one box — "entity list | the focused
+// entity's inline detail card" (the right pane scrolls with j/k via asCardScroll).
+func (m Model) viewAsEntity() string {
+	s, ok := m.focusedSession()
+	if !ok {
+		return m.spawnTitle() + "\n\n" + faintStyle.Render("(no live agents)")
+	}
+	listTitle, leftLines := m.asEntityLeftLines()
+	leftW, rightW := m.paneWidths(leftWidth(listTitle, leftLines, m.boardInner()))
+	cardTitle := "detail"
+	if t, tok := m.selectedTeammate(); tok {
+		if n := trunc(sessiontitle.CleanTitle(t.Name), rightW-6); n != "" {
+			cardTitle = n
+		}
+	} else if j, jok := m.selectedJob(); jok {
+		cardTitle = shortJobID(sessiontitle.CleanTitle(j.JobID))
+	}
+	rightLines := m.entityDetailLines(rightW)
+	bodyH := m.asEntityBodyHeight()
+	leftLines = windowLines(leftLines, m.asEntityCursor, bodyH)
+	board := indentBox(renderBoard(listTitle, leftLines, cardTitle, rightLines, leftW, rightW, bodyH, m.clampAsCardScroll(m.asCardScroll)), boardMargin)
+	// A single-kind session lands here directly (the boxes level is skipped): keep the
+	// two-box silhouette with a slim placeholder for the missing collection.
+	if _, single := singleKindSrc(s); single {
+		innerW := m.boardInner() - 6
+		if m.asEntitySrc.jobs {
+			ph := renderBox("Agent Teams", []string{faintStyle.Render("(none in this session)")}, innerW, 1)
+			board = indentBox(ph, boardMargin) + "\n" + board
+		} else {
+			ph := renderBox("Subagents · 0", []string{faintStyle.Render("(none in this session)")}, innerW, 1)
+			board = board + "\n" + indentBox(ph, boardMargin)
+		}
+	}
+	return indentBox(m.renderSessionHeader(s), boardMargin) + "\n" + m.headerRule() + "\n" + board
+}
+
+// asEntityBodyHeight is the entity box's row budget: the full body, minus the slim
+// placeholder box a single-kind session shows for its missing collection (two borders +
+// one row).
+func (m Model) asEntityBodyHeight() int {
+	if s, ok := m.focusedSession(); ok {
+		if _, single := singleKindSrc(s); single {
+			h := m.boardBodyHeight() - 3
+			if h < 5 {
+				h = 5
 			}
+			return h
 		}
-		if a.hasStartedAt != b.hasStartedAt {
-			return a.hasStartedAt
+	}
+	return m.boardBodyHeight()
+}
+
+// entityDetailLines is the focused entity's inline detail card (the L2 right pane): the
+// teammate card mirrors `ps --check` (canonical fields only, no raw pane text); the job card
+// renders from the already-loaded Result — usage/cost/turns appear once terminal, and a
+// failure shows the canonical ErrorCode ONLY (ErrorMsg never renders on this board).
+func (m Model) entityDetailLines(rightW int) []string {
+	if t, ok := m.selectedTeammate(); ok {
+		return m.teammateDetailLines(t, rightW)
+	}
+	if j, ok := m.selectedJob(); ok {
+		return m.jobDetailLines(j, rightW)
+	}
+	return []string{faintStyle.Render("(no row)")}
+}
+
+// detailField renders one "key  value" card line set, wrapping a long value to the pane
+// (continuation lines indent under the value column) — the card never truncates a field.
+func detailField(lines *[]string, k, v string, rightW int) {
+	if v == "" {
+		v = "—"
+	}
+	for fi, w := range wrapTo(v, rightW-12) {
+		key := fmt.Sprintf("%-8s", k)
+		if fi > 0 {
+			key = strings.Repeat(" ", 8)
 		}
-		if a.hasStartedAt && !a.startedAt.Equal(b.startedAt) {
-			return a.startedAt.Before(b.startedAt)
+		*lines = append(*lines, " "+faintStyle.Render(key)+"  "+contentStyle.Render(w))
+	}
+}
+
+// teammateStatusToken is the card's status line token: ok → green, error → red dot + the
+// canonical class, unknown → faint.
+func teammateStatusToken(t teardown.Teammate) string {
+	switch t.Status {
+	case "ok":
+		return okStyle.Render("● ok")
+	case "error":
+		return errStyle.Render("● " + teammateStatusWord(t))
+	default:
+		return faintStyle.Render("◌ " + teammateStatusWord(t))
+	}
+}
+
+func (m Model) teammateDetailLines(t teardown.Teammate, rightW int) []string {
+	status := teammateStatusToken(t)
+	if model := sessiontitle.CleanTitle(t.Model); model != "" {
+		status += faintStyle.Render(" · " + trunc(model, 28))
+	}
+	lines := []string{status, "", faintStyle.Render("Overview")}
+	detailField(&lines, "team", sessiontitle.CleanTitle(displayTeam(t.Team)), rightW)
+	detailField(&lines, "vendor", sessiontitle.CleanTitle(t.Vendor), rightW)
+	detailField(&lines, "model", sessiontitle.CleanTitle(t.Model), rightW)
+	pane := t.PaneID
+	if t.Socket != "" {
+		pane += " · " + sessiontitle.CleanTitle(t.Socket)
+	}
+	detailField(&lines, "pane", pane, rightW)
+	detailField(&lines, "pid", fmt.Sprintf("%d", t.PID), rightW)
+	if up := teammateUptime(t); up != "" {
+		detailField(&lines, "up", up, rightW)
+	}
+	detailField(&lines, "status", teammateStatusWord(t), rightW)
+	if t.Detail != "" {
+		detailField(&lines, "detail", t.Detail, rightW)
+	}
+	hidden := "no"
+	if t.Hidden {
+		hidden = "yes"
+	}
+	detailField(&lines, "hidden", hidden, rightW)
+	if t.LeadSessionID != "" {
+		detailField(&lines, "session", shortSessionID(sessiontitle.CleanTitle(t.LeadSessionID)), rightW)
+	}
+	return lines
+}
+
+func (m Model) jobDetailLines(j subagent.Result, rightW int) []string {
+	status := statusLabel(j.Status)
+	if model := sessiontitle.CleanTitle(j.Model); model != "" {
+		status += faintStyle.Render(" · " + trunc(model, 28))
+	}
+	if j.Attempt > 1 {
+		// >1 occurs only in records from engines that retried schema mismatches; surface it.
+		status += faintStyle.Render(fmt.Sprintf(" · attempt %d", j.Attempt))
+	}
+	lines := []string{status, "", faintStyle.Render("Overview")}
+	detailField(&lines, "job", sessiontitle.CleanTitle(j.JobID), rightW)
+	// The status line clips the model; the Overview carries it in full (the vendor is
+	// implied by the profile/model and lives in the CLI surfaces).
+	detailField(&lines, "model", sessiontitle.CleanTitle(j.Model), rightW)
+	if profile := sessiontitle.CleanTitle(j.PromptProfile); profile != "" {
+		if d := sessiontitle.CleanTitle(j.SlimDowngrade); d != "" {
+			profile += " (ran full: " + d + ")"
 		}
-		return a.firstIdx < b.firstIdx
-	})
-	return buckets
+		detailField(&lines, "profile", profile, rightW)
+	}
+	detailField(&lines, "started", sessiontitle.CleanTitle(j.StartedAt), rightW)
+	if el := jobElapsed(j); el != "" {
+		detailField(&lines, "elapsed", el, rightW)
+	}
+	in, out := m.jobTokens(j)
+	if in > 0 || out > 0 {
+		detailField(&lines, "tokens", fmt.Sprintf("↑ %s ctx · ↓ %s out",
+			humanTokens(in), humanTokens(out)), rightW)
+	}
+	if isTerminalLeaf(j.Status) {
+		if j.CostUSD > 0 {
+			detailField(&lines, "cost", fmt.Sprintf("~$%.4f est", j.CostUSD), rightW)
+		}
+		if j.NumTurns > 0 {
+			detailField(&lines, "turns", fmt.Sprintf("%d", j.NumTurns), rightW)
+		}
+		if stop := sessiontitle.CleanTitle(j.StopReason); stop != "" {
+			detailField(&lines, "stop", stop, rightW)
+		}
+	}
+	// Prompt → Activity → Output → Outcome, the wf agent card's order, fed from the
+	// nonce-gated io load. The Output reads the .answer side file (focused-single-job
+	// surface, CleanTitle-scrubbed) — NEVER Result.Result.
+	lines = append(lines, "")
+	switch {
+	case m.asDetailJobID != j.JobID:
+		lines = append(lines, faintStyle.Render("(loading…)"))
+	case !m.asDetailIO:
+		lines = append(lines, faintStyle.Render("(prompt/output not persisted — run with default persist-io)"))
+	default:
+		lines = append(lines, promptSection(m.asDetailPrompt, m.asPromptExpanded, rightW)...)
+	}
+	if m.asDetailJobID == j.JobID {
+		lines = append(lines, "")
+		lines = append(lines, activityLines(m.asDetailSnap, rightW)...)
+		if m.asDetailIO {
+			lines = append(lines, "", faintStyle.Render("Output"))
+			lines = append(lines, ioLines(m.asDetailAnswer, rightW, liveStyle)...)
+		}
+	}
+	lines = append(lines, "", faintStyle.Render("Outcome"), " "+m.renderOutcome(j))
+	return lines
 }
 
 // runGroup is a workflow run with its jobs bucketed by phase, ready to render.
@@ -1235,8 +2138,8 @@ type runPhaseGroup struct {
 // phase order; phases observed on a job but absent from the manifest are appended
 // in first-seen order. A run with no manifest (GC'd or never created) carries an
 // empty name and phases in first-seen order. Runs sort newest-first by StartedAt
-// (the manifest's, else the earliest job StartedAt), RFC3339 string compare —
-// same discipline as groupedJobsBySession.
+// (the manifest's, else the earliest job StartedAt) — an RFC3339 string compare,
+// whose lexicographic order matches chronological order for the fixed-width format.
 func groupByRun(jobs []subagent.Result, runs []subagent.WorkflowRun) []runGroup {
 	byRunID := map[string]subagent.WorkflowRun{}
 	for _, r := range runs {
@@ -1383,7 +2286,7 @@ func (m Model) sessionLabel(id string) string {
 	// Scrub both the opaque session id and any /rename title with CleanTitle so the board header
 	// strips ANSI/BEL/OSC control bytes (not just whitespace) before display.
 	short := shortSessionID(sessiontitle.CleanTitle(id))
-	if title := sessiontitle.CleanTitle(m.sessionTitles[id]); title != "" {
+	if title := sessiontitle.CleanTitle(m.sessionMeta[id].Title); title != "" {
 		return trunc(title, 48) + " (" + short + ")"
 	}
 	return short
@@ -1397,7 +2300,7 @@ func (m Model) sessionLabelFull(id string) string {
 		return "(no session)"
 	}
 	full := sessiontitle.CleanTitle(id)
-	if title := sessiontitle.CleanTitle(m.sessionTitles[id]); title != "" {
+	if title := sessiontitle.CleanTitle(m.sessionMeta[id].Title); title != "" {
 		return trunc(title, 48) + " (" + full + ")"
 	}
 	return full
@@ -1410,52 +2313,7 @@ func shortSessionID(id string) string {
 	return id
 }
 
-// viewTeammateDetail renders the full-field detail card for the board-selected
-// teammate: every field UNtruncated, so the operator can read values the table
-// clips (vendor / model / detail). Read-only — esc/enter returns to the board.
-// It shows the same canonical health fields as `ps --check` (never raw pane
-// text), so nothing here can leak a vendor reply.
-func (m Model) viewTeammateDetail() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("cc-fleet · teammate detail") + footer("    esc back") + "\n\n")
-	if m.spawnCursor < 0 || m.spawnCursor >= len(m.teammates) {
-		b.WriteString(faintStyle.Render("  (no teammate selected)") + "\n")
-		b.WriteString("\n" + footer("esc back"))
-		return b.String()
-	}
-	t := m.teammates[m.spawnCursor]
-	b.WriteString(selectedStyle.Render("  "+t.Name) + faintStyle.Render(" @ "+t.Team) + "\n\n")
-	field := func(k, v string) {
-		if v == "" {
-			v = "—"
-		}
-		b.WriteString("  " + faintStyle.Render(fmt.Sprintf("%-8s", k)) + "  " + v + "\n")
-	}
-	field("vendor", t.Vendor)
-	field("model", t.Model)
-	field("pane", t.PaneID)
-	field("pid", fmt.Sprintf("%d", t.PID))
-	status := t.Status
-	if status == "" {
-		status = "—"
-	}
-	field("status", status)
-	if t.ErrorClass != "" {
-		field("error", t.ErrorClass)
-	}
-	if t.Detail != "" {
-		field("detail", t.Detail)
-	}
-	hidden := "no"
-	if t.Hidden {
-		hidden = "yes"
-	}
-	field("hidden", hidden)
-	b.WriteString("\n" + footer("esc/enter back · q quit"))
-	return b.String()
-}
-
-// shortJobID trims a job UUID to its first 8 chars for the board's JOB column.
+// shortJobID trims a job UUID to its first 8 chars for the board's job rows.
 func shortJobID(id string) string {
 	if len(id) > 8 {
 		return id[:8]

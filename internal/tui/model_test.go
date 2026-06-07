@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,6 +14,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/models"
 	"github.com/ethanhq/cc-fleet/internal/panevis"
 	"github.com/ethanhq/cc-fleet/internal/secrets"
+	"github.com/ethanhq/cc-fleet/internal/sessiontitle"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 	"github.com/ethanhq/cc-fleet/internal/teardown"
 	"github.com/ethanhq/cc-fleet/internal/userops"
@@ -631,57 +633,101 @@ func boardModel(t *testing.T, tms []teardown.Teammate, jobs []subagent.Result) M
 	return m
 }
 
-// TestBoardRendersTablesAndColumns: the board renders both the teammate table
-// (with STATUS + HIDDEN columns) and the subagent-job table (status columns
-// only), plus the new footer — and NEVER the job's answer text.
-func TestBoardRendersTablesAndColumns(t *testing.T) {
+// TestBoardSingleSessionBoxes: one session auto-focuses into the stacked Agent Teams +
+// Subagents boxes: the team rail + member rows render in the first, the job rows in the
+// second (a hidden row keeps its canonical health word and gains the `· hidden` suffix),
+// and the job's answer text (Result.Result) never renders.
+func TestBoardSingleSessionBoxes(t *testing.T) {
 	m := boardModel(t,
 		[]teardown.Teammate{
-			{Name: "alice", Team: "t1", Vendor: "glm", Model: "glm-4.6", PaneID: "%3", PID: 42, Status: "ok"},
-			{Name: "bob", Team: "t2", Vendor: "kimi", Model: "kimi-k2", PaneID: "%4", PID: 43, Status: "error", Hidden: true},
+			{Name: "alice", Team: "t1", Vendor: "glm", Model: "glm-4.6", PaneID: "%3", PID: 42, Status: "ok", LeadSessionID: "sess-aaaaaaaa"},
+			{Name: "bob", Team: "t1", Vendor: "kimi", Model: "kimi-k2", PaneID: "%4", PID: 43, Status: "error", ErrorClass: "rate_limit", Hidden: true, LeadSessionID: "sess-aaaaaaaa"},
 		},
 		[]subagent.Result{{
 			JobID: "abcdef0123456789", Vendor: "glm", Model: "glm-4.6",
-			Status: "running", StartedAt: "2026-05-26T01:02:03Z", LeadSessionID: "session-one-abcdef",
+			Status: "running", StartedAt: "2026-05-26T01:02:03Z", LeadSessionID: "sess-aaaaaaaa",
 			Result: "TOP-SECRET-ANSWER", // must never render
 		}},
 	)
+	if m.asMode != asModeBoxes {
+		t.Fatalf("single session should auto-focus its boxes, mode=%d", m.asMode)
+	}
 	out := m.View()
 	for _, want := range []string{
-		"NAME", "STATUS", "HIDDEN", "Subagent Jobs", "JOB", "STARTED",
-		"◆ session: (no session)", "alice", "bob", "yes",
-		"◆ session: session-", "abcdef01", "h hide", "s show",
+		"sess-aaa…",                            // session header short id
+		"2 teammates (1 hidden) · 1 subagents", // header counts, kinds separated
+		"Agent Teams",                          // first box title
+		"Subagents · 1",                        // second box title
+		"alice", "bob",                         // the previewed team's rows
+		"rate_limit · hidden", // hidden row: health word + suffix
 	} {
 		if !strings.Contains(out, want) {
-			t.Errorf("board view missing %q\n---\n%s", want, out)
+			t.Errorf("boxes view missing %q\n---\n%s", want, out)
 		}
 	}
 	if strings.Contains(out, "TOP-SECRET-ANSWER") {
-		t.Errorf("board leaked the job answer text (Result.Result) into the table:\n%s", out)
+		t.Errorf("board leaked the job answer text (Result.Result):\n%s", out)
 	}
 }
 
-// TestBoardCursorClampAndKeys: ↑/↓ clamp the teammate cursor at both ends, and
-// h/s issue a command for the selected row.
-func TestBoardCursorClampAndKeys(t *testing.T) {
+// TestBoardMultiSessionList: >1 session (one project) parks on the session list, rail rows
+// ordered by earliest activity (job-only sessions included), "(no session)" last; →/⏎
+// descends into the cursored session's boxes.
+func TestBoardMultiSessionList(t *testing.T) {
+	m := boardModel(t,
+		[]teardown.Teammate{
+			{Name: "alice", Team: "t1", PaneID: "%1", LeadSessionID: "sess-bbbbbbbb", SpawnTime: 2_000_000},
+			{Name: "dave", Team: "t3", PaneID: "%4"}, // no session
+		},
+		[]subagent.Result{
+			{JobID: "job-a0000000", Vendor: "glm", Status: "done", StartedAt: "1970-01-01T00:00:01Z", LeadSessionID: "sess-aaaaaaaa"},
+		},
+	)
+	if m.asMode != asModeSessions {
+		t.Fatalf("multi session should park on the session list, mode=%d", m.asMode)
+	}
+	out := m.View()
+	// NEWEST first: sess-b (spawn @2000s) before sess-a (job @1s); no-session last.
+	posA := strings.Index(out, "sess-aaa…")
+	posB := strings.Index(out, "sess-bbb…")
+	posNone := strings.Index(out, "(no session)")
+	if posA < 0 || posB < 0 || posNone < 0 || !(posB < posA && posA < posNone) {
+		t.Fatalf("session rows missing or misordered (b=%d a=%d none=%d):\n%s", posB, posA, posNone, out)
+	}
+	m, _ = press(t, m, "enter")
+	// sess-b is a single-team, no-jobs session (single-kind) → straight to detail.
+	if m.asMode != asModeEntity || m.focusedSessionID != "sess-bbbbbbbb" {
+		t.Fatalf("enter should focus the cursored session's detail view, mode=%d focus=%q", m.asMode, m.focusedSessionID)
+	}
+}
+
+// TestBoardBoxContinuumAndEntityNavigation: one ↑/↓ cursor walks the teams then the job
+// rows across the two boxes, clamping at both ends; →/⏎ descends into entity mode where h/s
+// issue commands for the selected teammate; ←/esc return to the boxes without leaving the
+// board.
+func TestBoardBoxContinuumAndEntityNavigation(t *testing.T) {
 	m := boardModel(t, []teardown.Teammate{
-		{Name: "alice", Team: "t1", PaneID: "%3"},
-		{Name: "bob", Team: "t2", PaneID: "%4"},
-	}, nil)
-	if m.spawnCursor != 0 {
-		t.Fatalf("initial cursor = %d, want 0", m.spawnCursor)
+		{Name: "alice", Team: "t1", PaneID: "%3", LeadSessionID: "s"},
+		{Name: "bob", Team: "t2", PaneID: "%4", LeadSessionID: "s"},
+	}, []subagent.Result{{JobID: "j0000000", Status: "done", LeadSessionID: "s", StartedAt: "2026-05-26T01:00:00Z"}})
+	if m.asBoxCursor != 0 {
+		t.Fatalf("initial box cursor = %d, want 0", m.asBoxCursor)
 	}
 	m, _ = press(t, m, "up")
-	if m.spawnCursor != 0 {
-		t.Fatalf("up at top: cursor = %d, want 0 (clamped)", m.spawnCursor)
+	if m.asBoxCursor != 0 {
+		t.Fatalf("up at top: box cursor = %d, want 0 (clamped)", m.asBoxCursor)
 	}
 	m, _ = press(t, m, "down")
-	if m.spawnCursor != 1 {
-		t.Fatalf("down: cursor = %d, want 1", m.spawnCursor)
-	}
 	m, _ = press(t, m, "down")
-	if m.spawnCursor != 1 {
-		t.Fatalf("down at bottom: cursor = %d, want 1 (clamped)", m.spawnCursor)
+	m, _ = press(t, m, "down") // t1 → t2 → the job row, then clamp
+	if m.asBoxCursor != 2 {
+		t.Fatalf("box cursor = %d, want 2 (clamped at the job row)", m.asBoxCursor)
+	}
+	m, _ = press(t, m, "up")
+	m, _ = press(t, m, "up")
+	m, _ = press(t, m, "enter") // descend into t1's members
+	if m.asMode != asModeEntity {
+		t.Fatalf("enter should descend to entity mode, mode=%d", m.asMode)
 	}
 	if _, cmd := press(t, m, "h"); cmd == nil {
 		t.Fatal("h on a teammate row should issue a hide command")
@@ -689,18 +735,33 @@ func TestBoardCursorClampAndKeys(t *testing.T) {
 	if _, cmd := press(t, m, "s"); cmd == nil {
 		t.Fatal("s on a teammate row should issue a show command")
 	}
+	m, _ = press(t, m, "esc")
+	if m.screen != screenSpawn || m.asMode != asModeBoxes {
+		t.Fatalf("esc from entity must RETURN to the boxes, screen=%d mode=%d", m.screen, m.asMode)
+	}
 }
 
-// TestBoardHideShowNoOpWhenEmpty: h/s are no-ops (no command, stay on the board)
-// when there are no teammates to act on.
-func TestBoardHideShowNoOpWhenEmpty(t *testing.T) {
+// TestBoardHideShowNoOpOutsideTeammateRows: h/s are no-ops on an empty board and on the
+// jobs rail (no teammate to act on).
+func TestBoardHideShowNoOpOutsideTeammateRows(t *testing.T) {
 	m := boardModel(t, nil, nil)
 	mh, cmd := press(t, m, "h")
 	if cmd != nil || mh.screen != screenSpawn {
-		t.Fatalf("h with no teammates: cmd=%v screen=%d, want nil + screenSpawn", cmd, mh.screen)
+		t.Fatalf("h on an empty board: cmd=%v screen=%d, want nil + screenSpawn", cmd, mh.screen)
 	}
 	if _, cmd := press(t, m, "s"); cmd != nil {
-		t.Fatal("s with no teammates should be a no-op (nil cmd)")
+		t.Fatal("s on an empty board should be a no-op (nil cmd)")
+	}
+	m = boardModel(t, nil, []subagent.Result{{JobID: "j0000000", Status: "done", LeadSessionID: "s", StartedAt: "2026-05-26T01:00:00Z"}})
+	m, _ = press(t, m, "enter") // the job row is the only continuum row
+	if m.asMode != asModeEntity {
+		t.Fatalf("setup: mode=%d, want entity", m.asMode)
+	}
+	if _, cmd := press(t, m, "h"); cmd != nil {
+		t.Fatal("h on a job row should be a no-op")
+	}
+	if _, cmd := press(t, m, "s"); cmd != nil {
+		t.Fatal("s on a job row should be a no-op")
 	}
 }
 
@@ -724,153 +785,423 @@ func TestBoardTickReschedulesOnBoardStopsElsewhere(t *testing.T) {
 	}
 }
 
-// TestBoardCursorClampsOnReload: when a refresh returns fewer rows than the
-// cursor's position, the cursor clamps back into range.
-func TestBoardCursorClampsOnReload(t *testing.T) {
-	m := boardModel(t, []teardown.Teammate{{Name: "a"}, {Name: "b"}, {Name: "c"}}, nil)
-	m, _ = press(t, m, "down")
-	m, _ = press(t, m, "down")
-	if m.spawnCursor != 2 {
-		t.Fatalf("cursor = %d, want 2", m.spawnCursor)
+// TestBoardEntityCursorClampsOnReload: when a refresh shrinks the focused group, the entity
+// cursor index-clamps back into range; the group emptying entirely drops back to the rail.
+func TestBoardEntityCursorClampsOnReload(t *testing.T) {
+	tms := []teardown.Teammate{
+		{Name: "a", Team: "t1", PaneID: "%1", LeadSessionID: "s"},
+		{Name: "b", Team: "t1", PaneID: "%2", LeadSessionID: "s"},
+		{Name: "c", Team: "t1", PaneID: "%3", LeadSessionID: "s"},
 	}
-	m, _ = step(t, m, boardMsg{teammates: []teardown.Teammate{{Name: "a"}}, epoch: m.boardEpoch})
-	if m.spawnCursor != 0 {
-		t.Fatalf("after shrinking to 1 row: cursor = %d, want 0 (clamped)", m.spawnCursor)
+	m := boardModel(t, tms, nil)
+	m, _ = press(t, m, "enter") // entity mode on t1 (the only continuum row)
+	m, _ = press(t, m, "down")
+	m, _ = press(t, m, "down")
+	if m.asEntityCursor != 2 {
+		t.Fatalf("entity cursor = %d, want 2", m.asEntityCursor)
+	}
+	m, _ = step(t, m, boardMsg{teammates: tms[:1], epoch: m.boardEpoch})
+	if m.asEntityCursor != 0 || m.asMode != asModeEntity {
+		t.Fatalf("after shrink: cursor=%d mode=%d, want 0 + entity", m.asEntityCursor, m.asMode)
 	}
 	m, _ = step(t, m, boardMsg{teammates: nil, epoch: m.boardEpoch})
-	if m.spawnCursor != 0 {
-		t.Fatalf("after empty reload: cursor = %d, want 0", m.spawnCursor)
+	if m.asMode == asModeEntity {
+		t.Fatal("an emptied group must drop entity mode")
 	}
 }
 
-// TestBoardGroupsByTeam: interleaved sessions and teams on input are rendered
-// as session → team → members; the cursor stays a flat teammate
-// index that lands only on members, and h/s act on the selected member.
-func TestBoardGroupsByTeam(t *testing.T) {
+// TestBoardTeamsRailGrouping: interleaved input still yields one rail row per team
+// (session-contiguous via groupByTeam), ordered by earliest member SpawnTime, with a
+// team's members contiguous.
+func TestBoardTeamsRailGrouping(t *testing.T) {
 	m := boardModel(t, []teardown.Teammate{
-		{Name: "alice", Team: "t1", PaneID: "%1", LeadSessionID: "sess-bbbbbbbb", SpawnTime: 200},
-		{Name: "bob", Team: "t2", PaneID: "%2", LeadSessionID: "sess-aaaaaaaa", SpawnTime: 100},
-		{Name: "carol", Team: "t1", PaneID: "%3", LeadSessionID: "sess-bbbbbbbb", SpawnTime: 210},
-		{Name: "dave", Team: "t3", PaneID: "%4"},
+		{Name: "alice", Team: "t1", PaneID: "%1", LeadSessionID: "s", SpawnTime: 200},
+		{Name: "bob", Team: "t2", PaneID: "%2", LeadSessionID: "s", SpawnTime: 100},
+		{Name: "carol", Team: "t1", PaneID: "%3", LeadSessionID: "s", SpawnTime: 210},
 	}, nil)
-	// Grouped by session earliest SpawnTime: sess-a{bob}, sess-b{alice,carol},
-	// then no-session{dave} last.
-	wantOrder := []string{"bob", "alice", "carol", "dave"}
-	for i, want := range wantOrder {
-		if m.teammates[i].Name != want {
-			t.Fatalf("teammates[%d] = %q, want %q; all=%+v", i, m.teammates[i].Name, want, m.teammates)
-		}
+	s, ok := m.focusedSession()
+	if !ok {
+		t.Fatal("the sole session should be focused")
 	}
-	out := m.View()
-	if strings.Count(out, "◆ session: sess-aaa…") != 1 ||
-		strings.Count(out, "◆ session: sess-bbb…") != 1 ||
-		strings.Count(out, "◆ session: (no session)") != 1 {
-		t.Fatalf("want exactly one header per session:\n%s", out)
+	if len(s.teams) != 2 || s.teams[0].name != "t2" || s.teams[1].name != "t1" {
+		t.Fatalf("teams = %+v, want [t2 t1] (earliest SpawnTime first)", s.teams)
 	}
-	if strings.Count(out, "▸ team: t1") != 1 ||
-		strings.Count(out, "▸ team: t2") != 1 ||
-		strings.Count(out, "▸ team: t3") != 1 {
-		t.Fatalf("want exactly one header per team:\n%s", out)
-	}
-	if !strings.Contains(out, "  ▸ team: t1") {
-		t.Errorf("team header should be indented under its session:\n%s", out)
-	}
-	for _, name := range wantOrder {
-		if !strings.Contains(out, name) {
-			t.Errorf("grouped board missing member %q:\n%s", name, out)
-		}
-	}
-	// Cursor walks members only (4 of them); down twice lands on carol (the 3rd).
-	m, _ = press(t, m, "down")
-	m, _ = press(t, m, "down")
-	if m.spawnCursor != 2 || m.teammates[m.spawnCursor].Name != "carol" {
-		t.Fatalf("cursor=%d member=%q, want 2/carol", m.spawnCursor, m.teammates[m.spawnCursor].Name)
-	}
-	m, _ = press(t, m, "down")
-	m, _ = press(t, m, "down") // clamp at the last member, never onto a header
-	if m.spawnCursor != 3 {
-		t.Fatalf("cursor should clamp at the last member, got %d", m.spawnCursor)
-	}
-	if _, cmd := press(t, m, "h"); cmd == nil {
-		t.Fatal("h on a grouped member row should issue a hide command")
+	if len(s.teams[1].members) != 2 {
+		t.Fatalf("t1 members = %d, want 2 (alice+carol contiguous)", len(s.teams[1].members))
 	}
 }
 
-func TestBoardGroupsJobsBySession(t *testing.T) {
-	m := boardModel(t, nil, []subagent.Result{
-		{JobID: "job-b-newer", Vendor: "glm", Status: "done", StartedAt: "2026-05-26T03:00:00Z", LeadSessionID: "sess-bbbbbbbb"},
-		{JobID: "job-none", Vendor: "glm", Status: "done", StartedAt: "2026-05-26T01:00:00Z"},
-		{JobID: "job-a", Vendor: "glm", Status: "done", StartedAt: "2026-05-26T02:00:00Z", LeadSessionID: "sess-aaaaaaaa"},
-		{JobID: "job-b-older", Vendor: "glm", Status: "done", StartedAt: "2026-05-26T00:30:00Z", LeadSessionID: "sess-bbbbbbbb"},
-	})
-	out := m.View()
-	firstB := strings.Index(out, "◆ session: sess-bbb…")
-	firstA := strings.Index(out, "◆ session: sess-aaa…")
-	firstNone := strings.Index(out, "◆ session: (no session)")
-	if firstB < 0 || firstA < 0 || firstNone < 0 {
-		t.Fatalf("missing session headers:\n%s", out)
+// TestBoardBoxReanchorsTypedIdentity: the L2 cursor re-finds its row by typed identity
+// after a refresh — a job row stays a job row even when a real team is named "jobs" and the
+// indices shift.
+func TestBoardBoxReanchorsTypedIdentity(t *testing.T) {
+	tms := []teardown.Teammate{
+		{Name: "x", Team: "jobs", PaneID: "%1", LeadSessionID: "s", SpawnTime: 100},
+		{Name: "y", Team: "t2", PaneID: "%2", LeadSessionID: "s", SpawnTime: 200},
 	}
-	// sess-b has the earliest job (00:30), then sess-a (02:00), then no-session last.
-	if !(firstB < firstA && firstA < firstNone) {
-		t.Fatalf("job session headers not ordered by earliest StartedAt with no-session last:\n%s", out)
+	jobs := []subagent.Result{{JobID: "j0000000", Status: "done", LeadSessionID: "s", StartedAt: "2026-05-26T01:00:00Z"}}
+	m := boardModel(t, tms, jobs)
+	// Continuum: team "jobs"(0), t2(1), the job row(2). Park on the job row.
+	m, _ = press(t, m, "down")
+	m, _ = press(t, m, "down")
+	if ref, ok := m.boxRowRef(); !ok || ref.jobID == "" {
+		t.Fatalf("setup: cursor should sit on the job row, ref=%+v", ref)
 	}
-	if strings.Contains(out, "TOP-SECRET") {
-		t.Fatalf("job grouping must still avoid rendering job answers:\n%s", out)
+	// Dropping t2 shifts the indices; the cursor must follow the job's identity.
+	m, _ = step(t, m, boardMsg{teammates: tms[:1], jobs: jobs, epoch: m.boardEpoch})
+	if ref, ok := m.boxRowRef(); !ok || ref.jobID == "" {
+		t.Fatalf("after refresh: cursor lost the job row, ref=%+v", ref)
 	}
 }
 
-func TestBoardSessionHeadersUseResolvedTitles(t *testing.T) {
+// TestBoardSessionHeaderUsesResolvedTitle: the groups header shows the resolved /rename
+// title for the focused session.
+func TestBoardSessionHeaderUsesResolvedTitle(t *testing.T) {
 	m := boardModel(t,
 		[]teardown.Teammate{
 			{Name: "alice", Team: "t1", PaneID: "%1", LeadSessionID: "sess-aaaaaaaa"},
 		},
 		[]subagent.Result{{
-			JobID: "job-a", Vendor: "glm", Status: "done", StartedAt: "2026-05-26T02:00:00Z",
+			JobID: "job-a000", Vendor: "glm", Status: "done", StartedAt: "2026-05-26T02:00:00Z",
 			LeadSessionID: "sess-aaaaaaaa", Result: "TOP-SECRET",
 		}},
 	)
-	m.sessionTitles = map[string]string{"sess-aaaaaaaa": "Readable Session Name"}
-
+	m.sessionMeta = map[string]sessiontitle.Meta{"sess-aaaaaaaa": {Title: "Readable Session Name"}}
 	out := m.View()
-	if strings.Count(out, "◆ session: Readable Session Name (sess-aaa…)") != 2 {
-		t.Fatalf("expected titled session header in teammate and job tables:\n%s", out)
+	if !strings.Contains(out, "Readable Session Name (sess-aaa…)") {
+		t.Fatalf("the session header should show the resolved title:\n%s", out)
 	}
 	if strings.Contains(out, "TOP-SECRET") {
 		t.Fatalf("session title rendering must not leak job answers:\n%s", out)
 	}
 }
 
-// TestBoardEnterOpensTeammateDetail: enter on a board member opens the
-// full-field detail card showing UNtruncated vendor/model (the table clips them);
-// esc returns to the board with the cursor preserved.
-func TestBoardEnterOpensTeammateDetail(t *testing.T) {
+// TestBoardEntityDetailCard: →/⏎ opens the inline detail card showing UNtruncated
+// vendor/model (the row clips them); esc returns to the rail with the screen unchanged.
+func TestBoardEntityDetailCard(t *testing.T) {
 	m := boardModel(t, []teardown.Teammate{
-		{Name: "worker-1", Team: "alpha", Vendor: "xiaomimimo", Model: "mimo-v2-flash", PaneID: "%7", PID: 4242, Status: "ok"},
+		{Name: "worker-1", Team: "alpha", Vendor: "xiaomimimo", Model: "mimo-v2-flash", PaneID: "%7", PID: 4242, Status: "ok", LeadSessionID: "s"},
 	}, nil)
-	m, _ = press(t, m, "enter")
-	if m.screen != screenTeammateDetail {
-		t.Fatalf("enter on a member: screen=%d, want screenTeammateDetail", m.screen)
+	// A single-team, no-jobs session lands straight on the detail view.
+	if m.screen != screenSpawn || m.asMode != asModeEntity {
+		t.Fatalf("entry: screen=%d mode=%d, want screenSpawn + entity", m.screen, m.asMode)
 	}
 	out := m.View()
-	// "xiaomimimo" (10) and "mimo-v2-flash" (13) exceed the table's 9/16-wide
-	// columns only after trunc; the detail card must render them in full.
+	// "xiaomimimo" (10) and "mimo-v2-flash" (13) exceed the row's truncation widths; the
+	// detail card must render them in full.
 	for _, want := range []string{"worker-1", "alpha", "xiaomimimo", "mimo-v2-flash", "%7", "4242"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("detail card missing %q:\n%s", want, out)
 		}
 	}
+	// The card IS the board's top level here: ← clamps (stays), esc leaves for Vendors.
+	m, _ = press(t, m, "left")
+	if m.screen != screenSpawn || m.asMode != asModeEntity {
+		t.Fatalf("left at the top: screen=%d mode=%d, want screenSpawn + entity (clamped)", m.screen, m.asMode)
+	}
 	m, _ = press(t, m, "esc")
-	if m.screen != screenSpawn {
-		t.Fatalf("esc from detail: screen=%d, want screenSpawn", m.screen)
+	if m.screen != screenList {
+		t.Fatalf("esc at the top should leave for Vendors, screen=%d", m.screen)
 	}
 }
 
-// TestBoardEnterNoOpWhenEmpty: enter with no teammates stays on the board.
+// TestBoardEnterNoOpWhenEmpty: enter with no rows stays on the (empty) groups level.
 func TestBoardEnterNoOpWhenEmpty(t *testing.T) {
 	m := boardModel(t, nil, nil)
 	m, _ = press(t, m, "enter")
-	if m.screen != screenSpawn {
-		t.Fatalf("enter with no teammates: screen=%d, want screenSpawn (no-op)", m.screen)
+	if m.screen != screenSpawn || m.asMode != asModeBoxes {
+		t.Fatalf("enter with no rows: screen=%d mode=%d, want screenSpawn + boxes (no-op)", m.screen, m.asMode)
+	}
+}
+
+// TestBoardTickSurvivesEntityMode: the detail level lives INSIDE screenSpawn, so a
+// current-epoch tick keeps rescheduling while a detail card is open (the old separate
+// detail screen used to kill the chain).
+func TestBoardTickSurvivesEntityMode(t *testing.T) {
+	m := boardModel(t, []teardown.Teammate{{Name: "alice", Team: "t1", PaneID: "%1", LeadSessionID: "s"}}, nil)
+	m, _ = press(t, m, "enter")
+	if m.asMode != asModeEntity {
+		t.Fatalf("setup: mode=%d, want entity", m.asMode)
+	}
+	if _, cmd := step(t, m, boardTickMsg{epoch: m.boardEpoch}); cmd == nil {
+		t.Fatal("a current-epoch tick must keep rescheduling while the detail card is open")
+	}
+}
+
+// TestBoardMultiProjectRoutesToProjects: sessions whose transcripts record different
+// working directories park on the project rail; descending into a single-session project
+// collapses straight to its boxes, and unresolved-cwd sessions bucket as "(no project)"
+// last.
+func TestBoardMultiProjectRoutesToProjects(t *testing.T) {
+	tms := []teardown.Teammate{
+		{Name: "alice", Team: "t1", PaneID: "%1", LeadSessionID: "sess-aaaaaaaa", SpawnTime: 100},
+		{Name: "bob", Team: "t2", PaneID: "%2", LeadSessionID: "sess-bbbbbbbb", SpawnTime: 200},
+		{Name: "carol", Team: "t3", PaneID: "%3", LeadSessionID: "sess-cccccccc", SpawnTime: 300},
+	}
+	meta := map[string]sessiontitle.Meta{
+		"sess-aaaaaaaa": {Cwd: "/proj/alpha"},
+		"sess-bbbbbbbb": {Cwd: "/proj/beta"},
+	}
+	m := boardModel(t, nil, nil)
+	m, _ = step(t, m, boardMsg{teammates: tms, sessionMeta: meta, epoch: m.boardEpoch})
+	if m.asMode != asModeProjects {
+		t.Fatalf("multi project should park on the project rail, mode=%d", m.asMode)
+	}
+	out := m.View()
+	// NEWEST first: beta (spawn 200) before alpha (100); the unresolved bucket last.
+	posA := strings.Index(out, "proj/alpha")
+	posB := strings.Index(out, "proj/beta")
+	posNone := strings.Index(out, "(no project)")
+	if posA < 0 || posB < 0 || posNone < 0 || !(posB < posA && posA < posNone) {
+		t.Fatalf("project rows missing or misordered (b=%d a=%d none=%d):\n%s", posB, posA, posNone, out)
+	}
+	// Descending into a single-session, single-team project collapses straight to the
+	// detail view (both the session and the boxes levels are skipped).
+	m, _ = press(t, m, "enter")
+	if m.asMode != asModeEntity || m.focusedSessionID != "sess-bbbbbbbb" || m.focusedProject != "/proj/beta" {
+		t.Fatalf("enter on a single-session project should land on its detail view, mode=%d session=%q project=%q",
+			m.asMode, m.focusedSessionID, m.focusedProject)
+	}
+	// Ascending skips the degenerate levels and returns to the project rail.
+	m, _ = press(t, m, "left")
+	if m.asMode != asModeProjects {
+		t.Fatalf("left from a single-session project's detail should return to the project rail, mode=%d", m.asMode)
+	}
+}
+
+// TestBoardReentryRoutesOnFreshLoad: a re-entry must route from the freshly loaded session
+// count, never the previous visit's cached data — a stale single-session focus can't
+// suppress the session list when the fresh load shows several sessions.
+func TestBoardReentryRoutesOnFreshLoad(t *testing.T) {
+	one := []teardown.Teammate{{Name: "a", Team: "t1", PaneID: "%1", LeadSessionID: "sess-aaaaaaaa"}}
+	m := boardModel(t, one, nil) // single-kind session → auto-focused detail view on sess-a
+	if m.asMode != asModeEntity {
+		t.Fatalf("setup: mode=%d, want entity", m.asMode)
+	}
+	mlist, _ := press(t, m, "esc")
+	mb, _ := press(t, mlist, "tab") // re-enter: the old slices are still cached
+	two := append(one, teardown.Teammate{Name: "b", Team: "t2", PaneID: "%2", LeadSessionID: "sess-bbbbbbbb"})
+	mb, _ = step(t, mb, boardMsg{teammates: two, epoch: mb.boardEpoch})
+	if mb.asMode != asModeSessions {
+		t.Fatalf("re-entry with a fresh multi-session load must park on the session list, mode=%d", mb.asMode)
+	}
+}
+
+// TestJobElapsedNeverAgesTerminalJobs: a terminal job whose record carries no duration
+// renders no elapsed at all — never a live, growing since-StartedAt figure.
+func TestJobElapsedNeverAgesTerminalJobs(t *testing.T) {
+	if got := jobElapsed(subagent.Result{Status: "done", StartedAt: "2026-05-01T00:00:00Z"}); got != "" {
+		t.Fatalf("terminal durationless job elapsed = %q, want empty", got)
+	}
+	if got := jobElapsed(subagent.Result{Status: "running", StartedAt: "2026-05-01T00:00:00Z"}); got == "" {
+		t.Fatal("a running job should show a live elapsed")
+	}
+	if got := jobElapsed(subagent.Result{Status: "done", DurationMs: 7000}); got != "7s" {
+		t.Fatalf("terminal job with a duration = %q, want 7s", got)
+	}
+}
+
+// TestBoardJobsErrOwnLine: a jobs-scan failure renders on its own line and does NOT clobber
+// a surfaced hide/show outcome.
+func TestBoardJobsErrOwnLine(t *testing.T) {
+	tms := []teardown.Teammate{{Name: "alice", Team: "t1", PaneID: "%1", LeadSessionID: "s"}}
+	m := boardModel(t, tms, nil)
+	m, _ = step(t, m, paneVisMsg{res: panevis.Result{OK: true, Action: "hide", Name: "alice"}})
+	m, _ = step(t, m, boardMsg{teammates: tms, jobsErr: errors.New("jobs dir unreadable"), epoch: m.boardEpoch})
+	out := m.View()
+	if !strings.Contains(out, "jobs unavailable: jobs dir unreadable") {
+		t.Fatalf("jobs-scan failure should surface on its own line:\n%s", out)
+	}
+	if !strings.Contains(out, "hide alice: ok") {
+		t.Fatalf("the jobs error line must not clobber the hide/show outcome:\n%s", out)
+	}
+}
+
+// TestBoardUptimeFromSpawnTime: a recorded SpawnTime renders an "up …" figure on the row;
+// an unrecorded one omits it.
+func TestBoardUptimeFromSpawnTime(t *testing.T) {
+	m := boardModel(t, []teardown.Teammate{
+		{Name: "timed", Team: "t1", PaneID: "%1", LeadSessionID: "s", SpawnTime: time.Now().Add(-5 * time.Minute).UnixMilli()},
+		{Name: "untimed", Team: "t1", PaneID: "%2", LeadSessionID: "s"},
+	}, []subagent.Result{{JobID: "j0000000", Status: "done", LeadSessionID: "s", StartedAt: "2026-05-26T01:00:00Z"}})
+	out := m.View()
+	if !strings.Contains(out, "· up 5m") {
+		t.Fatalf("a SpawnTime-bearing row should render its uptime:\n%s", out)
+	}
+	if strings.Count(out, "· up ") != 1 {
+		t.Fatalf("an unrecorded SpawnTime must omit the uptime:\n%s", out)
+	}
+}
+
+// TestBoardHeaderShowsCursoredAgentStats: with the cursor on a single agent, the session
+// header's right slot shows THAT agent's own stats — a job's tokens/elapsed/started, a
+// teammate's uptime — and falls back to the session rollup on an L2 team row.
+func TestBoardHeaderShowsCursoredAgentStats(t *testing.T) {
+	job := subagent.Result{JobID: "j0000000", Status: "done", LeadSessionID: "s",
+		StartedAt: "2026-05-26T01:00:00Z", DurationMs: 7000,
+		Usage: &subagent.Usage{InputTokens: 1200, OutputTokens: 340}}
+	m := boardModel(t, nil, []subagent.Result{job}) // jobs-only → straight to the job's detail view
+	if out := m.View(); !strings.Contains(out, "↑ 1.2k ctx · ↓ 340 out · 7s · 05-26 01:00") {
+		t.Fatalf("the header should show the cursored job's stats:\n%s", out)
+	}
+	mate := teardown.Teammate{Name: "alice", Team: "t1", PaneID: "%1", LeadSessionID: "s",
+		SpawnTime: time.Now().Add(-5 * time.Minute).UnixMilli()}
+	m = boardModel(t, []teardown.Teammate{mate}, nil) // single team → the teammate's detail view
+	if out := m.View(); !strings.Contains(out, "up 5m · ") {
+		t.Fatalf("the header should show the cursored teammate's uptime:\n%s", out)
+	}
+	// L2: a team row keeps the session rollup; moving onto the job row swaps in its stats.
+	m = boardModel(t, []teardown.Teammate{mate}, []subagent.Result{job})
+	if out := m.View(); !strings.Contains(out, "1 teammates · 1 subagents · created") {
+		t.Fatalf("an L2 team row should keep the rollup header:\n%s", out)
+	}
+	m, _ = press(t, m, "down")
+	if out := m.View(); !strings.Contains(out, "↑ 1.2k ctx") {
+		t.Fatalf("an L2 job row should swap the cursored job's stats into the header:\n%s", out)
+	}
+}
+
+// TestBoardCardScrollResetAndClamp: j/k scroll clamps to the card content (zero for a short
+// card) and entity movement resets the offset.
+func TestBoardCardScrollResetAndClamp(t *testing.T) {
+	m := boardModel(t, []teardown.Teammate{
+		{Name: "a", Team: "t1", PaneID: "%1", LeadSessionID: "s"},
+		{Name: "b", Team: "t1", PaneID: "%2", LeadSessionID: "s"},
+	}, nil)
+	m, _ = press(t, m, "enter")
+	m, _ = press(t, m, "j")
+	if m.asCardScroll != 0 {
+		t.Fatalf("a short card must clamp the scroll at 0, got %d", m.asCardScroll)
+	}
+	m.asCardScroll = 99 // a stale offset from a longer card
+	m, _ = press(t, m, "down")
+	if m.asCardScroll != 0 {
+		t.Fatalf("entity movement must reset the card scroll, got %d", m.asCardScroll)
+	}
+}
+
+// TestBoardJobCardLeafParity: the standalone-job detail card carries the wf agent card's
+// sections — collapsed Prompt (⏎ expands), the Activity last-3 feed, the Output body — fed
+// by the nonce-gated io load issued when the board lands on the jobs detail view.
+func TestBoardJobCardLeafParity(t *testing.T) {
+	job := subagent.Result{JobID: "j0000000", Status: "done", LeadSessionID: "s",
+		StartedAt: "2026-05-26T01:00:00Z", NumTurns: 2}
+	m := boardModel(t, nil, []subagent.Result{job}) // jobs-only → straight to the detail view
+	if m.asMode != asModeEntity || m.asDetailNonce == 0 {
+		t.Fatalf("setup: mode=%d nonce=%d, want entity + an issued io load", m.asMode, m.asDetailNonce)
+	}
+	m, _ = step(t, m, asDetailMsg{
+		nonce: m.asDetailNonce, epoch: m.boardEpoch, jobID: "j0000000", present: true,
+		prompt: "line one\nline two\nline three\nline four\nline five\nline six",
+		answer: "THE-ANSWER-BODY",
+		snap:   activitySnapshot{sigs: []string{"A(1)", "B(2)", "C(3)", "D(4)"}},
+	})
+	// Assert on the full card line set — the box viewport scrolls, so sections can sit
+	// below the visible fold.
+	card := strings.Join(m.entityDetailLines(m.asEntityRightWidth()), "\n")
+	for _, want := range []string{
+		"Prompt · 6 lines · ⏎ expand",
+		"Activity · last 3 of 4 tool calls",
+		"D(4)", // the last three sigs show…
+		"Output", "THE-ANSWER-BODY",
+	} {
+		if !strings.Contains(card, want) {
+			t.Errorf("job card missing %q:\n%s", want, card)
+		}
+	}
+	if strings.Contains(card, "A(1)") {
+		t.Errorf("Activity should show only the LAST 3 signatures:\n%s", card)
+	}
+	if strings.Contains(card, "line six") {
+		t.Errorf("the folded prompt must hide its tail:\n%s", card)
+	}
+	m, _ = press(t, m, "enter") // expand the prompt
+	card = strings.Join(m.entityDetailLines(m.asEntityRightWidth()), "\n")
+	if !strings.Contains(card, "line six") {
+		t.Fatalf("⏎ should expand the full prompt:\n%s", card)
+	}
+}
+
+// TestBoardJobCardStaleNonceDropped: an io read answering a previously-focused job is
+// dropped, never shown on the wrong card.
+func TestBoardJobCardStaleNonceDropped(t *testing.T) {
+	job := subagent.Result{JobID: "j0000000", Status: "done", LeadSessionID: "s",
+		StartedAt: "2026-05-26T01:00:00Z"}
+	m := boardModel(t, nil, []subagent.Result{job})
+	stale := asDetailMsg{nonce: m.asDetailNonce - 1, epoch: m.boardEpoch, jobID: "j0000000", present: true, answer: "STALE-ANSWER"}
+	m, _ = step(t, m, stale)
+	if m.asDetailIO || strings.Contains(m.View(), "STALE-ANSWER") {
+		t.Fatal("a stale-nonce io read must be dropped")
+	}
+	prior := asDetailMsg{nonce: m.asDetailNonce, epoch: m.boardEpoch - 1, jobID: "j0000000", present: true, answer: "PRIOR-VISIT"}
+	m, _ = step(t, m, prior)
+	if m.asDetailIO || strings.Contains(m.View(), "PRIOR-VISIT") {
+		t.Fatal("a prior-visit (stale-epoch) io read must be dropped")
+	}
+}
+
+// TestBoardJobCardReloadsOnTerminalFlip: the refresh that first sees the focused job
+// terminal still issues one io load (the final .answer lands), and the NEXT refresh of the
+// stable terminal job issues none.
+func TestBoardJobCardReloadsOnTerminalFlip(t *testing.T) {
+	running := subagent.Result{JobID: "j0000000", Status: "running", LeadSessionID: "s",
+		StartedAt: "2026-05-26T01:00:00Z"}
+	done := running
+	done.Status = "done"
+	m := boardModel(t, nil, []subagent.Result{running})
+	mm, cmd := step(t, m, boardMsg{jobs: []subagent.Result{done}, epoch: m.boardEpoch})
+	if cmd == nil {
+		t.Fatal("the running→done refresh must reload the focused job's io")
+	}
+	// Land the issued read (production delivers it between refreshes), then a stable
+	// terminal focused job must stop reloading.
+	mm, _ = step(t, mm, asDetailMsg{nonce: mm.asDetailNonce, epoch: mm.boardEpoch, jobID: "j0000000", present: true, answer: "final"})
+	if _, cmd := step(t, mm, boardMsg{jobs: []subagent.Result{done}, epoch: mm.boardEpoch}); cmd != nil {
+		t.Fatal("a stable terminal focused job must not reload io every refresh")
+	}
+}
+
+// TestBoardJobCardNotPersistedNote: a job without io side files shows the not-persisted
+// note instead of empty sections.
+func TestBoardJobCardNotPersistedNote(t *testing.T) {
+	job := subagent.Result{JobID: "j0000000", Status: "done", LeadSessionID: "s",
+		StartedAt: "2026-05-26T01:00:00Z"}
+	m := boardModel(t, nil, []subagent.Result{job})
+	m, _ = step(t, m, asDetailMsg{nonce: m.asDetailNonce, epoch: m.boardEpoch, jobID: "j0000000", present: false})
+	if out := m.View(); !strings.Contains(out, "not persisted") {
+		t.Fatalf("an io-less job should show the not-persisted note:\n%s", out)
+	}
+}
+
+// TestAgentBoardNewSurfacesKeySafe: canaries planted in Result.Result and ErrorMsg must not
+// reach any board surface — the rows, the rail, or the entity detail card (which renders
+// the canonical ErrorCode only).
+func TestAgentBoardNewSurfacesKeySafe(t *testing.T) {
+	const answerCanary = "ANSWER-CANARY-sk-9f8e7d"
+	const errCanary = "ERRMSG-CANARY-sk-1a2b3c"
+	job := subagent.Result{
+		JobID: "deadbeef00000000", Vendor: "glm", Model: "glm-4.6",
+		Status: "failed", StartedAt: "2026-05-26T01:00:00Z", LeadSessionID: "s",
+		Result: answerCanary, ErrorCode: "SUBAGENT_FAILED", ErrorMsg: errCanary,
+		Usage: &subagent.Usage{InputTokens: 1200, OutputTokens: 340},
+	}
+	m := boardModel(t, nil, []subagent.Result{job})
+	groups := m.View()
+	mCard, _ := press(t, m, "enter")
+	// Even with the io side files loaded, Result.Result and ErrorMsg never render — the
+	// card's Output comes from the .answer file alone.
+	mCard, _ = step(t, mCard, asDetailMsg{nonce: mCard.asDetailNonce, epoch: mCard.boardEpoch, jobID: job.JobID,
+		present: true, prompt: "p", answer: "file answer"})
+	// The card line set is the full surface (the box viewport scrolls), so the witness
+	// checks it alongside the rendered views.
+	card := strings.Join(mCard.entityDetailLines(mCard.asEntityRightWidth()), "\n")
+	for name, out := range map[string]string{"groups": groups, "view": mCard.View(), "card": card} {
+		if strings.Contains(out, answerCanary) || strings.Contains(out, errCanary) {
+			t.Errorf("%s leaked a canary:\n%s", name, out)
+		}
+	}
+	if !strings.Contains(card, "SUBAGENT_FAILED") {
+		t.Errorf("the card should render the canonical ErrorCode:\n%s", card)
 	}
 }
 
@@ -940,7 +1271,6 @@ func TestViewsRenderForEveryScreen(t *testing.T) {
 	screens := []screen{
 		screenList, screenSpawn, screenWorkflows, screenPickTemplate,
 		screenForm, screenModelPick, screenRemoveConfirm, screenResult, screenKeys,
-		screenTeammateDetail,
 	}
 	for _, s := range screens {
 		m := NewModel()
@@ -1627,27 +1957,25 @@ func TestGroupByRun_NoManifestRunOrdersByEarliestJob(t *testing.T) {
 }
 
 // TestPartition_RunTaggedJobNotOnSpawnBoard: a RunID-tagged job belongs to the
-// Workflows board and must NOT appear in the agent-status job table — the spawn
-// board groups/shows only RunID == "" jobs.
+// Workflows board and must NOT appear on the agent-status board — its session
+// tree carries only RunID == "" jobs.
 func TestPartition_RunTaggedJobNotOnSpawnBoard(t *testing.T) {
 	tagged := subagent.Result{JobID: "tagged00", RunID: "run-1", Phase: "build",
-		Vendor: "glm", Status: "running", StartedAt: "2026-05-01T00:00:00Z"}
+		Vendor: "glm", Status: "running", StartedAt: "2026-05-01T00:00:00Z", LeadSessionID: "s"}
 	plain := subagent.Result{JobID: "plain000", Vendor: "kimi", Status: "done",
-		StartedAt: "2026-05-01T00:00:00Z"}
+		StartedAt: "2026-05-01T00:00:00Z", LeadSessionID: "s"}
 	m := boardModel(t, nil, []subagent.Result{tagged, plain})
-	out := m.viewJobTable()
+	out := m.View()
 	if strings.Contains(out, "tagged00") {
-		t.Errorf("RunID-tagged job leaked into the spawn job table:\n%s", out)
+		t.Errorf("RunID-tagged job leaked onto the agent-status board:\n%s", out)
 	}
 	if !strings.Contains(out, "plain000") {
-		t.Errorf("ungrouped job should appear in the spawn job table:\n%s", out)
+		t.Errorf("ungrouped job should appear on the agent-status board:\n%s", out)
 	}
-	// And groupedJobsBySession itself only sees the filtered slice when fed it.
-	buckets := groupedJobsBySession([]subagent.Result{plain})
-	for _, bk := range buckets {
-		for _, j := range bk.jobs {
+	for _, s := range m.asSessions() {
+		for _, j := range s.jobs {
 			if j.RunID != "" {
-				t.Errorf("groupedJobsBySession bucket carried a RunID-tagged job: %+v", j)
+				t.Errorf("session tree carried a RunID-tagged job: %+v", j)
 			}
 		}
 	}
