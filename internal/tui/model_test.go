@@ -16,6 +16,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/secrets"
 	"github.com/ethanhq/cc-fleet/internal/sessiontitle"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
+	"github.com/ethanhq/cc-fleet/internal/teamhist"
 	"github.com/ethanhq/cc-fleet/internal/teardown"
 	"github.com/ethanhq/cc-fleet/internal/userops"
 )
@@ -2297,5 +2298,173 @@ func TestRunLabel_SanitizesRunID(t *testing.T) {
 	}
 	if label := m.runLabel(groups[0]); strings.ContainsRune(label, '\x1b') {
 		t.Fatalf("runLabel leaked a raw ESC byte from the run id: %q", label)
+	}
+}
+
+// endedMate is a synthetic ended teammate (the shape synthesizeEnded produces).
+func endedMate(team, name, session string) teardown.Teammate {
+	return teardown.Teammate{Team: team, Name: name, LeadSessionID: session, Status: endedStatus}
+}
+
+// endedBoard enters the board with one ended team (rendered from its history record)
+// plus any live teammates, stamping endedSeen so the card + rail recognize it.
+func endedBoard(t *testing.T, ended map[string]time.Time, tms []teardown.Teammate) Model {
+	t.Helper()
+	m := withVendors(t, userops.VendorView{Name: "glm"})
+	m, _ = press(t, m, "tab")
+	m, _ = step(t, m, boardMsg{teammates: tms, endedSeen: ended, epoch: m.boardEpoch})
+	return m
+}
+
+// TestBoardEndedTeamRenders: an ended team renders faint with the word `ended`, the
+// card shows "last seen", and the team is excluded from the live teammate counts.
+func TestBoardEndedTeamRenders(t *testing.T) {
+	seen := time.Date(2026, 6, 7, 14, 30, 0, 0, time.UTC)
+	// Two teams in one session keep the board at the boxes level (so the team rail
+	// renders): one live, one ended.
+	m := endedBoard(t, map[string]time.Time{"gone": seen}, []teardown.Teammate{
+		{Team: "live", Name: "alice", PaneID: "%1", Status: "ok", LeadSessionID: "s"},
+		endedMate("gone", "bob", "s"),
+	})
+	if m.asMode != asModeBoxes {
+		t.Fatalf("two-team session should park at boxes, mode=%d", m.asMode)
+	}
+	out := m.View()
+	// The session counts cover only the LIVE team's member.
+	if !strings.Contains(out, "1 teammates") {
+		t.Errorf("ended member inflated the teammate count:\n%s", out)
+	}
+	// The ended team's rail row reads "ended · N members", not an okN/N.
+	if !strings.Contains(out, endedStatus+" · 1 members") {
+		t.Errorf("ended team rail row missing `ended · 1 members`:\n%s", out)
+	}
+	// Descend onto the ended team to render its member card with the last-seen line.
+	m.asBoxCursor = 1 // teams render after 0 runs: row 0 = live, row 1 = gone (encounter order)
+	mc, _ := press(t, m, "enter")
+	t2, ok := mc.selectedTeammate()
+	if !ok || t2.Status != endedStatus {
+		t.Fatalf("descend should land on the ended member, got %+v ok=%v", t2, ok)
+	}
+	card := strings.Join(mc.teammateDetailLines(t2, mc.asEntityRightWidth()), "\n")
+	if !strings.Contains(card, endedStatus) || !strings.Contains(card, "last seen 06-07 14:30") {
+		t.Errorf("ended card missing `ended` / last-seen line:\n%s", card)
+	}
+}
+
+// TestBoardEndedTeamHideShowNoOp: h/s on an ended member issue no command (no live pane).
+func TestBoardEndedTeamHideShowNoOp(t *testing.T) {
+	m := endedBoard(t, map[string]time.Time{"gone": time.Now()},
+		[]teardown.Teammate{endedMate("gone", "bob", "s")})
+	// A single ended team auto-focuses straight into its entity (member) view.
+	if m.asMode != asModeEntity {
+		t.Fatalf("single ended team should focus its member view, mode=%d", m.asMode)
+	}
+	t2, ok := m.selectedTeammate()
+	if !ok || t2.Status != endedStatus {
+		t.Fatalf("cursor not on the ended member: %+v ok=%v", t2, ok)
+	}
+	if _, cmd := press(t, m, "h"); cmd != nil {
+		t.Error("h on an ended row should be a no-op")
+	}
+	if _, cmd := press(t, m, "s"); cmd != nil {
+		t.Error("s on an ended row should be a no-op")
+	}
+}
+
+// TestBoardEndedTeamDelete: d on an ended team row arms the prompt; a second d dispatches
+// the record delete (and a live team row ignores d).
+func TestBoardEndedTeamDelete(t *testing.T) {
+	m := endedBoard(t, map[string]time.Time{"gone": time.Now()}, []teardown.Teammate{
+		{Team: "live", Name: "alice", PaneID: "%1", Status: "ok", LeadSessionID: "s"},
+		endedMate("gone", "bob", "s"),
+	})
+	if m.asMode != asModeBoxes {
+		t.Fatalf("setup: mode=%d, want boxes", m.asMode)
+	}
+	// Cursor on the LIVE team row (row 0): d must NOT arm.
+	m.asBoxCursor = 0
+	m1, cmd := press(t, m, "d")
+	if cmd != nil || m1.teamHistDeleteArm != "" || m1.boardStatus == teamHistDeleteArmPrompt {
+		t.Fatalf("d on a live team row armed a delete: arm=%q status=%q cmd=%v", m1.teamHistDeleteArm, m1.boardStatus, cmd)
+	}
+	// Cursor on the ENDED team row (row 1): first d arms, second d dispatches.
+	m.asBoxCursor = 1
+	m2, cmd := press(t, m, "d")
+	if cmd != nil {
+		t.Fatal("first d should only arm, not dispatch")
+	}
+	if m2.teamHistDeleteArm != "gone" || m2.boardStatus != teamHistDeleteArmPrompt {
+		t.Fatalf("first d did not arm: arm=%q status=%q", m2.teamHistDeleteArm, m2.boardStatus)
+	}
+	m3, cmd := press(t, m2, "d")
+	if cmd == nil {
+		t.Fatal("second d should dispatch the delete (non-nil cmd)")
+	}
+	if m3.teamHistDeleteArm != "" {
+		t.Errorf("arm not cleared after dispatch: %q", m3.teamHistDeleteArm)
+	}
+	// A non-d key disarms a pending delete.
+	m4, _ := press(t, m2, "j")
+	if m4.teamHistDeleteArm != "" || m4.boardStatus == teamHistDeleteArmPrompt {
+		t.Errorf("a non-d key did not disarm: arm=%q status=%q", m4.teamHistDeleteArm, m4.boardStatus)
+	}
+}
+
+// TestSynthesizeEndedBackfillsCwd: a record's member cwd back-fills the session meta when
+// live resolution left it empty, so the ended member's card resolves its transcript path.
+func TestSynthesizeEndedBackfillsCwd(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := teamhist.Upsert(
+		[]teardown.Teammate{{Team: "gone", Name: "bob", LeadSessionID: "s1"}},
+		func(string) string { return "/recorded/dir" },
+	); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	// meta starts with NO cwd for s1 — the live resolution found nothing.
+	meta := map[string]sessiontitle.Meta{}
+	ended, seen := synthesizeEnded(nil, meta)
+	if len(ended) != 1 || ended[0].Status != endedStatus || ended[0].Name != "bob" {
+		t.Fatalf("synthesizeEnded = %+v, want one ended bob", ended)
+	}
+	if meta["s1"].Cwd != "/recorded/dir" {
+		t.Errorf("cwd not back-filled into session meta: %q", meta["s1"].Cwd)
+	}
+	if _, ok := seen["gone"]; !ok {
+		t.Error("endedSeen missing the gone team")
+	}
+	// A live team of the same name shadows the record (no ended row).
+	ended2, _ := synthesizeEnded([]teardown.Teammate{{Team: "gone", Name: "x"}}, map[string]sessiontitle.Meta{})
+	if len(ended2) != 0 {
+		t.Errorf("a live team should shadow its record, got %+v", ended2)
+	}
+}
+
+// TestBoardEndedTeamKeySafe: a canary planted in a record's member string is scrubbed
+// through CleanTitle on every board surface it can reach. The team name itself stays
+// path-safe (it becomes a filename, ids-validated on read), so the canary rides the
+// model string, which ids never constrains.
+func TestBoardEndedTeamKeySafe(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	const modelCanary = "model\x1b[31mEVIL"
+	if err := teamhist.Upsert(
+		[]teardown.Teammate{{Team: "gone", Name: "bob", Model: modelCanary, LeadSessionID: "s"}},
+		func(string) string { return "" },
+	); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	ended, seen := synthesizeEnded(nil, map[string]sessiontitle.Meta{})
+	if len(ended) != 1 {
+		t.Fatalf("expected one ended row, got %+v", ended)
+	}
+	m := endedBoard(t, seen, ended)
+	mc, _ := press(t, m, "enter") // single ended team → straight to its member card
+	t2, _ := mc.selectedTeammate()
+	for name, out := range map[string]string{
+		"view": mc.View(),
+		"card": strings.Join(mc.teammateDetailLines(t2, mc.asEntityRightWidth()), "\n"),
+	} {
+		if strings.ContainsRune(out, '\x1b') {
+			t.Errorf("%s leaked a raw ESC byte from a record-sourced string:\n%q", name, out)
+		}
 	}
 }

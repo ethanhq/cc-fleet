@@ -23,6 +23,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/secrets"
 	"github.com/ethanhq/cc-fleet/internal/sessiontitle"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
+	"github.com/ethanhq/cc-fleet/internal/teamhist"
 	"github.com/ethanhq/cc-fleet/internal/teardown"
 	"github.com/ethanhq/cc-fleet/internal/userops"
 	"github.com/ethanhq/cc-fleet/internal/workflow"
@@ -94,20 +95,27 @@ type Model struct {
 	// tags each auto-refresh tick chain so re-entering the board supersedes a stale
 	// chain instead of stacking a second one. sessionMeta carries each session's
 	// resolved /rename title + recorded working directory (the project grouping key).
-	teammates        []teardown.Teammate
-	spawnErr         error
-	jobs             []subagent.Result
-	sessionMeta      map[string]sessiontitle.Meta
-	boardEpoch       int
-	asMode           asMode
-	focusedProject   string
-	focusedSessionID string
-	asProjectCursor  int       // L0 rail row
-	asSessionCursor  int       // L1 rail row
-	asBoxCursor      int       // L2 continuum row: the session's teams, then its jobs
-	asEntitySrc      asRailRef // the collection L3 lists (set on descend from L2)
-	asEntityCursor   int       // L3 entity row
-	asCardScroll     int       // L3 detail-card scroll offset (j/k); reset on entity change
+	teammates   []teardown.Teammate
+	spawnErr    error
+	jobs        []subagent.Result
+	sessionMeta map[string]sessiontitle.Meta
+	// endedSeen maps an ended team (gone from live discovery, rendered from its
+	// history record) to its record LastSeen, for the card's "last seen" line.
+	endedSeen map[string]time.Time
+	// teamHistDeleteArm holds the ended team armed for record deletion: the first
+	// `d` arms it (status prompt), a second `d` on the same team confirms (mirrors
+	// wfDeleteArm). Any other key disarms.
+	teamHistDeleteArm string
+	boardEpoch        int
+	asMode            asMode
+	focusedProject    string
+	focusedSessionID  string
+	asProjectCursor   int       // L0 rail row
+	asSessionCursor   int       // L1 rail row
+	asBoxCursor       int       // L2 continuum row: the session's teams, then its jobs
+	asEntitySrc       asRailRef // the collection L3 lists (set on descend from L2)
+	asEntityCursor    int       // L3 entity row
+	asCardScroll      int       // L3 detail-card scroll offset (j/k); reset on entity change
 	// Focused-job inline detail (the L3 jobs collection): the job's prompt/answer io +
 	// activity snapshot, read off the Update goroutine (the wf board's wfDetail* pattern).
 	// asDetailJobID records WHICH job the loaded io belongs to, so a render only shows it
@@ -296,7 +304,11 @@ type boardMsg struct {
 	runs        []subagent.WorkflowRun
 	activity    map[string]activitySnapshot
 	sessionMeta map[string]sessiontitle.Meta
-	epoch       int
+	// endedSeen maps an ended team's name to its record LastSeen, so the card can
+	// render "ended · last seen <ts>" without threading a time into the synthetic
+	// Teammate. Empty when no team has ended.
+	endedSeen map[string]time.Time
+	epoch     int
 }
 
 func (boardMsg) owningScreen() screen { return screenSpawn }
@@ -350,6 +362,16 @@ func loadBoard(epoch int) tea.Cmd {
 		if jobsErr == nil {
 			jobsErr = wfErr
 		}
+		meta := sessiontitle.ResolveMeta(leadSessionIDs(items, jobs, runs))
+		// Record live teams + synthesize ended ones AFTER annotation, so a pane
+		// capture can never overwrite a synthetic row's `ended` status. Upsert runs
+		// only on a successful discovery (else the live set is unknown) and is
+		// best-effort — a record error never fails the board.
+		if err == nil {
+			_ = teamhist.Upsert(items, func(sessionID string) string { return meta[sessionID].Cwd })
+		}
+		ended, endedSeen := synthesizeEnded(items, meta)
+		items = append(items, ended...)
 		return boardMsg{
 			teammates:   items,
 			teamErr:     err,
@@ -357,11 +379,62 @@ func loadBoard(epoch int) tea.Cmd {
 			jobsErr:     jobsErr,
 			runs:        runs,
 			activity:    activity,
-			sessionMeta: sessiontitle.ResolveMeta(leadSessionIDs(items, jobs, runs)),
+			sessionMeta: meta,
+			endedSeen:   endedSeen,
 			epoch:       epoch,
 		}
 	}
 }
+
+// synthesizeEnded reads the team-history records and, for every recorded team
+// absent from the live set, returns synthetic Status=="ended" teammates (PID 0,
+// no PaneID/Socket — pane-dependent ops no-op on them) plus a team→LastSeen map
+// for the card's "last seen" line. It also BACK-FILLS meta[leadSessionID].Cwd
+// from a member record when the live resolution left it empty, so the card's
+// transcript path resolves for an ended member. Best-effort: a List error yields
+// no ended rows.
+func synthesizeEnded(live []teardown.Teammate, meta map[string]sessiontitle.Meta) ([]teardown.Teammate, map[string]time.Time) {
+	recs, err := teamhist.List()
+	if err != nil || len(recs) == 0 {
+		return nil, nil
+	}
+	liveTeams := map[string]struct{}{}
+	for _, t := range live {
+		liveTeams[t.Team] = struct{}{}
+	}
+	var ended []teardown.Teammate
+	seen := map[string]time.Time{}
+	for _, rec := range recs {
+		if _, alive := liveTeams[rec.Team]; alive {
+			continue // live discovery wins — the record is shadow data only
+		}
+		if ts, perr := time.Parse(time.RFC3339, rec.LastSeen); perr == nil {
+			seen[rec.Team] = ts
+		}
+		for _, mr := range rec.Members {
+			if mr.Cwd != "" && meta[mr.LeadSessionID].Cwd == "" {
+				m := meta[mr.LeadSessionID]
+				m.Cwd = mr.Cwd
+				meta[mr.LeadSessionID] = m
+			}
+			ended = append(ended, teardown.Teammate{
+				Name:          mr.Name,
+				Team:          rec.Team,
+				Vendor:        mr.Vendor,
+				Model:         mr.Model,
+				SpawnTime:     mr.SpawnTime,
+				LeadSessionID: mr.LeadSessionID,
+				Status:        endedStatus,
+			})
+		}
+	}
+	return ended, seen
+}
+
+// endedStatus marks a synthesized teammate row whose team is gone from live
+// discovery: it renders faint with the word `ended`, h/s no-op on it, and it is
+// excluded from the live "ok" / teammate-count rollups.
+const endedStatus = "ended"
 
 // loadWfData assembles the workflow half of a refresh from an already-listed job set: the
 // run manifests plus each RunID-tagged leaf's activity sidecar (live tokens + tool calls).
@@ -1062,6 +1135,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.workflowRuns = msg.runs
 		m.wfActivity = msg.activity
 		m.sessionMeta = msg.sessionMeta
+		m.endedSeen = msg.endedSeen
 		// Preserve the drill state: re-route if the focus chain broke, re-find the L2 row
 		// by identity, index-clamp the entity cursor, re-clamp the card scroll.
 		m.rerootSpawn()
@@ -1177,6 +1251,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.workflowStatus = fmt.Sprintf("%s %s: ok", msg.verb, runID)
 		}
 		return m, loadWfLight(m.boardEpoch)
+
+	case teamHistCtlMsg:
+		// A stale result from a prior board visit must not mutate a fresh one.
+		if msg.epoch != m.boardEpoch {
+			return m, nil
+		}
+		// Surface the delete outcome on the board status line (it survives the reload),
+		// then reload so the now-gone team drops off. The team name is config-sourced,
+		// so scrub it like every other board surface before display.
+		team := sessiontitle.CleanTitle(displayTeam(msg.team))
+		if msg.err != nil {
+			m.boardStatusErr = true
+			m.boardStatus = fmt.Sprintf("delete %s failed: %s", team, sessiontitle.CleanTitle(msg.err.Error()))
+		} else {
+			m.boardStatusErr = false
+			m.boardStatus = fmt.Sprintf("delete %s: ok", team)
+		}
+		return m, loadBoard(m.boardEpoch)
 
 	case asDetailMsg:
 		// Drop a read that answers a prior focused job or a prior board visit (the
@@ -1385,6 +1477,12 @@ func (m Model) updateSpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.workflowStatus = ""
 		}
 	}
+	if msg.String() != "d" && m.teamHistDeleteArm != "" {
+		m.teamHistDeleteArm = "" // any non-d key disarms a pending ended-team delete
+		if m.boardStatus == teamHistDeleteArmPrompt {
+			m.boardStatus = ""
+		}
+	}
 	atRunLevel := m.asMode == asModeRunPhases || m.asMode == asModeRunAgent
 	switch msg.String() {
 	case "r":
@@ -1479,9 +1577,13 @@ func (m Model) updateAsBoxes(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.asBoxCursor = clampIndex(m.asBoxCursor+1, n)
 		return m.focusBoxJobIO()
 	case "d":
-		// A run row gets the two-press delete; other rows ignore d.
+		// A run row arms the run delete; an ENDED team row arms its record delete;
+		// a live team row and job rows ignore d.
 		if g, onRun := m.boxRun(); onRun {
 			return m.armOrDelete(g.runID)
+		}
+		if name, onTeam := m.boxTeam(); onTeam && m.isEndedTeam(name) {
+			return m.armOrDeleteTeamHist(name)
 		}
 	case "right", "enter":
 		if _, onJob := m.boxJob(); onJob {
@@ -1552,11 +1654,12 @@ func (m Model) updateAsEntity(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "h":
 		// Pass the discovered Teammate row (with its live Socket + PaneID) so HideRef can
 		// scope tmux ops to the right server and double-check the pane id against config.
-		if t, ok := m.selectedTeammate(); ok {
+		// An ended row has no live pane — h/s no-op on it.
+		if t, ok := m.selectedTeammate(); ok && t.Status != endedStatus {
 			return m, hideTeammateCmd(t)
 		}
 	case "s":
-		if t, ok := m.selectedTeammate(); ok {
+		if t, ok := m.selectedTeammate(); ok && t.Status != endedStatus {
 			return m, showTeammateCmd(t)
 		}
 	case "esc":
@@ -1939,6 +2042,25 @@ func (m Model) boxRun() (runGroup, bool) {
 	return runGroup{}, false
 }
 
+// boxTeam returns the team name under the L2 continuum cursor (ok=false off the teams range).
+func (m Model) boxTeam() (string, bool) {
+	s, ok := m.focusedSession()
+	if !ok {
+		return "", false
+	}
+	if i := m.asBoxCursor - len(s.runs); i >= 0 && i < len(s.teams) {
+		return s.teams[i].name, true
+	}
+	return "", false
+}
+
+// isEndedTeam reports whether a team is rendered from a history record (gone from
+// live discovery) — endedSeen carries exactly those teams.
+func (m Model) isEndedTeam(name string) bool {
+	_, ok := m.endedSeen[name]
+	return ok
+}
+
 // boxJob returns the job under the L2 continuum cursor (ok=false off the jobs range) — the
 // job whose inline card the Subagents box shows.
 func (m Model) boxJob() (subagent.Result, bool) {
@@ -2125,6 +2247,46 @@ func (m Model) armOrDelete(runID string) (tea.Model, tea.Cmd) {
 	m.workflowStatusErr = false
 	m.workflowStatus = deleteArmPrompt
 	return m, nil
+}
+
+// teamHistDeleteArmPrompt is the status shown after the first `d` on an ended team row.
+const teamHistDeleteArmPrompt = "press d again to delete this ended team · any other key cancels"
+
+// armOrDeleteTeamHist is the two-press guard for deleting an ended team's history
+// record: the first `d` arms it (status prompt on the board line), a second `d` on
+// the SAME team confirms and dispatches the delete (mirror armOrDelete). The
+// outcome rides boardStatus, whose survive-the-refresh semantics let the follow-up
+// reload re-render without the now-gone team.
+func (m Model) armOrDeleteTeamHist(team string) (tea.Model, tea.Cmd) {
+	if m.teamHistDeleteArm == team {
+		m.teamHistDeleteArm = ""
+		if m.boardStatus == teamHistDeleteArmPrompt {
+			m.boardStatus = ""
+		}
+		return m, deleteTeamHistCmd(team, m.boardEpoch)
+	}
+	m.teamHistDeleteArm = team
+	m.boardStatusErr = false
+	m.boardStatus = teamHistDeleteArmPrompt
+	return m, nil
+}
+
+// teamHistCtlMsg carries the outcome of an ended-team record delete. Owned by
+// screenSpawn; epoch is the originating board visit so a stale result is dropped.
+type teamHistCtlMsg struct {
+	team  string
+	err   error
+	epoch int
+}
+
+func (teamHistCtlMsg) owningScreen() screen { return screenSpawn }
+
+// deleteTeamHistCmd removes an ended team's history record off the Update goroutine,
+// reporting the outcome on the board status line (mirror deleteRunCmd).
+func deleteTeamHistCmd(team string, epoch int) tea.Cmd {
+	return func() tea.Msg {
+		return teamHistCtlMsg{team: team, err: teamhist.Delete(team), epoch: epoch}
+	}
 }
 
 // updateWfPhases (L1): ↑/↓ walk phases, → descend into a non-empty phase's agents, ← ascend to the

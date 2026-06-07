@@ -208,3 +208,35 @@ func TestUninstall_MixedJobsPartialClean(t *testing.T) {
 		t.Fatalf("Kept missing running-job report for %q (got %v)", "live", res.Kept)
 	}
 }
+
+// TestUninstall_PurgesTeamsHistory: Uninstall removes the whole teams-history dir
+// (an ended team's board snapshot) and reports it in Removed.
+func TestUninstall_PurgesTeamsHistory(t *testing.T) {
+	setupHome(t)
+	if _, err := Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	cfgDir, err := config.ConfigDir()
+	if err != nil {
+		t.Fatalf("ConfigDir: %v", err)
+	}
+	histDir := filepath.Join(cfgDir, "teams-history")
+	if err := os.MkdirAll(histDir, 0o700); err != nil {
+		t.Fatalf("mkdir teams-history: %v", err)
+	}
+	rec := filepath.Join(histDir, "alpha.json")
+	if err := os.WriteFile(rec, []byte(`{"team":"alpha","members":[]}`), 0o600); err != nil {
+		t.Fatalf("seed record: %v", err)
+	}
+
+	res, err := Uninstall(UninstallRequest{KeepSecrets: true})
+	if err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	if _, err := os.Stat(histDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("teams-history dir still exists post-Uninstall (err=%v)", err)
+	}
+	if !contains(res.Removed, histDir) {
+		t.Fatalf("Removed missing teams-history dir (got %v)", res.Removed)
+	}
+}

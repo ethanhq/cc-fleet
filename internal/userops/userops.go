@@ -17,6 +17,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/profile"
 	"github.com/ethanhq/cc-fleet/internal/secrets"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
+	"github.com/ethanhq/cc-fleet/internal/teamhist"
 )
 
 // Error codes returned by Add/Edit/Remove. Stable so cmd/ JSON envelopes can
@@ -769,7 +770,8 @@ type UninstallResult struct {
 }
 
 // Uninstall removes every cc-fleet-owned file: per-vendor profile JSONs,
-// vendors.toml, fingerprint.json, models-cache.json, and finished background
+// vendors.toml, fingerprint.json, models-cache.json, the team-history records
+// under teams-history/, and finished background
 // jobs under subagent-jobs/ (see subagent.PurgeJobs — finished job files are
 // removed even when other jobs are still running; the live ones, and the dir
 // itself, are kept and reported in Kept). The skill directory
@@ -861,6 +863,16 @@ func Uninstall(req UninstallRequest) (*UninstallResult, error) {
 	default:
 		// Nothing left running — the whole dir was purged (or never existed).
 		res.Removed = append(res.Removed, jobsPath)
+	}
+
+	// 2c. Team-history records (ConfigDir/teams-history). A record holds an ended
+	// team's snapshot (member names, models, cwds) the board renders after the team
+	// is gone; uninstall purges the whole dir. Routed through teamhist.Purge so the
+	// dir name stays owned by that package (no hardcoded path here).
+	if histPath, herr := teamhist.Purge(); herr != nil {
+		res.Kept = append(res.Kept, fmt.Sprintf("%s (purge failed: %v)", histPath, herr))
+	} else {
+		res.Removed = append(res.Removed, histPath)
 	}
 
 	// 3. Secrets directory (or its contents, depending on KeepSecrets).

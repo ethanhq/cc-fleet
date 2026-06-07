@@ -1041,7 +1041,11 @@ func projectCounts(p asProject) string {
 	mates, jobs, runs := 0, 0, 0
 	for _, sess := range p.sessions {
 		for _, t := range sess.teams {
-			mates += len(t.members)
+			for _, mem := range t.members {
+				if mem.Status != endedStatus { // ended members aren't live teammates
+					mates++
+				}
+			}
 		}
 		jobs += len(sess.jobs)
 		runs += len(sess.runs)
@@ -1229,6 +1233,9 @@ func asSessionCounts(s asSession) string {
 	mates, hidden := 0, 0
 	for _, t := range s.teams {
 		for _, mem := range t.members {
+			if mem.Status == endedStatus {
+				continue // ended members don't inflate the live "N teammates" rollup
+			}
 			mates++
 			if mem.Hidden {
 				hidden++
@@ -1482,8 +1489,14 @@ func (m Model) renderTeamsBox(s asSession, bodyH int) string {
 		} else {
 			title = liveStyle.Render(title)
 		}
+		// An ended team reads "ended · N members" — never an okN/N that would mimic
+		// an all-unhealthy live team.
+		count := fmt.Sprintf("%d/%d", okN, len(t.members))
+		if m.isEndedTeam(t.name) {
+			count = fmt.Sprintf("%s · %d members", endedStatus, len(t.members))
+		}
 		leftLines = append(leftLines, fmt.Sprintf("%s%s %s  %s", marker, teamAggregateDot(t.members), title,
-			faintStyle.Render(fmt.Sprintf("%d/%d", okN, len(t.members)))))
+			faintStyle.Render(count)))
 	}
 	leftW, rightW := m.paneWidths(leftWidth("Agent Teams", leftLines, m.boardInner()))
 	rightTitle := "teammates"
@@ -1617,6 +1630,8 @@ func teammateDot(t teardown.Teammate) string {
 		return okStyle.Render("●")
 	case "error":
 		return errStyle.Render("●")
+	case endedStatus:
+		return faintStyle.Render("■")
 	default:
 		return faintStyle.Render("◌")
 	}
@@ -1657,14 +1672,19 @@ func teammateUptime(t teardown.Teammate) string {
 // teamAggregateDot rolls a team's health up to the rail: any error → ● (err), all ok → ●
 // (green), else ◌ (faint — unscanned/unknown somewhere).
 func teamAggregateDot(members []teardown.Teammate) string {
-	okN := 0
+	okN, endedN := 0, 0
 	for _, t := range members {
 		switch t.Status {
 		case "error":
 			return errStyle.Render("●")
 		case "ok":
 			okN++
+		case endedStatus:
+			endedN++
 		}
+	}
+	if len(members) > 0 && endedN == len(members) {
+		return faintStyle.Render("■") // a fully-ended team reads as gone, not unknown
 	}
 	if len(members) > 0 && okN == len(members) {
 		return okStyle.Render("●")
@@ -1706,8 +1726,8 @@ func (m Model) renderTeammateRowFull(t teardown.Teammate, width int) string {
 		name = "teammate"
 	}
 	nameStyle := liveStyle
-	if t.Hidden {
-		nameStyle = faintStyle
+	if t.Hidden || t.Status == endedStatus {
+		nameStyle = faintStyle // an ended (gone) row recedes like a hidden one
 	}
 	left := teammateDot(t) + " " + nameStyle.Render(trunc(name, 24))
 	if model := sessiontitle.CleanTitle(t.Model); model != "" {
@@ -1717,7 +1737,8 @@ func (m Model) renderTeammateRowFull(t teardown.Teammate, width int) string {
 	if t.Hidden {
 		status += " · hidden"
 	}
-	if up := teammateUptime(t); up != "" {
+	// An ended row has no live pane — no uptime.
+	if up := teammateUptime(t); up != "" && t.Status != endedStatus {
 		status += " · up " + up
 	}
 	return joinRowEnds(left, faintStyle.Render(status), width)
@@ -1932,6 +1953,8 @@ func teammateStatusToken(t teardown.Teammate) string {
 		return okStyle.Render("● ok")
 	case "error":
 		return errStyle.Render("● " + teammateStatusWord(t))
+	case endedStatus:
+		return faintStyle.Render("■ " + endedStatus)
 	default:
 		return faintStyle.Render("◌ " + teammateStatusWord(t))
 	}
@@ -1939,6 +1962,11 @@ func teammateStatusToken(t teardown.Teammate) string {
 
 func (m Model) teammateDetailLines(t teardown.Teammate, rightW int) []string {
 	status := teammateStatusToken(t)
+	if t.Status == endedStatus {
+		if ts, ok := m.endedSeen[t.Team]; ok {
+			status += faintStyle.Render(" · last seen " + ts.Format("01-02 15:04"))
+		}
+	}
 	if model := sessiontitle.CleanTitle(t.Model); model != "" {
 		status += faintStyle.Render(" · " + trunc(model, 28))
 	}
@@ -1960,7 +1988,7 @@ func (m Model) teammateDetailLines(t teardown.Teammate, rightW int) []string {
 		{"status", teammateStatusWord(t)},
 		{"hidden", hidden},
 	}
-	if up := teammateUptime(t); up != "" {
+	if up := teammateUptime(t); up != "" && t.Status != endedStatus {
 		fields = append(fields, detailKV{"up", up})
 	}
 	if t.LeadSessionID != "" {
