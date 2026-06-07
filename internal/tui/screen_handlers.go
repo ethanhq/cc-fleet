@@ -24,19 +24,13 @@ var handlers = map[screen]screenHandler{
 	screenList:          {update: Model.updateList, view: Model.viewList},
 	screenSpawn:         {update: Model.updateSpawn, view: Model.viewSpawn},
 	screenPickTemplate:  {update: Model.updatePickTemplate, view: Model.viewPickTemplate},
-	screenForm:          {update: Model.updateForm, view: viewFormFooter},
+	screenForm:          {update: Model.updateForm, view: Model.viewForm},
 	screenModelPick:     {update: Model.updateModelPick, view: Model.viewModelPick},
 	screenRemoveConfirm: {update: Model.updateRemoveConfirm, view: Model.viewRemoveConfirm},
 	screenResult:        {update: Model.updateResult, view: Model.viewResult},
 	screenKeys:          {update: Model.updateKeys, view: Model.viewKeys},
 	screenSetupTmux:     {update: Model.updateSetupTmux, view: Model.viewSetupTmux},
 	screenSetup:         {update: Model.updateSetup, view: Model.viewSetup},
-}
-
-// viewFormFooter mirrors Model.View()'s screenForm branch (the form has no
-// dedicated view method; it composes form.View() with a static footer).
-func viewFormFooter(m Model) string {
-	return m.form.View() + "\n" + footer("esc cancel")
 }
 
 // allScreens returns every screen constant defined in this package, in the

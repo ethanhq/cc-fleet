@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -65,11 +64,11 @@ func newTextInput(value, placeholder string, password bool) textinput.Model {
 // Field order: name → base_url → models_endpoint → api_key → default_model.
 func newAddForm(t Template) form {
 	f := form{
-		title:  "Add vendor",
+		title:  "Add provider",
 		intro:  "↑/↓ or tab move · enter advances · enter on [Add] submits · esc cancels",
 		submit: "Add",
 		fields: []formField{
-			{key: "name", label: "Name", kind: fieldText, input: newTextInput(t.Name, "vendor id, e.g. deepseek", false)},
+			{key: "name", label: "Name", kind: fieldText, input: newTextInput(t.Name, "provider id, e.g. deepseek", false)},
 			{key: "base_url", label: "Base URL", kind: fieldText, input: newTextInput(t.BaseURL, "https://…/anthropic", false)},
 			{key: "models_endpoint", label: "Models endpoint", kind: fieldText, input: newTextInput(t.ModelsEndpoint, "https://…/v1/models", false)},
 			{key: "api_key", label: "API key", kind: fieldText, input: newTextInput("", "stored at <name>.key (mode 0600)", true)},
@@ -86,7 +85,7 @@ func newAddForm(t Template) form {
 // accepts plus the enabled toggle.
 func newEditForm(v userops.VendorView) form {
 	f := form{
-		title:  "Edit vendor: " + v.Name,
+		title:  "Edit provider: " + v.Name,
 		intro:  "↑/↓ or tab move · space toggles Enabled · enter on [Save] submits · esc cancels",
 		submit: "Save",
 		fields: []formField{
@@ -206,55 +205,47 @@ func (f form) boolValue(key string) bool {
 	return false
 }
 
-// View renders the form. Field labels are padded to a fixed column so inputs
-// align; the focused row and submit button are highlighted.
-func (f form) View() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render(f.title) + "\n")
-	if f.intro != "" {
-		b.WriteString(faintStyle.Render(f.intro) + "\n")
-	}
-	b.WriteString("\n")
-
+// viewLines renders the form as right-pane lines: a label line then the value line per
+// text field (the focused input draws its own cursor); toggle/action rows and the submit
+// button are single lines. The form title and intro live in the surrounding chrome.
+func (f form) viewLines() []string {
+	var lines []string
 	for i, fld := range f.fields {
-		cursor := "  "
-		if i == f.focus {
-			cursor = cursorStyle.Render("> ")
+		focused := i == f.focus
+		label := faintStyle.Render(fld.label)
+		if focused {
+			label = selectedStyle.Render(fld.label)
 		}
-		label := fmt.Sprintf("%-16s", fld.label)
 		switch fld.kind {
 		case fieldText:
-			b.WriteString(cursor + label + " " + fld.input.View() + "\n")
+			lines = append(lines, label, " "+fld.input.View())
 			// Tell the user the default_model field can pull the list from the
-			// vendor (only meaningful when there's an endpoint to hit).
+			// provider (only meaningful when there's an endpoint to hit).
 			if fld.key == "default_model" && f.value("models_endpoint") != "" {
-				b.WriteString(faintStyle.Render("                   enter: pick from vendor's model list") + "\n")
+				lines = append(lines, faintStyle.Render(" enter: pick from provider's model list"))
 			}
 		case fieldToggle:
 			state := "[ ] off"
 			if fld.on {
 				state = "[x] on"
 			}
-			b.WriteString(cursor + label + " " + state + "\n")
+			lines = append(lines, label+"  "+contentStyle.Render(state))
 		case fieldAction:
 			// Standalone action label (no value column); enter on it is handled
 			// by the parent model (e.g. open the key manager).
-			line := fld.label
-			if i == f.focus {
-				line = selectedStyle.Render(fld.label)
+			if !focused {
+				label = contentStyle.Render(fld.label)
 			}
-			b.WriteString(cursor + line + "\n")
+			lines = append(lines, label)
 		}
 	}
-
-	btn := "[ " + f.submit + " ]"
+	btn := "  [ " + f.submit + " ]"
 	if f.focus == len(f.fields) {
-		b.WriteString("\n" + cursorStyle.Render("> ") + selectedStyle.Render(btn) + "\n")
-	} else {
-		b.WriteString("\n" + "  " + btn + "\n")
+		btn = cursorStyle.Render("❯ ") + selectedStyle.Render("[ "+f.submit+" ]")
 	}
+	lines = append(lines, "", btn)
 	if f.err != "" {
-		b.WriteString("\n" + errStyle.Render(f.err) + "\n")
+		lines = append(lines, "", errStyle.Render(f.err))
 	}
-	return b.String()
+	return lines
 }

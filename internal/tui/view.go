@@ -49,7 +49,7 @@ func (m Model) View() string {
 	case screenPickTemplate:
 		return m.viewPickTemplate()
 	case screenForm:
-		return m.form.View() + "\n" + footer("esc cancel")
+		return m.viewForm()
 	case screenModelPick:
 		return m.viewModelPick()
 	case screenRemoveConfirm:
@@ -66,70 +66,78 @@ func (m Model) View() string {
 	return ""
 }
 
-// viewKeys renders the per-vendor key manager. It renders ONLY secrets.MaskKey
-// for each key — the full key never reaches the screen — and the add/edit input
-// is an EchoPassword field (bullets), so no plaintext is ever displayed.
+// viewKeys renders the per-vendor key manager in the hub box. It renders ONLY
+// secrets.MaskKey for each key — the full key never reaches the screen — and the
+// add/edit input is an EchoPassword field (bullets), so no plaintext is ever displayed.
 func (m Model) viewKeys() string {
-	var b strings.Builder
 	rot := m.keyRotation
 	if rot == "" {
 		rot = "off"
 	}
-	b.WriteString(titleStyle.Render("API keys · "+m.keyVendor) +
-		faintStyle.Render("    rotation: "+rot) + "\n\n")
-
+	ctx := "API keys · " + m.keyVendor
 	if m.keyEditing {
-		title := "Add key"
+		rightTitle := "add key"
 		if m.keyEditIdx >= 0 {
-			title = "Edit " + m.keyLabel(m.keyEditIdx)
+			rightTitle = "edit " + m.keyLabel(m.keyEditIdx)
 		}
-		b.WriteString(title + "\n")
-		b.WriteString(m.keyInput.View() + "\n")
-		if m.keyErr != "" {
-			b.WriteString("\n" + errStyle.Render(m.keyErr) + "\n")
-		}
-		b.WriteString("\n" + footer("enter save · esc cancel"))
-		return b.String()
+		return m.vendorFlowView(ctx, "rotation: "+rot, m.keyVendor, rightTitle,
+			"enter save · esc cancel", func(rightW int) []string {
+				lines := []string{" " + m.keyInput.View()}
+				if m.keyErr != "" {
+					lines = append(lines, "", errStyle.Render(m.keyErr))
+				}
+				return lines
+			})
 	}
+	return m.vendorFlowView(ctx, "rotation: "+rot, m.keyVendor, "keys",
+		"↑/↓ move · space toggle · e edit · d delete · a/enter add · t cycle rotation · esc back",
+		func(rightW int) []string {
+			var lines []string
+			for i, e := range m.keys {
+				cursor := "  "
+				label := fmt.Sprintf("%-10s", m.keyLabel(i))
+				if i == m.keyCursor {
+					cursor = cursorStyle.Render("❯ ")
+					label = selectedStyle.Render(label)
+				} else {
+					label = contentStyle.Render(label)
+				}
+				status := okStyle.Render("● enabled")
+				if !e.Enabled {
+					status = faintStyle.Render("○ disabled")
+				}
+				lines = append(lines, cursor+label+" "+
+					faintStyle.Render(fmt.Sprintf("%-10s", secrets.MaskKey(e.Key)))+" "+status)
+			}
+			if len(m.keys) == 0 {
+				lines = append(lines, faintStyle.Render("(no keys yet — add one below)"))
+			}
+			addCursor := "  "
+			addLabel := faintStyle.Render("+ Add key…")
+			if m.keyCursor == len(m.keys) {
+				addCursor = cursorStyle.Render("❯ ")
+				addLabel = selectedStyle.Render("+ Add key…")
+			}
+			lines = append(lines, addCursor+addLabel)
+			if m.keyErr != "" {
+				lines = append(lines, "", errStyle.Render(m.keyErr))
+			}
+			return lines
+		})
+}
 
-	for i, e := range m.keys {
-		cursor := "  "
-		label := fmt.Sprintf("%-10s", m.keyLabel(i))
-		if i == m.keyCursor {
-			cursor = cursorStyle.Render("> ")
-			label = selectedStyle.Render(label)
-		}
-		status := okStyle.Render("● enabled")
-		if !e.Enabled {
-			status = faintStyle.Render("○ disabled")
-		}
-		b.WriteString(cursor + label + " " +
-			faintStyle.Render(fmt.Sprintf("%-10s", secrets.MaskKey(e.Key))) + " " + status + "\n")
-	}
-	if len(m.keys) == 0 {
-		b.WriteString(faintStyle.Render("  (no keys yet — add one below)") + "\n")
-	}
-
-	addCursor := "  "
-	addLabel := "+ Add key…"
-	if m.keyCursor == len(m.keys) {
-		addCursor = cursorStyle.Render("> ")
-		addLabel = selectedStyle.Render(addLabel)
-	}
-	b.WriteString(addCursor + addLabel + "\n")
-	if m.keyErr != "" {
-		b.WriteString("\n" + errStyle.Render(m.keyErr) + "\n")
-	}
-	b.WriteString("\n" + footer("↑/↓ move · space toggle · e edit · d delete · a/enter add · t cycle rotation · esc back"))
-	return b.String()
+// hubTitle is the Model Providers app title + tab hint — the first chrome line of the
+// hub and every vendor flow (mirror spawnTitle).
+func (m Model) hubTitle() string {
+	return titleStyle.Render("cc-fleet · Model Providers") + faintStyle.Render("    tab → Agents Board")
 }
 
 // viewList renders the Model Providers hub in the board chrome: the fixed title line, the cursored
 // vendor beside its status rollup in the header, a rule, then one master-detail box —
-// vendor rail (with the trailing "+ Add vendor…" row) | the cursored vendor's read-only
+// vendor rail (with the trailing "+ Add provider…" row) | the cursored vendor's read-only
 // config card. enter still opens the edit form; the card saves a trip into it.
 func (m Model) viewList() string {
-	title := titleStyle.Render("cc-fleet · Model Providers") + faintStyle.Render("    tab → Agents Board")
+	title := m.hubTitle()
 	if m.loading {
 		return title + "\n\nloading…"
 	}
@@ -137,7 +145,7 @@ func (m Model) viewList() string {
 		return title + "\n\n" + errStyle.Render("error: "+m.vendorsErr.Error())
 	}
 	addRow := len(m.vendors)
-	left, right := "+ Add vendor…", ""
+	left, right := "+ Add provider…", ""
 	if m.vendorCursor < addRow {
 		v := m.vendors[m.vendorCursor]
 		left = v.Name
@@ -169,18 +177,18 @@ func (m Model) viewList() string {
 	if len(m.vendors) == 0 {
 		leftLines = append(leftLines, faintStyle.Render("  (none yet)"))
 	}
-	// Trailing synthetic "+ Add vendor…" row at index len(vendors).
-	addLabel := faintStyle.Render("+ Add vendor…")
+	// Trailing synthetic "+ Add provider…" row at index len(vendors).
+	addLabel := faintStyle.Render("+ Add provider…")
 	addMarker := "  "
 	if m.vendorCursor == addRow {
 		addMarker = cursorStyle.Render("❯ ")
-		addLabel = selectedStyle.Render("+ Add vendor…")
+		addLabel = selectedStyle.Render("+ Add provider…")
 	}
 	leftLines = append(leftLines, "  "+faintStyle.Render(strings.Repeat("─", 12)), addMarker+addLabel)
 	listTitle := fmt.Sprintf("Providers · %d", len(m.vendors))
 	leftW, rightW := m.paneWidths(leftWidth(listTitle, leftLines, m.boardInner()))
-	cardTitle := "add vendor"
-	rightLines := []string{faintStyle.Render("enter opens the add-vendor wizard")}
+	cardTitle := "add provider"
+	rightLines := []string{faintStyle.Render("enter opens the add-provider wizard")}
 	if m.vendorCursor < addRow {
 		v := m.vendors[m.vendorCursor]
 		cardTitle = trunc(v.Name, 24)
@@ -228,6 +236,52 @@ func vendorDetailLines(v userops.VendorView, rightW int) []string {
 	}
 	detailField(&lines, "key", key, rightW)
 	return lines
+}
+
+// vendorFlowView wraps a vendor flow (edit / add / model pick / keys / confirm / result)
+// in the hub chrome: the SAME master-detail box as the list, the inert provider rail on
+// the left keeping the spatial anchor, the flow's pane on the right. active highlights
+// the provider the flow concerns ("+" highlights the Add row, "" none); ctx/ctxRight fill
+// the header line; rightLines builds the pane content for its column budget.
+func (m Model) vendorFlowView(ctx, ctxRight, active, rightTitle, hint string, rightLines func(rightW int) []string) string {
+	var leftLines []string
+	for _, v := range m.vendors {
+		dot := okStyle.Render("●")
+		if !v.Enabled {
+			dot = faintStyle.Render("○")
+		}
+		name := trunc(v.Name, 24)
+		if v.Name == active {
+			name = selectedStyle.Render(name)
+		} else {
+			name = faintStyle.Render(name)
+		}
+		leftLines = append(leftLines, "  "+dot+" "+name)
+	}
+	addLabel := faintStyle.Render("+ Add provider…")
+	if active == "+" {
+		addLabel = selectedStyle.Render("+ Add provider…")
+	}
+	leftLines = append(leftLines, "  "+faintStyle.Render(strings.Repeat("─", 12)), "  "+addLabel)
+	listTitle := fmt.Sprintf("Providers · %d", len(m.vendors))
+	leftW, rightW := m.paneWidths(leftWidth(listTitle, leftLines, m.boardInner()))
+	bodyH := m.boardBodyHeight()
+	board := renderBoard(listTitle, leftLines, rightTitle, rightLines(rightW), leftW, rightW, bodyH, 0)
+	pad := strings.Repeat(" ", boardMargin)
+	return indentBox(m.hubTitle()+"\n\n"+headerSummaryLine(ctx, ctxRight, m.boardInner()), boardMargin) +
+		"\n" + m.headerRule() + "\n" + indentBox(board, boardMargin) +
+		"\n" + pad + footer(hint)
+}
+
+// viewForm renders the add/edit form inside the hub box: the rail stays put, the right
+// pane is the form, the header carries the form title and the footer its key hints.
+func (m Model) viewForm() string {
+	active, rightTitle := "+", "add provider"
+	if m.formMode == modeEdit {
+		active, rightTitle = m.editName, "edit "+trunc(m.editName, 20)
+	}
+	return m.vendorFlowView(m.form.title, "", active, rightTitle, m.form.intro,
+		func(rightW int) []string { return m.form.viewLines() })
 }
 
 // viewSpawn renders the Agents Board: a project-first master-detail. asMode re-roots
@@ -2186,7 +2240,7 @@ func (m Model) teammateDetailLines(t teardown.Teammate, rightW int) []string {
 	}
 	fields := []detailKV{
 		{"team", sessiontitle.CleanTitle(displayTeam(t.Team))},
-		{"vendor", sessiontitle.CleanTitle(t.Vendor)},
+		{"provider", sessiontitle.CleanTitle(t.Vendor)},
 		{"pane", pane},
 		{"pid", fmt.Sprintf("%d", t.PID)},
 		{"status", teammateStatusWord(t)},
@@ -2589,51 +2643,56 @@ func shortJobID(id string) string {
 	return id
 }
 
+// viewPickTemplate renders the add flow's template picker in the hub box: template rows
+// above the highlighted template's seed-value preview, so the user sees what will be
+// prefilled before committing to the form.
 func (m Model) viewPickTemplate() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("Add vendor") + faintStyle.Render("  ·  pick a template") + "\n\n")
-
-	rows := make([]string, 0, len(Templates)+1)
-	for _, t := range Templates {
-		rows = append(rows, t.Label)
-	}
-	rows = append(rows, "Custom vendor (fill everything manually)")
-
-	for i, label := range rows {
-		cursor := "  "
-		line := label
-		if i == m.tmplCursor {
-			cursor = cursorStyle.Render("> ")
-			line = selectedStyle.Render(label)
-		}
-		b.WriteString(cursor + line + "\n")
-	}
-
-	// Preview the highlighted template's seed values so the user sees what
-	// will be prefilled before committing to the form.
-	if m.tmplCursor < len(Templates) {
-		t := Templates[m.tmplCursor]
-		b.WriteString("\n" + faintStyle.Render("  base_url        "+t.BaseURL) + "\n")
-		b.WriteString(faintStyle.Render("  models_endpoint "+t.ModelsEndpoint) + "\n")
-		b.WriteString(faintStyle.Render("  default_model   "+t.DefaultModel) + "\n")
-		if t.Note != "" {
-			b.WriteString(errStyle.Render("  note: "+t.Note) + "\n")
-		}
-	} else {
-		b.WriteString("\n" + faintStyle.Render("  all fields start blank") + "\n")
-	}
-
-	b.WriteString("\n" + footer("↑/↓ move · enter choose · esc cancel"))
-	return b.String()
+	return m.vendorFlowView("Add provider · pick a template", "", "+", "templates",
+		"↑/↓ move · enter choose · esc cancel", func(rightW int) []string {
+			rows := make([]string, 0, len(Templates)+1)
+			for _, t := range Templates {
+				rows = append(rows, t.Label)
+			}
+			rows = append(rows, "Custom provider (fill everything manually)")
+			var lines []string
+			for i, label := range rows {
+				cursor := "  "
+				if i == m.tmplCursor {
+					cursor = cursorStyle.Render("❯ ")
+					label = selectedStyle.Render(label)
+				} else {
+					label = contentStyle.Render(label)
+				}
+				lines = append(lines, cursor+label)
+			}
+			lines = append(lines, "")
+			if m.tmplCursor < len(Templates) {
+				t := Templates[m.tmplCursor]
+				lines = append(lines,
+					faintStyle.Render("  base_url        "+t.BaseURL),
+					faintStyle.Render("  models_endpoint "+t.ModelsEndpoint),
+					faintStyle.Render("  default_model   "+t.DefaultModel))
+				if t.Note != "" {
+					lines = append(lines, errStyle.Render("  note: "+t.Note))
+				}
+			} else {
+				lines = append(lines, faintStyle.Render("  all fields start blank"))
+			}
+			return lines
+		})
 }
 
 func (m Model) viewRemoveConfirm() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("Remove vendor") + "\n\n")
-	b.WriteString("Remove " + selectedStyle.Render(m.removeName) +
-		" from vendors.toml, delete its profile, and (for file backend) its secret?\n")
-	b.WriteString("\n" + footer("y confirm · n/esc cancel"))
-	return b.String()
+	return m.vendorFlowView("Remove provider", "", m.removeName, "confirm "+trunc(m.removeName, 18),
+		"y confirm · n/esc cancel", func(rightW int) []string {
+			msg := "Remove " + m.removeName +
+				" from vendors.toml, delete its profile, and (for file backend) its secret?"
+			var lines []string
+			for _, w := range wrapTo(msg, rightW-2) {
+				lines = append(lines, contentStyle.Render(w))
+			}
+			return lines
+		})
 }
 
 // tmuxOptions are the two choices on the tmux setup screen, in cursor order
@@ -2704,14 +2763,22 @@ func (m Model) viewSetup() string {
 }
 
 func (m Model) viewResult() string {
-	var b strings.Builder
-	if m.resultErr {
-		b.WriteString(errStyle.Render("✗ "+m.result) + "\n")
-	} else {
-		b.WriteString(okStyle.Render("✓ "+m.result) + "\n")
-	}
-	b.WriteString("\n" + footer("press any key to return to Vendors"))
-	return b.String()
+	return m.vendorFlowView("", "", "", "result", "press any key to return",
+		func(rightW int) []string {
+			mark, style := "✓ ", okStyle
+			if m.resultErr {
+				mark, style = "✗ ", errStyle
+			}
+			var lines []string
+			for fi, w := range wrapTo(m.result, rightW-4) {
+				if fi == 0 {
+					lines = append(lines, style.Render(mark+w))
+				} else {
+					lines = append(lines, style.Render("  "+w))
+				}
+			}
+			return lines
+		})
 }
 
 // maxVisibleModels caps how many model rows the picker shows at once; longer
@@ -2719,53 +2786,58 @@ func (m Model) viewResult() string {
 const maxVisibleModels = 12
 
 func (m Model) viewModelPick() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("Select default model") + "\n\n")
-	switch {
-	case m.loading:
-		b.WriteString("fetching models…\n")
-	case m.modelsErr != nil:
-		b.WriteString(errStyle.Render("couldn't fetch models: "+m.modelsErr.Error()) + "\n")
-		b.WriteString(faintStyle.Render("press esc to type the model id manually") + "\n")
-	case len(m.modelList) == 0:
-		b.WriteString(faintStyle.Render("vendor returned no models") + "\n")
-		b.WriteString(faintStyle.Render("press esc to type the model id manually") + "\n")
-	default:
-		filtered := m.filteredModels()
-		total := len(m.modelList)
-		if m.modelFilter == "" {
-			b.WriteString(faintStyle.Render(fmt.Sprintf("filter: type to narrow %d models", total)) + "\n\n")
-		} else {
-			b.WriteString("filter: " + m.modelFilter +
-				faintStyle.Render(fmt.Sprintf("  (%d/%d)", len(filtered), total)) + "\n\n")
-		}
-		if len(filtered) == 0 {
-			b.WriteString(faintStyle.Render("no model matches — backspace to widen, esc to type manually") + "\n")
-			break
-		}
-		start, end := windowBounds(m.modelCursor, len(filtered), maxVisibleModels)
-		if start > 0 {
-			b.WriteString(faintStyle.Render(fmt.Sprintf("    ↑ %d more", start)) + "\n")
-		}
-		for i := start; i < end; i++ {
-			mod := filtered[i]
-			cursor := "  "
-			id := mod.ID
-			if i == m.modelCursor {
-				cursor = cursorStyle.Render("> ")
-				id = selectedStyle.Render(mod.ID)
-			}
-			b.WriteString(cursor + id + "\n")
-			if mod.OwnedBy != "" {
-				b.WriteString(faintStyle.Render("    "+mod.OwnedBy) + "\n")
-			}
-		}
-		if end < len(filtered) {
-			b.WriteString(faintStyle.Render(fmt.Sprintf("    ↓ %d more", len(filtered)-end)) + "\n")
-		}
+	active := "+"
+	if m.formMode == modeEdit {
+		active = m.editName
 	}
-	b.WriteString("\n" + footer("type to filter · ↑/↓ move · enter pick · esc manual entry"))
-	return b.String()
+	return m.vendorFlowView("Select default model", "", active, "models",
+		"type to filter · ↑/↓ move · enter pick · esc manual entry", func(rightW int) []string {
+			switch {
+			case m.loading:
+				return []string{faintStyle.Render("fetching models…")}
+			case m.modelsErr != nil:
+				return []string{errStyle.Render("couldn't fetch models: " + m.modelsErr.Error()),
+					faintStyle.Render("press esc to type the model id manually")}
+			case len(m.modelList) == 0:
+				return []string{faintStyle.Render("provider returned no models"),
+					faintStyle.Render("press esc to type the model id manually")}
+			}
+			filtered := m.filteredModels()
+			total := len(m.modelList)
+			var lines []string
+			if m.modelFilter == "" {
+				lines = append(lines, faintStyle.Render(fmt.Sprintf("filter: type to narrow %d models", total)), "")
+			} else {
+				lines = append(lines, "filter: "+m.modelFilter+
+					faintStyle.Render(fmt.Sprintf("  (%d/%d)", len(filtered), total)), "")
+			}
+			if len(filtered) == 0 {
+				return append(lines, faintStyle.Render("no model matches — backspace to widen, esc to type manually"))
+			}
+			start, end := windowBounds(m.modelCursor, len(filtered), maxVisibleModels)
+			if start > 0 {
+				lines = append(lines, faintStyle.Render(fmt.Sprintf("  ↑ %d more", start)))
+			}
+			for i := start; i < end; i++ {
+				mod := filtered[i]
+				cursor := "  "
+				id := mod.ID
+				if i == m.modelCursor {
+					cursor = cursorStyle.Render("❯ ")
+					id = selectedStyle.Render(mod.ID)
+				} else {
+					id = contentStyle.Render(id)
+				}
+				lines = append(lines, cursor+id)
+				if mod.OwnedBy != "" {
+					lines = append(lines, faintStyle.Render("    "+mod.OwnedBy))
+				}
+			}
+			if end < len(filtered) {
+				lines = append(lines, faintStyle.Render(fmt.Sprintf("  ↓ %d more", len(filtered)-end)))
+			}
+			return lines
+		})
 }
 
 // windowBounds returns the [start,end) slice of indices to render so the cursor

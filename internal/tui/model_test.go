@@ -106,7 +106,7 @@ func TestVendorListLoadsAndRenders(t *testing.T) {
 }
 
 // TestVendorListCursorClamps: the cursor walks [0, len(vendors)] — the last
-// index being the trailing "+ Add vendor…" row — and clamps at both ends.
+// index being the trailing "+ Add provider…" row — and clamps at both ends.
 func TestVendorListCursorClamps(t *testing.T) {
 	m := withVendors(t,
 		userops.VendorView{Name: "deepseek"}, userops.VendorView{Name: "glm"},
@@ -173,7 +173,7 @@ func TestTabTogglesSpawnStatus(t *testing.T) {
 	}
 }
 
-// TestAddRowOpensWizard: enter on the trailing "+ Add vendor…" row (the only
+// TestAddRowOpensWizard: enter on the trailing "+ Add provider…" row (the only
 // row when no vendors exist) opens the template picker; the chosen template
 // prefills the form; esc returns to the Model Providers list.
 func TestAddRowOpensWizardAndPrefills(t *testing.T) {

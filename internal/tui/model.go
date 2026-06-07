@@ -80,7 +80,7 @@ type Model struct {
 
 	// Vendor data, loaded for the Model Providers list (the hub) and reused to seed the
 	// edit form. vendorCursor ranges over [0, len(vendors)]; the final index is
-	// the trailing "+ Add vendor…" row.
+	// the trailing "+ Add provider…" row.
 	vendors      []userops.VendorView
 	vendorsErr   error
 	vendorCursor int
@@ -1162,7 +1162,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.vendors = msg.vendors
 		m.vendorsErr = msg.err
-		// The cursor may also rest on the trailing "+ Add vendor…" row at index
+		// The cursor may also rest on the trailing "+ Add provider…" row at index
 		// len(vendors); clamp to that, not len-1.
 		if m.vendorCursor > len(m.vendors) {
 			m.vendorCursor = len(m.vendors)
@@ -1478,11 +1478,11 @@ func (m Model) toList() (tea.Model, tea.Cmd) {
 }
 
 // updateList drives the Model Providers hub. The cursor ranges over [0, len(vendors)];
-// the final index is the synthetic "+ Add vendor…" row. enter edits the
+// the final index is the synthetic "+ Add provider…" row. enter edits the
 // highlighted vendor (or opens the add wizard on the Add row); d deletes it
 // (with a confirm); tab switches to Spawn status; q/esc quit.
 func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	addRow := len(m.vendors) // index of the trailing "+ Add vendor…" row
+	addRow := len(m.vendors) // index of the trailing "+ Add provider…" row
 	switch msg.String() {
 	case "q", "esc":
 		m.quitting = true
