@@ -14,6 +14,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/sessiontitle"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 	"github.com/ethanhq/cc-fleet/internal/teardown"
+	"github.com/ethanhq/cc-fleet/internal/userops"
 )
 
 // Shared lipgloss styles. Colors are ANSI 256 indices so they degrade
@@ -123,52 +124,110 @@ func (m Model) viewKeys() string {
 	return b.String()
 }
 
+// viewList renders the Vendors hub in the board chrome: the fixed title line, the cursored
+// vendor beside its status rollup in the header, a rule, then one master-detail box —
+// vendor rail (with the trailing "+ Add vendor…" row) | the cursored vendor's read-only
+// config card. enter still opens the edit form; the card saves a trip into it.
 func (m Model) viewList() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("cc-fleet · Vendors") +
-		faintStyle.Render("    tab → Agents Board") + "\n\n")
-	switch {
-	case m.loading:
-		b.WriteString("loading…\n")
-	case m.vendorsErr != nil:
-		b.WriteString(errStyle.Render("error: "+m.vendorsErr.Error()) + "\n")
-	default:
-		for i, v := range m.vendors {
-			cursor := "  "
-			// Pad the plain name to a fixed width BEFORE styling so the ANSI
-			// codes of the selected row don't throw off column alignment.
-			name := fmt.Sprintf("%-12s", v.Name)
-			if i == m.vendorCursor {
-				cursor = cursorStyle.Render("> ")
-				name = selectedStyle.Render(name)
-			}
-			status := okStyle.Render("● enabled")
-			if !v.Enabled {
-				status = faintStyle.Render("○ disabled")
-			}
-			models := fmt.Sprintf("%d models", v.ModelsCount)
-			if v.ModelsStale {
-				models += " (stale)"
-			}
-			b.WriteString(cursor + name + " " +
-				faintStyle.Render(fmt.Sprintf("%-20s ", v.DefaultModel)) +
-				status + faintStyle.Render("  "+models) + "\n")
-		}
-		if len(m.vendors) == 0 {
-			b.WriteString(faintStyle.Render("  (no vendors configured yet)") + "\n")
-		}
-		// Trailing synthetic "+ Add vendor…" row at index len(vendors).
-		b.WriteString(faintStyle.Render("  ────────────────") + "\n")
-		addCursor := "  "
-		addLabel := "+ Add vendor…"
-		if m.vendorCursor == len(m.vendors) {
-			addCursor = cursorStyle.Render("> ")
-			addLabel = selectedStyle.Render(addLabel)
-		}
-		b.WriteString(addCursor + addLabel + "\n")
+	title := titleStyle.Render("cc-fleet · Vendors") + faintStyle.Render("    tab → Agents Board")
+	if m.loading {
+		return title + "\n\nloading…"
 	}
-	b.WriteString("\n" + footer("↑/↓ move · enter edit · d delete · tab agents board · q quit"))
-	return b.String()
+	if m.vendorsErr != nil {
+		return title + "\n\n" + errStyle.Render("error: "+m.vendorsErr.Error())
+	}
+	addRow := len(m.vendors)
+	left, right := "+ Add vendor…", ""
+	if m.vendorCursor < addRow {
+		v := m.vendors[m.vendorCursor]
+		left = v.Name
+		state := "enabled"
+		if !v.Enabled {
+			state = "disabled"
+		}
+		right = state + " · " + vendorCacheFig(v)
+	}
+	var leftLines []string
+	for i, v := range m.vendors {
+		marker := "  "
+		dot := okStyle.Render("●")
+		if !v.Enabled {
+			dot = faintStyle.Render("○")
+		}
+		name := trunc(v.Name, 24)
+		switch {
+		case i == m.vendorCursor:
+			marker = cursorStyle.Render("❯ ")
+			name = selectedStyle.Render(name)
+		case v.Enabled:
+			name = liveStyle.Render(name)
+		default:
+			name = faintStyle.Render(name)
+		}
+		leftLines = append(leftLines, marker+dot+" "+name)
+	}
+	if len(m.vendors) == 0 {
+		leftLines = append(leftLines, faintStyle.Render("  (none yet)"))
+	}
+	// Trailing synthetic "+ Add vendor…" row at index len(vendors).
+	addLabel := faintStyle.Render("+ Add vendor…")
+	addMarker := "  "
+	if m.vendorCursor == addRow {
+		addMarker = cursorStyle.Render("❯ ")
+		addLabel = selectedStyle.Render("+ Add vendor…")
+	}
+	leftLines = append(leftLines, "  "+faintStyle.Render(strings.Repeat("─", 12)), addMarker+addLabel)
+	listTitle := fmt.Sprintf("Vendors · %d", len(m.vendors))
+	leftW, rightW := m.paneWidths(leftWidth(listTitle, leftLines, m.boardInner()))
+	cardTitle := "add vendor"
+	rightLines := []string{faintStyle.Render("enter opens the add-vendor wizard")}
+	if m.vendorCursor < addRow {
+		v := m.vendors[m.vendorCursor]
+		cardTitle = trunc(v.Name, 24)
+		rightLines = vendorDetailLines(v, rightW)
+	}
+	cursorLine := m.vendorCursor
+	if m.vendorCursor >= addRow {
+		cursorLine = len(leftLines) - 1
+	}
+	bodyH := m.boardBodyHeight()
+	board := renderBoard(listTitle, windowLines(leftLines, cursorLine, bodyH), cardTitle, rightLines, leftW, rightW, bodyH, 0)
+	pad := strings.Repeat(" ", boardMargin)
+	return indentBox(title+"\n\n"+headerSummaryLine(left, right, m.boardInner()), boardMargin) +
+		"\n" + m.headerRule() + "\n" + indentBox(board, boardMargin) +
+		"\n" + pad + footer("↑/↓ move · enter edit · d delete · tab agents board · q quit")
+}
+
+// vendorCacheFig is a vendor's models-cache figure: "N models[ (stale)]".
+func vendorCacheFig(v userops.VendorView) string {
+	fig := fmt.Sprintf("%d models", v.ModelsCount)
+	if v.ModelsStale {
+		fig += " (stale)"
+	}
+	return fig
+}
+
+// vendorDetailLines is the Vendors hub's read-only config card: the enabled state + default
+// model, then the vendors.toml fields. The key row shows only the secret backend + ref —
+// never key material (the status line already carries the model, so no separate field).
+func vendorDetailLines(v userops.VendorView, rightW int) []string {
+	status := okStyle.Render("● enabled")
+	if !v.Enabled {
+		status = faintStyle.Render("○ disabled")
+	}
+	if v.DefaultModel != "" {
+		status += faintStyle.Render(" · " + trunc(v.DefaultModel, 28))
+	}
+	lines := []string{status, "", faintStyle.Render("Config")}
+	detailField(&lines, "base url", v.BaseURL, rightW)
+	detailField(&lines, "models", v.ModelsEndpoint, rightW)
+	detailField(&lines, "cache", vendorCacheFig(v), rightW)
+	key := v.SecretBackend
+	if v.SecretRef != "" {
+		key += " · " + v.SecretRef
+	}
+	detailField(&lines, "key", key, rightW)
+	return lines
 }
 
 // viewSpawn renders the Agents Board: a project-first master-detail. asMode re-roots
