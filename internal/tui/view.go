@@ -1097,8 +1097,18 @@ func (m Model) renderAppHeader() string {
 	left, right := "", ""
 	if m.asProjectCursor < len(projects) {
 		p := projects[m.asProjectCursor]
-		left = sessiontitle.CleanTitle(projectLabel(p.dir))
 		right = projectCounts(p)
+		// L0 has no dir on the title line, so the label carries the project's FULL
+		// path, front-abbreviated when it overflows the slot.
+		label := sessiontitle.CleanTitle(p.dir)
+		if label == "" {
+			label = "(no project)"
+		}
+		limit := bw - ansi.StringWidth(right) - 1
+		if limit > 80 {
+			limit = 80
+		}
+		left = leftTruncCols(label, limit)
 	}
 	return m.spawnTitle() + "\n\n" + headerSummaryLine(left, right, bw)
 }
@@ -2487,11 +2497,12 @@ func (m Model) sessionLabel(id string) string {
 	}
 	// Scrub both the opaque session id and any /rename title with CleanTitle so the board header
 	// strips ANSI/BEL/OSC control bytes (not just whitespace) before display.
-	short := shortSessionID(sessiontitle.CleanTitle(id))
+	clean := sessiontitle.CleanTitle(id)
 	if title := sessiontitle.CleanTitle(m.sessionMeta[id].Title); title != "" {
-		return trunc(title, 48) + " (" + short + ")"
+		return trunc(title, 48) + " (" + shortSessionID(clean) + ")"
 	}
-	return short
+	// No recorded title: the full id IS the label — an 8-char stub would waste the slot.
+	return clean
 }
 
 func shortSessionID(id string) string {

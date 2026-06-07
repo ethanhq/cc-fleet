@@ -643,7 +643,7 @@ func TestBoardSingleSessionBoxes(t *testing.T) {
 	}
 	out := m.View()
 	for _, want := range []string{
-		"sess-aaa…",     // session header short id
+		"sess-aaaaaaaa", // session header: the full id (the session has no title)
 		"2 teammates ",  // the cursored team's header stats lead with its member count
 		"Agent Teams",   // first box title
 		"Subagents · 1", // second box title
@@ -677,8 +677,8 @@ func TestBoardMultiSessionList(t *testing.T) {
 	}
 	out := m.View()
 	// NEWEST first: sess-b (spawn @2000s) before sess-a (job @1s); no-session last.
-	posA := strings.Index(out, "sess-aaa…")
-	posB := strings.Index(out, "sess-bbb…")
+	posA := strings.Index(out, "sess-aaaaaaaa")
+	posB := strings.Index(out, "sess-bbbbbbbb")
 	posNone := strings.Index(out, "(no session)")
 	if posA < 0 || posB < 0 || posNone < 0 || !(posB < posA && posA < posNone) {
 		t.Fatalf("session rows missing or misordered (b=%d a=%d none=%d):\n%s", posB, posA, posNone, out)
