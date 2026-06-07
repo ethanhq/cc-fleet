@@ -38,6 +38,7 @@ cc-fleet subagent deepseek --prompt "..." --lead-session-id "$lead_session_id" -
 ```
 
 Useful flags:
+- **Name it** → `--label "<short-alias>"` (e.g. `--label sort-complexity`). The Agents Board shows the label instead of the opaque job id — pass one on every launch, like a teammate name. Display-only metadata; capped at 256 bytes.
 - **Large / sensitive prompt** → `--prompt-file <path>` (read from file, piped via stdin, kept out of argv / `ps`). Use it once a single prompt approaches **~128 KiB** (`MAX_ARG_STRLEN`, the per-argument cap — not the ~2 MB total `ARG_MAX`). `--prompt-file -` reads stdin.
 - **Long task** → `--timeout 600s` (default 300s). For tasks that may exceed the timeout, prefer `--background` (below). Note: a vendor that's down on **auth (401) or quota (429)** makes claude retry **~180s** before surfacing `KEY_INVALID` / `INSUFFICIENT_BALANCE`, so keep `--timeout ≥ ~200s` (the 300s default is fine) — a shorter timeout reports those as `SUBAGENT_TIMEOUT` instead. `--probe` does **not** catch a bad key (the models endpoint may not 401 it).
 - **Cost / runaway gates** → `--max-budget-usd 0.5` (cap spend) and `--max-turns 8` (cap the agentic tool loop). On fan-out, strongly consider passing these on every call.

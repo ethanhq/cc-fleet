@@ -1796,7 +1796,7 @@ func (m Model) renderRunsBox(s asSession, bodyH int) string {
 	return renderBoard(listTitle, leftLines, rightTitle, rightLines, leftW, rightW, bodyH, 0)
 }
 
-// jobsBoxLeftLines is the Subagents box's compact job rail (dot + short id), cursor-marked
+// jobsBoxLeftLines is the Subagents box's compact job rail (dot + label-or-short-id), cursor-marked
 // when the L2 continuum sits in the jobs range — shared by renderJobsBoxDetail and
 // jobsBoxRightWidth so the scroll clamp and the render agree on the card width.
 func (m Model) jobsBoxLeftLines(s asSession) []string {
@@ -1804,7 +1804,7 @@ func (m Model) jobsBoxLeftLines(s asSession) []string {
 	var lines []string
 	for i, j := range s.jobs {
 		marker := "  "
-		label := shortJobID(sessiontitle.CleanTitle(j.JobID))
+		label := jobRowLabel(j)
 		if i == cursor {
 			marker = cursorStyle.Render("❯ ")
 			label = selectedStyle.Render(label)
@@ -1834,7 +1834,7 @@ func (m Model) renderJobsBoxDetail(s asSession, bodyH int) string {
 	cardTitle := "job"
 	var rightLines []string
 	if j, ok := m.boxPreviewJob(); ok {
-		cardTitle = shortJobID(sessiontitle.CleanTitle(j.JobID))
+		cardTitle = jobRowLabel(j)
 		rightLines = m.jobDetailLines(j, rightW)
 	}
 	scroll := 0
@@ -2000,11 +2000,11 @@ func (m Model) renderTeammateRowFull(t teardown.Teammate, width int) string {
 	return joinRowEnds(left, faintStyle.Render(status), width)
 }
 
-// renderJobRowFull is one subagent-job row (right pane): "<dot> <jobID>  <model>" left,
+// renderJobRowFull is one subagent-job row (right pane): "<dot> <label|jobID>  <model>" left,
 // "<status> · <elapsed>" right-aligned — status columns only, NEVER answer text.
 func (m Model) renderJobRowFull(j subagent.Result, width int) string {
 	left := statusDot(j.Status) + " " +
-		labelStyle(j.Status).Render(shortJobID(sessiontitle.CleanTitle(j.JobID)))
+		labelStyle(j.Status).Render(jobRowLabel(j))
 	if model := sessiontitle.CleanTitle(j.Model); model != "" {
 		left += "  " + faintStyle.Render(trunc(model, 22))
 	}
@@ -2051,7 +2051,7 @@ func (m Model) asEntityLeftLines() (title string, lines []string) {
 		title = fmt.Sprintf("Subagents · %d", len(jobs))
 		for i, j := range jobs {
 			marker := "  "
-			label := shortJobID(sessiontitle.CleanTitle(j.JobID))
+			label := jobRowLabel(j)
 			if i == m.asEntityCursor {
 				marker = cursorStyle.Render("❯ ")
 				label = selectedStyle.Render(label)
@@ -2108,7 +2108,7 @@ func (m Model) viewAsEntity() string {
 			cardTitle = n
 		}
 	} else if j, jok := m.selectedJob(); jok {
-		cardTitle = shortJobID(sessiontitle.CleanTitle(j.JobID))
+		cardTitle = jobRowLabel(j)
 	}
 	rightLines := m.entityDetailLines(rightW)
 	bodyH := m.asEntityBodyHeight()
@@ -2633,6 +2633,15 @@ func shortSessionID(id string) string {
 		return id[:8] + "…"
 	}
 	return id
+}
+
+// jobRowLabel is a job's display name on the board: its --label when one was given,
+// else the short job id.
+func jobRowLabel(j subagent.Result) string {
+	if l := trunc(sessiontitle.CleanTitle(j.Label), 24); l != "" {
+		return l
+	}
+	return shortJobID(sessiontitle.CleanTitle(j.JobID))
 }
 
 // shortJobID trims a job UUID to its first 8 chars for the board's job rows.

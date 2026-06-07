@@ -240,7 +240,7 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 	cmd.Flags().StringVar(&phase, "phase", "",
 		"Workflow phase label within the run (optional)")
 	cmd.Flags().StringVar(&label, "label", "",
-		"Human label for this agent within the run (optional)")
+		"Human label for this agent — shown on the Agents Board instead of the job id (optional)")
 	cmd.Flags().StringVar(&promptProfile, "profile", "slim",
 		"Prompt profile: slim (default; native generic-subagent mirror) | slim-ro (read-only Explore mirror) | full (the full claude -p session; for behavior comparison)")
 	cmd.Flags().StringVar(&tools, "tools", "",
