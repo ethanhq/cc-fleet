@@ -145,10 +145,11 @@ type Model struct {
 	asMateSnap  teammateSnapshot
 	asMateFound bool // transcript located (false renders the no-transcript note)
 	// Cursored-team transcript aggregate for the session header (the L2 teams range):
-	// summed member ↑ peak-context / ↓ output, loaded async on the shared nonce gate.
-	asTeamKey string
-	asTeamCtx int
-	asTeamOut int
+	// summed member ↑ peak-context / ↓ output, loaded async on its own nonce gate.
+	asTeamNonce int // own nonce: team stats and the job-card io load in the same batch must not invalidate each other
+	asTeamKey   string
+	asTeamCtx   int
+	asTeamOut   int
 	// boardStatus is a one-line outcome of the last inline hide/show (so a failed
 	// h/s surfaces its reason instead of relying on the next silent refresh);
 	// boardStatusErr styles it as an error vs an ok confirmation. boardJobsErr is the
@@ -1229,15 +1230,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		} else if m.asMode == asModeBoxes {
 			// The boxes level always previews a job card (the cursored job, else the
-			// first) — keep it fresh on the same terms as the entity-level card; a
-			// cursored team row keeps its header aggregate fresh too.
-			if cmd := m.focusBoxTeamIO(); cmd != nil {
-				detail = cmd
-			} else if j, ok := m.boxPreviewJob(); ok && m.jobCardStale(j) {
+			// first) — keep it fresh on the same terms as the entity-level card, and a
+			// cursored team row keeps its header aggregate fresh in the same batch.
+			cmds := []tea.Cmd{m.focusBoxTeamIO()}
+			if j, ok := m.boxPreviewJob(); ok && m.jobCardStale(j) {
 				m.asDetailNonce++
 				m.asDetailTerminal = isTerminalLeaf(j.Status)
-				detail = loadJobIOCmd(j.JobID, m.asDetailNonce, m.boardEpoch)
+				cmds = append(cmds, loadJobIOCmd(j.JobID, m.asDetailNonce, m.boardEpoch))
 			}
+			detail = tea.Batch(cmds...)
 		}
 		return m, tea.Batch(detail, m.startWfLive())
 
@@ -1352,7 +1353,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case asTeamMsg:
-		if msg.nonce != m.asDetailNonce || msg.epoch != m.boardEpoch {
+		if msg.nonce != m.asTeamNonce || msg.epoch != m.boardEpoch {
 			return m, nil
 		}
 		m.asTeamKey, m.asTeamCtx, m.asTeamOut = msg.key, msg.ctx, msg.out
@@ -1703,8 +1704,8 @@ func (m *Model) focusBoxTeamIO() tea.Cmd {
 	if !ok {
 		return nil
 	}
-	m.asDetailNonce++
-	return loadTeamStatsCmd(t, m.sessionMeta, m.asDetailNonce, m.boardEpoch)
+	m.asTeamNonce++
+	return loadTeamStatsCmd(t, m.sessionMeta, m.asTeamNonce, m.boardEpoch)
 }
 
 // focusBoxJobIO keeps the Subagents box's previewed card loaded as the L2 cursor moves
