@@ -117,6 +117,22 @@ func TestLookupUsesCurrentProjectCandidate(t *testing.T) {
 	}
 }
 
+// TestLookupMetaPreservesCwdWhitespace: a transcript cwd keeps consecutive spaces
+// byte-exact (it is a grouping + transcript-discovery key), while control bytes
+// are still dropped.
+func TestLookupMetaPreservesCwdWhitespace(t *testing.T) {
+	cfg := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+	sessionID := "66666666-6666-4666-8666-666666666666"
+	path := filepath.Join(cfg, "projects", "repo", sessionID+".jsonl")
+	writeTranscript(t, path,
+		`{"type":"user","cwd":"/repo/My  Project\u001b[31m","sessionId":"`+sessionID+`"}`,
+	)
+	if got := LookupMeta(sessionID).Cwd; got != "/repo/My  Project[31m" {
+		t.Fatalf("Cwd = %q, want spaces preserved + control bytes dropped", got)
+	}
+}
+
 func TestResolveSkipsMissingAndWrongSession(t *testing.T) {
 	cfg := t.TempDir()
 	t.Setenv("CLAUDE_CONFIG_DIR", cfg)

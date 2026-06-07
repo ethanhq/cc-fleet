@@ -57,12 +57,12 @@ func TestToolArgPreview(t *testing.T) {
 		`{"zeta":"z","alpha":"a"}`:          "a", // no known primary → first sorted key
 	}
 	for in, want := range cases {
-		if got := toolArgPreview(json.RawMessage(in)); got != want {
-			t.Errorf("toolArgPreview(%s) = %q, want %q", in, got, want)
+		if got := ToolArgPreview(json.RawMessage(in)); got != want {
+			t.Errorf("ToolArgPreview(%s) = %q, want %q", in, got, want)
 		}
 	}
 	long := `{"command":"` + strings.Repeat("x", maxActivityArg+50) + `"}`
-	if got := toolArgPreview(json.RawMessage(long)); len(got) > maxActivityArg+len("…") || !strings.HasSuffix(got, "…") {
+	if got := ToolArgPreview(json.RawMessage(long)); len(got) > maxActivityArg+len("…") || !strings.HasSuffix(got, "…") {
 		t.Errorf("a long arg should be capped with an ellipsis, got len %d", len(got))
 	}
 }

@@ -133,6 +133,14 @@ type Model struct {
 	asDetailNonce    int
 	asDetailTerminal bool // the focused job was terminal when its io load was issued
 	asPromptExpanded bool
+	// Focused-teammate inline detail (the L3 team collection): the teammate's messages,
+	// outputs, and token aggregates, read off the Update goroutine on the same nonce+epoch
+	// gate the job card uses (asDetailNonce covers both detail kinds, so moving focus
+	// between a job and a teammate invalidates the other's in-flight read). asMateKey
+	// records WHICH teammate (mateKey) the loaded payload belongs to.
+	asMateKey   string
+	asMateSnap  teammateSnapshot
+	asMateFound bool // transcript located (false renders the no-transcript note)
 	// boardStatus is a one-line outcome of the last inline hide/show (so a failed
 	// h/s surfaces its reason instead of relying on the next silent refresh);
 	// boardStatusErr styles it as an error vs an ok confirmation. boardJobsErr is the
@@ -801,6 +809,68 @@ func loadJobIOCmd(jobID string, nonce, epoch int) tea.Cmd {
 	}
 }
 
+// asMateMsg carries the focused teammate's merged inbox + transcript projection for the
+// entity detail card (the asDetailMsg pattern: owned by screenSpawn, gated by the shared
+// asDetailNonce + the board epoch).
+type asMateMsg struct {
+	nonce int
+	epoch int
+	key   string
+	snap  teammateSnapshot
+	found bool
+}
+
+func (asMateMsg) owningScreen() screen { return screenSpawn }
+
+// mateKey identifies a teammate's detail payload by (team, name, pid). The pid is the
+// generation component: a respawned same-named teammate gets a new process, so a payload
+// loaded for its predecessor can never render on the new card while the fresh load is in
+// flight. \x00 cannot appear in the name components.
+func mateKey(t teardown.Teammate) string {
+	return fmt.Sprintf("%s\x00%s\x00%d", t.Team, t.Name, t.PID)
+}
+
+// loadMateCmd reads the teammate's transcript projection + pending inbox entries off the
+// Update goroutine. The transcript is rediscovered on every load — a cached path could
+// outlive a respawned same-named teammate — with the scan bounded to files modified since
+// the teammate's spawn (its own transcript keeps being appended, so it can never age past
+// that). Unread inbox entries merge into the message list as the PENDING backlog (read
+// ones already live in the transcript); the merged list sorts chronologically. Message and
+// transcript text reach ONLY the focused teammate's inline detail card.
+func loadMateCmd(t teardown.Teammate, cwd string, nonce, epoch int) tea.Cmd {
+	return func() tea.Msg {
+		var notBefore time.Time
+		if t.SpawnTime > 0 {
+			notBefore = time.UnixMilli(t.SpawnTime)
+		}
+		var snap teammateSnapshot
+		found := false
+		if path, ok := sessiontitle.FindAgentTranscript(cwd, t.Team, t.Name, notBefore); ok {
+			snap, found = readTeammateTranscript(path)
+		}
+		for _, e := range readTeammateInbox(t.Team, t.Name) {
+			if e.Read {
+				continue
+			}
+			snap.msgs = append(snap.msgs, mateMessage{
+				from: e.From, summary: inboxPreview(e.Text), body: e.Text, ts: e.Timestamp, pending: true,
+			})
+		}
+		// Parse for the chronological sort: the sources mix timestamp precision
+		// (inbox millis vs transcript seconds), so a raw string compare can misorder
+		// within a second; unparseable stamps keep their arrival order (stable).
+		sort.SliceStable(snap.msgs, func(i, j int) bool {
+			ti, ei := time.Parse(time.RFC3339, snap.msgs[i].ts)
+			tj, ej := time.Parse(time.RFC3339, snap.msgs[j].ts)
+			if ei != nil || ej != nil {
+				return false
+			}
+			return ti.Before(tj)
+		})
+		return asMateMsg{nonce: nonce, epoch: epoch, key: mateKey(t), snap: snap, found: found}
+	}
+}
+
 func addVendorCmd(req userops.AddRequest) tea.Cmd {
 	return func() tea.Msg {
 		_, err := userops.Add(req)
@@ -1005,16 +1075,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.clampAsCursors()
 		m.asCardScroll = m.clampAsCardScroll(m.asCardScroll)
-		// Load (or live-refresh) the focused job's io + activity: a reroot can land the
-		// board straight on the jobs detail view; a non-terminal focused job re-reads
-		// each refresh so its Activity feed climbs; and the load that FIRST sees the job
-		// terminal still runs once, so the final .answer lands after the running→done flip.
-		if m.asMode == asModeEntity && m.asEntitySrc.jobs {
-			if j, ok := m.selectedJob(); ok &&
-				(j.JobID != m.asDetailJobID || !isTerminalLeaf(j.Status) || !m.asDetailTerminal) {
+		// Load (or live-refresh) the focused entity's detail payload — a reroot can land
+		// the board straight on a detail view. Jobs: a non-terminal focused job re-reads
+		// each refresh so its Activity feed climbs, and the load that FIRST sees the job
+		// terminal still runs once, so the final .answer lands after the running→done
+		// flip. Teammates: long-lived, their inbox/transcript keep moving — reload on
+		// every accepted refresh, no terminal short-circuit.
+		if m.asMode == asModeEntity {
+			if m.asEntitySrc.jobs {
+				if j, ok := m.selectedJob(); ok &&
+					(j.JobID != m.asDetailJobID || !isTerminalLeaf(j.Status) || !m.asDetailTerminal) {
+					m.asDetailNonce++
+					m.asDetailTerminal = isTerminalLeaf(j.Status)
+					return m, loadJobIOCmd(j.JobID, m.asDetailNonce, m.boardEpoch)
+				}
+			} else if t, ok := m.selectedTeammate(); ok {
 				m.asDetailNonce++
-				m.asDetailTerminal = isTerminalLeaf(j.Status)
-				return m, loadJobIOCmd(j.JobID, m.asDetailNonce, m.boardEpoch)
+				return m, loadMateCmd(t, m.sessionMeta[t.LeadSessionID].Cwd, m.asDetailNonce, m.boardEpoch)
 			}
 		}
 		return m, nil
@@ -1104,6 +1181,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.asDetailAnswer = msg.answer
 		m.asDetailIO = msg.present
 		m.asDetailSnap = msg.snap
+		return m, nil
+
+	case asMateMsg:
+		// Same gate as asDetailMsg: a read answering a prior focused entity or a prior
+		// board visit is dropped, never shown on the wrong teammate's card.
+		if msg.nonce != m.asDetailNonce || msg.epoch != m.boardEpoch {
+			return m, nil
+		}
+		m.asMateKey = msg.key
+		m.asMateSnap = msg.snap
+		m.asMateFound = msg.found
 		return m, nil
 
 	case wfDetailMsg:
@@ -1239,6 +1327,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.boardJobsErr = nil
 		m.asDetailJobID, m.asDetailPrompt, m.asDetailAnswer, m.asDetailIO = "", "", "", false
 		m.asDetailSnap, m.asPromptExpanded = activitySnapshot{}, false
+		m.asMateKey, m.asMateSnap, m.asMateFound = "", teammateSnapshot{}, false
 		m.asProjectCursor, m.asSessionCursor, m.asBoxCursor, m.asEntityCursor, m.asCardScroll = 0, 0, 0, 0, 0
 		// Park unfocused so the FIRST accepted refresh routes by the freshly loaded
 		// project/session counts — never by the previous visit's cached data.
@@ -1387,23 +1476,16 @@ func (m Model) updateAsEntity(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up":
 		m.asEntityCursor = clampIndex(m.asEntityCursor-1, n)
-		if m.asEntitySrc.jobs {
-			return m.focusJobIO()
-		}
-		m.asCardScroll = 0
+		return m.focusEntityIO()
 	case "down":
 		m.asEntityCursor = clampIndex(m.asEntityCursor+1, n)
-		if m.asEntitySrc.jobs {
-			return m.focusJobIO()
-		}
-		m.asCardScroll = 0
+		return m.focusEntityIO()
 	case "enter":
-		// Fold/unfold the focused job's prompt (collapsed by default); re-clamp the
-		// scroll since the card height changes. A teammate card has no prompt — no-op.
-		if m.asEntitySrc.jobs {
-			m.asPromptExpanded = !m.asPromptExpanded
-			m.asCardScroll = m.clampAsCardScroll(m.asCardScroll)
-		}
+		// Fold/unfold the focused card's collapsible block (the job's Prompt, the
+		// teammate's Messages — both collapsed by default); re-clamp the scroll since
+		// the card height changes.
+		m.asPromptExpanded = !m.asPromptExpanded
+		m.asCardScroll = m.clampAsCardScroll(m.asCardScroll)
 		return m, nil
 	case "j":
 		m.asCardScroll = m.clampAsCardScroll(m.asCardScroll + 1)
@@ -1496,10 +1578,19 @@ func (m Model) asDescend() (tea.Model, tea.Cmd) {
 		m.asMode = asModeEntity
 		m.asCardScroll = 0
 	}
-	if m.asMode == asModeEntity && m.asEntitySrc.jobs {
-		return m.focusJobIO()
+	if m.asMode == asModeEntity {
+		return m.focusEntityIO()
 	}
 	return m, nil
+}
+
+// focusEntityIO loads the focused entity's detail payload per the collection kind (job io
+// vs teammate inbox/transcript). Called whenever the entity cursor lands on a row.
+func (m Model) focusEntityIO() (tea.Model, tea.Cmd) {
+	if m.asEntitySrc.jobs {
+		return m.focusJobIO()
+	}
+	return m.focusMateIO()
 }
 
 // focusJobIO resets the card scroll/expand state and loads the focused job's io + activity
@@ -1517,6 +1608,20 @@ func (m Model) focusJobIO() (tea.Model, tea.Cmd) {
 	m.asDetailNonce++
 	m.asDetailTerminal = isTerminalLeaf(j.Status)
 	return m, loadJobIOCmd(j.JobID, m.asDetailNonce, m.boardEpoch)
+}
+
+// focusMateIO is focusJobIO's teammate sibling: reset the card scroll/expand state and load
+// the focused teammate's inbox + transcript projection, on the same nonce gate.
+func (m Model) focusMateIO() (tea.Model, tea.Cmd) {
+	m.asCardScroll = 0
+	m.asPromptExpanded = false
+	t, ok := m.selectedTeammate()
+	if !ok {
+		m.asMateKey, m.asMateSnap, m.asMateFound = "", teammateSnapshot{}, false
+		return m, nil
+	}
+	m.asDetailNonce++
+	return m, loadMateCmd(t, m.sessionMeta[t.LeadSessionID].Cwd, m.asDetailNonce, m.boardEpoch)
 }
 
 // asAscend climbs one level: entity → boxes, boxes → sessions (multi-session project) or

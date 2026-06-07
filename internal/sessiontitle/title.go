@@ -268,9 +268,7 @@ func (s *titleState) scan(chunk, sessionID string) {
 			var entry cwdEntry
 			if json.Unmarshal([]byte(line), &entry) == nil &&
 				entry.SessionID == sessionID && entry.Cwd != "" {
-				// Sanitized like the titles: a transcript-supplied cwd must not carry
-				// control bytes into display or grouping keys.
-				s.cwd = cleanTitle(entry.Cwd)
+				s.cwd = cleanCwd(entry.Cwd)
 			}
 		}
 		if !strings.Contains(line, `"type"`) ||
@@ -319,6 +317,24 @@ func CleanTitle(title string) string {
 // cleanTitle is the unexported alias delegating to CleanTitle.
 func cleanTitle(title string) string {
 	return CleanTitle(title)
+}
+
+// cleanCwd sanitizes a transcript-supplied working directory: every control rune
+// is dropped (no escape-sequence injection; the board's \x00 focus sentinel stays
+// impossible), but unlike cleanTitle the remaining text is kept byte-exact — the
+// cwd is a grouping key and a transcript-discovery input, where collapsing
+// consecutive spaces would point at a different directory. Display call sites
+// still run CleanTitle before rendering.
+func cleanCwd(p string) string {
+	var b strings.Builder
+	b.Grow(len(p))
+	for _, r := range p {
+		if unicode.IsControl(r) {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
 }
 
 func claudeConfigDir() string {

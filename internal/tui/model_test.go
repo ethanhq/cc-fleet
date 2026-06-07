@@ -1068,6 +1068,7 @@ func TestBoardCardScrollResetAndClamp(t *testing.T) {
 		{Name: "a", Team: "t1", PaneID: "%1", LeadSessionID: "s"},
 		{Name: "b", Team: "t1", PaneID: "%2", LeadSessionID: "s"},
 	}, nil)
+	m.height = 40 // viewport taller than the card, so the clamp floor is 0
 	m, _ = press(t, m, "enter")
 	m, _ = press(t, m, "j")
 	if m.asCardScroll != 0 {
@@ -1173,9 +1174,163 @@ func TestBoardJobCardNotPersistedNote(t *testing.T) {
 	}
 }
 
+// TestTeammateCardMessagesAndOutput: the focused teammate's card renders the merged
+// Messages block (pending ● + consumed ○, newest first, one line each collapsed, ⏎
+// expands the bodies), the Activity feed, the always-expanded Output block (newest
+// first under timestamp rules), and the Overview tokens field — all fed by the
+// nonce-gated asMateMsg load.
+func TestTeammateCardMessagesAndOutput(t *testing.T) {
+	mate := teardown.Teammate{Name: "alice", Team: "t1", Model: "glm-4.6", PaneID: "%1", PID: 7, Status: "ok", LeadSessionID: "s"}
+	m := boardModel(t, []teardown.Teammate{mate}, nil) // single team, no jobs → straight to detail
+	if m.asMode != asModeEntity || m.asDetailNonce == 0 {
+		t.Fatalf("setup: mode=%d nonce=%d, want entity + an issued mate load", m.asMode, m.asDetailNonce)
+	}
+	if card := strings.Join(m.entityDetailLines(m.asEntityRightWidth()), "\n"); !strings.Contains(card, "(loading…)") {
+		t.Fatalf("the card should show the loading note until the payload lands:\n%s", card)
+	}
+	m, _ = step(t, m, asMateMsg{
+		nonce: m.asDetailNonce, epoch: m.boardEpoch, key: mateKey(mate), found: true,
+		snap: teammateSnapshot{
+			activity: activitySnapshot{sigs: []string{"A(1)", "B(2)", "C(3)", "D(4)"}},
+			msgs: []mateMessage{
+				{from: "team-lead", summary: "older subject", body: "older body text", ts: "2026-06-07T02:11:00Z"},
+				{from: "team-lead", summary: "Subj-X", body: "full assignment body", ts: "2026-06-07T02:31:00Z", pending: true},
+			},
+			outputs: []mateOutput{
+				{text: "older output", ts: "2026-06-07T02:20:00Z"},
+				{text: "newest output", ts: "2026-06-07T02:40:00Z"},
+			},
+			ctxTok: 92032, outTok: 48659,
+		},
+	})
+	card := strings.Join(m.entityDetailLines(m.asEntityRightWidth()), "\n")
+	for _, want := range []string{
+		"tokens", "↑ 92.0k ctx · ↓ 48.7k out",
+		"Messages · 2 · 1 pending · ⏎ expand",
+		"Subj-X", "older subject",
+		"06-07 02:31",
+		"Activity · last 3 of 4 tool calls", "D(4)",
+		"Output · 2 messages", "newest output", "older output",
+		"06-07 02:40",
+	} {
+		if !strings.Contains(card, want) {
+			t.Errorf("teammate card missing %q:\n%s", want, card)
+		}
+	}
+	if strings.Contains(card, "full assignment body") {
+		t.Errorf("a collapsed Messages block must not render bodies:\n%s", card)
+	}
+	// Newest first in both blocks.
+	if i, j := strings.Index(card, "Subj-X"), strings.Index(card, "older subject"); i > j {
+		t.Errorf("Messages must render newest first (Subj-X@%d, older@%d):\n%s", i, j, card)
+	}
+	if i, j := strings.Index(card, "newest output"), strings.Index(card, "older output"); i > j {
+		t.Errorf("Output must render newest first:\n%s", card)
+	}
+	m, _ = press(t, m, "enter") // expand the message bodies
+	card = strings.Join(m.entityDetailLines(m.asEntityRightWidth()), "\n")
+	if !strings.Contains(card, "full assignment body") || !strings.Contains(card, "older body text") {
+		t.Fatalf("⏎ should expand the full message bodies:\n%s", card)
+	}
+	// The expanded card swaps the header hint away and the cursored teammate's header
+	// stats include the transcript tokens.
+	if strings.Contains(card, "⏎ expand") {
+		t.Errorf("the expanded Messages header should drop the expand hint:\n%s", card)
+	}
+	if out := m.View(); !strings.Contains(out, "↑ 92.0k ctx · ↓ 48.7k out") {
+		t.Errorf("the session header should carry the focused teammate's tokens:\n%s", out)
+	}
+}
+
+// TestTeammateCardLoadsEveryRefresh: a focused teammate reloads its messages/transcript on
+// EVERY accepted refresh (teammates are long-lived — no terminal short-circuit), and the
+// entity cursor movement issues a fresh load too; a stale nonce or epoch payload is dropped.
+func TestTeammateCardLoadsEveryRefresh(t *testing.T) {
+	tms := []teardown.Teammate{
+		{Name: "alice", Team: "t1", PaneID: "%1", LeadSessionID: "s"},
+		{Name: "bob", Team: "t1", PaneID: "%2", LeadSessionID: "s"},
+	}
+	m := boardModel(t, tms, nil)
+	if m.asMode != asModeEntity {
+		t.Fatalf("setup: mode=%d, want entity", m.asMode)
+	}
+	for i := 0; i < 2; i++ {
+		var cmd tea.Cmd
+		m, cmd = step(t, m, boardMsg{teammates: tms, epoch: m.boardEpoch})
+		if cmd == nil {
+			t.Fatalf("refresh %d: a focused teammate must reload its detail payload", i+1)
+		}
+	}
+	before := m.asDetailNonce
+	m, cmd := press(t, m, "down")
+	if cmd == nil || m.asDetailNonce != before+1 {
+		t.Fatal("entity cursor movement must issue a fresh mate load")
+	}
+	stale := asMateMsg{nonce: m.asDetailNonce - 1, epoch: m.boardEpoch, key: "k", found: true,
+		snap: teammateSnapshot{outputs: []mateOutput{{text: "STALE-OUTPUT"}}}}
+	m, _ = step(t, m, stale)
+	if m.asMateKey != "" || strings.Contains(m.View(), "STALE-OUTPUT") {
+		t.Fatal("a stale-nonce mate payload must be dropped")
+	}
+	prior := asMateMsg{nonce: m.asDetailNonce, epoch: m.boardEpoch - 1, key: "k", found: true,
+		snap: teammateSnapshot{outputs: []mateOutput{{text: "PRIOR-VISIT"}}}}
+	m, _ = step(t, m, prior)
+	if m.asMateKey != "" || strings.Contains(m.View(), "PRIOR-VISIT") {
+		t.Fatal("a prior-visit (stale-epoch) mate payload must be dropped")
+	}
+}
+
+// TestTeammateCardRespawnDropsStalePayload: a respawned same-named teammate (new pid) must
+// not render its predecessor's payload while the fresh load is in flight — the payload key
+// carries the pid generation, so the card falls back to the loading note.
+func TestTeammateCardRespawnDropsStalePayload(t *testing.T) {
+	v1 := teardown.Teammate{Name: "alice", Team: "t1", PaneID: "%1", PID: 42, LeadSessionID: "s"}
+	m := boardModel(t, []teardown.Teammate{v1}, nil)
+	m, _ = step(t, m, asMateMsg{nonce: m.asDetailNonce, epoch: m.boardEpoch, key: mateKey(v1), found: true,
+		snap: teammateSnapshot{outputs: []mateOutput{{text: "OLD-GENERATION"}}}})
+	if card := strings.Join(m.entityDetailLines(m.asEntityRightWidth()), "\n"); !strings.Contains(card, "OLD-GENERATION") {
+		t.Fatalf("setup: the loaded payload should render on its own generation:\n%s", card)
+	}
+	v2 := v1
+	v2.PID, v2.PaneID = 43, "%9"
+	m, cmd := step(t, m, boardMsg{teammates: []teardown.Teammate{v2}, epoch: m.boardEpoch})
+	if cmd == nil {
+		t.Fatal("the respawned teammate must trigger a fresh load")
+	}
+	card := strings.Join(m.entityDetailLines(m.asEntityRightWidth()), "\n")
+	if strings.Contains(card, "OLD-GENERATION") {
+		t.Fatalf("the new generation's card must not render the predecessor's payload:\n%s", card)
+	}
+	if !strings.Contains(card, "(loading…)") {
+		t.Fatalf("the new generation's card should show the loading note:\n%s", card)
+	}
+}
+
+// TestTeammateCardNoTranscript: an unlocatable transcript renders the no-transcript note
+// and omits the Activity/Output sections; pending messages (the merged inbox backlog)
+// still show.
+func TestTeammateCardNoTranscript(t *testing.T) {
+	mate := teardown.Teammate{Name: "alice", Team: "t1", PaneID: "%1", LeadSessionID: "s"}
+	m := boardModel(t, []teardown.Teammate{mate}, nil)
+	m, _ = step(t, m, asMateMsg{nonce: m.asDetailNonce, epoch: m.boardEpoch, key: mateKey(mate),
+		snap: teammateSnapshot{msgs: []mateMessage{{from: "team-lead", summary: "queued task", ts: "2026-06-07T02:31:00Z", pending: true}}}})
+	card := strings.Join(m.entityDetailLines(m.asEntityRightWidth()), "\n")
+	for _, want := range []string{"Messages · 1 · 1 pending", "queued task", "(no transcript found)"} {
+		if !strings.Contains(card, want) {
+			t.Errorf("transcript-less card missing %q:\n%s", want, card)
+		}
+	}
+	for _, absent := range []string{"Activity ·", "Output ·"} {
+		if strings.Contains(card, absent) {
+			t.Errorf("transcript-less card must omit %q:\n%s", absent, card)
+		}
+	}
+}
+
 // TestAgentBoardNewSurfacesKeySafe: canaries planted in Result.Result and ErrorMsg must not
 // reach any board surface — the rows, the rail, or the entity detail card (which renders
-// the canonical ErrorCode only).
+// the canonical ErrorCode only) — and the teammate card's inbox/transcript text shows ONLY
+// on the focused teammate's own card, never on another card or an upper level.
 func TestAgentBoardNewSurfacesKeySafe(t *testing.T) {
 	const answerCanary = "ANSWER-CANARY-sk-9f8e7d"
 	const errCanary = "ERRMSG-CANARY-sk-1a2b3c"
@@ -1202,6 +1357,40 @@ func TestAgentBoardNewSurfacesKeySafe(t *testing.T) {
 	}
 	if !strings.Contains(card, "SUBAGENT_FAILED") {
 		t.Errorf("the card should render the canonical ErrorCode:\n%s", card)
+	}
+
+	// Teammate surfaces: message text and transcript-extracted text are focused-card-only.
+	const msgCanary = "MSG-CANARY-sk-4d5e6f"
+	const sigCanary = "SIG-CANARY-sk-7a8b9c"
+	const outCanary = "OUTPUT-CANARY-sk-0d1e2f"
+	alice := teardown.Teammate{Name: "alice", Team: "t1", PaneID: "%1", LeadSessionID: "s"}
+	tms := []teardown.Teammate{alice, {Name: "bob", Team: "t1", PaneID: "%2", LeadSessionID: "s"}}
+	mm := boardModel(t, tms, []subagent.Result{{JobID: "j0000000", Status: "done", LeadSessionID: "s", StartedAt: "2026-05-26T01:00:00Z"}})
+	boxes := mm.View()            // L2: the two stacked boxes — no detail payload loaded yet
+	mm, _ = press(t, mm, "enter") // descend onto t1's members (cursor on alice)
+	mm, _ = step(t, mm, asMateMsg{
+		nonce: mm.asDetailNonce, epoch: mm.boardEpoch, key: mateKey(alice), found: true,
+		snap: teammateSnapshot{
+			activity: activitySnapshot{sigs: []string{"Bash(" + sigCanary + ")"}},
+			msgs:     []mateMessage{{from: "team-lead", summary: msgCanary, body: msgCanary, ts: "2026-06-07T02:31:00Z", pending: true}},
+			outputs:  []mateOutput{{text: outCanary, ts: "2026-06-07T02:40:00Z"}},
+		},
+	})
+	focused := strings.Join(mm.entityDetailLines(mm.asEntityRightWidth()), "\n")
+	for _, want := range []string{msgCanary, sigCanary, outCanary} {
+		if !strings.Contains(focused, want) {
+			t.Errorf("the FOCUSED teammate card should render its own payload %q:\n%s", want, focused)
+		}
+	}
+	mmBob, _ := press(t, mm, "down") // cursor → bob: alice's payload must vanish (key mismatch)
+	mmUp, _ := press(t, mm, "esc")   // back to the boxes level
+	bobCard := strings.Join(mmBob.entityDetailLines(mmBob.asEntityRightWidth()), "\n")
+	for name, out := range map[string]string{"boxes": boxes, "bob-view": mmBob.View(), "bob-card": bobCard, "ascended": mmUp.View()} {
+		for _, canary := range []string{msgCanary, sigCanary, outCanary} {
+			if strings.Contains(out, canary) {
+				t.Errorf("%s leaked teammate detail text %q:\n%s", name, canary, out)
+			}
+		}
 	}
 }
 

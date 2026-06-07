@@ -192,7 +192,7 @@ func parseStreamLine(line []byte, w *activityWriter, outRunes, outTokens, inToke
 	msgRunes := 0
 	for _, c := range sl.Message.Content {
 		if c.Type == "tool_use" && c.Name != "" {
-			w.emit(activityRecord{Kind: "tool", Tool: c.Name, Arg: toolArgPreview(c.Input)})
+			w.emit(activityRecord{Kind: "tool", Tool: c.Name, Arg: ToolArgPreview(c.Input)})
 		}
 		if c.Type == "text" && c.Text != "" {
 			msgRunes += utf8.RuneCountInString(c.Text)
@@ -215,11 +215,12 @@ func parseStreamLine(line []byte, w *activityWriter, outRunes, outTokens, inToke
 	}
 }
 
-// toolArgPreview renders a tool_use input as a single safe line: the primary argument value
+// ToolArgPreview renders a tool_use input as a single safe line: the primary argument value
 // (preferring a known primary key, else the first key in sorted order), key-masked and length-capped.
 // Model-generated content — never the key (apiKeyHelper) — but masked + truncated defense-in-depth,
-// then CleanTitle-scrubbed by the board at render.
-func toolArgPreview(input json.RawMessage) string {
+// then CleanTitle-scrubbed by the board at render. Exported because the board's teammate card
+// projects transcript tool_use blocks into the same signature format the activity sidecar uses.
+func ToolArgPreview(input json.RawMessage) string {
 	if len(bytes.TrimSpace(input)) == 0 {
 		return ""
 	}

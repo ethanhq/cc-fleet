@@ -234,7 +234,7 @@ func renderAsFooter(mode asMode) string {
 	case asModeSessions:
 		return footer("↑/↓ session · →/⏎ open · ← back · r refresh · tab dynamic workflows · esc vendors · q quit")
 	case asModeEntity:
-		return footer("↑/↓ row · j/k scroll · ⏎ prompt · h hide · s show · ←/esc back · r refresh · q quit")
+		return footer("↑/↓ row · j/k scroll · ⏎ expand · h hide · s show · ←/esc back · r refresh · q quit")
 	default:
 		return footer("↑/↓ row · →/⏎ detail · ← back · r refresh · tab dynamic workflows · esc vendors · q quit")
 	}
@@ -1490,7 +1490,7 @@ func (m Model) headerEntityStats() string {
 	switch m.asMode {
 	case asModeEntity:
 		if t, ok := m.selectedTeammate(); ok {
-			return teammateStats(t)
+			return m.teammateStats(t)
 		}
 		if j, ok := m.selectedJob(); ok {
 			return m.jobStats(j)
@@ -1521,9 +1521,13 @@ func (m Model) jobStats(j subagent.Result) string {
 	return strings.Join(parts, " · ")
 }
 
-// teammateStats is one teammate's header summary: its uptime + spawn time.
-func teammateStats(t teardown.Teammate) string {
+// teammateStats is one teammate's header summary: its transcript token aggregates (once
+// the focused payload is loaded), uptime, and spawn time.
+func (m Model) teammateStats(t teardown.Teammate) string {
 	var parts []string
+	if s := m.asMateSnap; m.asMateKey == mateKey(t) && (s.ctxTok > 0 || s.outTok > 0) {
+		parts = append(parts, fmt.Sprintf("↑ %s ctx · ↓ %s out", humanTokens(s.ctxTok), humanTokens(s.outTok)))
+	}
 	if up := teammateUptime(t); up != "" {
 		parts = append(parts, "up "+up)
 	}
@@ -2025,6 +2029,112 @@ func (m Model) teammateDetailLines(t teardown.Teammate, rightW int) []string {
 	detailField(&lines, "hidden", hidden, rightW)
 	if t.LeadSessionID != "" {
 		detailField(&lines, "session", shortSessionID(sessiontitle.CleanTitle(t.LeadSessionID)), rightW)
+	}
+	// Messages → Activity → Output, fed from the nonce-gated transcript/inbox load. The
+	// text reaches ONLY this focused card — rows, rails, and headers never carry it.
+	if s := m.asMateSnap; m.asMateKey == mateKey(t) && (s.ctxTok > 0 || s.outTok > 0) {
+		detailField(&lines, "tokens", fmt.Sprintf("↑ %s ctx · ↓ %s out",
+			humanTokens(s.ctxTok), humanTokens(s.outTok)), rightW)
+	}
+	lines = append(lines, "")
+	if m.asMateKey != mateKey(t) {
+		lines = append(lines, faintStyle.Render("(loading…)"))
+		return lines
+	}
+	lines = append(lines, m.mateMessagesSection(rightW)...)
+	if !m.asMateFound {
+		lines = append(lines, "", faintStyle.Render("(no transcript found)"))
+		return lines
+	}
+	lines = append(lines, "")
+	lines = append(lines, activityLines(m.asMateSnap.activity, rightW)...)
+	lines = append(lines, "")
+	lines = append(lines, m.mateOutputSection(rightW)...)
+	return lines
+}
+
+// mateMessagesSection renders the teammate card's Messages block: every message it
+// received, newest first — pending (● undelivered inbox backlog) and consumed (○, from
+// the transcript). Collapsed, each message is one "<dot> <from> · <time>  <summary>"
+// line; ⏎ expands the full bodies.
+func (m Model) mateMessagesSection(rightW int) []string {
+	msgs := m.asMateSnap.msgs
+	pending := 0
+	for _, msg := range msgs {
+		if msg.pending {
+			pending++
+		}
+	}
+	header := fmt.Sprintf("Messages · %d", len(msgs))
+	if pending > 0 {
+		header += fmt.Sprintf(" · %d pending", pending)
+	}
+	if len(msgs) == 0 {
+		return []string{faintStyle.Render(header), faintStyle.Render(" (none)")}
+	}
+	if !m.asPromptExpanded {
+		header += " · ⏎ expand"
+	}
+	lines := []string{faintStyle.Render(header)}
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg := msgs[i]
+		dot := faintStyle.Render("○")
+		if msg.pending {
+			dot = cursorStyle.Render("●")
+		}
+		meta := sessiontitle.CleanTitle(msg.from)
+		if ts, err := time.Parse(time.RFC3339, msg.ts); err == nil {
+			meta += " · " + ts.Format("01-02 15:04")
+		}
+		head := " " + dot + " " + faintStyle.Render(meta)
+		if !m.asPromptExpanded {
+			if text := sessiontitle.CleanTitle(msg.summary); text != "" {
+				budget := rightW - lipgloss.Width(head) - 2
+				if budget < 8 {
+					budget = 8 // renderBoard's boxCell still bounds the row to the pane
+				}
+				// A consumed row reads as one quiet faint line; only the pending
+				// backlog keeps a bright summary.
+				style := faintStyle
+				if msg.pending {
+					style = liveStyle
+				}
+				head += "  " + style.Render(truncCols(text, budget))
+			}
+			lines = append(lines, head)
+			continue
+		}
+		lines = append(lines, head)
+		lines = append(lines, ioLines(msg.body, rightW, contentStyle)...)
+		if i > 0 {
+			lines = append(lines, "")
+		}
+	}
+	return lines
+}
+
+// mateOutputSection renders the teammate card's Output block: every output message,
+// newest first, each under a faint timestamp rule — always expanded (j/k scroll).
+func (m Model) mateOutputSection(rightW int) []string {
+	outs := m.asMateSnap.outputs
+	lines := []string{faintStyle.Render(fmt.Sprintf("Output · %d messages", len(outs)))}
+	if len(outs) == 0 {
+		return append(lines, faintStyle.Render(" (no output yet)"))
+	}
+	for i := len(outs) - 1; i >= 0; i-- {
+		o := outs[i]
+		stamp := "── "
+		if ts, err := time.Parse(time.RFC3339, o.ts); err == nil {
+			stamp += ts.Format("01-02 15:04") + " "
+		}
+		if fill := rightW - 1 - lipgloss.Width(stamp); fill > 0 {
+			stamp += strings.Repeat("─", fill)
+		}
+		lines = append(lines, " "+faintStyle.Render(stamp))
+		lines = append(lines, ioLines(o.text, rightW, liveStyle)...)
+		if i > 0 {
+			lines = append(lines, "") // breathing room between messages
+		}
 	}
 	return lines
 }
