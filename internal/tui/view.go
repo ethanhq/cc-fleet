@@ -415,11 +415,21 @@ func (m Model) runTokens(g runGroup) int {
 
 // renderRunHeader is the run drill's header — the board's unified chrome: line 1 = the
 // fixed app title (run cwd right-aligned), a blank spacer, line 3 = the run label beside
-// the right-aligned "<done>/<total> agents · <elapsed> · ↓ <tokens> tokens" rollup.
+// the CURSORED thing's stats (the phase's agents+tokens at the Phases level, the leaf's
+// tokens/tools/duration at the Agent level; the run rollup as the fallback).
 func (m Model) renderRunHeader(g runGroup) string {
-	done, total := runAgentCounts(g)
 	bw := m.boardInner()
-	right := fmt.Sprintf("%d/%d agents · %s · ↓ %s tokens", done, total, g.elapsed(), humanTokens(m.runTokens(g)))
+	right := m.runStatsLine(g)
+	switch m.asMode {
+	case asModeRunPhases:
+		if p, ok := m.focusedPhase(); ok {
+			right = m.phaseStatsLine(p)
+		}
+	case asModeRunAgent:
+		if j, ok := m.selectedLeaf(); ok {
+			right = m.leafStatsLine(j)
+		}
+	}
 	return m.appTitleLine(g.cwd) + "\n\n" + headerSummaryLine(m.runLabel(g), right, bw)
 }
 
@@ -1319,11 +1329,41 @@ func (m Model) headerEntityStats() string {
 			return m.jobStats(j)
 		}
 	case asModeBoxes:
+		if g, ok := m.boxRun(); ok {
+			return m.runStatsLine(g)
+		}
+		if t, ok := m.boxTeamGroup(); ok {
+			return m.teamStats(t)
+		}
 		if j, ok := m.boxJob(); ok {
 			return m.jobStats(j)
 		}
 	}
 	return ""
+}
+
+// teamStats is a team's header summary: the members' summed transcript tokens (loaded
+// async while the team row is cursored), the team's age, and its earliest spawn time —
+// falling back to the session rollup until the aggregate lands.
+func (m Model) teamStats(t asTeam) string {
+	var parts []string
+	if m.asTeamKey == t.name && (m.asTeamCtx > 0 || m.asTeamOut > 0) {
+		parts = append(parts, fmt.Sprintf("↑ %s ctx · ↓ %s out", humanTokens(m.asTeamCtx), humanTokens(m.asTeamOut)))
+	}
+	var oldest int64
+	for _, mem := range t.members {
+		if mem.SpawnTime > 0 && (oldest == 0 || mem.SpawnTime < oldest) {
+			oldest = mem.SpawnTime
+		}
+	}
+	if oldest > 0 {
+		ot := teardown.Teammate{SpawnTime: oldest}
+		if up := teammateUptime(ot); up != "" {
+			parts = append(parts, "up "+up)
+		}
+		parts = append(parts, time.UnixMilli(oldest).Format("01-02 15:04"))
+	}
+	return strings.Join(parts, " · ")
 }
 
 // jobStats is one job's header summary: "↑ <ctx> ctx · ↓ <out> out · <elapsed> · <started>"
@@ -1356,6 +1396,46 @@ func (m Model) teammateStats(t teardown.Teammate) string {
 		parts = append(parts, time.UnixMilli(t.SpawnTime).Format("01-02 15:04"))
 	}
 	return strings.Join(parts, " · ")
+}
+
+// runStatsLine is a run's header summary: agents done/total, summed leaf input + output
+// tokens, elapsed, started.
+func (m Model) runStatsLine(g runGroup) string {
+	done, total := runAgentCounts(g)
+	in := 0
+	for _, p := range g.phases {
+		for _, j := range p.jobs {
+			i, _, _ := m.leafCounts(j)
+			in += i
+		}
+	}
+	out := fmt.Sprintf("%d/%d agents · ↑ %s · ↓ %s · %s", done, total, humanTokens(in), humanTokens(m.runTokens(g)), g.elapsed())
+	if ts, err := time.Parse(time.RFC3339, g.startedAt); err == nil {
+		out += " · " + ts.Format("01-02 15:04")
+	}
+	return out
+}
+
+// phaseStatsLine is a phase's header summary: its agents done/total + summed tokens.
+func (m Model) phaseStatsLine(p runPhaseGroup) string {
+	done, total := phaseAgentCounts(p)
+	in, out := 0, 0
+	for _, j := range p.jobs {
+		i, o, _ := m.leafCounts(j)
+		in += i
+		out += o
+	}
+	return fmt.Sprintf("%d/%d agents · ↑ %s · ↓ %s", done, total, humanTokens(in), humanTokens(out))
+}
+
+// leafStatsLine is one leaf's header summary: its tokens, tool calls, and duration.
+func (m Model) leafStatsLine(j subagent.Result) string {
+	in, out, tools := m.leafCounts(j)
+	line := fmt.Sprintf("↑ %s ctx · ↓ %s out · %d tools", humanTokens(in), humanTokens(out), tools)
+	if d := leafDuration(j); d != "" {
+		line += " · " + d
+	}
+	return line
 }
 
 // jobTokens is the job's (peak-context, cumulative-output) token pair: the final Result
@@ -2047,26 +2127,22 @@ func (m Model) mateMessagesSection(rightW int) []string {
 	lines := []string{faintStyle.Render(header)}
 	for i := len(msgs) - 1; i >= 0; i-- {
 		msg := msgs[i]
-		dot := faintStyle.Render("○")
+		// One tone per row: a consumed message reads entirely at the body gray (the
+		// Activity rows' tone); a pending one keeps the accent dot + bright text.
+		dot, style := contentStyle.Render("○"), contentStyle
 		if msg.pending {
-			dot = cursorStyle.Render("●")
+			dot, style = cursorStyle.Render("●"), liveStyle
 		}
 		meta := sessiontitle.CleanTitle(msg.from)
 		if ts, err := time.Parse(time.RFC3339, msg.ts); err == nil {
 			meta += " · " + ts.Format("01-02 15:04")
 		}
-		head := " " + dot + " " + faintStyle.Render(meta)
+		head := " " + dot + " " + style.Render(meta)
 		if !m.asPromptExpanded {
 			if text := sessiontitle.CleanTitle(msg.summary); text != "" {
 				budget := rightW - lipgloss.Width(head) - 2
 				if budget < 8 {
 					budget = 8 // renderBoard's boxCell still bounds the row to the pane
-				}
-				// A consumed row's summary sits at the body tone (the Activity rows'
-				// gray); only the pending backlog keeps a bright summary.
-				style := contentStyle
-				if msg.pending {
-					style = liveStyle
 				}
 				head += "  " + style.Render(truncCols(text, budget))
 			}

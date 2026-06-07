@@ -61,8 +61,9 @@ func TestWfHeader_AgentCounts(t *testing.T) {
 	if strings.Contains(out, "a sweep run") {
 		t.Fatalf("the run description must not be rendered:\n%s", out)
 	}
-	if !strings.Contains(out, "1/2 agents") {
-		t.Fatalf("header should count 1 done of 2 agents:\n%s", out)
+	// The Phases-level header follows the CURSORED phase: "map" has its 1 agent done.
+	if !strings.Contains(out, "1/1 agents") {
+		t.Fatalf("header should carry the cursored phase's counts:\n%s", out)
 	}
 }
 
@@ -694,8 +695,9 @@ func TestWfRunHeader_Layout(t *testing.T) {
 	if strings.TrimSpace(parts[1]) != "" {
 		t.Fatalf("line 2 must be a blank spacer: %q", parts[1])
 	}
-	// Line 3 is the run label + the agents/elapsed/tokens summary — and NOT the description.
-	if !strings.Contains(parts[2], "sweep") || !strings.Contains(parts[2], "1/2 agents") {
+	// Line 3 is the run label + the cursored phase's agents/token summary — never the
+	// description.
+	if !strings.Contains(parts[2], "sweep") || !strings.Contains(parts[2], "agents") {
 		t.Fatalf("line 3 must be the run label + counts: %q", parts[2])
 	}
 	if strings.Contains(m.renderRunHeader(g), "a sweep run") {

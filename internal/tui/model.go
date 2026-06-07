@@ -138,6 +138,11 @@ type Model struct {
 	asMateKey   string
 	asMateSnap  teammateSnapshot
 	asMateFound bool // transcript located (false renders the no-transcript note)
+	// Cursored-team transcript aggregate for the session header (the L2 teams range):
+	// summed member ↑ peak-context / ↓ output, loaded async on the shared nonce gate.
+	asTeamKey string
+	asTeamCtx int
+	asTeamOut int
 	// boardStatus is a one-line outcome of the last inline hide/show (so a failed
 	// h/s surfaces its reason instead of relying on the next silent refresh);
 	// boardStatusErr styles it as an error vs an ok confirmation. boardJobsErr is the
@@ -945,6 +950,43 @@ func loadMateCmd(t teardown.Teammate, cwd string, nonce, epoch int) tea.Cmd {
 	}
 }
 
+// asTeamMsg carries a cursored team's summed member transcript tokens for the session
+// header (the asMateMsg pattern: owned by screenSpawn, nonce+epoch gated).
+type asTeamMsg struct {
+	nonce int
+	epoch int
+	key   string
+	ctx   int
+	out   int
+}
+
+func (asTeamMsg) owningScreen() screen { return screenSpawn }
+
+// loadTeamStatsCmd scans every member's transcript off the Update goroutine and sums the
+// token aggregates (each member's ↑ peak context; cumulative ↓ output). Only integer counts
+// leave the read.
+func loadTeamStatsCmd(t asTeam, cwdOf map[string]sessiontitle.Meta, nonce, epoch int) tea.Cmd {
+	members := append([]teardown.Teammate(nil), t.members...)
+	return func() tea.Msg {
+		ctx, out := 0, 0
+		for _, mem := range members {
+			var notBefore time.Time
+			if mem.SpawnTime > 0 {
+				notBefore = time.UnixMilli(mem.SpawnTime)
+			}
+			path, ok := sessiontitle.FindAgentTranscript(cwdOf[mem.LeadSessionID].Cwd, mem.Team, mem.Name, notBefore)
+			if !ok {
+				continue
+			}
+			if snap, ok := readTeammateTranscript(path); ok {
+				ctx += snap.ctxTok
+				out += snap.outTok
+			}
+		}
+		return asTeamMsg{nonce: nonce, epoch: epoch, key: t.name, ctx: ctx, out: out}
+	}
+}
+
 func addVendorCmd(req userops.AddRequest) tea.Cmd {
 	return func() tea.Msg {
 		_, err := userops.Add(req)
@@ -1173,8 +1215,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		} else if m.asMode == asModeBoxes {
 			// The boxes level always previews a job card (the cursored job, else the
-			// first) — keep it fresh on the same terms as the entity-level card.
-			if j, ok := m.boxPreviewJob(); ok && m.jobCardStale(j) {
+			// first) — keep it fresh on the same terms as the entity-level card; a
+			// cursored team row keeps its header aggregate fresh too.
+			if cmd := m.focusBoxTeamIO(); cmd != nil {
+				detail = cmd
+			} else if j, ok := m.boxPreviewJob(); ok && m.jobCardStale(j) {
 				m.asDetailNonce++
 				m.asDetailTerminal = isTerminalLeaf(j.Status)
 				detail = loadJobIOCmd(j.JobID, m.asDetailNonce, m.boardEpoch)
@@ -1290,6 +1335,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.asDetailAnswer = msg.answer
 		m.asDetailIO = msg.present
 		m.asDetailSnap = msg.snap
+		return m, nil
+
+	case asTeamMsg:
+		if msg.nonce != m.asDetailNonce || msg.epoch != m.boardEpoch {
+			return m, nil
+		}
+		m.asTeamKey, m.asTeamCtx, m.asTeamOut = msg.key, msg.ctx, msg.out
 		return m, nil
 
 	case asMateMsg:
@@ -1587,10 +1639,14 @@ func (m Model) updateAsBoxes(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up":
 		m.asBoxCursor = clampIndex(m.asBoxCursor-1, n)
-		return m.focusBoxJobIO()
+		team := m.focusBoxTeamIO()
+		mm, job := m.focusBoxJobIO()
+		return mm, tea.Batch(team, job)
 	case "down":
 		m.asBoxCursor = clampIndex(m.asBoxCursor+1, n)
-		return m.focusBoxJobIO()
+		team := m.focusBoxTeamIO()
+		mm, job := m.focusBoxJobIO()
+		return mm, tea.Batch(team, job)
 	case "d":
 		// A run row arms the run delete; an ENDED team row arms its record delete;
 		// a live team row and job rows ignore d.
@@ -1624,6 +1680,17 @@ func (m Model) updateAsBoxes(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.asAscend(false)
 	}
 	return m, nil
+}
+
+// focusBoxTeamIO loads the cursored team's token aggregate for the session header
+// (nonce-gated; reloaded on every landing — members keep working).
+func (m *Model) focusBoxTeamIO() tea.Cmd {
+	t, ok := m.boxTeamGroup()
+	if !ok {
+		return nil
+	}
+	m.asDetailNonce++
+	return loadTeamStatsCmd(t, m.sessionMeta, m.asDetailNonce, m.boardEpoch)
 }
 
 // focusBoxJobIO keeps the Subagents box's previewed card loaded as the L2 cursor moves
@@ -2075,14 +2142,20 @@ func (m Model) boxRun() (runGroup, bool) {
 
 // boxTeam returns the team name under the L2 continuum cursor (ok=false off the teams range).
 func (m Model) boxTeam() (string, bool) {
+	t, ok := m.boxTeamGroup()
+	return t.name, ok
+}
+
+// boxTeamGroup returns the team under the L2 continuum cursor (ok=false off the teams range).
+func (m Model) boxTeamGroup() (asTeam, bool) {
 	s, ok := m.focusedSession()
 	if !ok {
-		return "", false
+		return asTeam{}, false
 	}
 	if i := m.asBoxCursor - len(s.runs); i >= 0 && i < len(s.teams) {
-		return s.teams[i].name, true
+		return s.teams[i], true
 	}
-	return "", false
+	return asTeam{}, false
 }
 
 // isEndedTeam reports whether a team is rendered from a history record (gone from

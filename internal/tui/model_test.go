@@ -1098,10 +1098,15 @@ func TestBoardHeaderShowsCursoredAgentStats(t *testing.T) {
 	if out := m.View(); !strings.Contains(out, "up 5m · ") {
 		t.Fatalf("the header should show the cursored teammate's uptime:\n%s", out)
 	}
-	// L2: a team row keeps the session rollup; moving onto the job row swaps in its stats.
+	// L2: a team row carries the TEAM's stats (age + spawn; tokens once the aggregate
+	// lands); moving onto the job row swaps in the job's stats.
 	m = boardModel(t, []teardown.Teammate{mate}, []subagent.Result{job})
-	if out := m.View(); !strings.Contains(out, "1 teammates · 1 subagents · created") {
-		t.Fatalf("an L2 team row should keep the rollup header:\n%s", out)
+	if out := m.View(); !strings.Contains(out, "up 5m · ") {
+		t.Fatalf("an L2 team row should carry the team's stats:\n%s", out)
+	}
+	m, _ = step(t, m, asTeamMsg{nonce: m.asDetailNonce, epoch: m.boardEpoch, key: "t1", ctx: 92032, out: 48659})
+	if out := m.View(); !strings.Contains(out, "↑ 92.0k ctx · ↓ 48.7k out · up 5m") {
+		t.Fatalf("the landed aggregate should join the team header stats:\n%s", out)
 	}
 	m, _ = press(t, m, "down")
 	if out := m.View(); !strings.Contains(out, "↑ 1.2k ctx") {
