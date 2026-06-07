@@ -216,7 +216,7 @@ func (m Model) viewSpawn() string {
 		}
 		b.WriteString("\n" + style.Render(m.boardStatus))
 	}
-	b.WriteString("\n" + renderAsFooter(m.asMode))
+	b.WriteString("\n" + m.renderAsFooter())
 	return b.String()
 }
 
@@ -226,9 +226,10 @@ func (m Model) spawnTitle() string {
 	return titleStyle.Render("cc-fleet · Agent status") + faintStyle.Render("    tab → Dynamic Workflows")
 }
 
-// renderAsFooter is the contextual footer per asMode.
-func renderAsFooter(mode asMode) string {
-	switch mode {
+// renderAsFooter is the contextual footer per asMode; the boxes level swaps in the card
+// keys while the cursor sits on a job row (its card is inline there).
+func (m Model) renderAsFooter() string {
+	switch m.asMode {
 	case asModeProjects:
 		return footer("↑/↓ project · →/⏎ open · esc vendors · tab dynamic workflows · r refresh · q quit")
 	case asModeSessions:
@@ -236,6 +237,9 @@ func renderAsFooter(mode asMode) string {
 	case asModeEntity:
 		return footer("↑/↓ row · j/k scroll · ⏎ expand · h hide · s show · ←/esc back · r refresh · q quit")
 	default:
+		if _, onJob := m.boxJob(); onJob {
+			return footer("↑/↓ row · j/k scroll · ⏎ expand · ←/esc back · r refresh · q quit")
+		}
 		return footer("↑/↓ row · →/⏎ detail · ← back · r refresh · tab dynamic workflows · esc vendors · q quit")
 	}
 }
@@ -1550,8 +1554,10 @@ func (m Model) jobTokens(j subagent.Result) (in, out int) {
 }
 
 // viewAsBoxes is L2: the session header above the two stacked boxes — Agent Teams
-// (master-detail: team rail | the cursored team's member rows) and Subagents (the session's
-// job rows). One ↑/↓ cursor walks both (see updateAsBoxes); a session missing one kind
+// (master-detail: team rail | the cursored team's member rows) and Subagents. One ↑/↓
+// cursor walks both (see updateAsBoxes). With the cursor on a JOB row the Subagents box
+// is itself a master-detail (job rail | the job's inline card — no descend needed) and
+// takes the height; on a team row it stays the flat row list. A session missing one kind
 // simply omits that box.
 func (m Model) viewAsBoxes() string {
 	s, ok := m.focusedSession()
@@ -1566,14 +1572,19 @@ func (m Model) viewAsBoxes() string {
 		parts = append(parts, indentBox(m.renderTeamsBox(s, teamsBody), boardMargin))
 	}
 	if len(s.jobs) > 0 {
-		parts = append(parts, indentBox(m.renderJobsBox(s, jobsBody), boardMargin))
+		if _, onJob := m.boxJob(); onJob {
+			parts = append(parts, indentBox(m.renderJobsBoxDetail(s, jobsBody), boardMargin))
+		} else {
+			parts = append(parts, indentBox(m.renderJobsBox(s, jobsBody), boardMargin))
+		}
 	}
 	return header + strings.Join(parts, "\n")
 }
 
 // splitBoxHeights divides the body budget between the two boxes: the Agent Teams box gets
-// what its content needs up to half, the Subagents box the rest; a missing kind hands its
-// share to the other. The two extra border rows of the second box come off the budget.
+// what its content needs up to half — only up to a quarter while the cursor sits on a job
+// row, whose inline card then takes the rest; a missing kind hands its share to the other.
+// The two extra border rows of the second box come off the budget.
 func (m Model) splitBoxHeights(s asSession) (teams, jobs int) {
 	total := m.boardBodyHeight()
 	if len(s.teams) == 0 {
@@ -1591,7 +1602,11 @@ func (m Model) splitBoxHeights(s asSession) (teams, jobs int) {
 		need = len(s.teams[ti].members)
 	}
 	teams = need
-	if cap := avail / 2; teams > cap {
+	cap := avail / 2
+	if _, onJob := m.boxJob(); onJob {
+		cap = avail / 4
+	}
+	if teams > cap {
 		teams = cap
 	}
 	if teams < 2 {
@@ -1667,6 +1682,51 @@ func (m Model) renderJobsBox(s asSession, bodyH int) string {
 		cursor = 0
 	}
 	return renderBox(fmt.Sprintf("Subagents · %d", len(s.jobs)), windowLines(lines, cursor, bodyH), innerW, bodyH)
+}
+
+// jobsBoxLeftLines is the Subagents box's compact job rail (dot + short id), cursor-marked
+// when the L2 continuum sits in the jobs range — shared by renderJobsBoxDetail and
+// jobsBoxRightWidth so the scroll clamp and the render agree on the card width.
+func (m Model) jobsBoxLeftLines(s asSession) []string {
+	cursor := m.asBoxCursor - len(s.teams)
+	var lines []string
+	for i, j := range s.jobs {
+		marker := "  "
+		label := shortJobID(sessiontitle.CleanTitle(j.JobID))
+		if i == cursor {
+			marker = cursorStyle.Render("❯ ")
+			label = selectedStyle.Render(label)
+		} else {
+			label = labelStyle(j.Status).Render(label)
+		}
+		lines = append(lines, marker+statusDot(j.Status)+" "+label)
+	}
+	return lines
+}
+
+// jobsBoxRightWidth is the inline job card's column budget in the Subagents box.
+func (m Model) jobsBoxRightWidth(s asSession) int {
+	title := fmt.Sprintf("Subagents · %d", len(s.jobs))
+	_, rightW := m.paneWidths(leftWidth(title, m.jobsBoxLeftLines(s), m.boardInner()))
+	return rightW
+}
+
+// renderJobsBoxDetail is the Subagents box with the cursor on a job row: a master-detail
+// of the job rail | that job's inline card (the same card the entity level shows), so a
+// job's detail is one cursor move away — never a descend.
+func (m Model) renderJobsBoxDetail(s asSession, bodyH int) string {
+	listTitle := fmt.Sprintf("Subagents · %d", len(s.jobs))
+	leftLines := m.jobsBoxLeftLines(s)
+	leftW, rightW := m.paneWidths(leftWidth(listTitle, leftLines, m.boardInner()))
+	cardTitle := "job"
+	var rightLines []string
+	if j, ok := m.boxJob(); ok {
+		cardTitle = shortJobID(sessiontitle.CleanTitle(j.JobID))
+		rightLines = m.jobDetailLines(j, rightW)
+	}
+	cursor := m.asBoxCursor - len(s.teams)
+	leftLines = windowLines(leftLines, cursor, bodyH)
+	return renderBoard(listTitle, leftLines, cardTitle, rightLines, leftW, rightW, bodyH, m.clampAsCardScroll(m.asCardScroll))
 }
 
 // renderBox draws a full-width single-pane rounded box with a title segment — the

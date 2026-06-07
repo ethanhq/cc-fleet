@@ -741,6 +741,61 @@ func TestBoardBoxContinuumAndEntityNavigation(t *testing.T) {
 	}
 }
 
+// TestBoardBoxesInlineJobCard: at the boxes level, moving the continuum cursor onto a job
+// row loads and shows that job's card INLINE in the Subagents box — full sections, card
+// keys (⏎ fold, j/k scroll), no descend — while a team row keeps the flat job list and the
+// descend semantics.
+func TestBoardBoxesInlineJobCard(t *testing.T) {
+	job := subagent.Result{JobID: "j0000000", Status: "done", LeadSessionID: "s",
+		StartedAt: "2026-05-26T01:00:00Z", NumTurns: 2}
+	m := boardModel(t, []teardown.Teammate{{Name: "alice", Team: "t1", PaneID: "%1", LeadSessionID: "s"}},
+		[]subagent.Result{job})
+	m.height = 60 // viewport tall enough that the whole inline card is on screen
+	if m.asMode != asModeBoxes {
+		t.Fatalf("setup: mode=%d, want boxes", m.asMode)
+	}
+	if out := m.View(); strings.Contains(out, "Prompt") {
+		t.Fatalf("a team-row cursor must keep the flat Subagents list:\n%s", out)
+	}
+	m, cmd := press(t, m, "down") // onto the job row
+	if cmd == nil || m.asDetailNonce == 0 {
+		t.Fatal("landing on a job row must issue its io load")
+	}
+	m, _ = step(t, m, asDetailMsg{nonce: m.asDetailNonce, epoch: m.boardEpoch, jobID: "j0000000",
+		present: true, prompt: "p1", answer: "THE-ANSWER",
+		snap: activitySnapshot{sigs: []string{"A(1)"}}})
+	out := m.View()
+	for _, want := range []string{"Prompt", "THE-ANSWER", "Activity · last 3 of 1 tool calls", "Outcome"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the inline job card should render %q at the boxes level:\n%s", want, out)
+		}
+	}
+	if !strings.Contains(out, "⏎ expand") || strings.Contains(out, "→/⏎ detail") {
+		t.Errorf("the footer should swap to the card keys on a job row:\n%s", out)
+	}
+	// ⏎ folds, never descends; → is a no-op; the refresh keeps reloading a card-visible job.
+	m, _ = press(t, m, "enter")
+	if m.asMode != asModeBoxes || !m.asPromptExpanded {
+		t.Fatalf("⏎ on a job row must toggle the fold in place, mode=%d expanded=%v", m.asMode, m.asPromptExpanded)
+	}
+	m, _ = press(t, m, "right")
+	if m.asMode != asModeBoxes {
+		t.Fatalf("→ on a job row must stay at the boxes level, mode=%d", m.asMode)
+	}
+	running := job
+	running.Status = "running"
+	if _, cmd := step(t, m, boardMsg{teammates: []teardown.Teammate{{Name: "alice", Team: "t1", PaneID: "%1", LeadSessionID: "s"}},
+		jobs: []subagent.Result{running}, epoch: m.boardEpoch}); cmd == nil {
+		t.Fatal("a refresh with the cursor on a running job row must reload the inline card")
+	}
+	// The team row still descends into the member view.
+	m, _ = press(t, m, "up")
+	m, _ = press(t, m, "enter")
+	if m.asMode != asModeEntity || m.asEntitySrc.jobs {
+		t.Fatalf("⏎ on a team row must still descend to its members, mode=%d src=%+v", m.asMode, m.asEntitySrc)
+	}
+}
+
 // TestBoardHideShowNoOpOutsideTeammateRows: h/s are no-ops on an empty board and on the
 // jobs rail (no teammate to act on).
 func TestBoardHideShowNoOpOutsideTeammateRows(t *testing.T) {

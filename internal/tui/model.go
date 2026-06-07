@@ -1083,8 +1083,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// every accepted refresh, no terminal short-circuit.
 		if m.asMode == asModeEntity {
 			if m.asEntitySrc.jobs {
-				if j, ok := m.selectedJob(); ok &&
-					(j.JobID != m.asDetailJobID || !isTerminalLeaf(j.Status) || !m.asDetailTerminal) {
+				if j, ok := m.selectedJob(); ok && m.jobCardStale(j) {
 					m.asDetailNonce++
 					m.asDetailTerminal = isTerminalLeaf(j.Status)
 					return m, loadJobIOCmd(j.JobID, m.asDetailNonce, m.boardEpoch)
@@ -1092,6 +1091,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else if t, ok := m.selectedTeammate(); ok {
 				m.asDetailNonce++
 				return m, loadMateCmd(t, m.sessionMeta[t.LeadSessionID].Cwd, m.asDetailNonce, m.boardEpoch)
+			}
+		} else if m.asMode == asModeBoxes {
+			// The boxes level shows a job's card inline whenever the cursor sits on a
+			// job row — keep it fresh on the same terms as the entity-level card.
+			if j, ok := m.boxJob(); ok && m.jobCardStale(j) {
+				m.asDetailNonce++
+				m.asDetailTerminal = isTerminalLeaf(j.Status)
+				return m, loadJobIOCmd(j.JobID, m.asDetailNonce, m.boardEpoch)
 			}
 		}
 		return m, nil
@@ -1442,8 +1449,9 @@ func (m Model) updateAsSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // updateAsBoxes (L2): a single ↑/↓ cursor walks the continuum — the session's team rows
-// (the Agent Teams box rail), then its job rows (the Subagents box) — so focus flows across
-// the two boxes without a dedicated switch key. →/⏎ descends into the row's detail; ←/esc
+// (the Agent Teams box rail), then its job rows (the Subagents box). A job row shows its
+// card INLINE in the Subagents box, so it gets the card keys right here (j/k scroll, ⏎
+// fold) and never needs a descend; →/⏎ descend a TEAM row into its member view. ←/esc
 // ascend.
 func (m Model) updateAsBoxes(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	s, ok := m.focusedSession()
@@ -1454,16 +1462,49 @@ func (m Model) updateAsBoxes(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up":
 		m.asBoxCursor = clampIndex(m.asBoxCursor-1, n)
+		return m.focusBoxJobIO()
 	case "down":
 		m.asBoxCursor = clampIndex(m.asBoxCursor+1, n)
+		return m.focusBoxJobIO()
 	case "right", "enter":
+		if _, onJob := m.boxJob(); onJob {
+			if msg.String() == "right" {
+				return m, nil // the card is already inline — nothing deeper
+			}
+			m.asPromptExpanded = !m.asPromptExpanded
+			m.asCardScroll = m.clampAsCardScroll(m.asCardScroll)
+			return m, nil
+		}
 		return m.asDescend()
+	case "j":
+		if _, onJob := m.boxJob(); onJob {
+			m.asCardScroll = m.clampAsCardScroll(m.asCardScroll + 1)
+		}
+	case "k":
+		if _, onJob := m.boxJob(); onJob {
+			m.asCardScroll = m.clampAsCardScroll(m.asCardScroll - 1)
+		}
 	case "esc":
 		return m.asAscend(true)
 	case "left":
 		return m.asAscend(false)
 	}
 	return m, nil
+}
+
+// focusBoxJobIO loads the job under the L2 continuum cursor into the inline card (reset
+// scroll/fold, nonce-gated — focusJobIO's boxes-level sibling); a team row clears nothing
+// and loads nothing.
+func (m Model) focusBoxJobIO() (tea.Model, tea.Cmd) {
+	j, ok := m.boxJob()
+	if !ok {
+		return m, nil
+	}
+	m.asCardScroll = 0
+	m.asPromptExpanded = false
+	m.asDetailNonce++
+	m.asDetailTerminal = isTerminalLeaf(j.Status)
+	return m, loadJobIOCmd(j.JobID, m.asDetailNonce, m.boardEpoch)
 }
 
 // updateAsEntity (L3): ↑/↓ walk the collection's rows (resetting the card scroll), j/k
@@ -1582,6 +1623,13 @@ func (m Model) asDescend() (tea.Model, tea.Cmd) {
 		return m.focusEntityIO()
 	}
 	return m, nil
+}
+
+// jobCardStale reports whether the visible job card needs a fresh io load: a different
+// job, a still-running one (its Activity feed climbs), or the first refresh that sees it
+// terminal (the final .answer lands after the running→done flip).
+func (m Model) jobCardStale(j subagent.Result) bool {
+	return j.JobID != m.asDetailJobID || !isTerminalLeaf(j.Status) || !m.asDetailTerminal
 }
 
 // focusEntityIO loads the focused entity's detail payload per the collection kind (job io
@@ -1832,6 +1880,19 @@ func (m *Model) clampAsCursors() {
 	}
 }
 
+// boxJob returns the job under the L2 continuum cursor (ok=false on a team row or out
+// of range) — the job whose inline card the Subagents box shows.
+func (m Model) boxJob() (subagent.Result, bool) {
+	s, ok := m.focusedSession()
+	if !ok {
+		return subagent.Result{}, false
+	}
+	if i := m.asBoxCursor - len(s.teams); i >= 0 && i < len(s.jobs) {
+		return s.jobs[i], true
+	}
+	return subagent.Result{}, false
+}
+
 // boxRowRef returns the typed identity of the L2 row under asBoxCursor.
 func (m Model) boxRowRef() (asBoxRef, bool) {
 	s, ok := m.focusedSession()
@@ -1871,10 +1932,20 @@ func (m *Model) reanchorBox(prev asBoxRef) {
 	}
 }
 
-// clampAsCardScroll bounds the entity detail-card scroll to [0, lines-viewport] so j/k never
-// scroll past the content (mirror clampCardScroll).
+// clampAsCardScroll bounds the visible card's scroll to [0, lines-viewport] so j/k never
+// scroll past the content (mirror clampCardScroll). The card lives in the entity view OR
+// inline in the L2 Subagents box — each with its own geometry.
 func (m Model) clampAsCardScroll(v int) int {
-	max := len(m.entityDetailLines(m.asEntityRightWidth())) - m.asEntityBodyHeight()
+	var max int
+	if m.asMode == asModeBoxes {
+		if j, ok := m.boxJob(); ok {
+			s, _ := m.focusedSession()
+			_, jobsH := m.splitBoxHeights(s)
+			max = len(m.jobDetailLines(j, m.jobsBoxRightWidth(s))) - jobsH
+		}
+	} else {
+		max = len(m.entityDetailLines(m.asEntityRightWidth())) - m.asEntityBodyHeight()
+	}
 	if max < 0 {
 		max = 0
 	}
