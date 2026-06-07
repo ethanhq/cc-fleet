@@ -152,7 +152,7 @@ Supported targets: linux & darwin, amd64 & arm64.
 ### Layout
 
 - `cmd/cc-fleet/` — Cobra entrypoint; one file per subcommand, all registered in `main.go`.
-  Bare `cc-fleet` in an interactive TTY launches the Bubbletea TUI (`internal/tui`: vendors hub
+  Bare `cc-fleet` in an interactive TTY launches the Bubbletea TUI (`internal/tui`: Model Providers hub
   + Agents Board); non-interactive contexts fall through to `--help`.
 - User-layer commands: `init`/`add`/`edit`/`remove`/`list`/`repair`/`uninstall`.
   Claude-layer (machine-driven): `spawn`/`subagent`/`ps`/`hide`/`show`/`teardown`/`keyget`/

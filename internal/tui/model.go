@@ -34,7 +34,7 @@ import (
 type screen int
 
 const (
-	screenList screen = iota // the home/hub: Vendors list + inline "+ Add" row
+	screenList screen = iota // the home/hub: Model Providers list + inline "+ Add" row
 	screenSpawn
 	screenPickTemplate
 	screenForm
@@ -78,7 +78,7 @@ type Model struct {
 	width  int
 	height int
 
-	// Vendor data, loaded for the Vendors list (the hub) and reused to seed the
+	// Vendor data, loaded for the Model Providers list (the hub) and reused to seed the
 	// edit form. vendorCursor ranges over [0, len(vendors)]; the final index is
 	// the trailing "+ Add vendor…" row.
 	vendors      []userops.VendorView
@@ -256,7 +256,7 @@ type Model struct {
 	quitting bool
 }
 
-// NewModel returns the initial model. It normally parks on the Vendors list
+// NewModel returns the initial model. It normally parks on the Model Providers list
 // (the hub) with loading=true so Init can kick off the vendor load. On a first
 // run where agent-teams looks unconfigured (and the user hasn't dismissed the
 // nudge), it instead opens on the agent-teams setup screen; the hub loads when
@@ -1469,7 +1469,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// toList returns to the Vendors list (the hub) and reloads it — after an
+// toList returns to the Model Providers list (the hub) and reloads it — after an
 // add/edit/remove the content changed, and a plain cancel just re-reads.
 func (m Model) toList() (tea.Model, tea.Cmd) {
 	m.screen = screenList
@@ -1477,7 +1477,7 @@ func (m Model) toList() (tea.Model, tea.Cmd) {
 	return m, loadVendors
 }
 
-// updateList drives the Vendors hub. The cursor ranges over [0, len(vendors)];
+// updateList drives the Model Providers hub. The cursor ranges over [0, len(vendors)];
 // the final index is the synthetic "+ Add vendor…" row. enter edits the
 // highlighted vendor (or opens the add wizard on the Add row); d deletes it
 // (with a confirm); tab switches to Spawn status; q/esc quit.
@@ -2789,7 +2789,7 @@ func (m Model) updateRemoveConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// updateResult returns to the Vendors list on any key press.
+// updateResult returns to the Model Providers list on any key press.
 func (m Model) updateResult(_ tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m.toList()
 }
