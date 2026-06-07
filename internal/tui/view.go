@@ -203,10 +203,11 @@ func (m Model) viewSpawn() string {
 			b.WriteString(m.viewAsBoxes())
 		}
 	}
+	pad := strings.Repeat(" ", boardMargin) // status + footer lines align with the box border
 	// The jobs-scan failure renders on its OWN line so it never overwrites a surfaced
 	// hide/show outcome (boardStatus keeps its survive-the-refresh semantics).
 	if m.boardJobsErr != nil {
-		b.WriteString("\n" + faintStyle.Render("jobs unavailable: "+
+		b.WriteString("\n" + pad + faintStyle.Render("jobs unavailable: "+
 			sessiontitle.CleanTitle(m.boardJobsErr.Error())))
 	}
 	// Inline hide/show outcome: a failed h/s shows its reason here rather than
@@ -216,21 +217,21 @@ func (m Model) viewSpawn() string {
 		if m.boardStatusErr {
 			style = errStyle
 		}
-		b.WriteString("\n" + style.Render(m.boardStatus))
+		b.WriteString("\n" + pad + style.Render(m.boardStatus))
 	}
 	// Run-control outcomes + the save-workflow name prompt (the run drill's controls).
 	switch {
 	case m.wfSaving:
-		b.WriteString("\n" + faintStyle.Render("save as: ") + m.wfSaveInput.View() +
+		b.WriteString("\n" + pad + faintStyle.Render("save as: ") + m.wfSaveInput.View() +
 			faintStyle.Render("  · enter save · esc cancel"))
 	case m.workflowStatus != "":
 		style := okStyle
 		if m.workflowStatusErr {
 			style = errStyle
 		}
-		b.WriteString("\n" + style.Render(sessiontitle.CleanTitle(m.workflowStatus)))
+		b.WriteString("\n" + pad + style.Render(sessiontitle.CleanTitle(m.workflowStatus)))
 	}
-	b.WriteString("\n" + m.renderAsFooter())
+	b.WriteString("\n" + pad + m.renderAsFooter())
 	return b.String()
 }
 
@@ -1383,14 +1384,22 @@ func (m Model) viewAsBoxes() string {
 	}
 	header := indentBox(m.renderSessionHeader(s), boardMargin) + "\n" + m.headerRule() + "\n"
 	runsBody, teamsBody, jobsBody := m.splitBoxHeights(s)
+	innerW := m.boardInner() - 6
 	var parts []string
 	if len(s.runs) > 0 {
 		parts = append(parts, indentBox(m.renderRunsBox(s, runsBody), boardMargin))
+	} else {
+		parts = append(parts, indentBox(emptyKindBox("Dynamic Workflows", innerW), boardMargin))
 	}
 	if len(s.teams) > 0 {
 		parts = append(parts, indentBox(m.renderTeamsBox(s, teamsBody), boardMargin))
+	} else {
+		parts = append(parts, indentBox(emptyKindBox("Agent Teams", innerW), boardMargin))
 	}
-	if len(s.jobs) > 0 {
+	switch {
+	case len(s.jobs) == 0:
+		parts = append(parts, indentBox(emptyKindBox("Subagents · 0", innerW), boardMargin))
+	default:
 		if _, onJob := m.boxJob(); onJob {
 			parts = append(parts, indentBox(m.renderJobsBoxDetail(s, jobsBody), boardMargin))
 		} else {
@@ -1400,25 +1409,24 @@ func (m Model) viewAsBoxes() string {
 	return header + strings.Join(parts, "\n")
 }
 
-// splitBoxHeights divides the body budget across the session's boxes: the Dynamic
-// Workflows box gets its content up to a quarter, the Agent Teams box its content up to
-// half of the rest — only up to a quarter while the cursor sits on a job row, whose inline
-// card then takes the remainder; a missing kind hands its share down. Each extra box costs
-// its two border rows.
+// emptyKindBox is the slim placeholder a session view shows for a kind it has none of, so
+// the three-box silhouette never reshapes.
+func emptyKindBox(title string, innerW int) string {
+	return renderBox(title, []string{faintStyle.Render("(none in this session)")}, innerW, 1)
+}
+
+// splitBoxHeights divides the body budget across the session's three boxes (an empty kind
+// shows a slim one-row placeholder): the Dynamic Workflows box gets its content up to a
+// quarter, the Agent Teams box its content up to half of the rest — only up to a quarter
+// while the cursor sits on a job row, whose inline card then takes the remainder; an empty
+// Subagents kind hands its remainder back to the teams box. The second and third boxes
+// cost their two border rows each.
 func (m Model) splitBoxHeights(s asSession) (runs, teams, jobs int) {
-	avail := m.boardBodyHeight()
-	boxes := 0
-	for _, n := range []int{len(s.runs), len(s.teams), len(s.jobs)} {
-		if n > 0 {
-			boxes++
-		}
+	avail := m.boardBodyHeight() - 4 // three boxes always render
+	if avail < 6 {
+		avail = 6
 	}
-	if boxes > 1 {
-		avail -= 2 * (boxes - 1)
-	}
-	if avail < 4 {
-		avail = 4
-	}
+	runs = 1
 	if len(s.runs) > 0 {
 		runs = len(s.runs)
 		if cap := avail / 4; runs > cap {
@@ -1427,30 +1435,34 @@ func (m Model) splitBoxHeights(s asSession) (runs, teams, jobs int) {
 		if runs < 1 {
 			runs = 1
 		}
-		avail -= runs
 	}
-	if len(s.teams) == 0 {
-		return runs, 0, avail
+	avail -= runs
+	teams = 1
+	if len(s.teams) > 0 {
+		need := len(s.teams)
+		if ti := m.boxTeamIdx(s); ti >= 0 && len(s.teams[ti].members) > need {
+			need = len(s.teams[ti].members)
+		}
+		teams = need
+		cap := avail / 2
+		if _, onJob := m.boxJob(); onJob {
+			cap = avail / 4
+		}
+		if teams > cap {
+			teams = cap
+		}
+		if teams < 2 {
+			teams = 2
+		}
 	}
-	if len(s.jobs) == 0 {
-		return runs, avail, 0
+	avail -= teams
+	jobs = 1
+	if len(s.jobs) > 0 {
+		jobs = avail
+	} else if len(s.teams) > 0 {
+		teams += avail - 1 // the spare space returns to the teams box
 	}
-	need := len(s.teams)
-	if ti := m.boxTeamIdx(s); ti >= 0 && len(s.teams[ti].members) > need {
-		need = len(s.teams[ti].members)
-	}
-	teams = need
-	cap := avail / 2
-	if _, onJob := m.boxJob(); onJob {
-		cap = avail / 4
-	}
-	if teams > cap {
-		teams = cap
-	}
-	if teams < 2 {
-		teams = 2
-	}
-	return runs, teams, avail - teams
+	return runs, teams, jobs
 }
 
 // boxTeamIdx is the team the Agent Teams box previews: the cursored team while the L2
@@ -1859,27 +1871,29 @@ func (m Model) viewAsEntity() string {
 	leftLines = windowLines(leftLines, m.asEntityCursor, bodyH)
 	board := indentBox(renderBoard(listTitle, leftLines, cardTitle, rightLines, leftW, rightW, bodyH, m.clampAsCardScroll(m.asCardScroll)), boardMargin)
 	// A single-kind session lands here directly (the boxes level is skipped): keep the
-	// two-box silhouette with a slim placeholder for the missing collection.
+	// three-box silhouette with slim placeholders for the missing collections (a
+	// single-kind session has no runs by definition).
 	if _, single := singleKindSrc(s); single {
 		innerW := m.boardInner() - 6
+		wf := indentBox(emptyKindBox("Dynamic Workflows", innerW), boardMargin)
 		if m.asEntitySrc.jobs {
-			ph := renderBox("Agent Teams", []string{faintStyle.Render("(none in this session)")}, innerW, 1)
-			board = indentBox(ph, boardMargin) + "\n" + board
+			ph := indentBox(emptyKindBox("Agent Teams", innerW), boardMargin)
+			board = wf + "\n" + ph + "\n" + board
 		} else {
-			ph := renderBox("Subagents · 0", []string{faintStyle.Render("(none in this session)")}, innerW, 1)
-			board = board + "\n" + indentBox(ph, boardMargin)
+			ph := indentBox(emptyKindBox("Subagents · 0", innerW), boardMargin)
+			board = wf + "\n" + board + "\n" + ph
 		}
 	}
 	return indentBox(m.renderSessionHeader(s), boardMargin) + "\n" + m.headerRule() + "\n" + board
 }
 
-// asEntityBodyHeight is the entity box's row budget: the full body, minus the slim
-// placeholder box a single-kind session shows for its missing collection (two borders +
-// one row).
+// asEntityBodyHeight is the entity box's row budget: the full body, minus the two slim
+// placeholder boxes a single-kind session shows for its missing collections (two borders +
+// one row each).
 func (m Model) asEntityBodyHeight() int {
 	if s, ok := m.focusedSession(); ok {
 		if _, single := singleKindSrc(s); single {
-			h := m.boardBodyHeight() - 3
+			h := m.boardBodyHeight() - 6
 			if h < 5 {
 				h = 5
 			}
@@ -2061,9 +2075,9 @@ func (m Model) mateMessagesSection(rightW int) []string {
 				if budget < 8 {
 					budget = 8 // renderBoard's boxCell still bounds the row to the pane
 				}
-				// A consumed row reads as one quiet faint line; only the pending
-				// backlog keeps a bright summary.
-				style := faintStyle
+				// A consumed row's summary sits at the body tone (the Activity rows'
+				// gray); only the pending backlog keeps a bright summary.
+				style := contentStyle
 				if msg.pending {
 					style = liveStyle
 				}
