@@ -1396,15 +1396,10 @@ func (m Model) viewAsBoxes() string {
 	} else {
 		parts = append(parts, indentBox(emptyKindBox("Agent Teams", innerW), boardMargin))
 	}
-	switch {
-	case len(s.jobs) == 0:
+	if len(s.jobs) == 0 {
 		parts = append(parts, indentBox(emptyKindBox("Subagents · 0", innerW), boardMargin))
-	default:
-		if _, onJob := m.boxJob(); onJob {
-			parts = append(parts, indentBox(m.renderJobsBoxDetail(s, jobsBody), boardMargin))
-		} else {
-			parts = append(parts, indentBox(m.renderJobsBox(s, jobsBody), boardMargin))
-		}
+	} else {
+		parts = append(parts, indentBox(m.renderJobsBoxDetail(s, jobsBody), boardMargin))
 	}
 	return header + strings.Join(parts, "\n")
 }
@@ -1525,23 +1520,23 @@ func (m Model) renderTeamsBox(s asSession, bodyH int) string {
 	return renderBoard("Agent Teams", leftLines, rightTitle, rightLines, leftW, rightW, bodyH, 0)
 }
 
-// renderJobsBox is the Subagents box: the session's job rows, full width, the continuum
-// cursor marking the active row.
-func (m Model) renderJobsBox(s asSession, bodyH int) string {
+// renderRunsBox is the Dynamic Workflows box: the session's run rows (newest first), the
+// continuum cursor marking the active row; ⏎ opens the run's Phases level.
+func (m Model) renderRunsBox(s asSession, bodyH int) string {
 	innerW := m.boardInner() - 6
-	cursor := m.asBoxCursor - len(s.runs) - len(s.teams)
 	var lines []string
-	for i, j := range s.jobs {
-		marker := "  "
-		if i == cursor {
-			marker = cursorStyle.Render("❯ ")
+	for i, g := range s.runs {
+		row := m.renderRunRow(g, innerW-2, i == m.asBoxCursor)
+		if i != m.asBoxCursor {
+			row = "  " + row // the un-cursored marker slot, so the dot column lines up
 		}
-		lines = append(lines, marker+m.renderJobRowFull(j, innerW-2))
+		lines = append(lines, row)
 	}
-	if cursor < 0 {
-		cursor = 0
+	cursor := m.asBoxCursor
+	if cursor >= len(s.runs) {
+		cursor = len(s.runs) - 1
 	}
-	return renderBox(fmt.Sprintf("Subagents · %d", len(s.jobs)), windowLines(lines, cursor, bodyH), innerW, bodyH)
+	return renderBox(fmt.Sprintf("Dynamic Workflows · %d", len(s.runs)), windowLines(lines, cursor, bodyH), innerW, bodyH)
 }
 
 // jobsBoxLeftLines is the Subagents box's compact job rail (dot + short id), cursor-marked
@@ -1571,37 +1566,29 @@ func (m Model) jobsBoxRightWidth(s asSession) int {
 	return rightW
 }
 
-// renderJobsBoxDetail is the Subagents box with the cursor on a job row: a master-detail
-// of the job rail | that job's inline card (the same card the entity level shows), so a
-// job's detail is one cursor move away — never a descend.
+// renderJobsBoxDetail is the Subagents box: a master-detail of the job rail | the
+// PREVIEWED job's inline card (the cursored job, else the first — a job's detail is always
+// visible, never behind a descend). j/k scrolling applies once the cursor sits in the
+// jobs range.
 func (m Model) renderJobsBoxDetail(s asSession, bodyH int) string {
 	listTitle := fmt.Sprintf("Subagents · %d", len(s.jobs))
 	leftLines := m.jobsBoxLeftLines(s)
 	leftW, rightW := m.paneWidths(leftWidth(listTitle, leftLines, m.boardInner()))
 	cardTitle := "job"
 	var rightLines []string
-	if j, ok := m.boxJob(); ok {
+	if j, ok := m.boxPreviewJob(); ok {
 		cardTitle = shortJobID(sessiontitle.CleanTitle(j.JobID))
 		rightLines = m.jobDetailLines(j, rightW)
 	}
+	scroll := 0
 	cursor := m.asBoxCursor - len(s.runs) - len(s.teams)
+	if cursor >= 0 {
+		scroll = m.clampAsCardScroll(m.asCardScroll)
+	} else {
+		cursor = 0 // window the rail on the previewed first job
+	}
 	leftLines = windowLines(leftLines, cursor, bodyH)
-	return renderBoard(listTitle, leftLines, cardTitle, rightLines, leftW, rightW, bodyH, m.clampAsCardScroll(m.asCardScroll))
-}
-
-// renderRunsBox is the Dynamic Workflows box: the session's run rows (newest first), the
-// continuum cursor marking the active row; ⏎ opens the run's Phases level.
-func (m Model) renderRunsBox(s asSession, bodyH int) string {
-	innerW := m.boardInner() - 6
-	var lines []string
-	for i, g := range s.runs {
-		lines = append(lines, m.renderRunRow(g, innerW, i == m.asBoxCursor))
-	}
-	cursor := m.asBoxCursor
-	if cursor >= len(s.runs) {
-		cursor = len(s.runs) - 1
-	}
-	return renderBox(fmt.Sprintf("Dynamic Workflows · %d", len(s.runs)), windowLines(lines, cursor, bodyH), innerW, bodyH)
+	return renderBoard(listTitle, leftLines, cardTitle, rightLines, leftW, rightW, bodyH, scroll)
 }
 
 // renderBox draws a full-width single-pane rounded box with a title segment — the

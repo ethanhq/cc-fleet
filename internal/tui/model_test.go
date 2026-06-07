@@ -743,13 +743,17 @@ func TestBoardBoxesInlineJobCard(t *testing.T) {
 	if m.asMode != asModeBoxes {
 		t.Fatalf("setup: mode=%d, want boxes", m.asMode)
 	}
-	if out := m.View(); strings.Contains(out, "Prompt") {
-		t.Fatalf("a team-row cursor must keep the flat Subagents list:\n%s", out)
+	// The Subagents box previews the FIRST job's card even with the cursor on the team
+	// row — the entry refresh already issued its io load.
+	if m.asDetailNonce == 0 {
+		t.Fatal("entering the boxes must issue the previewed job's io load")
 	}
-	m, cmd := press(t, m, "down") // onto the job row
-	if cmd == nil || m.asDetailNonce == 0 {
-		t.Fatal("landing on a job row must issue its io load")
+	m, _ = step(t, m, asDetailMsg{nonce: m.asDetailNonce, epoch: m.boardEpoch, jobID: "j0000000",
+		present: true, prompt: "preview-p"})
+	if out := m.View(); !strings.Contains(out, "Prompt") {
+		t.Fatalf("the first job's card should preview under a team-row cursor:\n%s", out)
 	}
+	m, _ = press(t, m, "down") // onto the job row: same preview, now interactive
 	m, _ = step(t, m, asDetailMsg{nonce: m.asDetailNonce, epoch: m.boardEpoch, jobID: "j0000000",
 		present: true, prompt: "p1", answer: "THE-ANSWER",
 		snap: activitySnapshot{sigs: []string{"A(1)"}}})

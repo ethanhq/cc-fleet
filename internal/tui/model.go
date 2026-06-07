@@ -1172,9 +1172,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				detail = loadMateCmd(t, m.sessionMeta[t.LeadSessionID].Cwd, m.asDetailNonce, m.boardEpoch)
 			}
 		} else if m.asMode == asModeBoxes {
-			// The boxes level shows a job's card inline whenever the cursor sits on a
-			// job row — keep it fresh on the same terms as the entity-level card.
-			if j, ok := m.boxJob(); ok && m.jobCardStale(j) {
+			// The boxes level always previews a job card (the cursored job, else the
+			// first) — keep it fresh on the same terms as the entity-level card.
+			if j, ok := m.boxPreviewJob(); ok && m.jobCardStale(j) {
 				m.asDetailNonce++
 				m.asDetailTerminal = isTerminalLeaf(j.Status)
 				detail = loadJobIOCmd(j.JobID, m.asDetailNonce, m.boardEpoch)
@@ -1626,16 +1626,21 @@ func (m Model) updateAsBoxes(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// focusBoxJobIO loads the job under the L2 continuum cursor into the inline card (reset
-// scroll/fold, nonce-gated — focusJobIO's boxes-level sibling); a team row clears nothing
-// and loads nothing.
+// focusBoxJobIO keeps the Subagents box's previewed card loaded as the L2 cursor moves
+// (focusJobIO's boxes-level sibling, nonce-gated): scroll/fold reset when the cursor sits
+// on a job row, and a stale preview (different job, or one still running) reloads.
 func (m Model) focusBoxJobIO() (tea.Model, tea.Cmd) {
-	j, ok := m.boxJob()
+	j, ok := m.boxPreviewJob()
 	if !ok {
 		return m, nil
 	}
-	m.asCardScroll = 0
-	m.asPromptExpanded = false
+	if _, onJob := m.boxJob(); onJob {
+		m.asCardScroll = 0
+		m.asPromptExpanded = false
+	}
+	if !m.jobCardStale(j) {
+		return m, nil
+	}
 	m.asDetailNonce++
 	m.asDetailTerminal = isTerminalLeaf(j.Status)
 	return m, loadJobIOCmd(j.JobID, m.asDetailNonce, m.boardEpoch)
@@ -2087,8 +2092,20 @@ func (m Model) isEndedTeam(name string) bool {
 	return ok
 }
 
-// boxJob returns the job under the L2 continuum cursor (ok=false off the jobs range) — the
-// job whose inline card the Subagents box shows.
+// boxPreviewJob is the job whose card the Subagents box shows: the cursored job while the
+// continuum sits in the jobs range, else the FIRST job — the box never shows a flat list.
+func (m Model) boxPreviewJob() (subagent.Result, bool) {
+	if j, ok := m.boxJob(); ok {
+		return j, true
+	}
+	s, ok := m.focusedSession()
+	if !ok || len(s.jobs) == 0 {
+		return subagent.Result{}, false
+	}
+	return s.jobs[0], true
+}
+
+// boxJob returns the job under the L2 continuum cursor (ok=false off the jobs range).
 func (m Model) boxJob() (subagent.Result, bool) {
 	s, ok := m.focusedSession()
 	if !ok {
