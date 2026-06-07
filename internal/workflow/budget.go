@@ -53,6 +53,10 @@ func (e *engine) budgetRelease(usd float64, tok int64) {
 func (e *engine) budgetCharge(usd float64, tok int64) {
 	e.budgetSpent += usd
 	e.budgetTokensSpent += tok
+	// Persist the new running spend so an external `workflow status` reader sees a live run-level
+	// total mid-run (the manifest otherwise only restamps at phase/terminal transitions). Bounded
+	// by real leaf completions (cache hits never charge); GIL-held, so it serializes with charging.
+	e.saveManifest("running", "")
 }
 
 // budgetExceededErr is the gate's refusal, naming only the active cap(s): USD (a list-price

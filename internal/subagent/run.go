@@ -75,6 +75,12 @@ type WorkflowRun struct {
 	// BudgetTokens is the run-level token cap (Usage.InputTokens+OutputTokens summed across
 	// leaves, cache-read excluded); 0 = uncapped. Replayed on resume like BudgetUSD.
 	BudgetTokens int64 `json:"budget_tokens,omitempty"`
+	// SpentUSD / SpentTokens are the run's LIVE cumulative spend (list-price USD estimate +
+	// input+output tokens), restamped by the engine as each leaf charges — so `workflow status`
+	// shows a run-level running total without summing per-leaf jobs (which omit in-flight leaves).
+	// A resume counts only newly-run leaves; journaled replays are free. Not a leaf determinant.
+	SpentUSD    float64 `json:"spent_usd,omitempty"`
+	SpentTokens int64   `json:"spent_tokens,omitempty"`
 }
 
 // runsDir is ConfigDir/subagent-jobs/runs.
@@ -382,7 +388,7 @@ func finalizeRunLeaves(runID string) {
 		if merr != nil || meta.RunID != runID {
 			continue
 		}
-		finalizeSyncJob(jobID, fail(ErrCodeFailed, "engine stopped before the leaf finished", meta.Vendor, ""))
+		finalizeSyncJob(jobID, fail(ErrCodeStopped, "run stopped before the leaf finished", meta.Vendor, ""))
 	}
 }
 
