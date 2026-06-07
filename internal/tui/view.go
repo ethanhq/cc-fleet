@@ -124,12 +124,12 @@ func (m Model) viewKeys() string {
 	return b.String()
 }
 
-// viewList renders the Vendors hub in the board chrome: the fixed title line, the cursored
+// viewList renders the Model Providers hub in the board chrome: the fixed title line, the cursored
 // vendor beside its status rollup in the header, a rule, then one master-detail box —
 // vendor rail (with the trailing "+ Add vendor…" row) | the cursored vendor's read-only
 // config card. enter still opens the edit form; the card saves a trip into it.
 func (m Model) viewList() string {
-	title := titleStyle.Render("cc-fleet · Vendors") + faintStyle.Render("    tab → Agents Board")
+	title := titleStyle.Render("cc-fleet · Model Providers") + faintStyle.Render("    tab → Agents Board")
 	if m.loading {
 		return title + "\n\nloading…"
 	}
@@ -177,7 +177,7 @@ func (m Model) viewList() string {
 		addLabel = selectedStyle.Render("+ Add vendor…")
 	}
 	leftLines = append(leftLines, "  "+faintStyle.Render(strings.Repeat("─", 12)), addMarker+addLabel)
-	listTitle := fmt.Sprintf("Vendors · %d", len(m.vendors))
+	listTitle := fmt.Sprintf("Providers · %d", len(m.vendors))
 	leftW, rightW := m.paneWidths(leftWidth(listTitle, leftLines, m.boardInner()))
 	cardTitle := "add vendor"
 	rightLines := []string{faintStyle.Render("enter opens the add-vendor wizard")}
@@ -207,7 +207,7 @@ func vendorCacheFig(v userops.VendorView) string {
 	return fig
 }
 
-// vendorDetailLines is the Vendors hub's read-only config card: the enabled state + default
+// vendorDetailLines is the Model Providers hub's read-only config card: the enabled state + default
 // model, then the vendors.toml fields. The key row shows only the secret backend + ref —
 // never key material (the status line already carries the model, so no separate field).
 func vendorDetailLines(v userops.VendorView, rightW int) []string {
@@ -297,7 +297,7 @@ func (m Model) viewSpawn() string {
 // spawnTitle is the Agents Board app title + tab hint, used in the loading / empty / error
 // fallbacks and as the first chrome line every board level renders above its header.
 func (m Model) spawnTitle() string {
-	return titleStyle.Render("cc-fleet · Agents Board") + faintStyle.Render("    tab → Vendors")
+	return titleStyle.Render("cc-fleet · Agents Board") + faintStyle.Render("    tab → Model Providers")
 }
 
 // renderAsFooter is the contextual footer per asMode; the boxes level swaps in the card
@@ -306,9 +306,9 @@ func (m Model) renderAsFooter() string {
 	var hint string
 	switch m.asMode {
 	case asModeProjects:
-		hint = "↑/↓ project · →/⏎ open · esc/tab vendors · r refresh · q quit"
+		hint = "↑/↓ project · →/⏎ open · esc/tab providers · r refresh · q quit"
 	case asModeSessions:
-		hint = "↑/↓ session · →/⏎ open · ← back · r refresh · esc/tab vendors · q quit"
+		hint = "↑/↓ session · →/⏎ open · ← back · r refresh · esc/tab providers · q quit"
 	case asModeEntity:
 		hint = "↑/↓ row · j/k scroll · ⏎ expand · h hide · s show · ←/esc back · r refresh · q quit"
 	case asModeRunPhases:
@@ -319,7 +319,7 @@ func (m Model) renderAsFooter() string {
 		if _, onJob := m.boxJob(); onJob {
 			hint = "↑/↓ row · j/k scroll · ⏎ expand · ←/esc back · r refresh · q quit"
 		} else {
-			hint = "↑/↓ row · →/⏎ detail · d delete run · ← back · r refresh · esc/tab vendors · q quit"
+			hint = "↑/↓ row · →/⏎ detail · d delete run · ← back · r refresh · esc/tab providers · q quit"
 		}
 	}
 	return footer(hint)

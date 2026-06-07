@@ -65,7 +65,7 @@ func press(t *testing.T, m Model, key string) (Model, tea.Cmd) {
 	return step(t, m, keyMsg(key))
 }
 
-// withVendors returns a fresh model on the Vendors list with vs already loaded.
+// withVendors returns a fresh model on the Model Providers list with vs already loaded.
 func withVendors(t *testing.T, vs ...userops.VendorView) Model {
 	t.Helper()
 	m, _ := step(t, NewModel(), vendorsMsg{vendors: vs})
@@ -135,7 +135,7 @@ func TestQuitKeys(t *testing.T) {
 }
 
 // TestTabTogglesSpawnStatus: tab from the list opens the Agents Board (and
-// loads it); tab from the board returns to the Vendors list — the cycle is now
+// loads it); tab from the board returns to the Model Providers list — the cycle is now
 // List ↔ Spawn (the Dynamic Workflows screen folded into the Agents Board).
 func TestTabTogglesSpawnStatus(t *testing.T) {
 	m := withVendors(t, userops.VendorView{Name: "glm"})
@@ -161,12 +161,12 @@ func TestTabTogglesSpawnStatus(t *testing.T) {
 	if out := m.View(); out == "" {
 		t.Fatal("board view rendered empty")
 	}
-	// tab from the board returns to the Vendors list (+reload).
+	// tab from the board returns to the Model Providers list (+reload).
 	mback, cmd := press(t, m, "tab")
 	if mback.screen != screenList || cmd == nil {
 		t.Fatalf("tab from board: screen=%d cmd=%v, want screenList + reload cmd", mback.screen, cmd)
 	}
-	// esc from the board (at its top boxes level) also returns to the Vendors list (and reloads).
+	// esc from the board (at its top boxes level) also returns to the Model Providers list (and reloads).
 	mlist, cmd := press(t, m, "esc")
 	if mlist.screen != screenList || cmd == nil {
 		t.Fatalf("esc from board: screen=%d cmd=%v, want screenList + reload cmd", mlist.screen, cmd)
@@ -175,7 +175,7 @@ func TestTabTogglesSpawnStatus(t *testing.T) {
 
 // TestAddRowOpensWizard: enter on the trailing "+ Add vendor…" row (the only
 // row when no vendors exist) opens the template picker; the chosen template
-// prefills the form; esc returns to the Vendors list.
+// prefills the form; esc returns to the Model Providers list.
 func TestAddRowOpensWizardAndPrefills(t *testing.T) {
 	m := NewModel() // no vendors loaded -> cursor 0 == the Add row
 	m, _ = press(t, m, "enter")
@@ -272,7 +272,7 @@ func TestAddFormTypingAndSubmitDispatches(t *testing.T) {
 	if m.screen != screenResult || m.resultErr {
 		t.Fatalf("after success: screen=%d resultErr=%v, want screenResult+false", m.screen, m.resultErr)
 	}
-	// Any key returns to the Vendors list (not a menu).
+	// Any key returns to the Model Providers list (not a menu).
 	m, _ = press(t, m, "enter")
 	if m.screen != screenList {
 		t.Fatalf("result -> any key should return to the list, screen = %d", m.screen)
@@ -824,7 +824,7 @@ func TestBoardTickReschedulesOnBoardStopsElsewhere(t *testing.T) {
 	if _, cmd := step(t, m, boardTickMsg{epoch: 0}); cmd != nil {
 		t.Fatal("stale-epoch tick should not reschedule")
 	}
-	mlist, _ := press(t, m, "esc") // board → Vendors list
+	mlist, _ := press(t, m, "esc") // board → Model Providers list
 	if mlist.screen != screenList {
 		t.Fatalf("esc should return to the list, screen = %d", mlist.screen)
 	}
@@ -1537,7 +1537,7 @@ func TestViewsRenderForEveryScreen(t *testing.T) {
 // key manager (screenKeys)
 // ---------------------------------------------------------------------------
 
-// keysModel walks from the Vendors list into the EDIT form, focuses the "Manage
+// keysModel walks from the Model Providers list into the EDIT form, focuses the "Manage
 // API keys →" action row, opens screenKeys, and delivers the given key set
 // (bypassing disk). It returns the model parked on screenKeys.
 func keysModel(t *testing.T, vendor, rotation string, ks ...secrets.KeyEntry) Model {
