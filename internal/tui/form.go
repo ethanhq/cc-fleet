@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -48,6 +49,7 @@ type form struct {
 // echo a bullet so API keys aren't shown on screen.
 func newTextInput(value, placeholder string, password bool) textinput.Model {
 	ti := textinput.New()
+	ti.Prompt = "" // the card's key column replaces the "> " prompt
 	ti.SetValue(value)
 	ti.Placeholder = placeholder
 	ti.CharLimit = 1024
@@ -205,43 +207,80 @@ func (f form) boolValue(key string) bool {
 	return false
 }
 
-// viewLines renders the form as right-pane lines: a label line then the value line per
-// text field (the focused input draws its own cursor); toggle/action rows and the submit
-// button are single lines. The form title and intro live in the surrounding chrome.
+// cardKey maps a field to the config card's short key column, so the edit card lines up
+// with the read-only preview (the same grammar, editable values).
+func cardKey(key string) string {
+	switch key {
+	case "base_url":
+		return "base url"
+	case "models_endpoint":
+		return "models"
+	case "default_model":
+		return "default"
+	case "api_key":
+		return "key"
+	case "manage_keys":
+		return "keys"
+	}
+	return key // name / enabled already read as card keys
+}
+
+// viewLines renders the form in the read-only config card's grammar — the live status
+// line, a "Config" section, then one "key  value" row per field — so entering edit barely
+// reshapes the pane. Values always render through input.View() (the focused input draws
+// its cursor; a password field stays bullet-masked).
 func (f form) viewLines() []string {
 	var lines []string
+	// The edit form's enabled toggle mirrors the preview card's status line, live.
+	for _, fld := range f.fields {
+		if fld.kind != fieldToggle || fld.key != "enabled" {
+			continue
+		}
+		status := okStyle.Render("● enabled")
+		if !fld.on {
+			status = faintStyle.Render("○ disabled")
+		}
+		if dm := f.value("default_model"); dm != "" {
+			status += faintStyle.Render(" · " + trunc(dm, 28))
+		}
+		lines = append(lines, status, "")
+		break
+	}
+	lines = append(lines, faintStyle.Render("Config"))
 	for i, fld := range f.fields {
 		focused := i == f.focus
-		label := faintStyle.Render(fld.label)
+		key := fmt.Sprintf("%-8s", cardKey(fld.key))
+		keyCell := faintStyle.Render(key)
 		if focused {
-			label = selectedStyle.Render(fld.label)
+			keyCell = selectedStyle.Render(key)
 		}
 		switch fld.kind {
 		case fieldText:
-			lines = append(lines, label, " "+fld.input.View())
-			// Tell the user the default_model field can pull the list from the
-			// provider (only meaningful when there's an endpoint to hit).
-			if fld.key == "default_model" && f.value("models_endpoint") != "" {
-				lines = append(lines, faintStyle.Render(" enter: pick from provider's model list"))
+			lines = append(lines, " "+keyCell+"  "+fld.input.View())
+			// The default_model field can pull the list from the provider (only
+			// meaningful when there's an endpoint to hit).
+			if focused && fld.key == "default_model" && f.value("models_endpoint") != "" {
+				lines = append(lines, faintStyle.Render("            enter: pick from provider's model list"))
 			}
 		case fieldToggle:
 			state := "[ ] off"
 			if fld.on {
 				state = "[x] on"
 			}
-			lines = append(lines, label+"  "+contentStyle.Render(state))
+			lines = append(lines, " "+keyCell+"  "+contentStyle.Render(state))
 		case fieldAction:
-			// Standalone action label (no value column); enter on it is handled
-			// by the parent model (e.g. open the key manager).
-			if !focused {
-				label = contentStyle.Render(fld.label)
+			// Value-column action label; enter on it is handled by the parent
+			// model (e.g. open the key manager).
+			label := contentStyle.Render(fld.label)
+			if focused {
+				label = selectedStyle.Render(fld.label)
 			}
-			lines = append(lines, label)
+			lines = append(lines, " "+keyCell+"  "+label)
 		}
 	}
-	btn := "  [ " + f.submit + " ]"
+	btn := "   [ " + f.submit + " ]"
 	if f.focus == len(f.fields) {
-		btn = cursorStyle.Render("❯ ") + selectedStyle.Render("[ "+f.submit+" ]")
+		btn = " " + cursorStyle.Render("❯ ") + selectedStyle.Render("[ "+f.submit+" ]")
 	}
 	lines = append(lines, "", btn)
 	if f.err != "" {
