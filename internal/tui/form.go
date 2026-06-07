@@ -257,11 +257,6 @@ func (f form) viewLines() []string {
 		switch fld.kind {
 		case fieldText:
 			lines = append(lines, " "+keyCell+"  "+fld.input.View())
-			// The default_model field can pull the list from the provider (only
-			// meaningful when there's an endpoint to hit).
-			if focused && fld.key == "default_model" && f.value("models_endpoint") != "" {
-				lines = append(lines, faintStyle.Render("            enter: pick from provider's model list"))
-			}
 		case fieldToggle:
 			state := "[ ] off"
 			if fld.on {
@@ -285,6 +280,15 @@ func (f form) viewLines() []string {
 	lines = append(lines, "", btn)
 	if f.err != "" {
 		lines = append(lines, "", errStyle.Render(f.err))
+	}
+	// The focused field's note renders in its own bottom section (Config-grammar
+	// aligned), so moving focus never reflows the field rows above.
+	if f.focus < len(f.fields) {
+		fld := f.fields[f.focus]
+		if fld.key == "default_model" && f.value("models_endpoint") != "" {
+			lines = append(lines, "", faintStyle.Render("Note"),
+				faintStyle.Render(" enter picks from the provider's model list"))
+		}
 	}
 	return lines
 }

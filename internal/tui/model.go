@@ -1520,7 +1520,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.vendorCursor < addRow {
 			m.vendorCursor++
 		}
-	case "enter":
+	case "enter", "right":
 		if m.vendorCursor == addRow {
 			m.screen = screenPickTemplate
 			m.tmplCursor = 0

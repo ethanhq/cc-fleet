@@ -203,7 +203,7 @@ func (m Model) viewList() string {
 	pad := strings.Repeat(" ", boardMargin)
 	return indentBox(title+"\n\n"+headerSummaryLine(left, right, m.boardInner()), boardMargin) +
 		"\n" + m.headerRule() + "\n" + indentBox(board, boardMargin) +
-		"\n" + pad + footer("↑/↓ move · enter edit · d delete · tab agents board · q quit")
+		"\n" + pad + footer("↑/↓ move · →/⏎ edit · d delete · tab agents board · q quit")
 }
 
 // vendorCacheFig is a vendor's models-cache figure: "N models[ (stale)]".
@@ -2790,10 +2790,6 @@ func (m Model) viewResult() string {
 		})
 }
 
-// maxVisibleModels caps how many model rows the picker shows at once; longer
-// lists scroll a window around the cursor (some vendors return 50+ models).
-const maxVisibleModels = 12
-
 func (m Model) viewModelPick() string {
 	active := "+"
 	if m.formMode == modeEdit {
@@ -2823,7 +2819,20 @@ func (m Model) viewModelPick() string {
 			if len(filtered) == 0 {
 				return append(lines, faintStyle.Render("no model matches — backspace to widen, esc to type manually"))
 			}
-			start, end := windowBounds(m.modelCursor, len(filtered), maxVisibleModels)
+			// The window fills the pane: the filter line + spacer and the two
+			// ↑/↓ markers cost 4 rows; an owner sub-line doubles a model's cost.
+			rowsPer := 1
+			for _, mod := range filtered {
+				if mod.OwnedBy != "" {
+					rowsPer = 2
+					break
+				}
+			}
+			maxModels := (m.boardBodyHeight() - 4) / rowsPer
+			if maxModels < 5 {
+				maxModels = 5
+			}
+			start, end := windowBounds(m.modelCursor, len(filtered), maxModels)
 			if start > 0 {
 				lines = append(lines, faintStyle.Render(fmt.Sprintf("  ↑ %d more", start)))
 			}
