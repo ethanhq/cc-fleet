@@ -2811,9 +2811,9 @@ func (m Model) viewModelPick() string {
 			total := len(m.modelList)
 			var lines []string
 			if m.modelFilter == "" {
-				lines = append(lines, faintStyle.Render(fmt.Sprintf("filter: type to narrow %d models", total)), "")
+				lines = append(lines, contentStyle.Render(fmt.Sprintf("filter: type to narrow %d models", total)), "")
 			} else {
-				lines = append(lines, "filter: "+m.modelFilter+
+				lines = append(lines, contentStyle.Render("filter: "+m.modelFilter)+
 					faintStyle.Render(fmt.Sprintf("  (%d/%d)", len(filtered), total)), "")
 			}
 			if len(filtered) == 0 {

@@ -2656,7 +2656,7 @@ func saveWorkflowCmd(runID, name, sessionID, description string, epoch int) tea.
 func (m Model) updatePickTemplate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	n := len(Templates) + 1 // + synthetic "Custom" row
 	switch msg.String() {
-	case "esc", "q":
+	case "esc", "q", "left":
 		return m.toList()
 	case "up", "k":
 		if m.tmplCursor > 0 {
@@ -2783,7 +2783,7 @@ func (m Model) updateRemoveConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "y", "Y":
 		m.loading = true
 		return m, removeVendorCmd(m.removeName)
-	case "n", "N", "esc", "q":
+	case "n", "N", "esc", "q", "left":
 		return m.toList()
 	}
 	return m, nil
@@ -2908,7 +2908,7 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	addRow := len(m.keys) // index of the synthetic "+ Add key…" row
 	switch msg.String() {
-	case "esc":
+	case "esc", "left":
 		m.screen = screenForm
 		m.keyErr = ""
 		return m, textinput.Blink

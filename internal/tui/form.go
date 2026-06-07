@@ -139,6 +139,10 @@ func (f form) Update(msg tea.KeyMsg) (form, tea.Cmd, bool) {
 		if f.focus == len(f.fields) {
 			return f, nil, true
 		}
+		if f.fields[f.focus].kind == fieldToggle {
+			f.fields[f.focus].on = !f.fields[f.focus].on
+			return f, nil, false
+		}
 		f.setFocus(f.focus + 1)
 		return f, nil, false
 	}
@@ -246,7 +250,21 @@ func (f form) viewLines() []string {
 		lines = append(lines, status, "")
 		break
 	}
-	lines = append(lines, faintStyle.Render("Config"))
+	// The Note section sits ABOVE the fields and is always present (a fixed slot —
+	// moving focus swaps its text, never reflows the card); the focused field's
+	// note renders bright, the empty placeholder faint.
+	note := faintStyle.Render("—")
+	if f.focus < len(f.fields) {
+		switch fld := f.fields[f.focus]; {
+		case fld.key == "default_model" && f.value("models_endpoint") != "":
+			note = contentStyle.Render("enter picks from the provider's model list")
+		case fld.kind == fieldToggle:
+			note = contentStyle.Render("enter / space toggles")
+		case fld.key == "manage_keys":
+			note = contentStyle.Render("enter opens the key manager")
+		}
+	}
+	lines = append(lines, faintStyle.Render("Note"), " "+note, "", faintStyle.Render("Config"))
 	for i, fld := range f.fields {
 		focused := i == f.focus
 		key := fmt.Sprintf("%-8s", cardKey(fld.key))
@@ -280,15 +298,6 @@ func (f form) viewLines() []string {
 	lines = append(lines, "", btn)
 	if f.err != "" {
 		lines = append(lines, "", errStyle.Render(f.err))
-	}
-	// The focused field's note renders in its own bottom section (Config-grammar
-	// aligned), so moving focus never reflows the field rows above.
-	if f.focus < len(f.fields) {
-		fld := f.fields[f.focus]
-		if fld.key == "default_model" && f.value("models_endpoint") != "" {
-			lines = append(lines, "", faintStyle.Render("Note"),
-				faintStyle.Render(" enter picks from the provider's model list"))
-		}
 	}
 	return lines
 }
