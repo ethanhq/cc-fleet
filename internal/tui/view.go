@@ -242,15 +242,18 @@ func (m Model) viewWorkflows() string {
 }
 
 // statusDot maps a leaf/run/phase status to a colored glyph: done ✔ (green), running ● (accent),
-// failed/stopped ● (err), cached ○ (faint), queued/unknown ◌ (faint hollow).
+// failed ● (err), stopped ■ (faint — a stop is neutral, not a failure), cached ○ (faint),
+// queued/unknown ◌ (faint hollow).
 func statusDot(status string) string {
 	switch status {
 	case "done":
 		return okStyle.Render("✔")
 	case "running":
 		return cursorStyle.Render("●")
-	case "failed", "stopped":
+	case "failed":
 		return errStyle.Render("●")
+	case "stopped":
+		return faintStyle.Render("■")
 	case "cached":
 		return faintStyle.Render("○")
 	default: // "" / queued / not-yet-started
@@ -284,13 +287,16 @@ func phaseStatus(done, total int) string {
 }
 
 // statusLabel is the detail-pane status token (glyph + word in one color): done renders an all-green
-// "✔ Done", failed/stopped a red dot + word, running/other an accent dot + a bright word.
+// "✔ Done", failed a red dot + word, stopped a faint dot + word (neutral), running/other an accent dot
+// + a bright word.
 func statusLabel(status string) string {
 	switch status {
 	case "done":
 		return okStyle.Render("✔ " + humanStatus(status))
-	case "failed", "stopped":
+	case "failed":
 		return statusDot(status) + " " + errStyle.Render(humanStatus(status))
+	case "stopped":
+		return statusDot(status) + " " + faintStyle.Render(humanStatus(status))
 	default:
 		return statusDot(status) + " " + liveStyle.Render(humanStatus(status))
 	}
@@ -798,10 +804,16 @@ func (m Model) agentDetailLines(rightW int) []string {
 		// >1 occurs only in records from engines that retried schema mismatches; surface it.
 		status += faintStyle.Render(fmt.Sprintf(" · attempt %d", j.Attempt))
 	}
+	// ↑ peak input context · ↓ cumulative output (the header sums only output across leaves) · cache-write
+	// tokens when the leaf wrote the prompt cache · tool calls.
+	tokLine := fmt.Sprintf("↑ %s ctx · ↓ %s out", humanTokens(in), humanTokens(out))
+	if j.Usage != nil && j.Usage.CacheCreationInputTokens > 0 {
+		tokLine += fmt.Sprintf(" · ⊕ %s cache-w", humanTokens(j.Usage.CacheCreationInputTokens))
+	}
+	tokLine += fmt.Sprintf(" · %d tool calls", tools)
 	lines := []string{
 		status,
-		// ↑ peak input context · ↓ cumulative output (the header sums only output across leaves).
-		faintStyle.Render(fmt.Sprintf("↑ %s ctx · ↓ %s out · %d tool calls", humanTokens(in), humanTokens(out), tools)),
+		faintStyle.Render(tokLine),
 	}
 	// Prompt first.
 	switch {
@@ -973,6 +985,8 @@ func (m Model) renderOutcome(j subagent.Result) string {
 		return faintStyle.Render("Still running…") // queued has OK=true but isn't done — keep it in-progress
 	case j.OK || j.Status == "done":
 		return faintStyle.Render(fmt.Sprintf("done · %d turns", j.NumTurns))
+	case j.Status == "stopped":
+		return faintStyle.Render("stopped") // a `workflow stop` reap — neutral, not a failure
 	default:
 		cls := j.ErrorCode
 		if cls == "" {

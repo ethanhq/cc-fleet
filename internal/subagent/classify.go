@@ -41,9 +41,10 @@ type innerEnvelope struct {
 }
 
 type innerUsage struct {
-	InputTokens          int `json:"input_tokens"`
-	OutputTokens         int `json:"output_tokens"`
-	CacheReadInputTokens int `json:"cache_read_input_tokens"`
+	InputTokens              int `json:"input_tokens"`
+	OutputTokens             int `json:"output_tokens"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
 }
 
 // classify turns a finished claude invocation into a Result. It never returns
@@ -102,9 +103,10 @@ func classify(req Request, model string, stdout, stderr []byte, exitCode int, ti
 		}
 		if inner.Usage != nil {
 			res.Usage = &Usage{
-				InputTokens:          inner.Usage.InputTokens,
-				OutputTokens:         inner.Usage.OutputTokens,
-				CacheReadInputTokens: inner.Usage.CacheReadInputTokens,
+				InputTokens:              inner.Usage.InputTokens,
+				OutputTokens:             inner.Usage.OutputTokens,
+				CacheReadInputTokens:     inner.Usage.CacheReadInputTokens,
+				CacheCreationInputTokens: inner.Usage.CacheCreationInputTokens,
 			}
 		}
 		return res

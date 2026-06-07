@@ -110,9 +110,10 @@ type Request struct {
 
 // Usage mirrors the token-usage subset of claude's inner envelope we surface.
 type Usage struct {
-	InputTokens          int `json:"input_tokens,omitempty"`
-	OutputTokens         int `json:"output_tokens,omitempty"`
-	CacheReadInputTokens int `json:"cache_read_input_tokens,omitempty"`
+	InputTokens              int `json:"input_tokens,omitempty"`
+	OutputTokens             int `json:"output_tokens,omitempty"`
+	CacheReadInputTokens     int `json:"cache_read_input_tokens,omitempty"`
+	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"` // tokens billed to WRITE the prompt cache
 }
 
 // Result is cc-fleet's stable outer envelope (mirrors spawn.Result style). It
@@ -208,6 +209,7 @@ const (
 	// cc-fleet layer.
 	ErrCodeTimeout        = "SUBAGENT_TIMEOUT"          // --timeout deadline fired before claude returned
 	ErrCodeFailed         = "SUBAGENT_FAILED"           // non-zero exit with no parseable envelope / internal error
+	ErrCodeStopped        = "SUBAGENT_STOPPED"          // a still-running leaf finalized by `workflow stop` (a stop, not a failure)
 	ErrCodeOutputTooLarge = "SUBAGENT_OUTPUT_TOO_LARGE" // child stdout/stderr exceeded the byte cap; group killed
 )
 

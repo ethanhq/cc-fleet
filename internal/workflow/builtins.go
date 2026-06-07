@@ -717,6 +717,8 @@ func (e *engine) saveManifest(status, errText string) {
 		NoPersistIO:  !e.persistIO,
 		BudgetUSD:    e.budgetTotal,
 		BudgetTokens: e.budgetTokensTotal,
+		SpentUSD:     e.budgetSpent,
+		SpentTokens:  e.budgetTokensSpent,
 	})
 }
 

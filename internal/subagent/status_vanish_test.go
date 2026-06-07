@@ -74,6 +74,32 @@ func TestStatusForVanishedLeafHonestFailure(t *testing.T) {
 	}
 }
 
+// A still-running leaf reaped by `workflow stop` (finalizeRunLeaves) reports a neutral terminal
+// "stopped" — not "failed" — so the board distinguishes a deliberate stop from a real failure.
+func TestFinalizeRunLeavesMarksStopped(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir, err := jobsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	m := jobMeta{JobID: "s1", PID: os.Getpid(), Status: "running", RunID: "runX",
+		Vendor: "v", StartedAt: time.Now().UTC().Format(time.RFC3339)}
+	if err := writeMeta(dir, m); err != nil {
+		t.Fatal(err)
+	}
+	finalizeRunLeaves("runX")
+	st := StatusFor("s1")
+	if st.Status != "stopped" {
+		t.Fatalf("stopped leaf status = %q, want stopped", st.Status)
+	}
+	if st.OK {
+		t.Errorf("a stopped leaf must have OK=false")
+	}
+}
+
 // A detached bg leaf seen dead with an as-yet-unwritten envelope is recovered by the confirm-delay
 // re-read, not cached as a spurious failure. A goroutine writes the envelope just after StatusFor's
 // first (empty) read, so only the re-read sees it.

@@ -1163,9 +1163,12 @@ func finalizeSyncJob(jobID string, res Result) {
 		PromptProfile:  meta.PromptProfile,
 		SlimDowngrade:  meta.SlimDowngrade,
 	}
-	if res.OK {
+	switch {
+	case res.OK:
 		cached.Status = "done"
-	} else {
+	case res.ErrorCode == ErrCodeStopped:
+		cached.Status = "stopped" // a `workflow stop` reap — terminal, but not a failure
+	default:
 		cached.Status = "failed"
 	}
 	if data, merr := json.Marshal(cached); merr == nil {

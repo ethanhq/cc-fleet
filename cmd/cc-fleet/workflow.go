@@ -21,18 +21,23 @@ import (
 // CLI's own envelope (one per invocation), deliberately separate from
 // subagent.Result so a workflow shape change never bloats that contract.
 type workflowEnvelope struct {
-	OK        bool                     `json:"ok"`
-	RunID     string                   `json:"run_id,omitempty"`
-	Name      string                   `json:"name,omitempty"`
-	Phases    []subagent.RunPhase      `json:"phases,omitempty"`
-	Status    string                   `json:"status,omitempty"`
-	StartedAt string                   `json:"started_at,omitempty"`
-	Runs      []subagent.WorkflowRun   `json:"runs,omitempty"`
-	Jobs      []subagent.Result        `json:"jobs,omitempty"`
-	Saved     []subagent.SavedWorkflow `json:"saved,omitempty"`
-	Removed   int                      `json:"removed,omitempty"`   // rm/prune: number of runs deleted
-	RunError  string                   `json:"run_error,omitempty"` // a failed run's cause (distinct from the command-level Error)
-	Error     string                   `json:"error,omitempty"`
+	OK        bool                `json:"ok"`
+	RunID     string              `json:"run_id,omitempty"`
+	Name      string              `json:"name,omitempty"`
+	Phases    []subagent.RunPhase `json:"phases,omitempty"`
+	Status    string              `json:"status,omitempty"`
+	StartedAt string              `json:"started_at,omitempty"`
+	// Run-level budget caps + live cumulative spend, so `status` surfaces a running total.
+	BudgetUSD    float64                  `json:"budget_usd,omitempty"`
+	BudgetTokens int64                    `json:"budget_tokens,omitempty"`
+	SpentUSD     float64                  `json:"spent_usd,omitempty"`
+	SpentTokens  int64                    `json:"spent_tokens,omitempty"`
+	Runs         []subagent.WorkflowRun   `json:"runs,omitempty"`
+	Jobs         []subagent.Result        `json:"jobs,omitempty"`
+	Saved        []subagent.SavedWorkflow `json:"saved,omitempty"`
+	Removed      int                      `json:"removed,omitempty"`   // rm/prune: number of runs deleted
+	RunError     string                   `json:"run_error,omitempty"` // a failed run's cause (distinct from the command-level Error)
+	Error        string                   `json:"error,omitempty"`
 }
 
 // newWorkflowCmd builds `cc-fleet workflow` — run orchestration over subagent
@@ -430,9 +435,23 @@ func newWorkflowStatusCmd() *cobra.Command {
 					OK: true, RunID: run.RunID, Name: run.Name,
 					Phases: run.Phases, Status: run.Status, StartedAt: run.StartedAt,
 					RunError: run.Error, Jobs: jobs,
+					BudgetUSD: run.BudgetUSD, BudgetTokens: run.BudgetTokens,
+					SpentUSD: run.SpentUSD, SpentTokens: run.SpentTokens,
 				})
 			}
 			fmt.Printf("run %s  %s  %s\n", run.RunID, run.Name, run.Status)
+			if run.SpentUSD > 0 || run.SpentTokens > 0 {
+				line := fmt.Sprintf("  spent: $%.4f · %d tokens", run.SpentUSD, run.SpentTokens)
+				switch { // 0 means uncapped — only name a cap that is actually set
+				case run.BudgetUSD > 0 && run.BudgetTokens > 0:
+					line += fmt.Sprintf("  (cap $%.2f / %d tok)", run.BudgetUSD, run.BudgetTokens)
+				case run.BudgetUSD > 0:
+					line += fmt.Sprintf("  (cap $%.2f)", run.BudgetUSD)
+				case run.BudgetTokens > 0:
+					line += fmt.Sprintf("  (cap %d tok)", run.BudgetTokens)
+				}
+				fmt.Println(line)
+			}
 			if run.Error != "" {
 				fmt.Printf("  error: %s\n", run.Error)
 			}
