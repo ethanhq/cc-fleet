@@ -268,7 +268,15 @@ func (m Model) vendorFlowView(ctx, ctxRight, active, rightTitle, hint string, ri
 	listTitle := fmt.Sprintf("Providers · %d", len(m.vendors))
 	leftW, rightW := m.paneWidths(leftWidth(listTitle, leftLines, m.boardInner()))
 	bodyH := m.boardBodyHeight()
-	board := renderBoard(listTitle, leftLines, rightTitle, rightLines(rightW), leftW, rightW, bodyH, 0)
+	// Window the rail on the flow's provider (the Add row when none) so it stays
+	// visible past the box height.
+	activeIdx := len(leftLines) - 1
+	for i, v := range m.vendors {
+		if v.Name == active {
+			activeIdx = i
+		}
+	}
+	board := renderBoard(listTitle, windowLines(leftLines, activeIdx, bodyH), rightTitle, rightLines(rightW), leftW, rightW, bodyH, 0)
 	pad := strings.Repeat(" ", boardMargin)
 	return indentBox(m.hubTitle()+"\n\n"+headerSummaryLine(ctx, ctxRight, m.boardInner()), boardMargin) +
 		"\n" + m.headerRule() + "\n" + indentBox(board, boardMargin) +

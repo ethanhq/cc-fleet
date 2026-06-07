@@ -1018,6 +1018,27 @@ func TestBoardMultiProjectRoutesToProjects(t *testing.T) {
 	}
 }
 
+// TestBoardTeamAndJobGatesIndependent: a refresh with the L2 cursor on a team row loads
+// the team aggregate AND the previewed job's io on independent nonce gates — delivering
+// both results keeps both (neither load invalidates the other).
+func TestBoardTeamAndJobGatesIndependent(t *testing.T) {
+	tms := []teardown.Teammate{{Name: "alice", Team: "t1", PaneID: "%1", Status: "ok", LeadSessionID: "sX"}}
+	jobs := []subagent.Result{{JobID: "job-a0000000", Status: "done", LeadSessionID: "sX", DurationMs: 50}}
+	m := boardModel(t, tms, jobs)
+	if m.asMode != asModeBoxes {
+		t.Fatalf("setup: want boxes, mode=%d", m.asMode)
+	}
+	m, _ = step(t, m, boardMsg{teammates: tms, jobs: jobs, epoch: m.boardEpoch})
+	m, _ = step(t, m, asTeamMsg{nonce: m.asTeamNonce, epoch: m.boardEpoch, key: "t1", ctx: 10, out: 5})
+	m, _ = step(t, m, asDetailMsg{nonce: m.asDetailNonce, epoch: m.boardEpoch, jobID: "job-a0000000", present: true, answer: "A"})
+	if m.asTeamKey != "t1" {
+		t.Fatal("team aggregate dropped — the job io load must not invalidate the team gate")
+	}
+	if m.asDetailJobID != "job-a0000000" {
+		t.Fatal("job preview io dropped — the team load must not invalidate the job gate")
+	}
+}
+
 // TestBoardReentryRoutesOnFreshLoad: a re-entry must route from the freshly loaded session
 // count, never the previous visit's cached data — a stale single-session focus can't
 // suppress the session list when the fresh load shows several sessions.
@@ -1105,7 +1126,7 @@ func TestBoardHeaderShowsCursoredAgentStats(t *testing.T) {
 	if out := m.View(); !strings.Contains(out, "1 teammates · 5m · ") {
 		t.Fatalf("an L2 team row should carry the team's stats:\n%s", out)
 	}
-	m, _ = step(t, m, asTeamMsg{nonce: m.asDetailNonce, epoch: m.boardEpoch, key: "t1", ctx: 92032, out: 48659})
+	m, _ = step(t, m, asTeamMsg{nonce: m.asTeamNonce, epoch: m.boardEpoch, key: "t1", ctx: 92032, out: 48659})
 	if out := m.View(); !strings.Contains(out, "1 teammates · ↑ 92.0k · ↓ 48.7k · 5m") {
 		t.Fatalf("the landed aggregate should join the team header stats:\n%s", out)
 	}
