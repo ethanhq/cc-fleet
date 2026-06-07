@@ -112,7 +112,7 @@ RUN=$(cc-fleet workflow run audit.star)      # detached; prints ONLY the bare ru
 cc-fleet workflow status "$RUN" --json       # manifest + every tagged leaf (run→phase→agent)
 cc-fleet workflow list --json                # all runs, newest first
 cc-fleet workflow stop "$RUN"                # reap a running run (engine + in-flight leaves)
-# or watch the board's Workflows view: live log, token/cost columns, prompt/answer drill-in,
+# or watch the board's Dynamic Workflows view: live log, token/cost columns, prompt/answer drill-in,
 # x = stop, r = restart (= run --resume). --foreground runs inline (debug).
 # --max-concurrency N overrides the default pool (min(16, cores-2));
 # --budget-usd N caps total spend; --no-persist-io disables the prompt/answer drill-in.

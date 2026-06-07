@@ -176,7 +176,7 @@ func (m Model) viewList() string {
 
 func (m Model) viewSpawn() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("cc-fleet · Agent status") + faintStyle.Render("    tab → Workflows") + "\n\n")
+	b.WriteString(titleStyle.Render("cc-fleet · Agent status") + faintStyle.Render("    tab → Dynamic Workflows") + "\n\n")
 	switch {
 	case m.loading:
 		b.WriteString("discovering…\n")
@@ -195,7 +195,7 @@ func (m Model) viewSpawn() string {
 		}
 		b.WriteString("\n" + style.Render(m.boardStatus))
 	}
-	b.WriteString("\n" + footer("↑/↓ move · enter detail · h hide · s show · r refresh · tab workflows · esc vendors · q quit"))
+	b.WriteString("\n" + footer("↑/↓ move · enter detail · h hide · s show · r refresh · tab dynamic workflows · esc vendors · q quit"))
 	return b.String()
 }
 
@@ -210,9 +210,9 @@ func (m Model) viewWorkflows() string {
 	var b strings.Builder
 	switch {
 	case m.loading:
-		b.WriteString(titleStyle.Render("cc-fleet · Workflows") + "\n\nloading…")
+		b.WriteString(titleStyle.Render("cc-fleet · Dynamic Workflows") + "\n\nloading…")
 	case m.workflowsErr != nil:
-		b.WriteString(titleStyle.Render("cc-fleet · Workflows") + "\n\n" +
+		b.WriteString(titleStyle.Render("cc-fleet · Dynamic Workflows") + "\n\n" +
 			errStyle.Render("error: "+sessiontitle.CleanTitle(m.workflowsErr.Error())))
 	case m.wfMode == wfModePicker:
 		b.WriteString(m.viewWfPicker())
@@ -220,7 +220,7 @@ func (m Model) viewWorkflows() string {
 		b.WriteString(m.viewWfAgent())
 	default:
 		if _, ok := m.focusedGroup(); !ok {
-			b.WriteString(titleStyle.Render("cc-fleet · Workflows") +
+			b.WriteString(titleStyle.Render("cc-fleet · Dynamic Workflows") +
 				faintStyle.Render("    tab → Vendors") + "\n\n" + faintStyle.Render("(no workflow runs)"))
 		} else {
 			b.WriteString(m.viewWfPhases())
@@ -578,7 +578,7 @@ func (m Model) paneWidths(leftW int) (left, right int) {
 // the flat run list. Each session prints one "◆ <session>" header.
 func (m Model) viewWfPicker() string {
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("cc-fleet · Workflows") + faintStyle.Render("    tab → Vendors") + "\n\n")
+	b.WriteString(titleStyle.Render("cc-fleet · Dynamic Workflows") + faintStyle.Render("    tab → Vendors") + "\n\n")
 	lastSession := "\x00" // sentinel so the first header always prints (even for a "" session)
 	for i, g := range m.wfGroups() {
 		if g.sessionID != lastSession {
