@@ -242,8 +242,7 @@ func (m Model) spawnTitle() string {
 }
 
 // renderAsFooter is the contextual footer per asMode; the boxes level swaps in the card
-// keys while the cursor sits on a job row (its card is inline there). The hints justify
-// across the box width — first hint flush left, `q quit` flush right.
+// keys while the cursor sits on a job row (its card is inline there).
 func (m Model) renderAsFooter() string {
 	var hint string
 	switch m.asMode {
@@ -264,36 +263,7 @@ func (m Model) renderAsFooter() string {
 			hint = "↑/↓ row · →/⏎ detail · d delete run · ← back · r refresh · esc/tab vendors · q quit"
 		}
 	}
-	return footer(justifyHints(hint, m.boardInner()))
-}
-
-// justifyHints stretches a "a · b · c" hint line to exactly width columns by widening the
-// separator gaps evenly (the dot stays centered in each gap), so the first hint sits on
-// the box's left border column and the last on its right. A line already at or past the
-// width is returned unchanged.
-func justifyHints(hint string, width int) string {
-	items := strings.Split(hint, " · ")
-	have := ansi.StringWidth(hint)
-	gaps := len(items) - 1
-	if gaps < 1 || have >= width {
-		return hint
-	}
-	extra := width - have
-	per, rem := extra/gaps, extra%gaps
-	var b strings.Builder
-	for i, it := range items {
-		b.WriteString(it)
-		if i < gaps {
-			pad := per
-			if i < rem {
-				pad++
-			}
-			left := 1 + pad/2
-			right := 1 + pad - pad/2
-			b.WriteString(strings.Repeat(" ", left) + "·" + strings.Repeat(" ", right))
-		}
-	}
-	return b.String()
+	return footer(hint)
 }
 
 // statusDot maps a leaf/run/phase status to a colored glyph: done ✔ (green), running ● (accent),
