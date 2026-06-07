@@ -108,15 +108,21 @@ type Model struct {
 	// wfDeleteArm). Any other key disarms.
 	teamHistDeleteArm string
 	boardEpoch        int
-	asMode            asMode
-	focusedProject    string
-	focusedSessionID  string
-	asProjectCursor   int       // L0 rail row
-	asSessionCursor   int       // L1 rail row
-	asBoxCursor       int       // L2 continuum row: the session's runs, then its teams, then its jobs
-	asEntitySrc       asRailRef // the collection L3 lists (set on descend from L2)
-	asEntityCursor    int       // L3 entity row
-	asCardScroll      int       // L3 detail-card scroll offset (j/k); reset on entity change
+	// boardSeen marks that a boardMsg has ever been accepted; a revisit then skips the
+	// "discovering…" loading frame and keeps the previous frame until the fresh load
+	// lands. boardEntryRoute defers the entry reset (cursors + focus park) to that
+	// first accepted refresh, so the stale frame can still render.
+	boardSeen        bool
+	boardEntryRoute  bool
+	asMode           asMode
+	focusedProject   string
+	focusedSessionID string
+	asProjectCursor  int       // L0 rail row
+	asSessionCursor  int       // L1 rail row
+	asBoxCursor      int       // L2 continuum row: the session's runs, then its teams, then its jobs
+	asEntitySrc      asRailRef // the collection L3 lists (set on descend from L2)
+	asEntityCursor   int       // L3 entity row
+	asCardScroll     int       // L3 detail-card scroll offset (j/k); reset on entity change
 	// Focused-job inline detail (the L3 jobs collection): the job's prompt/answer io +
 	// activity snapshot, read off the Update goroutine (the wf board's wfDetail* pattern).
 	// asDetailJobID records WHICH job the loaded io belongs to, so a render only shows it
@@ -1172,10 +1178,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.epoch != m.boardEpoch {
 			return m, nil
 		}
+		// A board entry routes from THIS fresh load: zero the cursors and park the
+		// focus now (deferred from the tab handler so the stale frame could render).
+		if m.boardEntryRoute {
+			m.boardEntryRoute = false
+			m.asProjectCursor, m.asSessionCursor, m.asBoxCursor, m.asEntityCursor, m.asCardScroll = 0, 0, 0, 0, 0
+			m.focusedProject, m.focusedSessionID, m.asMode = asNoFocus, asNoFocus, asModeBoxes
+		}
 		// Capture the L2 cursor row's TYPED identity before the data changes, so the
 		// cursor can re-find it (a team by name, a job by id) after the refresh.
 		prevBox, hadBox := m.boxRowRef()
 		m.loading = false
+		m.boardSeen = true
 		// Pre-group session → team so the session tree (recomputed per render off these
 		// slices, mirror wfGroups) renders contiguously on every update path, tests included.
 		m.teammates = groupByTeam(msg.teammates)
@@ -1475,8 +1489,8 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "tab":
 		m.screen = screenSpawn
-		m.loading = true
-		m.boardStatus = "" // clear any stale hide/show line from a prior visit
+		m.loading = !m.boardSeen // a revisit keeps the previous frame until the fresh load lands
+		m.boardStatus = ""       // clear any stale hide/show line from a prior visit
 		m.boardJobsErr = nil
 		m.asDetailJobID, m.asDetailPrompt, m.asDetailAnswer, m.asDetailIO = "", "", "", false
 		m.asDetailSnap, m.asPromptExpanded = activitySnapshot{}, false
@@ -1487,10 +1501,10 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.workflowStatus, m.wfDeleteArm, m.teamHistDeleteArm = "", "", ""
 		m.wfRestarting = map[string]bool{}
 		m.wfSaving = false
-		m.asProjectCursor, m.asSessionCursor, m.asBoxCursor, m.asEntityCursor, m.asCardScroll = 0, 0, 0, 0, 0
-		// Park unfocused so the FIRST accepted refresh routes by the freshly loaded
-		// project/session counts — never by the previous visit's cached data.
-		m.focusedProject, m.focusedSessionID, m.asMode = asNoFocus, asNoFocus, asModeBoxes
+		// The entry reset (cursor zeroing + the unfocused park that makes the FIRST
+		// accepted refresh route by the fresh counts) is deferred to that refresh via
+		// boardEntryRoute, so the previous frame renders meanwhile instead of a flash.
+		m.boardEntryRoute = true
 		// Bump the epoch so a tick still pending from a previous board visit
 		// can't double the refresh rate; start a fresh load + tick chain. The
 		// epoch is also stamped on boardMsg so a refresh scheduled BEFORE the
