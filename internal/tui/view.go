@@ -1120,7 +1120,7 @@ func (m Model) viewAsProjects() string {
 	var leftLines []string
 	for i, p := range projects {
 		marker := "  "
-		label := leftTruncCols(sessiontitle.CleanTitle(projectLabel(p.dir)), 28)
+		label := leftTruncCols(sessiontitle.CleanTitle(projectName(p.dir)), 28)
 		if i == m.asProjectCursor {
 			marker = cursorStyle.Render("❯ ")
 			label = selectedStyle.Render(label)
@@ -1299,6 +1299,16 @@ func asCreated(s asSession) string {
 		return ""
 	}
 	return s.earliest.Format("01-02 15:04")
+}
+
+// projectName is the project rail's short form — the path's LAST segment only (the L0
+// header and the right pane title carry the longer forms); "(no project)" when unresolved.
+func projectName(dir string) string {
+	if dir == "" {
+		return "(no project)"
+	}
+	segs := strings.Split(strings.Trim(dir, "/"), "/")
+	return segs[len(segs)-1]
 }
 
 // projectLabel renders a project dir as its LAST TWO path segments (a deep absolute path

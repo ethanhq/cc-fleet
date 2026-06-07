@@ -997,8 +997,9 @@ func TestBoardMultiProjectRoutesToProjects(t *testing.T) {
 	}
 	out := m.View()
 	// NEWEST first: beta (spawn 200) before alpha (100); the unresolved bucket last.
-	posA := strings.Index(out, "proj/alpha")
-	posB := strings.Index(out, "proj/beta")
+	// The rail shows the basename only, so the order is asserted on it.
+	posA := strings.Index(out, "alpha")
+	posB := strings.Index(out, "beta")
 	posNone := strings.Index(out, "(no project)")
 	if posA < 0 || posB < 0 || posNone < 0 || !(posB < posA && posA < posNone) {
 		t.Fatalf("project rows missing or misordered (b=%d a=%d none=%d):\n%s", posB, posA, posNone, out)
