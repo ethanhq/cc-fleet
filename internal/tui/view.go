@@ -977,8 +977,8 @@ func wrapTo(s string, w int) []string {
 	return out
 }
 
-// renderOutcome is the key-safe outcome line: status + a canonical summary, NEVER Result.Result. A
-// done leaf shows "done · N turns"; a failed one its error class; a running/queued one "Still running…".
+// renderOutcome is the key-safe outcome line: status + a canonical summary, NEVER Result.Result.
+// Done shows turns, stopped is neutral, a failure shows its error class, queued/running stay in progress.
 func (m Model) renderOutcome(j subagent.Result) string {
 	switch {
 	case j.Status == "running" || j.Status == "queued" || j.Status == "":

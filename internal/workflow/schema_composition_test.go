@@ -28,7 +28,7 @@ n = res["name"]
 	}
 }
 
-// allOf: violating ANY subschema fails validation terminally (one exec, no retry).
+// allOf: violating any subschema fails terminally (one exec, no retry).
 func TestSchemaAllOfViolationTerminal(t *testing.T) {
 	rec := &recorder{}
 	leaf := fakeLeaf(rec, func(leafCall) subagent.Result {
@@ -46,7 +46,7 @@ res = agent("q", vendor="v", schema={"allOf": [
 	}
 }
 
-// oneOf: a payload matching MORE than one subschema fails (must match exactly one).
+// oneOf: a payload matching more than one subschema fails (must match exactly one).
 func TestSchemaOneOfMatchesTwoFails(t *testing.T) {
 	leaf := fakeLeaf(&recorder{}, func(leafCall) subagent.Result {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"card":"4111","bank":"acme"}`)}
@@ -80,8 +80,7 @@ z = res["shipTo"]["zip"]
 	}
 }
 
-// A oneOf whose other branch matches must still SURFACE a structural error (an unresolvable
-// $ref) in a sibling branch — never silently swallow it as "that branch didn't match".
+// oneOf surfaces a dangling-$ref structural error in a sibling branch even when another branch matches.
 func TestSchemaOneOfSurfacesBrokenRef(t *testing.T) {
 	leaf := fakeLeaf(&recorder{}, func(leafCall) subagent.Result {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`"x"`)}
@@ -95,8 +94,7 @@ res = agent("q", vendor="v", schema={"oneOf": [
 	}
 }
 
-// anyOf must surface a structural error even when an EARLIER branch already matched — it scans
-// every branch, not stopping at the first match.
+// anyOf scans every branch, so a structural error is not hidden by an earlier match.
 func TestSchemaAnyOfSurfacesBrokenRefAfterMatch(t *testing.T) {
 	leaf := fakeLeaf(&recorder{}, func(leafCall) subagent.Result {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`"x"`)}
@@ -110,8 +108,8 @@ res = agent("q", vendor="v", schema={"anyOf": [
 	}
 }
 
-// A structural defect surfaces even when a SIBLING keyword would short-circuit first: the broken
-// $ref in the second branch is caught before its mismatching type, so the value can't slip through.
+// A structural defect surfaces even behind a sibling keyword that would short-circuit: the $ref is
+// checked before the mismatching type, so the value can't slip through.
 func TestSchemaAnyOfDefectBehindMismatch(t *testing.T) {
 	leaf := fakeLeaf(&recorder{}, func(leafCall) subagent.Result {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`"x"`)}
@@ -140,8 +138,7 @@ res = agent("q", vendor="v", schema={"anyOf": [
 	}
 }
 
-// An empty anyOf matches nothing, and an empty oneOf matches zero subschemas — both must FAIL,
-// not silently accept every value.
+// An empty anyOf matches nothing and an empty oneOf matches zero subschemas — both fail, not accept.
 func TestSchemaEmptyAnyOfOneOfFail(t *testing.T) {
 	for i, schema := range []string{`{"anyOf":[]}`, `{"oneOf":[]}`} {
 		l := fakeLeaf(&recorder{}, func(leafCall) subagent.Result {
@@ -187,6 +184,18 @@ res = agent("q", vendor="v", schema={
 	}
 }
 
+// An external (non intra-document) $ref is unsupported by the local backstop and fails validation
+// (claude's --json-schema is authoritative for it).
+func TestSchemaExternalRefFails(t *testing.T) {
+	leaf := fakeLeaf(&recorder{}, func(leafCall) subagent.Result {
+		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"a":1}`)}
+	})
+	if _, err := runScript(t, "co11", 1, leaf,
+		`res = agent("q", vendor="v", schema={"type":"object","properties":{"a":{"$ref":"https://example.com/s.json"}}})`); err == nil {
+		t.Fatal("want an error: an external $ref is unsupported by the local backstop")
+	}
+}
+
 // pattern: a string must match the regex; a mismatch fails.
 func TestSchemaPattern(t *testing.T) {
 	ok := fakeLeaf(&recorder{}, func(leafCall) subagent.Result {
@@ -205,8 +214,7 @@ func TestSchemaPattern(t *testing.T) {
 	}
 }
 
-// An ECMA-only pattern (lookahead) that Go RE2 can't compile is SKIPPED locally — the leaf isn't
-// failed (claude enforced the real pattern on the wire), so a conforming value still passes.
+// An ECMA-only pattern (lookahead) Go RE2 can't compile is skipped locally, so a conforming value passes.
 func TestSchemaPatternEcmaSkipped(t *testing.T) {
 	leaf := fakeLeaf(&recorder{}, func(leafCall) subagent.Result {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"p":"x1"}`)}

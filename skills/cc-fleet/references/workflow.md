@@ -33,7 +33,7 @@ not JS.
   the wire enforces the authoritative ECMA regex) / `format` (email/uri/uuid/date/date-time),
   `additionalProperties`, the composition keywords
   `allOf`/`anyOf`/`oneOf`, and intra-document `$ref` (`#/…` pointers, e.g. `#/$defs/Addr`;
-  external URIs are not resolved). A validation failure — or a result envelope
+  an external URI is unsupported and fails). A validation failure — or a result envelope
   without a structured payload — FAILS the leaf; there is no automatic retry. The forced
   `StructuredOutput` call costs turns: give a schema'd leaf `max_turns` ≥ 3 headroom (a
   budget of 1 starves it). `schema=` needs claude ≥ 2.1.88 (the slim-profile floor); an
@@ -147,7 +147,7 @@ produce the same keys. A **failed** leaf is never journaled, so resume re-runs i
 - **Client-side `schema=` validation is a JSON-Schema subset** — `type`/`required`/nested
   `properties`/array `items`/scalar `enum`/`pattern`/`format`/`additionalProperties`/`allOf`/
   `anyOf`/`oneOf`/intra-document `$ref` (`#/…`), not the full spec (an external `$ref` URI is
-  unresolved → a validation error; an unknown `format` is an annotation, not enforced). claude
+  unsupported and fails; an unknown `format` is an annotation, not enforced). claude
   enforces that `StructuredOutput` is called; this backstop checks what it was filled with, and a
   failure is terminal (no retry).
 - Key-safety is unchanged: the vendor key flows only via `apiKeyHelper`; prompts go to the

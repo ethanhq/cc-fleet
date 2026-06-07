@@ -14,9 +14,9 @@ import (
 	"go.starlark.net/starlark"
 )
 
-// schemaError marks a structural schema defect — an unresolvable or malformed `$ref`, or nesting
-// beyond maxSchemaDepth — distinct from a value/schema MISMATCH. anyOf/oneOf must PROPAGATE it (a
-// broken branch is not "the value didn't match this branch"), never count it as a non-match.
+// schemaError marks a structural schema defect (a dangling/malformed `$ref` or nesting past
+// maxSchemaDepth), distinct from a value mismatch. anyOf/oneOf propagate it rather than count it
+// as a branch that did not match.
 type schemaError struct{ err error }
 
 func (e schemaError) Error() string { return e.err.Error() }
@@ -53,21 +53,11 @@ func encodeSchema(thread *starlark.Thread, schema starlark.Value) (string, error
 	return s, nil
 }
 
-// decodeAndValidate parses the vendor reply as JSON and recursively validates it against
-// the schema. Runs under the GIL. A parse failure or any validation failure is an error —
-// terminal for a live leaf, and on resume a cached value that no longer validates is
-// treated as a miss. The supported keywords are `type` (object/array/string/number/integer/
-// boolean/null), `required`, nested `properties`, array `items`, scalar `enum`, string `pattern`
-// (RE2 best-effort — an uncompilable ECMA pattern defers to the wire) and `format`, `additionalProperties`,
-// the composition keywords `allOf` / `anyOf` / `oneOf`, and intra-document `$ref` (`#/…` JSON
-// pointers into the root schema, e.g. `#/$defs/Address`). External `$ref` URIs are not
-// resolved (surfaced as a validation error, not silently passed).
-//
-// This is a single-pass VALUE validator, not a value-independent schema linter: an unresolvable
-// `$ref` always surfaces from a composition branch, but a structural defect buried behind a value
-// mismatch in a deeply-nested non-composition keyword may not. Recursion (a deep or cyclic `$ref`)
-// is bounded by `maxSchemaDepth`, so it terminates with a depth error rather than looping. It is
-// the backstop; claude enforces the full schema on the wire via `--json-schema`.
+// decodeAndValidate parses the reply JSON and validates it against the schema subset: `type`,
+// `required`, `properties`, `items`, `enum`, `pattern`/`format`/`additionalProperties`,
+// `allOf`/`anyOf`/`oneOf`, and intra-document `$ref` (`#/…`; an external ref is unsupported, fails).
+// It is the local backstop for claude's `--json-schema`: a live failure is terminal, a resume
+// failure is a cache miss. Single-pass over the value; `maxSchemaDepth` bounds a recursive `$ref`.
 func decodeAndValidate(thread *starlark.Thread, reply string, schema starlark.Value) (starlark.Value, error) {
 	v, err := starlark.Call(thread, jsonDecode, starlark.Tuple{starlark.String(stripCodeFence(reply))}, nil)
 	if err != nil {
@@ -112,11 +102,8 @@ func validateAgainstSchema(value, schema, root starlark.Value, depth int) error 
 	if s, isStr := starlark.AsString(value); isStr {
 		if pv, found, _ := sd.Get(starlark.String("pattern")); found {
 			if pat, ok := starlark.AsString(pv); ok {
-				// pattern is ECMA-262 in JSON Schema; Go RE2 only approximates it. An uncompilable
-				// (ECMA-only) pattern is skipped; the rare RE2-vs-ECMA semantic divergence (an escape
-				// RE2 reads differently) is an accepted best-effort caveat — claude enforces the
-				// authoritative pattern on the wire via --json-schema, and this local check is a backstop
-				// (chiefly for resume re-validation), so a stray mismatch only re-runs a leaf, never wrong.
+				// JSON Schema `pattern` is ECMA-262; Go RE2 is a best-effort local approximation. An
+				// uncompilable pattern is skipped — `--json-schema` stays authoritative on the wire.
 				if re, cerr := regexp.Compile(pat); cerr == nil && !re.MatchString(s) {
 					return fmt.Errorf("value does not match pattern %q", pat)
 				}
@@ -266,9 +253,11 @@ func checkComposition(value starlark.Value, sd *starlark.Dict, root starlark.Val
 		if !ok {
 			return schemaError{fmt.Errorf("$ref must be a string")}
 		}
+		// Only an intra-document ref resolves locally; an external URI is unsupported and fails here
+		// (claude's --json-schema is authoritative for it). A dangling intra-document ref is a defect.
 		target, rerr := resolveRef(ref, root)
 		if rerr != nil {
-			return schemaError{rerr} // an unresolvable ref is a schema defect, not a value mismatch
+			return schemaError{rerr}
 		}
 		if err := validateAgainstSchema(value, target, root, depth+1); err != nil {
 			return fmt.Errorf("$ref %s: %w", ref, err)

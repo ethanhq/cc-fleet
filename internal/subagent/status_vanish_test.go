@@ -20,10 +20,7 @@ func deadPID(t *testing.T) int {
 	return c.Process.Pid
 }
 
-// A job with no recorded process (PID<=0) and no cached terminal result has produced no terminal
-// signal, so StatusFor reports it queued regardless of the Status string — never a done leaf. The
-// dead-classify path below it would otherwise read a queued placeholder's empty .out (the
-// placeholder is minted in text mode) plus the synthetic exit 0 as a "done · 0 turns" success.
+// StatusFor reports a PID<=0 job with no cached result as queued, regardless of meta.Status — never done.
 func TestStatusForNoProcessReportsQueuedNotDone(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	dir, err := jobsDir()
@@ -43,10 +40,7 @@ func TestStatusForNoProcessReportsQueuedNotDone(t *testing.T) {
 	}
 }
 
-// A dead detached leaf with an empty .out fails with an honest message — never the cause-erasing
-// "claude exited 0 without a result envelope". A Released detached job has no wait()-able exit code,
-// so StatusFor fabricates exitCode 0; the message must say the exit status is unknown, not assert a
-// clean "exited 0".
+// A dead detached leaf with an empty .out fails with an honest unknown-exit message, never "exited 0".
 func TestStatusForVanishedLeafHonestFailure(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	dir, err := jobsDir()
@@ -100,9 +94,8 @@ func TestFinalizeRunLeavesMarksStopped(t *testing.T) {
 	}
 }
 
-// A detached bg leaf seen dead with an as-yet-unwritten envelope is recovered by the confirm-delay
-// re-read, not cached as a spurious failure. A goroutine writes the envelope just after StatusFor's
-// first (empty) read, so only the re-read sees it.
+// The confirm-delay re-read recovers a late-landing envelope instead of caching a failure (a goroutine
+// writes it just after the first empty read).
 func TestStatusForConfirmDelayRecoversLateEnvelope(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	dir, err := jobsDir()
