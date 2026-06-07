@@ -643,11 +643,11 @@ func TestBoardSingleSessionBoxes(t *testing.T) {
 	}
 	out := m.View()
 	for _, want := range []string{
-		"sess-aaa…",                            // session header short id
-		"2 teammates (1 hidden) · 1 subagents", // header counts, kinds separated
-		"Agent Teams",                          // first box title
-		"Subagents · 1",                        // second box title
-		"alice", "bob",                         // the previewed team's rows
+		"sess-aaa…",     // session header short id
+		"2 teammates ",  // the cursored team's header stats lead with its member count
+		"Agent Teams",   // first box title
+		"Subagents · 1", // second box title
+		"alice", "bob",  // the previewed team's rows
 		"rate_limit · hidden", // hidden row: health word + suffix
 	} {
 		if !strings.Contains(out, want) {
@@ -1095,17 +1095,17 @@ func TestBoardHeaderShowsCursoredAgentStats(t *testing.T) {
 	mate := teardown.Teammate{Name: "alice", Team: "t1", PaneID: "%1", LeadSessionID: "s",
 		SpawnTime: time.Now().Add(-5 * time.Minute).UnixMilli()}
 	m = boardModel(t, []teardown.Teammate{mate}, nil) // single team → the teammate's detail view
-	if out := m.View(); !strings.Contains(out, "up 5m · ") {
-		t.Fatalf("the header should show the cursored teammate's uptime:\n%s", out)
+	if out := m.View(); !strings.Contains(out, "5m · ") {
+		t.Fatalf("the header should show the cursored teammate's age:\n%s", out)
 	}
 	// L2: a team row carries the TEAM's stats (age + spawn; tokens once the aggregate
 	// lands); moving onto the job row swaps in the job's stats.
 	m = boardModel(t, []teardown.Teammate{mate}, []subagent.Result{job})
-	if out := m.View(); !strings.Contains(out, "up 5m · ") {
+	if out := m.View(); !strings.Contains(out, "1 teammates · 5m · ") {
 		t.Fatalf("an L2 team row should carry the team's stats:\n%s", out)
 	}
 	m, _ = step(t, m, asTeamMsg{nonce: m.asDetailNonce, epoch: m.boardEpoch, key: "t1", ctx: 92032, out: 48659})
-	if out := m.View(); !strings.Contains(out, "↑ 92.0k ctx · ↓ 48.7k out · up 5m") {
+	if out := m.View(); !strings.Contains(out, "1 teammates · ↑ 92.0k · ↓ 48.7k · 5m") {
 		t.Fatalf("the landed aggregate should join the team header stats:\n%s", out)
 	}
 	m, _ = press(t, m, "down")

@@ -242,25 +242,58 @@ func (m Model) spawnTitle() string {
 }
 
 // renderAsFooter is the contextual footer per asMode; the boxes level swaps in the card
-// keys while the cursor sits on a job row (its card is inline there).
+// keys while the cursor sits on a job row (its card is inline there). The hints justify
+// across the box width — first hint flush left, `q quit` flush right.
 func (m Model) renderAsFooter() string {
+	var hint string
 	switch m.asMode {
 	case asModeProjects:
-		return footer("↑/↓ project · →/⏎ open · esc/tab vendors · r refresh · q quit")
+		hint = "↑/↓ project · →/⏎ open · esc/tab vendors · r refresh · q quit"
 	case asModeSessions:
-		return footer("↑/↓ session · →/⏎ open · ← back · r refresh · esc/tab vendors · q quit")
+		hint = "↑/↓ session · →/⏎ open · ← back · r refresh · esc/tab vendors · q quit"
 	case asModeEntity:
-		return footer("↑/↓ row · j/k scroll · ⏎ expand · h hide · s show · ←/esc back · r refresh · q quit")
+		hint = "↑/↓ row · j/k scroll · ⏎ expand · h hide · s show · ←/esc back · r refresh · q quit"
 	case asModeRunPhases:
-		return footer("↑/↓ phase · → agents · r restart · x stop · d delete · s save · ←/esc back · R refresh · q quit")
+		hint = "↑/↓ phase · → agents · r restart · x stop · d delete · s save · ←/esc back · R refresh · q quit"
 	case asModeRunAgent:
-		return footer("↑/↓ agent · j/k scroll · ⏎ prompt · r restart agent · x stop · s save · ←/esc back · R refresh · q quit")
+		hint = "↑/↓ agent · j/k scroll · ⏎ prompt · r restart agent · x stop · s save · ←/esc back · R refresh · q quit"
 	default:
 		if _, onJob := m.boxJob(); onJob {
-			return footer("↑/↓ row · j/k scroll · ⏎ expand · ←/esc back · r refresh · q quit")
+			hint = "↑/↓ row · j/k scroll · ⏎ expand · ←/esc back · r refresh · q quit"
+		} else {
+			hint = "↑/↓ row · →/⏎ detail · d delete run · ← back · r refresh · esc/tab vendors · q quit"
 		}
-		return footer("↑/↓ row · →/⏎ detail · d delete run · ← back · r refresh · esc/tab vendors · q quit")
 	}
+	return footer(justifyHints(hint, m.boardInner()))
+}
+
+// justifyHints stretches a "a · b · c" hint line to exactly width columns by widening the
+// separator gaps evenly (the dot stays centered in each gap), so the first hint sits on
+// the box's left border column and the last on its right. A line already at or past the
+// width is returned unchanged.
+func justifyHints(hint string, width int) string {
+	items := strings.Split(hint, " · ")
+	have := ansi.StringWidth(hint)
+	gaps := len(items) - 1
+	if gaps < 1 || have >= width {
+		return hint
+	}
+	extra := width - have
+	per, rem := extra/gaps, extra%gaps
+	var b strings.Builder
+	for i, it := range items {
+		b.WriteString(it)
+		if i < gaps {
+			pad := per
+			if i < rem {
+				pad++
+			}
+			left := 1 + pad/2
+			right := 1 + pad - pad/2
+			b.WriteString(strings.Repeat(" ", left) + "·" + strings.Repeat(" ", right))
+		}
+	}
+	return b.String()
 }
 
 // statusDot maps a leaf/run/phase status to a colored glyph: done ✔ (green), running ● (accent),
@@ -1342,13 +1375,13 @@ func (m Model) headerEntityStats() string {
 	return ""
 }
 
-// teamStats is a team's header summary: the members' summed transcript tokens (loaded
-// async while the team row is cursored), the team's age, and its earliest spawn time —
-// falling back to the session rollup until the aggregate lands.
+// teamStats is a team's header summary, the run line's shape: member count, the members'
+// summed transcript tokens (loaded async while the team row is cursored), the team's age,
+// and its earliest spawn time.
 func (m Model) teamStats(t asTeam) string {
-	var parts []string
+	parts := []string{fmt.Sprintf("%d teammates", len(t.members))}
 	if m.asTeamKey == t.name && (m.asTeamCtx > 0 || m.asTeamOut > 0) {
-		parts = append(parts, fmt.Sprintf("↑ %s ctx · ↓ %s out", humanTokens(m.asTeamCtx), humanTokens(m.asTeamOut)))
+		parts = append(parts, fmt.Sprintf("↑ %s · ↓ %s", humanTokens(m.asTeamCtx), humanTokens(m.asTeamOut)))
 	}
 	var oldest int64
 	for _, mem := range t.members {
@@ -1357,9 +1390,8 @@ func (m Model) teamStats(t asTeam) string {
 		}
 	}
 	if oldest > 0 {
-		ot := teardown.Teammate{SpawnTime: oldest}
-		if up := teammateUptime(ot); up != "" {
-			parts = append(parts, "up "+up)
+		if age := teammateUptime(teardown.Teammate{SpawnTime: oldest}); age != "" {
+			parts = append(parts, age)
 		}
 		parts = append(parts, time.UnixMilli(oldest).Format("01-02 15:04"))
 	}
@@ -1383,14 +1415,14 @@ func (m Model) jobStats(j subagent.Result) string {
 }
 
 // teammateStats is one teammate's header summary: its transcript token aggregates (once
-// the focused payload is loaded), uptime, and spawn time.
+// the focused payload is loaded), its age, and its spawn time — the job line's shape.
 func (m Model) teammateStats(t teardown.Teammate) string {
 	var parts []string
 	if s := m.asMateSnap; m.asMateKey == mateKey(t) && (s.ctxTok > 0 || s.outTok > 0) {
 		parts = append(parts, fmt.Sprintf("↑ %s ctx · ↓ %s out", humanTokens(s.ctxTok), humanTokens(s.outTok)))
 	}
-	if up := teammateUptime(t); up != "" {
-		parts = append(parts, "up "+up)
+	if age := teammateUptime(t); age != "" {
+		parts = append(parts, age)
 	}
 	if t.SpawnTime > 0 {
 		parts = append(parts, time.UnixMilli(t.SpawnTime).Format("01-02 15:04"))
