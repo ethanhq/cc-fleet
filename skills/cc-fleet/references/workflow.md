@@ -27,10 +27,13 @@ not JS.
   (a dict) the schema goes to the claude child via `--json-schema`: claude injects a forced
   `StructuredOutput` tool and enforces that it is CALLED (the native mechanism — no JSON
   instruction is added to the prompt); `agent()` returns the parsed structured payload.
-  Client-side validation stays as a backstop — a real (recursive) JSON-Schema subset:
+  Client-side validation stays as a backstop — a recursive JSON-Schema subset:
   `type` (object/array/string/number/integer/boolean/null; `integer` accepts `5.0`),
-  `required`, nested `properties`, array `items`, scalar `enum` (composition keywords
-  `$ref`/`allOf`/`oneOf` are NOT enforced). A validation failure — or a result envelope
+  `required`, nested `properties`, array `items`, scalar `enum`, string `pattern` (RE2 best-effort —
+  the wire enforces the authoritative ECMA regex) / `format` (email/uri/uuid/date/date-time),
+  `additionalProperties`, the composition keywords
+  `allOf`/`anyOf`/`oneOf`, and intra-document `$ref` (`#/…` pointers, e.g. `#/$defs/Addr`;
+  external URIs are not resolved). A validation failure — or a result envelope
   without a structured payload — FAILS the leaf; there is no automatic retry. The forced
   `StructuredOutput` call costs turns: give a schema'd leaf `max_turns` ≥ 3 headroom (a
   budget of 1 starves it). `schema=` needs claude ≥ 2.1.88 (the slim-profile floor); an
@@ -141,11 +144,12 @@ produce the same keys. A **failed** leaf is never journaled, so resume re-runs i
 ## Non-goals (state plainly, don't oversell)
 - **No pause.** A running `claude -p` can't be cleanly suspended; use `workflow stop` (reaps
   the run) + `run --resume` (cheap restart via the journal) instead.
-- **Client-side `schema=` validation is a practical subset** — `type`/`required`/nested
-  `properties`/array `items`/scalar `enum`, not the full JSON-Schema spec
-  (`$ref`/`allOf`/`oneOf` are ignored). claude enforces that `StructuredOutput` is called;
-  this backstop checks what it was filled with, and a failure is terminal (no retry).
-- **No deep `$ref`/composition.** Keep schemas concrete.
+- **Client-side `schema=` validation is a JSON-Schema subset** — `type`/`required`/nested
+  `properties`/array `items`/scalar `enum`/`pattern`/`format`/`additionalProperties`/`allOf`/
+  `anyOf`/`oneOf`/intra-document `$ref` (`#/…`), not the full spec (an external `$ref` URI is
+  unresolved → a validation error; an unknown `format` is an annotation, not enforced). claude
+  enforces that `StructuredOutput` is called; this backstop checks what it was filled with, and a
+  failure is terminal (no retry).
 - Key-safety is unchanged: the vendor key flows only via `apiKeyHelper`; prompts go to the
   leaf via stdin, never argv; the journal/events/board carry no key.
 
