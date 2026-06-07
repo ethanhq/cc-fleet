@@ -2683,9 +2683,14 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "esc" {
 		return m.toList()
 	}
-	// Enter on the "Manage API keys →" action row (edit form only) opens the
-	// per-vendor key manager and loads its key set.
-	if msg.String() == "enter" && m.formMode == modeEdit && m.form.focusedKey() == "manage_keys" {
+	// ← returns to the provider list from any non-text row (a text field keeps
+	// the arrow for its input cursor).
+	if msg.String() == "left" && !m.form.focusedText() {
+		return m.toList()
+	}
+	// Enter (or →, the descend key) on the "Manage API keys →" action row (edit
+	// form only) opens the per-vendor key manager and loads its key set.
+	if (msg.String() == "enter" || msg.String() == "right") && m.formMode == modeEdit && m.form.focusedKey() == "manage_keys" {
 		m.screen = screenKeys
 		m.keyVendor = m.editName
 		m.keyCursor = 0

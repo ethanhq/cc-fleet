@@ -188,7 +188,8 @@ func (m Model) viewList() string {
 	listTitle := fmt.Sprintf("Providers · %d", len(m.vendors))
 	leftW, rightW := m.paneWidths(leftWidth(listTitle, leftLines, m.boardInner()))
 	cardTitle := "add provider"
-	rightLines := []string{faintStyle.Render("enter opens the add-provider wizard")}
+	rightLines := []string{contentStyle.Render("Note"),
+		" " + contentStyle.Render("→/⏎ opens the add-provider wizard")}
 	if m.vendorCursor < addRow {
 		v := m.vendors[m.vendorCursor]
 		cardTitle = trunc(v.Name, 24)
@@ -226,7 +227,8 @@ func vendorDetailLines(v userops.VendorView, rightW int) []string {
 	if v.DefaultModel != "" {
 		status += faintStyle.Render(" · " + trunc(v.DefaultModel, 28))
 	}
-	lines := []string{status, "", faintStyle.Render("Config")}
+	lines := []string{status, "", contentStyle.Render("Note"),
+		" " + contentStyle.Render("→/⏎ edit · d delete"), "", faintStyle.Render("Config")}
 	detailField(&lines, "base url", v.BaseURL, rightW)
 	detailField(&lines, "models", v.ModelsEndpoint, rightW)
 	detailField(&lines, "cache", vendorCacheFig(v), rightW)
@@ -2811,9 +2813,9 @@ func (m Model) viewModelPick() string {
 			total := len(m.modelList)
 			var lines []string
 			if m.modelFilter == "" {
-				lines = append(lines, contentStyle.Render(fmt.Sprintf("filter: type to narrow %d models", total)), "")
+				lines = append(lines, contentStyle.Render(fmt.Sprintf("Filter: type to narrow %d models", total)), "")
 			} else {
-				lines = append(lines, contentStyle.Render("filter: "+m.modelFilter)+
+				lines = append(lines, contentStyle.Render("Filter: "+m.modelFilter)+
 					faintStyle.Render(fmt.Sprintf("  (%d/%d)", len(filtered), total)), "")
 			}
 			if len(filtered) == 0 {

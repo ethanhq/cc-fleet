@@ -179,6 +179,12 @@ func (f form) value(key string) string {
 	return ""
 }
 
+// focusedText reports whether focus sits on a text field (whose input consumes
+// the arrow keys for cursor movement).
+func (f form) focusedText() bool {
+	return f.focus < len(f.fields) && f.fields[f.focus].kind == fieldText
+}
+
 // focusedKey returns the key of the currently focused field, or "" when focus
 // is on the submit button. The parent model uses this to special-case the
 // default_model field (enter opens the model picker there).
@@ -264,7 +270,7 @@ func (f form) viewLines() []string {
 			note = contentStyle.Render("enter opens the key manager")
 		}
 	}
-	lines = append(lines, faintStyle.Render("Note"), " "+note, "", faintStyle.Render("Config"))
+	lines = append(lines, contentStyle.Render("Note"), " "+note, "", faintStyle.Render("Config"))
 	for i, fld := range f.fields {
 		focused := i == f.focus
 		key := fmt.Sprintf("%-8s", cardKey(fld.key))
