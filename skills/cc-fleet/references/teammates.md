@@ -153,7 +153,7 @@ cc-fleet show <target> --json    # pane → back to its origin window, re-tiled 
 You usually won't need this programmatically — it's mainly for the Agents Board below.
 
 ### Agents Board (interactive TUI — for the human)
-Run bare `cc-fleet` in a terminal → press `Tab` from **Model Providers** to **Agents Board**: a live board of every teammate across **all teams** (with `ps --check` health + a `HIDDEN` column) plus subagent jobs, grouped by parent Claude session then team. Session headers show the Claude `/rename` title when available while keeping the short UUID. Keys: `↑/↓` select · `h` hide / `s` show the selected teammate · `r` refresh · auto-refreshes every 3s. The job table shows only id/vendor/model/status/started — never answer text. This is a human-facing view; you (the orchestrator) use `cc-fleet ps --json --check` for teammate data programmatically.
+Run bare `cc-fleet` in a terminal → press `Tab` from **Model Providers** to **Agents Board**: a live board of every teammate across **all teams** (with `ps --check` health + a `HIDDEN` column) plus subagent jobs, grouped by parent Claude session then team. Session headers show the Claude `/rename` title when available while keeping the short UUID. Keys: `↑/↓` select · `h` hide / `s` show the selected teammate · `r` refresh · auto-refreshes every 3s. Job rows show only label/id/model/status columns; the focused job's detail card additionally renders its own persisted prompt/output — never another job's, and never raw pane text. This is a human-facing view; you (the orchestrator) use `cc-fleet ps --json --check` for teammate data programmatically.
 
 ---
 

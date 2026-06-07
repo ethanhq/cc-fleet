@@ -523,11 +523,9 @@ func runAgentCounts(g runGroup) (done, total int) {
 	return
 }
 
-// runTokens sums each leaf's cumulative OUTPUT tokens across the run — the run header's "↓ tokens".
-// Output is the one cross-leaf-additive figure (the generated text accumulates); input is each leaf's
-// PEAK context window, so summing it across leaves is dimensionally meaningless — the header shows
-// output only, and per-leaf input lives in the agent detail (↑ ctx). Live snapshot while running, the
-// final Result once done. Cache-read is excluded throughout.
+// runTokens sums each leaf's cumulative OUTPUT tokens across the run — the truly additive
+// figure (generated text accumulates across leaves). Live snapshot while running, the final
+// Result once done. Cache-read is excluded throughout.
 func (m Model) runTokens(g runGroup) int {
 	total := 0
 	for _, p := range g.phases {
@@ -1466,10 +1464,10 @@ func (m Model) renderSessionHeader(s asSession) string {
 	return line1 + "\n\n" + headerSummaryLine(m.sessionLabel(s.sessionID), right, bw)
 }
 
-// headerEntityStats is the cursored agent's own stat summary for the session header: a
-// job's tokens + elapsed + started time, a teammate's uptime + spawn time. "" when the
-// cursored row isn't a single agent (an L2 team row, an empty collection) — the header
-// falls back to the session rollup.
+// headerEntityStats is the cursored row's own stat summary for the session header: a job's
+// tokens + elapsed + started, a teammate's uptime + spawn time, an L2 team row's member
+// aggregate, an L2 run row's run stats. "" when nothing single is cursored (an empty
+// collection) — the header falls back to the session rollup.
 func (m Model) headerEntityStats() string {
 	switch m.asMode {
 	case asModeEntity:
@@ -1603,10 +1601,10 @@ func (m Model) jobTokens(j subagent.Result) (in, out int) {
 // viewAsBoxes is L2: the session header above the stacked boxes — Dynamic Workflows
 // (master-detail: run rail | the previewed run's phase rows), Agent Teams (master-detail:
 // team rail | the cursored team's member rows), and
-// Subagents. One ↑/↓ cursor walks all three (see updateAsBoxes). With the cursor on a JOB row
-// the Subagents box is itself a master-detail (job rail | the job's inline card — no descend
-// needed) and takes the height; on a team row it stays the flat row list. A session missing
-// one kind simply omits that box.
+// Subagents (master-detail: job rail | the previewed job's inline card — the cursored job,
+// else the first; no descend needed). One ↑/↓ cursor walks all three (see updateAsBoxes);
+// with the cursor on a JOB row the Subagents box takes the height. A kind the session has
+// none of renders as a slim placeholder box below the content boxes.
 func (m Model) viewAsBoxes() string {
 	s, ok := m.focusedSession()
 	if !ok {

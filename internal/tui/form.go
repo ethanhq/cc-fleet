@@ -235,10 +235,10 @@ func cardKey(key string) string {
 	return key // name / enabled already read as card keys
 }
 
-// viewLines renders the form in the read-only config card's grammar — the live status
-// line, a "Config" section, then one "key  value" row per field — so entering edit barely
-// reshapes the pane. Values always render through input.View() (the focused input draws
-// its cursor; a password field stays bullet-masked).
+// viewLines renders the form in the read-only config card's grammar — a "Config" section
+// of "key  value" rows (the edit form adds the live status line its enabled toggle drives)
+// — so entering edit barely reshapes the pane. Text-field values always render through
+// input.View() (the focused input draws its cursor; a password field stays bullet-masked).
 func (f form) viewLines() []string {
 	var lines []string
 	// The edit form's enabled toggle mirrors the preview card's status line, live.

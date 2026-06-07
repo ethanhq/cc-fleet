@@ -58,8 +58,8 @@ const (
 // asMode is the active level of the master-detail Agents Board — all WITHIN
 // screenSpawn, so the refresh/tick msg ownership stays on one screen.
 // →/enter descend a level; ← ascends but CLAMPS at the board's top level; esc ascends too
-// and only leaves for Vendors at the top — so the entity-level detail card always RETURNS
-// on esc, never exits the board. Single-choice levels collapse: one project skips L0, one
+// and only leaves for the Model Providers hub at the top — so the entity-level detail card
+// always RETURNS on esc, never exits the board. Single-choice levels collapse: one project skips L0, one
 // session skips L1 too.
 type asMode int
 
@@ -1479,9 +1479,9 @@ func (m Model) toList() (tea.Model, tea.Cmd) {
 }
 
 // updateList drives the Model Providers hub. The cursor ranges over [0, len(vendors)];
-// the final index is the synthetic "+ Add provider…" row. enter edits the
-// highlighted vendor (or opens the add wizard on the Add row); d deletes it
-// (with a confirm); tab switches to Spawn status; q/esc quit.
+// the final index is the synthetic "+ Add provider…" row. →/enter edits the
+// highlighted provider (or opens the add wizard on the Add row); d deletes it
+// (with a confirm); tab switches to the Agents Board; q/esc quit.
 func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	addRow := len(m.vendors) // index of the trailing "+ Add provider…" row
 	switch msg.String() {
@@ -1545,9 +1545,9 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // updateSpawn drives the master-detail Agents Board, branching on asMode (projects,
 // sessions, the session's boxes, an entity's inline detail, or a run drill). r reloads
 // everywhere except the run drill, where it is restart and R/ctrl+r reload; tab returns to
-// Vendors; q quits. The per-mode handlers own ↑/↓, →/⏎ (descend), ←/esc (ascend — esc
-// additionally leaves for Vendors at the board's top level), and h/s (entity mode, teammate
-// rows). The auto-refresh tick chain runs independently (see boardTickMsg).
+// the Model Providers hub; q quits. The per-mode handlers own ↑/↓, →/⏎ (descend), ←/esc
+// (ascend — esc additionally leaves for the hub at the board's top level), and h/s (entity
+// mode, teammate rows). The auto-refresh tick chain runs independently (see boardTickMsg).
 func (m Model) updateSpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.wfSaving {
 		return m.updateWfSaveInput(msg)
