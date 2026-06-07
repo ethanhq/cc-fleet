@@ -134,8 +134,8 @@ func TestQuitKeys(t *testing.T) {
 }
 
 // TestTabTogglesSpawnStatus: tab from the list opens the agent-status board (and
-// loads it); tab again advances the cycle to the Workflows board; esc from the
-// board returns to the Vendors list (and reloads).
+// loads it); tab from the board returns to the Vendors list — the cycle is now
+// List ↔ Spawn (the Dynamic Workflows screen folded into the Agent-status board).
 func TestTabTogglesSpawnStatus(t *testing.T) {
 	m := withVendors(t, userops.VendorView{Name: "glm"})
 	m, cmd := press(t, m, "tab")
@@ -160,24 +160,12 @@ func TestTabTogglesSpawnStatus(t *testing.T) {
 	if out := m.View(); out == "" {
 		t.Fatal("board view rendered empty")
 	}
-	// tab advances the cycle to the Workflows board (loads it + bumps epoch).
-	mw, cmd := press(t, m, "tab")
-	if mw.screen != screenWorkflows || cmd == nil {
-		t.Fatalf("tab from board: screen=%d cmd=%v, want screenWorkflows + load cmd", mw.screen, cmd)
-	}
-	if mw.workflowsEpoch != 1 {
-		t.Fatalf("entering Workflows should bump workflowsEpoch to 1, got %d", mw.workflowsEpoch)
-	}
-	// Close the 3-way cycle: tab from Workflows returns to the Vendors list (+reload).
-	mback, cmd := press(t, mw, "tab")
+	// tab from the board returns to the Vendors list (+reload).
+	mback, cmd := press(t, m, "tab")
 	if mback.screen != screenList || cmd == nil {
-		t.Fatalf("tab from Workflows: screen=%d cmd=%v, want screenList + reload cmd", mback.screen, cmd)
+		t.Fatalf("tab from board: screen=%d cmd=%v, want screenList + reload cmd", mback.screen, cmd)
 	}
-	// esc from Workflows also returns to the Vendors list.
-	if mesc, _ := press(t, mw, "esc"); mesc.screen != screenList {
-		t.Fatalf("esc from Workflows: screen=%d, want screenList", mesc.screen)
-	}
-	// esc from the board returns to the Vendors list (and reloads).
+	// esc from the board (at its top boxes level) also returns to the Vendors list (and reloads).
 	mlist, cmd := press(t, m, "esc")
 	if mlist.screen != screenList || cmd == nil {
 		t.Fatalf("esc from board: screen=%d cmd=%v, want screenList + reload cmd", mlist.screen, cmd)
@@ -1513,7 +1501,7 @@ func TestWindowBounds(t *testing.T) {
 func TestViewsRenderForEveryScreen(t *testing.T) {
 	// Smoke test: every screen must render a non-empty frame without panic.
 	screens := []screen{
-		screenList, screenSpawn, screenWorkflows, screenPickTemplate,
+		screenList, screenSpawn, screenPickTemplate,
 		screenForm, screenModelPick, screenRemoveConfirm, screenResult, screenKeys,
 	}
 	for _, s := range screens {
@@ -2100,7 +2088,7 @@ func TestKeyMgr_SaveSuccessDoesNotReload(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Workflows board (screenWorkflows)
+// Dynamic Workflows (run boxes folded into the Agent-status board, screenSpawn)
 // ---------------------------------------------------------------------------
 
 // TestGroupByRun_PhaseOrderAndRunOrder: phases render in manifest order first,
@@ -2200,92 +2188,100 @@ func TestGroupByRun_NoManifestRunOrdersByEarliestJob(t *testing.T) {
 	}
 }
 
-// TestPartition_RunTaggedJobNotOnSpawnBoard: a RunID-tagged job belongs to the
-// Workflows board and must NOT appear on the agent-status board — its session
-// tree carries only RunID == "" jobs.
+// TestPartition_RunTaggedJobNotOnSpawnBoard: a RunID-tagged job feeds the session's run
+// box, never the Subagents box — its session tree carries only RunID == "" jobs as standalone
+// subagents. The tagged job's id must not appear among the Subagents rows (it lives under the
+// Dynamic Workflows box instead); the plain job's does.
 func TestPartition_RunTaggedJobNotOnSpawnBoard(t *testing.T) {
-	tagged := subagent.Result{JobID: "tagged00", RunID: "run-1", Phase: "build",
+	tagged := subagent.Result{JobID: "tagged00", RunID: "run-1", Phase: "build", Label: "b1",
 		Vendor: "glm", Status: "running", StartedAt: "2026-05-01T00:00:00Z", LeadSessionID: "s"}
 	plain := subagent.Result{JobID: "plain000", Vendor: "kimi", Status: "done",
 		StartedAt: "2026-05-01T00:00:00Z", LeadSessionID: "s"}
-	m := boardModel(t, nil, []subagent.Result{tagged, plain})
+	runs := []subagent.WorkflowRun{{RunID: "run-1", Name: "sweep", SessionID: "s", StartedAt: "2026-05-01T00:00:00Z"}}
+	m := boardModel(t, nil, nil)
+	m, _ = step(t, m, boardMsg{jobs: []subagent.Result{tagged, plain}, runs: runs, epoch: m.boardEpoch})
 	out := m.View()
 	if strings.Contains(out, "tagged00") {
-		t.Errorf("RunID-tagged job leaked onto the agent-status board:\n%s", out)
+		t.Errorf("RunID-tagged job leaked into the Subagents box on the agent-status board:\n%s", out)
 	}
 	if !strings.Contains(out, "plain000") {
-		t.Errorf("ungrouped job should appear on the agent-status board:\n%s", out)
+		t.Errorf("ungrouped job should appear in the Subagents box:\n%s", out)
 	}
+	// The standalone (RunID == "") jobs are the only entries in each session's Subagents box;
+	// the tagged job must instead live among the session's runs.
 	for _, s := range m.asSessions() {
 		for _, j := range s.jobs {
 			if j.RunID != "" {
-				t.Errorf("session tree carried a RunID-tagged job: %+v", j)
+				t.Errorf("session tree carried a RunID-tagged job in its Subagents box: %+v", j)
 			}
 		}
 	}
+	if got := len(m.workflowJobs); got != 1 {
+		t.Errorf("the tagged job should be the only workflow leaf, got %d", got)
+	}
 }
 
-// TestWorkflowsMsg_StaleEpochDropped: a workflowsMsg whose epoch != the model's
-// current workflowsEpoch (a prior visit's in-flight refresh) is dropped — the
-// fresh visit's loading=true / empty state survives.
-func TestWorkflowsMsg_StaleEpochDropped(t *testing.T) {
-	// Enter the board, then advance to Workflows (workflowsEpoch -> 1, loading).
+// TestWfRefresh_StaleEpochDropped: a wfRefreshMsg whose epoch != the model's current
+// boardEpoch (a prior visit's in-flight light refresh) is dropped — the fresh visit's
+// workflow data survives unchanged.
+func TestWfRefresh_StaleEpochDropped(t *testing.T) {
 	m := boardModel(t, nil, nil)
-	m, _ = press(t, m, "tab") // -> Workflows, epoch 1
-	if m.screen != screenWorkflows || m.workflowsEpoch != 1 || !m.loading {
-		t.Fatalf("setup: screen=%d epoch=%d loading=%v, want Workflows + epoch 1 + loading",
-			m.screen, m.workflowsEpoch, m.loading)
-	}
-	stale := workflowsMsg{
-		jobs:  []subagent.Result{{RunID: "run-z", Phase: "p", JobID: "leak0000"}},
-		runs:  []subagent.WorkflowRun{{RunID: "run-z"}},
-		epoch: 0, // from before the bump; must be dropped
-	}
-	m, _ = step(t, m, stale)
-	if !m.loading {
-		t.Fatal("stale-epoch workflowsMsg flipped m.loading to false")
-	}
-	if len(m.workflowJobs) != 0 || len(m.workflowRuns) != 0 {
-		t.Fatalf("stale-epoch workflowsMsg leaked data: jobs=%+v runs=%+v",
-			m.workflowJobs, m.workflowRuns)
-	}
-	// A matching-epoch msg DOES land (sanity).
-	fresh := workflowsMsg{
+	m, _ = step(t, m, boardMsg{
 		jobs:  []subagent.Result{{RunID: "run-z", Phase: "p", JobID: "ok000000", Label: "agent-a"}},
 		runs:  []subagent.WorkflowRun{{RunID: "run-z", Name: "z", StartedAt: "2026-05-01T00:00:00Z"}},
-		epoch: m.workflowsEpoch,
+		epoch: m.boardEpoch,
+	})
+	before := len(m.workflowJobs)
+	stale := wfRefreshMsg{
+		jobs:  nil,
+		runs:  nil,
+		epoch: m.boardEpoch - 1, // from a prior visit; must be dropped
+	}
+	m, _ = step(t, m, stale)
+	if len(m.workflowJobs) != before {
+		t.Fatalf("a stale-epoch wfRefreshMsg must be dropped, jobs went %d → %d", before, len(m.workflowJobs))
+	}
+	// A matching-epoch refresh DOES land (sanity): it replaces the workflow halves.
+	fresh := wfRefreshMsg{
+		jobs:  []subagent.Result{{RunID: "run-z", Phase: "p", JobID: "ok000000", Label: "agent-b"}},
+		runs:  []subagent.WorkflowRun{{RunID: "run-z", Name: "z", StartedAt: "2026-05-01T00:00:00Z"}},
+		epoch: m.boardEpoch,
 	}
 	m, _ = step(t, m, fresh)
-	if m.loading || len(m.workflowJobs) != 1 || len(m.workflowRuns) != 1 {
-		t.Fatalf("matching workflowsMsg dropped: loading=%v jobs=%d runs=%d",
-			m.loading, len(m.workflowJobs), len(m.workflowRuns))
-	}
-	if out := m.viewWorkflows(); !strings.Contains(out, "agent-a") || !strings.Contains(out, "agents") {
-		t.Fatalf("workflows view missing expected content:\n%s", out)
+	if len(m.workflowJobs) != 1 || m.workflowJobs[0].Label != "agent-b" {
+		t.Fatalf("matching wfRefreshMsg dropped: jobs=%+v", m.workflowJobs)
 	}
 }
 
-// TestWorkflowsTickReschedulesOnBoardStopsElsewhere: a current-epoch Workflows
-// tick reschedules; a stale-epoch tick, or any tick once off the Workflows board,
-// stops the chain (mirror of TestBoardTickReschedulesOnBoardStopsElsewhere).
-func TestWorkflowsTickReschedulesOnBoardStopsElsewhere(t *testing.T) {
+// TestWfLiveChain_StartsReschedulesStops: a boardMsg whose data has a running RunID-tagged
+// leaf starts the 500ms light chain (wfLiveOn true + a non-nil cmd); a current-epoch
+// wfLiveTickMsg with something still running reschedules; one with nothing running clears
+// wfLiveOn and returns no cmd; a stale-epoch tick is dropped.
+func TestWfLiveChain_StartsReschedulesStops(t *testing.T) {
+	runningLeaf := []subagent.Result{{RunID: "run-z", Phase: "p", Label: "a", JobID: "j1", Status: "running",
+		StartedAt: "2026-05-01T00:00:00Z"}}
+	runs := []subagent.WorkflowRun{{RunID: "run-z", Name: "z", Status: "running", StartedAt: "2026-05-01T00:00:00Z"}}
+
 	m := boardModel(t, nil, nil)
-	m, _ = press(t, m, "tab") // -> Workflows, workflowsEpoch 1
-	if m.screen != screenWorkflows || m.workflowsEpoch != 1 {
-		t.Fatalf("setup: screen=%d epoch=%d, want Workflows + epoch 1", m.screen, m.workflowsEpoch)
+	m, cmd := step(t, m, boardMsg{jobs: runningLeaf, runs: runs, epoch: m.boardEpoch})
+	if !m.wfLiveOn || cmd == nil {
+		t.Fatalf("a running leaf should start the light chain: wfLiveOn=%v cmd=%v", m.wfLiveOn, cmd)
 	}
-	if _, cmd := step(t, m, workflowsTickMsg{epoch: m.workflowsEpoch}); cmd == nil {
-		t.Fatal("current-epoch Workflows tick should reschedule (non-nil cmd)")
+	// A current-epoch tick while a leaf still runs reschedules.
+	if _, c := step(t, m, wfLiveTickMsg{epoch: m.boardEpoch}); c == nil {
+		t.Fatal("a current-epoch live tick with a running leaf should reschedule (non-nil cmd)")
 	}
-	if _, cmd := step(t, m, workflowsTickMsg{epoch: 0}); cmd != nil {
-		t.Fatal("stale-epoch Workflows tick should not reschedule")
+	// A stale-epoch tick is dropped (no reschedule).
+	if _, c := step(t, m, wfLiveTickMsg{epoch: m.boardEpoch - 1}); c != nil {
+		t.Fatal("a stale-epoch live tick must not reschedule")
 	}
-	mlist, _ := press(t, m, "tab") // Workflows → Vendors list
-	if mlist.screen != screenList {
-		t.Fatalf("tab should return to the list, screen = %d", mlist.screen)
-	}
-	if _, cmd := step(t, mlist, workflowsTickMsg{epoch: mlist.workflowsEpoch}); cmd != nil {
-		t.Fatal("a Workflows tick fired while off the board should stop the chain (nil cmd)")
+	// Once nothing runs, the tick clears the flag and stops the chain.
+	doneLeaf := []subagent.Result{{RunID: "run-z", Phase: "p", Label: "a", JobID: "j1", Status: "done",
+		StartedAt: "2026-05-01T00:00:00Z", NumTurns: 1}}
+	m2, _ := step(t, m, wfRefreshMsg{jobs: doneLeaf, runs: runs, epoch: m.boardEpoch})
+	m2, c := step(t, m2, wfLiveTickMsg{epoch: m2.boardEpoch})
+	if m2.wfLiveOn || c != nil {
+		t.Fatalf("with nothing running the chain should stop: wfLiveOn=%v cmd=%v", m2.wfLiveOn, c)
 	}
 }
 

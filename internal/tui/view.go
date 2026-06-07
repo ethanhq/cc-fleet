@@ -45,8 +45,6 @@ func (m Model) View() string {
 		return m.viewList()
 	case screenSpawn:
 		return m.viewSpawn()
-	case screenWorkflows:
-		return m.viewWorkflows()
 	case screenPickTemplate:
 		return m.viewPickTemplate()
 	case screenForm:
@@ -193,6 +191,10 @@ func (m Model) viewSpawn() string {
 		b.WriteString(m.viewAsSessions())
 	case m.asMode == asModeEntity:
 		b.WriteString(m.viewAsEntity())
+	case m.asMode == asModeRunPhases:
+		b.WriteString(m.viewWfPhases())
+	case m.asMode == asModeRunAgent:
+		b.WriteString(m.viewWfAgent())
 	default:
 		if _, ok := m.focusedSession(); !ok {
 			b.WriteString(m.spawnTitle() + "\n\n" +
@@ -216,63 +218,7 @@ func (m Model) viewSpawn() string {
 		}
 		b.WriteString("\n" + style.Render(m.boardStatus))
 	}
-	b.WriteString("\n" + m.renderAsFooter())
-	return b.String()
-}
-
-// spawnTitle is the Agent-status app title + tab hint (picker / empty / loading / error
-// states; the groups and entity levels show the session header instead).
-func (m Model) spawnTitle() string {
-	return titleStyle.Render("cc-fleet · Agent status") + faintStyle.Render("    tab → Dynamic Workflows")
-}
-
-// renderAsFooter is the contextual footer per asMode; the boxes level swaps in the card
-// keys while the cursor sits on a job row (its card is inline there).
-func (m Model) renderAsFooter() string {
-	switch m.asMode {
-	case asModeProjects:
-		return footer("↑/↓ project · →/⏎ open · esc vendors · tab dynamic workflows · r refresh · q quit")
-	case asModeSessions:
-		return footer("↑/↓ session · →/⏎ open · ← back · r refresh · tab dynamic workflows · esc vendors · q quit")
-	case asModeEntity:
-		return footer("↑/↓ row · j/k scroll · ⏎ expand · h hide · s show · ←/esc back · r refresh · q quit")
-	default:
-		if _, onJob := m.boxJob(); onJob {
-			return footer("↑/↓ row · j/k scroll · ⏎ expand · ←/esc back · r refresh · q quit")
-		}
-		return footer("↑/↓ row · →/⏎ detail · ← back · r refresh · tab dynamic workflows · esc vendors · q quit")
-	}
-}
-
-// viewWorkflows renders the native-mirror Workflows board: a persistent run header + ONE enclosing
-// master-detail box that re-roots on wfMode (run picker → Phases overview → agent detail). The agent
-// ROWS show only field-source-safe data — status / metric columns + the per-agent Activity feed
-// (tool name + masked arg), NEVER Result.Result. The focused agent's inline detail additionally
-// reads its prompt/output from the leaf io files (PersistIO opt-in). Run name, phase title, agent
-// label, model, and tool signatures are opaque
-// operator/model metadata sanitized through sessiontitle.CleanTitle before display.
-func (m Model) viewWorkflows() string {
-	var b strings.Builder
-	switch {
-	case m.loading:
-		b.WriteString(titleStyle.Render("cc-fleet · Dynamic Workflows") + "\n\nloading…")
-	case m.workflowsErr != nil:
-		b.WriteString(titleStyle.Render("cc-fleet · Dynamic Workflows") + "\n\n" +
-			errStyle.Render("error: "+sessiontitle.CleanTitle(m.workflowsErr.Error())))
-	case m.wfMode == wfModeProjects:
-		b.WriteString(m.viewWfProjects())
-	case m.wfMode == wfModePicker:
-		b.WriteString(m.viewWfPicker())
-	case m.wfMode == wfModeAgent:
-		b.WriteString(m.viewWfAgent())
-	default:
-		if _, ok := m.focusedGroup(); !ok {
-			b.WriteString(titleStyle.Render("cc-fleet · Dynamic Workflows") +
-				faintStyle.Render("    tab → Vendors") + "\n\n" + faintStyle.Render("(no workflow runs)"))
-		} else {
-			b.WriteString(m.viewWfPhases())
-		}
-	}
+	// Run-control outcomes + the save-workflow name prompt (the run drill's controls).
 	switch {
 	case m.wfSaving:
 		b.WriteString("\n" + faintStyle.Render("save as: ") + m.wfSaveInput.View() +
@@ -284,8 +230,36 @@ func (m Model) viewWorkflows() string {
 		}
 		b.WriteString("\n" + style.Render(sessiontitle.CleanTitle(m.workflowStatus)))
 	}
-	b.WriteString("\n" + renderWfFooter(m.wfMode))
+	b.WriteString("\n" + m.renderAsFooter())
 	return b.String()
+}
+
+// spawnTitle is the Agent-status app title + tab hint (picker / empty / loading / error
+// states; the groups and entity levels show the session header instead).
+func (m Model) spawnTitle() string {
+	return titleStyle.Render("cc-fleet · Agent status") + faintStyle.Render("    tab → Vendors")
+}
+
+// renderAsFooter is the contextual footer per asMode; the boxes level swaps in the card
+// keys while the cursor sits on a job row (its card is inline there).
+func (m Model) renderAsFooter() string {
+	switch m.asMode {
+	case asModeProjects:
+		return footer("↑/↓ project · →/⏎ open · esc/tab vendors · r refresh · q quit")
+	case asModeSessions:
+		return footer("↑/↓ session · →/⏎ open · ← back · r refresh · esc/tab vendors · q quit")
+	case asModeEntity:
+		return footer("↑/↓ row · j/k scroll · ⏎ expand · h hide · s show · ←/esc back · r refresh · q quit")
+	case asModeRunPhases:
+		return footer("↑/↓ phase · → agents · r restart · x stop · d delete · s save · ←/esc back · R refresh · q quit")
+	case asModeRunAgent:
+		return footer("↑/↓ agent · j/k scroll · ⏎ prompt · r restart agent · x stop · s save · ←/esc back · R refresh · q quit")
+	default:
+		if _, onJob := m.boxJob(); onJob {
+			return footer("↑/↓ row · j/k scroll · ⏎ expand · ←/esc back · r refresh · q quit")
+		}
+		return footer("↑/↓ row · →/⏎ detail · d delete run · ← back · r refresh · esc/tab vendors · q quit")
+	}
 }
 
 // statusDot maps a leaf/run/phase status to a colored glyph: done ✔ (green), running ● (accent),
@@ -438,43 +412,14 @@ func (m Model) runTokens(g runGroup) int {
 	return total
 }
 
-// renderRunHeader is the persistent native header, THREE lines: line 1 is the bold run name (left) and, when
-// the run recorded it, the launching project dir (right-aligned); a blank spacer; then the description
-// (left) + the right-aligned "<done>/<total> agents · <elapsed> · ↓ <tokens> tokens" (just the summary when there's no
-// description). Each text line is width-bounded so a long name/path/description can't wrap onto an extra row
-// and shift the fixed-height box down.
+// renderRunHeader is the run drill's header — the board's unified chrome: line 1 = the
+// fixed app title (run cwd right-aligned), a blank spacer, line 3 = the run label beside
+// the right-aligned "<done>/<total> agents · <elapsed> · ↓ <tokens> tokens" rollup.
 func (m Model) renderRunHeader(g runGroup) string {
 	done, total := runAgentCounts(g)
-	bw := m.boardInner() // header aligns with the inset box; the full-width rule overhangs both
-	// Line 1: run name (left) + project dir (right-aligned, home-abbreviated, tail kept). The name takes
-	// the width the dir leaves; both bounded so neither wraps.
-	dir, nameW := "", bw
-	if g.cwd != "" {
-		dir = faintStyle.Render(leftTruncCols(sessiontitle.CleanTitle(prettyDir(g.cwd)), bw/2))
-		nameW = bw - lipgloss.Width(dir) - 1
-	}
-	name := titleStyle.Render(truncCols(m.runLabel(g), nameW))
-	line1 := name
-	if dir != "" {
-		gap := bw - lipgloss.Width(name) - lipgloss.Width(dir)
-		if gap < 1 {
-			gap = 1
-		}
-		line1 = name + strings.Repeat(" ", gap) + dir
-	}
-	right := liveStyle.Render(fmt.Sprintf("%d/%d agents · %s · ↓ %s tokens", done, total, g.elapsed(), humanTokens(m.runTokens(g))))
-	left := ""
-	if g.description != "" {
-		left = liveStyle.Render(trunc(sessiontitle.CleanTitle(g.description), 80))
-	}
-	gap := bw - lipgloss.Width(left) - lipgloss.Width(right)
-	if gap < 1 {
-		// A long description must not wrap the third line onto a fourth — that would shift the fixed-height
-		// box down. Truncate the description to fit beside the right summary.
-		left = boxCell(left, bw-lipgloss.Width(right)-1)
-		gap = 1
-	}
-	return line1 + "\n\n" + left + strings.Repeat(" ", gap) + right
+	bw := m.boardInner()
+	right := fmt.Sprintf("%d/%d agents · %s · ↓ %s tokens", done, total, g.elapsed(), humanTokens(m.runTokens(g)))
+	return m.appTitleLine(g.cwd) + "\n\n" + headerSummaryLine(m.runLabel(g), right, bw)
 }
 
 // boardBodyHeight is the inner row budget for the master-detail box (drives right-pane scroll). It
@@ -620,55 +565,6 @@ func (m Model) paneWidths(leftW int) (left, right int) {
 	return leftW, avail - leftW
 }
 
-// renderWfAppHeader is the project rail's header — the same THREE-line + rule chrome the
-// deeper levels show (the run header), so changing levels never reshapes the screen.
-func (m Model) renderWfAppHeader() string {
-	bw := m.boardInner()
-	projects := m.wfProjects()
-	left, right := "", ""
-	if m.wfProjectCursor < len(projects) {
-		p := projects[m.wfProjectCursor]
-		left = sessiontitle.CleanTitle(projectLabel(p.dir))
-		right = fmt.Sprintf("%d runs", len(p.groups))
-	}
-	return titleStyle.Render("cc-fleet · Dynamic Workflows") + faintStyle.Render("    tab → Vendors") +
-		"\n\n" + headerSummaryLine(left, right, bw)
-}
-
-// viewWfProjects is L0 (>1 project): the app header above one box — the project rail | the
-// cursored project's run rows.
-func (m Model) viewWfProjects() string {
-	projects := m.wfProjects()
-	var leftLines []string
-	for i, p := range projects {
-		marker := "  "
-		label := leftTruncCols(sessiontitle.CleanTitle(projectLabel(p.dir)), 28)
-		if i == m.wfProjectCursor {
-			marker = cursorStyle.Render("❯ ")
-			label = selectedStyle.Render(label)
-		} else {
-			label = liveStyle.Render(label)
-		}
-		leftLines = append(leftLines, fmt.Sprintf("%s%s  %s", marker, label,
-			faintStyle.Render(fmt.Sprintf("%d", len(p.groups)))))
-	}
-	leftW, rightW := m.paneWidths(leftWidth("Projects", leftLines, m.boardInner()))
-	rightTitle := "runs"
-	rightLines := []string{faintStyle.Render("(none)")}
-	if m.wfProjectCursor < len(projects) {
-		p := projects[m.wfProjectCursor]
-		rightTitle = fmt.Sprintf("%s · %d runs", leftTruncCols(sessiontitle.CleanTitle(projectLabel(p.dir)), 24), len(p.groups))
-		rightLines = nil
-		for _, g := range p.groups {
-			rightLines = append(rightLines, m.renderRunRow(g, rightW, false))
-		}
-	}
-	bodyH := m.boardBodyHeight()
-	leftLines = windowLines(leftLines, m.wfProjectCursor, bodyH)
-	return indentBox(m.renderWfAppHeader(), boardMargin) + "\n" + m.headerRule() + "\n" +
-		indentBox(renderBoard("Projects", leftLines, rightTitle, rightLines, leftW, rightW, bodyH, 0), boardMargin)
-}
-
 // renderRunRow is one run row: "<dot> <name (short id)>" left; "<done>/<total> agents ·
 // <elapsed>[ · <started MM-DD HH:MM>]" right-aligned. selected marks the picker's cursored row.
 func (m Model) renderRunRow(g runGroup, width int, selected bool) string {
@@ -688,91 +584,6 @@ func (m Model) renderRunRow(g runGroup, width int, selected bool) string {
 		metrics += " · " + t.Format("01-02 15:04")
 	}
 	return joinRowEnds(left, faintStyle.Render(metrics), width)
-}
-
-// renderWfProjectHeader is the run picker's header — the CONTAINER the user descended into:
-// the project label (full path right-aligned) over its run count. The cursored run names
-// only the right pane (the preview), never the header.
-func (m Model) renderWfProjectHeader(p wfProject) string {
-	bw := m.boardInner()
-	line1 := titleStyle.Render("cc-fleet · Dynamic Workflows") + faintStyle.Render("    tab → Vendors")
-	if p.dir != "" {
-		d := faintStyle.Render(leftTruncCols(sessiontitle.CleanTitle(prettyDir(p.dir)), bw/2))
-		gap := bw - lipgloss.Width(line1) - lipgloss.Width(d)
-		if gap < 1 {
-			gap = 1
-		}
-		line1 += strings.Repeat(" ", gap) + d
-	}
-	// Fixed on the container label, like the agent board's project header.
-	return line1 + "\n\n" + headerSummaryLine(sessiontitle.CleanTitle(projectLabel(p.dir)),
-		fmt.Sprintf("%d runs", len(p.groups)), bw)
-}
-
-// viewWfPicker is the run picker (the focused project's runs, shown only when it has >1):
-// the PROJECT's header above one box — the run rail | the cursored run's overview (session,
-// started, phases).
-func (m Model) viewWfPicker() string {
-	p, ok := m.focusedWfProjectGroup()
-	if !ok {
-		return titleStyle.Render("cc-fleet · Dynamic Workflows") + faintStyle.Render("    tab → Vendors") +
-			"\n\n" + faintStyle.Render("(no workflow runs)")
-	}
-	var leftLines []string
-	for i, g := range p.groups {
-		marker := "  "
-		name := trunc(m.runLabel(g), 36)
-		if i == m.wfRunCursor {
-			marker = cursorStyle.Render("❯ ")
-			name = selectedStyle.Render(name)
-		} else {
-			name = labelStyle(g.status).Render(name)
-		}
-		leftLines = append(leftLines, marker+statusDot(g.status)+" "+name)
-	}
-	leftW, rightW := m.paneWidths(leftWidth("Runs", leftLines, m.boardInner()))
-	rightTitle := "overview"
-	var rightLines []string
-	if m.wfRunCursor < len(p.groups) {
-		g := p.groups[m.wfRunCursor]
-		rightTitle = trunc(m.runLabel(g), rightW-6)
-		rightLines = m.runOverviewLines(g, rightW)
-	}
-	bodyH := m.boardBodyHeight()
-	leftLines = windowLines(leftLines, m.wfRunCursor, bodyH)
-	return indentBox(m.renderWfProjectHeader(p), boardMargin) + "\n" + m.headerRule() + "\n" +
-		indentBox(renderBoard("Runs", leftLines, rightTitle, rightLines, leftW, rightW, bodyH, 0), boardMargin)
-}
-
-// runOverviewLines is the picker's right pane: the cursored run's session + phase rollup —
-// what ⏎ will open, previewed in place.
-func (m Model) runOverviewLines(g runGroup, rightW int) []string {
-	var lines []string
-	if g.sessionID != "" {
-		// The FULL session id (sessionLabelFull) keeps the run findable by id; detailField
-		// wraps an over-wide value instead of truncating it.
-		detailField(&lines, "session", m.sessionLabelFull(g.sessionID), rightW)
-	}
-	if g.startedAt != "" {
-		detailField(&lines, "started", sessiontitle.CleanTitle(g.startedAt), rightW)
-	}
-	if len(g.phases) > 0 {
-		lines = append(lines, "", faintStyle.Render(fmt.Sprintf("Phases · %d", len(g.phases))))
-		for i, ph := range g.phases {
-			done, total := phaseAgentCounts(ph)
-			glyph := fmt.Sprintf("%d", i+1)
-			if st := phaseStatus(done, total); st == "done" {
-				glyph = statusDot("done")
-			}
-			counts := ""
-			if total > 0 {
-				counts = faintStyle.Render(fmt.Sprintf("  %d/%d", done, total))
-			}
-			lines = append(lines, " "+glyph+" "+
-				contentStyle.Render(trunc(sessiontitle.CleanTitle(ph.title), 28))+counts)
-		}
-	}
-	return lines
 }
 
 // viewWfPhases is L1: the run header above one box — "Phases | the selected phase's agents". The box
@@ -1168,21 +979,6 @@ func (m Model) renderOutcome(j subagent.Result) string {
 	}
 }
 
-// renderWfFooter is the contextual footer per wfMode. NOTE: no `p pause` — pause is a deliberate
-// non-goal (vendor leaves have no cooperative-pause protocol).
-func renderWfFooter(mode wfMode) string {
-	switch mode {
-	case wfModeProjects:
-		return footer("↑/↓ project · →/⏎ open · esc/tab vendors · R refresh · q quit")
-	case wfModePicker:
-		return footer("↑/↓ run · →/⏎ open · d delete · ← back · esc/tab vendors · R refresh · q quit")
-	case wfModeAgent:
-		return footer("↑/↓ agent · j/k scroll · ⏎ prompt · r restart agent · x stop · s save · ← back · q quit")
-	default:
-		return footer("↑/↓ phase · → agents · r restart · x stop · d delete · s save · ← back · tab vendors · q quit")
-	}
-}
-
 // humanTokens compacts a token count: <1000 verbatim, else N.Nk (e.g. 50.7k), else
 // N.NM for millions.
 func humanTokens(n int) string {
@@ -1240,16 +1036,20 @@ func headerSummaryLine(left, right string, bw int) string {
 	return l + strings.Repeat(" ", gap) + r
 }
 
-// projectCounts is one project's "N sessions[ · T teammates][ · J subagents]" rollup.
+// projectCounts is one project's "N sessions[ · K workflows][ · T teammates][ · J subagents]" rollup.
 func projectCounts(p asProject) string {
-	mates, jobs := 0, 0
+	mates, jobs, runs := 0, 0, 0
 	for _, sess := range p.sessions {
 		for _, t := range sess.teams {
 			mates += len(t.members)
 		}
 		jobs += len(sess.jobs)
+		runs += len(sess.runs)
 	}
 	out := fmt.Sprintf("%d sessions", len(p.sessions))
+	if runs > 0 {
+		out += fmt.Sprintf(" · %d workflows", runs)
+	}
 	if mates > 0 {
 		out += fmt.Sprintf(" · %d teammates", mates)
 	}
@@ -1377,6 +1177,12 @@ func (m Model) sessionOverviewLines(p asProject, rightW int) []string {
 	}
 	s := p.sessions[m.asSessionCursor]
 	var lines []string
+	if len(s.runs) > 0 {
+		lines = append(lines, "", faintStyle.Render(fmt.Sprintf("Dynamic Workflows · %d", len(s.runs))))
+		for _, g := range s.runs {
+			lines = append(lines, " "+m.renderRunRow(g, rightW-1, false))
+		}
+	}
 	if len(s.teams) > 0 {
 		lines = append(lines, "", faintStyle.Render("Agent Teams"))
 		for _, t := range s.teams {
@@ -1430,6 +1236,9 @@ func asSessionCounts(s asSession) string {
 		}
 	}
 	var parts []string
+	if len(s.runs) > 0 {
+		parts = append(parts, fmt.Sprintf("%d workflows", len(s.runs)))
+	}
 	if mates > 0 {
 		seg := fmt.Sprintf("%d teammates", mates)
 		if hidden > 0 {
@@ -1566,8 +1375,11 @@ func (m Model) viewAsBoxes() string {
 			faintStyle.Render("(no live agents — none spawned, and no subagent jobs)")
 	}
 	header := indentBox(m.renderSessionHeader(s), boardMargin) + "\n" + m.headerRule() + "\n"
-	teamsBody, jobsBody := m.splitBoxHeights(s)
+	runsBody, teamsBody, jobsBody := m.splitBoxHeights(s)
 	var parts []string
+	if len(s.runs) > 0 {
+		parts = append(parts, indentBox(m.renderRunsBox(s, runsBody), boardMargin))
+	}
 	if len(s.teams) > 0 {
 		parts = append(parts, indentBox(m.renderTeamsBox(s, teamsBody), boardMargin))
 	}
@@ -1581,21 +1393,40 @@ func (m Model) viewAsBoxes() string {
 	return header + strings.Join(parts, "\n")
 }
 
-// splitBoxHeights divides the body budget between the two boxes: the Agent Teams box gets
-// what its content needs up to half — only up to a quarter while the cursor sits on a job
-// row, whose inline card then takes the rest; a missing kind hands its share to the other.
-// The two extra border rows of the second box come off the budget.
-func (m Model) splitBoxHeights(s asSession) (teams, jobs int) {
-	total := m.boardBodyHeight()
-	if len(s.teams) == 0 {
-		return 0, total
+// splitBoxHeights divides the body budget across the session's boxes: the Dynamic
+// Workflows box gets its content up to a quarter, the Agent Teams box its content up to
+// half of the rest — only up to a quarter while the cursor sits on a job row, whose inline
+// card then takes the remainder; a missing kind hands its share down. Each extra box costs
+// its two border rows.
+func (m Model) splitBoxHeights(s asSession) (runs, teams, jobs int) {
+	avail := m.boardBodyHeight()
+	boxes := 0
+	for _, n := range []int{len(s.runs), len(s.teams), len(s.jobs)} {
+		if n > 0 {
+			boxes++
+		}
 	}
-	if len(s.jobs) == 0 {
-		return total, 0
+	if boxes > 1 {
+		avail -= 2 * (boxes - 1)
 	}
-	avail := total - 2
 	if avail < 4 {
 		avail = 4
+	}
+	if len(s.runs) > 0 {
+		runs = len(s.runs)
+		if cap := avail / 4; runs > cap {
+			runs = cap
+		}
+		if runs < 1 {
+			runs = 1
+		}
+		avail -= runs
+	}
+	if len(s.teams) == 0 {
+		return runs, 0, avail
+	}
+	if len(s.jobs) == 0 {
+		return runs, avail, 0
 	}
 	need := len(s.teams)
 	if ti := m.boxTeamIdx(s); ti >= 0 && len(s.teams[ti].members) > need {
@@ -1612,18 +1443,22 @@ func (m Model) splitBoxHeights(s asSession) (teams, jobs int) {
 	if teams < 2 {
 		teams = 2
 	}
-	return teams, avail - teams
+	return runs, teams, avail - teams
 }
 
 // boxTeamIdx is the team the Agent Teams box previews: the cursored team while the L2
-// cursor sits in the teams range, else the last team (the cursor moved into the Subagents
-// box).
+// cursor sits in the teams range, the first team while it is above (the runs box), else
+// the last team (the cursor moved into the Subagents box).
 func (m Model) boxTeamIdx(s asSession) int {
 	if len(s.teams) == 0 {
 		return -1
 	}
-	if m.asBoxCursor < len(s.teams) {
-		return m.asBoxCursor
+	i := m.asBoxCursor - len(s.runs)
+	switch {
+	case i < 0:
+		return 0
+	case i < len(s.teams):
+		return i
 	}
 	return len(s.teams) - 1
 }
@@ -1641,7 +1476,7 @@ func (m Model) renderTeamsBox(s asSession, bodyH int) string {
 			}
 		}
 		title := trunc(sessiontitle.CleanTitle(displayTeam(t.name)), 20)
-		if i == m.asBoxCursor {
+		if i == m.asBoxCursor-len(s.runs) {
 			marker = cursorStyle.Render("❯ ")
 			title = selectedStyle.Render(title)
 		} else {
@@ -1669,7 +1504,7 @@ func (m Model) renderTeamsBox(s asSession, bodyH int) string {
 // cursor marking the active row.
 func (m Model) renderJobsBox(s asSession, bodyH int) string {
 	innerW := m.boardInner() - 6
-	cursor := m.asBoxCursor - len(s.teams)
+	cursor := m.asBoxCursor - len(s.runs) - len(s.teams)
 	var lines []string
 	for i, j := range s.jobs {
 		marker := "  "
@@ -1688,7 +1523,7 @@ func (m Model) renderJobsBox(s asSession, bodyH int) string {
 // when the L2 continuum sits in the jobs range — shared by renderJobsBoxDetail and
 // jobsBoxRightWidth so the scroll clamp and the render agree on the card width.
 func (m Model) jobsBoxLeftLines(s asSession) []string {
-	cursor := m.asBoxCursor - len(s.teams)
+	cursor := m.asBoxCursor - len(s.runs) - len(s.teams)
 	var lines []string
 	for i, j := range s.jobs {
 		marker := "  "
@@ -1724,9 +1559,24 @@ func (m Model) renderJobsBoxDetail(s asSession, bodyH int) string {
 		cardTitle = shortJobID(sessiontitle.CleanTitle(j.JobID))
 		rightLines = m.jobDetailLines(j, rightW)
 	}
-	cursor := m.asBoxCursor - len(s.teams)
+	cursor := m.asBoxCursor - len(s.runs) - len(s.teams)
 	leftLines = windowLines(leftLines, cursor, bodyH)
 	return renderBoard(listTitle, leftLines, cardTitle, rightLines, leftW, rightW, bodyH, m.clampAsCardScroll(m.asCardScroll))
+}
+
+// renderRunsBox is the Dynamic Workflows box: the session's run rows (newest first), the
+// continuum cursor marking the active row; ⏎ opens the run's Phases level.
+func (m Model) renderRunsBox(s asSession, bodyH int) string {
+	innerW := m.boardInner() - 6
+	var lines []string
+	for i, g := range s.runs {
+		lines = append(lines, m.renderRunRow(g, innerW, i == m.asBoxCursor))
+	}
+	cursor := m.asBoxCursor
+	if cursor >= len(s.runs) {
+		cursor = len(s.runs) - 1
+	}
+	return renderBox(fmt.Sprintf("Dynamic Workflows · %d", len(s.runs)), windowLines(lines, cursor, bodyH), innerW, bodyH)
 }
 
 // renderBox draws a full-width single-pane rounded box with a title segment — the
@@ -2493,20 +2343,6 @@ func (m Model) sessionLabel(id string) string {
 		return trunc(title, 48) + " (" + short + ")"
 	}
 	return short
-}
-
-// sessionLabelFull is sessionLabel for the run-picker header (a free-standing line, not boxed): the
-// /rename title first when known, then the FULL session id in parens (not truncated) so a run is
-// findable by its id. Both stay CleanTitle-scrubbed.
-func (m Model) sessionLabelFull(id string) string {
-	if id == "" {
-		return "(no session)"
-	}
-	full := sessiontitle.CleanTitle(id)
-	if title := sessiontitle.CleanTitle(m.sessionMeta[id].Title); title != "" {
-		return trunc(title, 48) + " (" + full + ")"
-	}
-	return full
 }
 
 func shortSessionID(id string) string {
