@@ -1104,7 +1104,7 @@ func (m Model) renderAppHeader() string {
 }
 
 // viewAsProjects is L0 (>1 project): the app header above one box — the project rail | the
-// cursored project's session rows (title, separated teammate/subagent counts, created time).
+// cursored project's session rows (title, created time).
 func (m Model) viewAsProjects() string {
 	projects := m.asProjects()
 	var leftLines []string
@@ -1241,14 +1241,11 @@ func (m Model) sessionOverviewLines(p asProject, rightW int) []string {
 }
 
 // renderSessionRow is one session row in the L0 right pane: "◆ <title (short id)>" left,
-// the separated counts + created time right-aligned.
+// the created time right-aligned — the header already carries the cursored project's
+// counts, so the row keeps its width for the title.
 func (m Model) renderSessionRow(s asSession, width int) string {
 	left := sessionHdrStyle.Render("◆ ") + liveStyle.Render(trunc(m.sessionLabel(s.sessionID), 44))
-	right := asSessionCounts(s)
-	if c := asCreated(s); c != "" {
-		right += " · " + c
-	}
-	return joinRowEnds(left, faintStyle.Render(right), width)
+	return joinRowEnds(left, faintStyle.Render(asCreated(s)), width)
 }
 
 // asSessionCounts is a session's rollup with the two kinds separated: "N teammates
