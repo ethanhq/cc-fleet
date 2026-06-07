@@ -127,7 +127,14 @@ func Upsert(live []teardown.Teammate, cwdOf func(sessionID string) string) error
 		if tombstoneBlocks(team, newestJoinedAt(members)) {
 			continue
 		}
-		clearTombstone(team)
+		// Clear a tombstone only on respawn evidence: one EXISTS but the members'
+		// JoinedAt is newer (it no longer blocks). A Delete racing in after these
+		// checks leaves its fresh tombstone in place — the record write below may
+		// recreate the file, but List treats a record shadowed by a blocking
+		// tombstone as deleted, so the race never resurrects anything.
+		if tombstoneExists(team) {
+			clearTombstone(team)
+		}
 		rec := Record{Team: team, LastSeen: now.Format(time.RFC3339)}
 		for _, t := range members {
 			var cwd string
@@ -148,6 +155,18 @@ func Upsert(live []teardown.Teammate, cwdOf func(sessionID string) string) error
 	return nil
 }
 
+// newestRecJoinedAt is the newest SpawnTime across a record's members (the same
+// generation marker newestJoinedAt derives from live teammates).
+func newestRecJoinedAt(rec Record) int64 {
+	var newest int64
+	for _, m := range rec.Members {
+		if m.SpawnTime > newest {
+			newest = m.SpawnTime
+		}
+	}
+	return newest
+}
+
 // tombstoneBlocks reports whether team's tombstone is newer than newestJoinedAt
 // (so Upsert must not re-record it). A newer member JoinedAt — a real respawn —
 // does not block. A missing tombstone never blocks. JoinedAt is unix millis.
@@ -161,6 +180,16 @@ func tombstoneBlocks(team string, newestJoinedAt int64) bool {
 		return false
 	}
 	return fi.ModTime().UnixMilli() >= newestJoinedAt
+}
+
+// tombstoneExists reports whether team has a tombstone file at all.
+func tombstoneExists(team string) bool {
+	path, err := recordPath(team, tombstoneExt)
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(path)
+	return err == nil
 }
 
 // clearTombstone removes team's tombstone (best-effort) — called when a real
@@ -247,6 +276,11 @@ func List() ([]Record, error) {
 		}
 		rec, ok := readRecord(filepath.Join(dir, name))
 		if !ok || ids.ValidateTeamName(rec.Team) != nil {
+			continue
+		}
+		// A record shadowed by a blocking tombstone is deleted — a stale sibling
+		// board's Upsert may have recreated the file right after a Delete.
+		if tombstoneBlocks(rec.Team, newestRecJoinedAt(rec)) {
 			continue
 		}
 		valid := true
