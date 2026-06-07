@@ -1465,22 +1465,25 @@ func (m Model) viewAsBoxes() string {
 	header := indentBox(m.renderSessionHeader(s), boardMargin) + "\n" + m.headerRule() + "\n"
 	runsBody, teamsBody, jobsBody := m.splitBoxHeights(s)
 	innerW := m.boardInner() - 6
-	var parts []string
+	// Content boxes keep the canonical order; the empty placeholders sink below them
+	// (an empty kind never carries cursor rows, so the continuum order is unaffected).
+	var parts, empties []string
 	if len(s.runs) > 0 {
 		parts = append(parts, indentBox(m.renderRunsBox(s, runsBody), boardMargin))
 	} else {
-		parts = append(parts, indentBox(emptyKindBox("Dynamic Workflows", innerW), boardMargin))
+		empties = append(empties, indentBox(emptyKindBox("Dynamic Workflows", innerW), boardMargin))
 	}
 	if len(s.teams) > 0 {
 		parts = append(parts, indentBox(m.renderTeamsBox(s, teamsBody), boardMargin))
 	} else {
-		parts = append(parts, indentBox(emptyKindBox("Agent Teams", innerW), boardMargin))
+		empties = append(empties, indentBox(emptyKindBox("Agent Teams", innerW), boardMargin))
 	}
-	if len(s.jobs) == 0 {
-		parts = append(parts, indentBox(emptyKindBox("Subagents · 0", innerW), boardMargin))
-	} else {
+	if len(s.jobs) > 0 {
 		parts = append(parts, indentBox(m.renderJobsBoxDetail(s, jobsBody), boardMargin))
+	} else {
+		empties = append(empties, indentBox(emptyKindBox("Subagents · 0", innerW), boardMargin))
 	}
+	parts = append(parts, empties...)
 	return header + strings.Join(parts, "\n")
 }
 
@@ -1606,11 +1609,13 @@ func (m Model) renderRunsBox(s asSession, bodyH int) string {
 	innerW := m.boardInner() - 6
 	var lines []string
 	for i, g := range s.runs {
-		row := m.renderRunRow(g, innerW-2, i == m.asBoxCursor)
-		if i != m.asBoxCursor {
-			row = "  " + row // the un-cursored marker slot, so the dot column lines up
+		// Both shapes span innerW with a 2-col marker slot, so the dot column and the
+		// right-aligned metrics never shift as the cursor moves.
+		if i == m.asBoxCursor {
+			lines = append(lines, m.renderRunRow(g, innerW, true))
+		} else {
+			lines = append(lines, "  "+m.renderRunRow(g, innerW-2, false))
 		}
-		lines = append(lines, row)
 	}
 	cursor := m.asBoxCursor
 	if cursor >= len(s.runs) {
@@ -1938,17 +1943,17 @@ func (m Model) viewAsEntity() string {
 	leftLines = windowLines(leftLines, m.asEntityCursor, bodyH)
 	board := indentBox(renderBoard(listTitle, leftLines, cardTitle, rightLines, leftW, rightW, bodyH, m.clampAsCardScroll(m.asCardScroll)), boardMargin)
 	// A single-kind session lands here directly (the boxes level is skipped): keep the
-	// three-box silhouette with slim placeholders for the missing collections (a
-	// single-kind session has no runs by definition).
+	// three-box silhouette, with the slim placeholders for the missing collections
+	// BELOW the content (a single-kind session has no runs by definition).
 	if _, single := singleKindSrc(s); single {
 		innerW := m.boardInner() - 6
 		wf := indentBox(emptyKindBox("Dynamic Workflows", innerW), boardMargin)
 		if m.asEntitySrc.jobs {
 			ph := indentBox(emptyKindBox("Agent Teams", innerW), boardMargin)
-			board = wf + "\n" + ph + "\n" + board
+			board = board + "\n" + wf + "\n" + ph
 		} else {
 			ph := indentBox(emptyKindBox("Subagents · 0", innerW), boardMargin)
-			board = wf + "\n" + board + "\n" + ph
+			board = board + "\n" + wf + "\n" + ph
 		}
 	}
 	return indentBox(m.renderSessionHeader(s), boardMargin) + "\n" + m.headerRule() + "\n" + board
