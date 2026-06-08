@@ -78,6 +78,10 @@ func TestAddPicker_CodexRowNoSourceGoesToConsent(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())            // no ~/.codex
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no own login
 	m := NewModel()
+	// The blank config dir also reads as a fresh install with no tmux, so NewModel
+	// opens on the first-run setup nudge; this test exercises the picker, so start
+	// from the provider list.
+	m.screen, m.loading = screenList, true
 	m, _ = press(t, m, "enter")
 	m = pressN(t, m, "down", codexIdx()) // to the codex row
 	m, _ = press(t, m, "enter")
