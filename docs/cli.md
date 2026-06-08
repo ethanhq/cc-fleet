@@ -20,6 +20,8 @@ drive it through plain language, but every command also works directly. Run `cc-
 | `spawn <vendor>` | Spawn a vendor teammate as a tmux pane (Claude layer). |
 | `subagent <vendor>` | Run a one-shot headless vendor subagent. |
 | `run <vendor>` | Launch an interactive vendor-backed `claude` session (foreground; you drive it). |
+| `codex add` / `login` / `logout` / `status` | Register the ChatGPT-subscription provider + manage cc-fleet's own codex login. |
+| `codex-proxy status` / `stop` | Inspect / stop the local codex conversion daemon. |
 | `ps` | List live cc-fleet teammates (`--json`, `--check` for health). |
 | `hide` / `show` | Hide / restore a teammate's tmux pane without killing it. |
 | `teardown <team\|%pane>` | Kill teammate panes and clean up team state. |
@@ -121,6 +123,28 @@ Disabled keys are filtered out before selection. Keys are shown masked everywher
 `~/.config/cc-fleet/secrets/`), or an external manager referenced by `--secret-ref`
 (1Password, Vault, keyring). For non-file backends you provision the secret through that
 backend's own CLI; cc-fleet only resolves it at `keyget` time.
+
+## Codex — reuse a ChatGPT subscription as a provider
+
+A `codex` provider drives OpenAI gpt-5.x through your existing ChatGPT/Codex
+subscription — as a teammate, subagent, workflow leaf, or `cc-fleet run` session:
+
+```bash
+cc-fleet codex add      # register the provider (port + default model auto-picked)
+cc-fleet codex login    # one-time device-code OAuth (prints a URL + code)
+```
+
+The `claude` process speaks the Anthropic API to a loopback conversion daemon
+(`codex-proxy`, started lazily, self-exits when idle with no codex worker left);
+the daemon translates to the OpenAI Responses API and calls the ChatGPT backend.
+The OAuth bearer lives only inside the daemon — `keyget` hands claude a low-value
+loopback handshake secret, and the token never enters env, argv, or any profile.
+cc-fleet keeps its **own** token chain (`codex login`), never reading or writing
+`~/.codex` auth, so the codex CLI's login is unaffected.
+
+> **Unofficial:** reusing a subscription outside the codex CLI may violate
+> OpenAI's terms; the account could be rate-limited or banned. `codex login`
+> asks for explicit confirmation, and quota errors surface with their reset time.
 
 ## Health & repair
 

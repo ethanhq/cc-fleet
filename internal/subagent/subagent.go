@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ethanhq/cc-fleet/internal/childenv"
+	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 	"github.com/ethanhq/cc-fleet/internal/ids"
@@ -87,6 +88,11 @@ func LoadFingerprint() (*fingerprint.Fingerprint, error) { return loadFP() }
 // without relying on the process tree they run under.
 var detectLeadSession = leadsession.Detect
 
+// ensureVendorProxy ensures the codex conversion daemon for a codex provider
+// (a no-op for every other vendor). A package var so tests can stub it without
+// launching a real daemon process.
+var ensureVendorProxy = codexproxy.EnsureForVendor
+
 // Run executes the full subagent pipeline and returns a structured Result. Like
 // Spawn it NEVER returns a Go error — every failure path produces a Result.
 // It builds its own timeout context (self-contained, like Spawn).
@@ -146,6 +152,13 @@ func Run(req Request) Result {
 		return fail(ErrCodeFingerprintStale,
 			err.Error(),
 			req.Vendor, suggestionFor(ErrCodeFingerprintStale))
+	}
+
+	// 3b. For a codex provider, ensure the conversion daemon is up — after the
+	//     fingerprint gate, before the profile write, so a daemon failure is
+	//     fail-before-mutation and leaves no profile behind.
+	if err := ensureVendorProxy(v); err != nil {
+		return fail(ErrCodeProxyUnavailable, err.Error(), req.Vendor, suggestionFor(ErrCodeProxyUnavailable))
 	}
 
 	// 4. Ensure the per-vendor profile exists. Atomic temp+rename + idempotent,

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/fileutil"
 	"github.com/ethanhq/cc-fleet/internal/models"
@@ -218,7 +219,9 @@ type AddResult struct {
 //  2. refuse to overwrite an existing entry (use Edit/Remove instead)
 //  3. if APIKey is set, write it to <SecretsDir>/<SecretRef> at 0600
 //  4. probe the vendor's /v1/models endpoint (3s) using the same secrets path
-//     keyget would — failures map to KEY_INVALID, VENDOR_UNREACHABLE, ADD_FAILED
+//     keyget would — failures map to KEY_INVALID, VENDOR_UNREACHABLE, ADD_FAILED.
+//     A codex-oauth vendor skips the probe (its models endpoint is a lazily-started
+//     loopback daemon) and seeds the static codex model list instead.
 //  5. commit vendors.toml + write profile JSON + populate the models cache
 //
 // On any failure after step 3, the file-backend secret is rolled back so the
@@ -296,16 +299,28 @@ func addLocked(req AddRequest) (*AddResult, error) {
 	}
 
 	// Synchronous probe so a bad key fails the add (not silently later). Failure
-	// here rolls back vendors.toml + the inline secret.
-	probeCtx, cancel := context.WithTimeout(context.Background(), probeTimeout)
-	defer cancel()
-	fetched, fetchErr := models.Fetch(probeCtx, v)
-	if fetchErr != nil {
-		// Roll back the staged vendor row before returning the typed error.
-		delete(cfg.Vendors, req.Name)
-		_ = config.Save(cfg)
-		_ = rollbackInlineSecret(req)
-		return nil, opErr(classifyAddErr(fetchErr), fetchErr)
+	// here rolls back vendors.toml + the inline secret. A codex provider skips it:
+	// its /v1/models is served by a lazily-started daemon, and starting that daemon
+	// under the vendors-config lock is forbidden (the proxy lock must not nest with
+	// it). Instead the cache is seeded with codex's static model list so a fresh
+	// entry carries the real models (not zero) and model resolution works at once.
+	var fetched []models.Model
+	if v.SecretBackend == codexproxy.SecretBackend {
+		for _, id := range codexproxy.StaticModels() {
+			fetched = append(fetched, models.Model{ID: id})
+		}
+	} else {
+		probeCtx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+		defer cancel()
+		f, fetchErr := models.Fetch(probeCtx, v)
+		if fetchErr != nil {
+			// Roll back the staged vendor row before returning the typed error.
+			delete(cfg.Vendors, req.Name)
+			_ = config.Save(cfg)
+			_ = rollbackInlineSecret(req)
+			return nil, opErr(classifyAddErr(fetchErr), fetchErr)
+		}
+		fetched = f
 	}
 
 	// All good — write the profile JSON and refresh the models cache so the
@@ -874,6 +889,13 @@ func Uninstall(req UninstallRequest) (*UninstallResult, error) {
 	} else {
 		res.Removed = append(res.Removed, histPath)
 	}
+
+	// 2d. Codex proxy daemon + its state files. Routed through codexproxy.Purge
+	// so the file names stay owned by that package; the daemon is stopped first.
+	// The login token chain is a credential, so it follows KeepSecrets.
+	cpRemoved, cpKept := codexproxy.Purge(req.KeepSecrets)
+	res.Removed = append(res.Removed, cpRemoved...)
+	res.Kept = append(res.Kept, cpKept...)
 
 	// 3. Secrets directory (or its contents, depending on KeepSecrets).
 	secretsDir, err := config.SecretsDir()

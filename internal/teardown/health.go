@@ -24,6 +24,7 @@ const (
 	errClassInsufficient = "insufficient_balance" // out of balance / quota
 	errClassAuth         = "auth"                 // HTTP 401/403 / bad key
 	errClassAPIError     = "api_error"            // generic vendor API failure
+	errClassCloudflare   = "cloudflare_blocked"   // Cloudflare edge blocked this IP/client
 )
 
 // captureFn is the seam tests substitute so they never need a live tmux server
@@ -89,8 +90,8 @@ func capturePane(socket, paneID string) (string, error) {
 //
 // It returns ONLY canonical strings — never any substring of the input — so a
 // key fragment in the pane can't leak into ps output (see AnnotateHealth's
-// SECURITY note). The signature matching + priority (out-of-balance > auth >
-// rate-limit > generic API error) live in internal/vendorclass so the
+// SECURITY note). The signature matching + priority (out-of-balance > cloudflare
+// > auth > rate-limit > generic API error) live in internal/vendorclass so the
 // subagent envelope classifier shares the exact same vocabulary; here we map
 // the shared class back onto teardown's status/error_class/detail triple.
 func classifyPaneOutput(text string) (status, errorClass, detail string) {
@@ -98,6 +99,9 @@ func classifyPaneOutput(text string) (status, errorClass, detail string) {
 	case vendorclass.ClassInsufficientBalance:
 		return statusError, errClassInsufficient,
 			"vendor account out of balance / quota — top up or switch vendor"
+	case vendorclass.ClassCloudflareBlocked:
+		return statusError, errClassCloudflare,
+			"vendor edge (Cloudflare) blocked this IP/client — switch network or retry later"
 	case vendorclass.ClassAuth:
 		return statusError, errClassAuth,
 			"vendor rejected the API key (HTTP 401/403) — rotate the key"

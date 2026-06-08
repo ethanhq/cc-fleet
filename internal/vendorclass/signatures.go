@@ -5,10 +5,10 @@
 //   - internal/subagent parses claude's inner `is_error` result envelope.
 //
 // Both must map vendor noise into the same small vocabulary
-// (insufficient_balance / auth / rate_limit / api_error) with the same priority,
-// and a reachability probe (the spawn / subagent `--probe`) must classify a
-// models-endpoint result identically. Keeping both here stops the two copies
-// from drifting.
+// (insufficient_balance / cloudflare_blocked / auth / rate_limit / api_error) with
+// the same priority, and a reachability probe (the spawn / subagent `--probe`) must
+// classify a models-endpoint result identically. Keeping both here stops the two
+// copies from drifting.
 //
 // Imports are deliberately limited to config / models / secrets / neterr so this
 // package never forms an import cycle with spawn / teardown / subagent.
@@ -20,12 +20,13 @@ import "strings"
 // error_class vocabulary so the lead's mental model is identical across
 // `ps --check` (teammate) and `subagent` error codes:
 // auth↔KEY_INVALID, rate_limit↔RATE_LIMITED, insufficient_balance↔INSUFFICIENT_BALANCE,
-// api_error↔VENDOR_API_ERROR.
+// api_error↔VENDOR_API_ERROR, cloudflare_blocked↔CODEX_CLOUDFLARE_BLOCKED.
 const (
 	ClassInsufficientBalance = "insufficient_balance"
 	ClassAuth                = "auth"
 	ClassRateLimit           = "rate_limit"
 	ClassAPIError            = "api_error"
+	ClassCloudflareBlocked   = "cloudflare_blocked"
 )
 
 // Signature sets are matched against the lowercased input. We prefer specific
@@ -39,6 +40,12 @@ var (
 		"insufficient balance", "insufficient_quota", "insufficient quota",
 		"insufficient funds", "out of credits", "quota exceeded",
 		"exceeded your current quota",
+	}
+	// cloudflareSignatures must be matched BEFORE authSignatures: a Cloudflare
+	// edge block answers 403, so the generic "(403)" auth rule would otherwise
+	// misread an IP/client block as a bad key.
+	cloudflareSignatures = []string{
+		"blocked by cloudflare", "cf-mitigated",
 	}
 	authSignatures = []string{
 		"unauthorized", "invalid api key", "invalid_api_key",
@@ -58,16 +65,20 @@ var (
 // MatchClass classifies vendor error text into one of the Class* constants, or
 // "" when no signature matches.
 //
-// Priority: out-of-balance > auth > rate-limit > generic API error. A single
-// real-world line like "API Error: Request rejected (429) 余额不足无可用资源包"
-// carries several signals at once; the most actionable root cause wins — being
-// out of balance means a retry can't help (top up / switch vendor), whereas a
-// bare 429 might clear on its own, so balance must outrank the 429 symptom.
+// Priority: out-of-balance > cloudflare > auth > rate-limit > generic API
+// error. A single real-world line like "API Error: Request rejected (429)
+// 余额不足无可用资源包" carries several signals at once; the most actionable
+// root cause wins — being out of balance means a retry can't help (top up /
+// switch vendor), whereas a bare 429 might clear on its own, so balance must
+// outrank the 429 symptom. Cloudflare outranks auth because an edge block
+// answers 403, which the generic auth rule would misread as a bad key.
 func MatchClass(text string) string {
 	h := strings.ToLower(text)
 	switch {
 	case containsAny(h, balanceSignatures...):
 		return ClassInsufficientBalance
+	case containsAny(h, cloudflareSignatures...):
+		return ClassCloudflareBlocked
 	case containsAny(h, authSignatures...):
 		return ClassAuth
 	case containsAny(h, rateLimitSignatures...):

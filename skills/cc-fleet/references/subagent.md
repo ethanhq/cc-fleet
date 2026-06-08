@@ -70,6 +70,8 @@ Useful flags:
 | `VENDOR_UNREACHABLE` | Transport failure (only with `--probe`). | `cc-fleet doctor`; if urgent, fall back to native `Agent`. |
 | `SUBAGENT_TIMEOUT` | Exceeded `--timeout`. | Real long task → raise `--timeout` (or use `--background`) and retry; suspected hang → switch vendor / fall back. |
 | `VENDOR_API_ERROR` | Other vendor failure (5xx / overloaded). | Retry once or switch vendor. |
+| `CODEX_PROXY_UNAVAILABLE` | The codex conversion daemon could not start (no login, or the loopback port is held). | Tell the user: `cc-fleet codex login`, or free / change the port (`cc-fleet codex add --port <n>`). |
+| `CODEX_CLOUDFLARE_BLOCKED` | The ChatGPT backend's edge blocked this IP/client — not a key problem. | Switch network/IP or retry later; don't rotate credentials. |
 | `SUBAGENT_FAILED` | claude exited with no parseable result (or turn/budget exhaustion). | Inspect; retry or switch vendor. |
 
 ## Batch fan-out example (parallel, each returns synchronously)

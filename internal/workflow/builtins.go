@@ -9,6 +9,7 @@ import (
 
 	"go.starlark.net/starlark"
 
+	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
@@ -310,6 +311,17 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 			e.emitLeaf("cached", phaseTag, label, vendor, model)
 			return v, nil
 		}
+	}
+
+	// For a codex provider, ensure the conversion daemon is up just before the leaf
+	// executes — AFTER the journal cache-hit return (a cached leaf needs no daemon)
+	// and after argument validation (an invalid call must not start one), but BEFORE
+	// the budget gate so the gate→reserve step stays GIL-atomic (runBlocking releases
+	// the GIL, which must not happen between gate and reserve). A no-op for non-codex.
+	var proxyErr error
+	e.sched.runBlocking(func() { proxyErr = codexproxy.EnsureForVendorName(vendor) })
+	if proxyErr != nil {
+		return nil, fmt.Errorf("agent(%s): codex proxy unavailable: %w", vendor, proxyErr)
 	}
 
 	// Budget gate: a real exec is about to spend, so refuse once a cap would be breached.

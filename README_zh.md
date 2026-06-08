@@ -170,6 +170,21 @@ cc-fleet run deepseek --dangerously-skip-permissions
 以用更便宜或不同司法辖区的模型，而不只是用来委派任务。`--model` 覆盖默认模型；`--permission-mode` /
 `--dangerously-skip-permissions` 设定权限模式。**无需 tmux、无需 agent-teams** —— 一个终端就够。
 
+### 用 ChatGPT 订阅当 provider（codex）
+
+> *有 Codex / ChatGPT 订阅？也能直接驱动 gpt-5.x。*
+
+```bash
+cc-fleet codex add && cc-fleet codex login
+```
+
+一次 `codex add` 加一次设备码登录，订阅就成了一个普通 provider —— teammate、subagent、
+workflow leaf、`cc-fleet run` 全部可用，由 gpt-5.x 作答。本地转换 daemon 把 Claude 的
+Anthropic 调用翻译成 OpenAI Responses API；OAuth token 只存在于 daemon 内部（绝不进
+env / argv / profile），且 cc-fleet 维护自己独立的登录，不碰 codex CLI 的认证。
+**非官方用法** —— `codex login` 会先要求明确确认；详见
+[CLI 指南](docs/cli.md#codex--reuse-a-chatgpt-subscription-as-a-provider)。
+
 ### 更多示例提示词
 
 - *"开一个 glm teammate 和一个 deepseek teammate，各自总结自己模型的强项，然后对比两者。"*

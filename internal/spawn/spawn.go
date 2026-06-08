@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 	"github.com/ethanhq/cc-fleet/internal/ids"
@@ -161,7 +162,10 @@ func Spawn(req Request) Result {
 	}
 
 	// 4. Optional vendor probe (3s GET against models_endpoint, with key).
-	if req.Probe {
+	//    Skipped for a codex provider: its models endpoint is served by the
+	//    lazily-started conversion daemon, so probing here (before 5c starts it)
+	//    would always fail — daemon readiness at 5c is the real health signal.
+	if req.Probe && v.SecretBackend != codexproxy.SecretBackend {
 		if res := probeVendor(v); res != nil {
 			res.Vendor = req.Vendor
 			return *res
@@ -208,6 +212,14 @@ func Spawn(req Request) Result {
 	// CurrentVersionExceedsRecipe's ccver probe (which can exec `claude --version`).
 	// Computed before the lock, consumed after a successful spawn below.
 	runSettle := req.Verify && fingerprint.CurrentVersionExceedsRecipe(fp)
+
+	// 5c. For a codex provider, ensure the conversion daemon is up — after the
+	//     fingerprint gate, before the profile write and the tmux split, so a
+	//     daemon failure is fail-before-mutation (no profile, no pane).
+	if err := ensureVendorProxy(v); err != nil {
+		return fail(ErrCodeProxyUnavailable, err.Error(), req.Vendor,
+			"Run cc-fleet codex login (and check the codex base_url port is free), then retry")
+	}
 
 	// 6. Ensure the per-vendor profile exists (idempotent write).
 	profilePath, err := profile.WriteForVendor(v, "")
@@ -588,6 +600,11 @@ var settleOK = func(socket, paneID string) bool {
 	time.Sleep(settleWindow)
 	return tmux.NewServer(socket).PaneExists(paneID)
 }
+
+// ensureVendorProxy ensures the codex conversion daemon for a codex provider
+// (a no-op for every other vendor). A package var so tests can stub it without
+// launching a real daemon process.
+var ensureVendorProxy = codexproxy.EnsureForVendor
 
 // rollbackSpawnedMember undoes a FULLY committed spawn (pane + config member +
 // inbox) when the post-spawn settle check fails. Unlike rollbackPane — which

@@ -139,6 +139,14 @@ func TestClassify(t *testing.T) {
 		}
 	})
 
+	t.Run("403 cloudflare block → not key invalid", func(t *testing.T) {
+		js := `{"type":"result","is_error":true,"api_error_status":403,"result":"API Error: blocked by Cloudflare (codex backend rejected this IP/client)"}`
+		res := classify(req, "m", []byte(js), nil, 1, false, true)
+		if res.ErrorCode != ErrCodeCloudflareBlocked {
+			t.Fatalf("want CODEX_CLOUDFLARE_BLOCKED, got %s", res.ErrorCode)
+		}
+	})
+
 	t.Run("400 model rejection → model not found", func(t *testing.T) {
 		js := `{"type":"result","is_error":true,"api_error_status":400,"result":"model not found; supported names: a, b"}`
 		res := classify(req, "m", []byte(js), nil, 1, false, true)

@@ -194,21 +194,23 @@ type Result struct {
 const (
 	// Pre-flight failures (claude never launched). Reuse spawn's code spellings
 	// so the skill already recognizes them.
-	ErrCodeBadArgs            = "SUBAGENT_BAD_ARGS"   // --prompt/--prompt-file missing or both given (CLI layer)
-	ErrCodeUnknownVendor      = "UNKNOWN_VENDOR"      // vendor not in vendors.toml
-	ErrCodeVendorDisabled     = "VENDOR_DISABLED"     // enabled = false
-	ErrCodeFingerprintMissing = "FINGERPRINT_MISSING" // never captured → skill self-heal
-	ErrCodeFingerprintStale   = "FINGERPRINT_STALE"   // BinaryPath gone from disk
+	ErrCodeBadArgs            = "SUBAGENT_BAD_ARGS"       // --prompt/--prompt-file missing or both given (CLI layer)
+	ErrCodeUnknownVendor      = "UNKNOWN_VENDOR"          // vendor not in vendors.toml
+	ErrCodeVendorDisabled     = "VENDOR_DISABLED"         // enabled = false
+	ErrCodeFingerprintMissing = "FINGERPRINT_MISSING"     // never captured → skill self-heal
+	ErrCodeFingerprintStale   = "FINGERPRINT_STALE"       // BinaryPath gone from disk
+	ErrCodeProxyUnavailable   = "CODEX_PROXY_UNAVAILABLE" // codex conversion daemon could not be started
 
 	// Probe failure (only when --probe).
 	ErrCodeVendorUnreachable = "VENDOR_UNREACHABLE" // transport-layer failure
 
 	// Runtime failures parsed from claude's inner envelope.
-	ErrCodeKeyInvalid          = "KEY_INVALID"          // api_error_status 401/403
-	ErrCodeRateLimited         = "RATE_LIMITED"         // 429 (no balance signature)
-	ErrCodeInsufficientBalance = "INSUFFICIENT_BALANCE" // 429/402 + balance signature
-	ErrCodeModelNotFound       = "MODEL_NOT_FOUND"      // 400 + model-name rejection
-	ErrCodeVendorAPIError      = "VENDOR_API_ERROR"     // other is_error / 5xx / overloaded
+	ErrCodeKeyInvalid          = "KEY_INVALID"              // api_error_status 401/403
+	ErrCodeRateLimited         = "RATE_LIMITED"             // 429 (no balance signature)
+	ErrCodeInsufficientBalance = "INSUFFICIENT_BALANCE"     // 429/402 + balance signature
+	ErrCodeModelNotFound       = "MODEL_NOT_FOUND"          // 400 + model-name rejection
+	ErrCodeVendorAPIError      = "VENDOR_API_ERROR"         // other is_error / 5xx / overloaded
+	ErrCodeCloudflareBlocked   = "CODEX_CLOUDFLARE_BLOCKED" // 403 + Cloudflare edge-block signature
 
 	// cc-fleet layer.
 	ErrCodeTimeout        = "SUBAGENT_TIMEOUT"          // --timeout deadline fired before claude returned

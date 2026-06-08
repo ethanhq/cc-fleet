@@ -174,6 +174,21 @@ day-to-day coding, not only for delegated work. `--model` overrides the default;
 / `--dangerously-skip-permissions` set the permission posture. **No tmux, no agent-teams** — just a
 terminal.
 
+### ChatGPT subscription as a provider (codex)
+
+> *Have a Codex / ChatGPT subscription? Drive gpt-5.x with it too.*
+
+```bash
+cc-fleet codex add && cc-fleet codex login
+```
+
+One `codex add` plus a device-code login turns the subscription into a regular provider —
+teammate, subagent, workflow leaf, or `cc-fleet run`, all answering through gpt-5.x. A local
+conversion daemon translates Claude's Anthropic calls to the OpenAI Responses API; the OAuth
+token stays inside the daemon (never in env, argv, or a profile), and cc-fleet keeps its own
+login so the codex CLI's auth is untouched. **Unofficial** — `codex login` asks for explicit
+confirmation; details in [the CLI guide](docs/cli.md#codex--reuse-a-chatgpt-subscription-as-a-provider).
+
 ### More example prompts
 
 - *"Spawn a glm teammate and a deepseek teammate; have each summarize its model's strengths, then compare the two."*

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/BurntSushi/toml"
@@ -24,9 +25,16 @@ import (
 // SchemaVersion is the only supported vendors.toml schema version.
 const SchemaVersion = 1
 
+// CodexOAuthBackend is the secret_backend value for a codex (ChatGPT
+// subscription) provider. Its keyget hands back a loopback handshake secret —
+// the upstream OAuth bearer lives only in the codex proxy daemon — so its
+// base_url and models_endpoint MUST be loopback http (enforced at validate, so a
+// hand-edited or `cc-fleet edit` vendor can never send that secret off-host).
+const CodexOAuthBackend = "codex-oauth"
+
 // validSecretBackends is the closed set of supported secret_backend values.
 // Order is the canonical order used in error messages.
-var validSecretBackends = []string{"file", "pass", "1password", "vault", "keyring"}
+var validSecretBackends = []string{"file", "pass", "1password", "vault", "keyring", CodexOAuthBackend}
 
 // Config is the parsed contents of vendors.toml.
 //
@@ -262,6 +270,17 @@ func (v *Vendor) validate(mapKey string) error {
 	if v.SecretRef == "" {
 		return fmt.Errorf("config: vendor %q: secret_ref is required", name)
 	}
+	// A codex-oauth vendor's endpoints must be loopback: keyget hands the launched
+	// claude only a handshake secret, and the proxy receives it on base_url — a
+	// remote/https endpoint would leak that secret off-host.
+	if v.SecretBackend == CodexOAuthBackend {
+		if _, err := ParseLoopbackURL(v.BaseURL); err != nil {
+			return fmt.Errorf("config: vendor %q: codex base_url %w", name, err)
+		}
+		if _, err := ParseLoopbackURL(v.ModelsEndpoint); err != nil {
+			return fmt.Errorf("config: vendor %q: codex models_endpoint %w", name, err)
+		}
+	}
 	if !isValidKeyRotation(v.KeyRotation) {
 		return fmt.Errorf("config: vendor %q: key_rotation %q invalid (want one of %v)",
 			name, v.KeyRotation, ValidKeyRotations())
@@ -300,4 +319,25 @@ func validateHTTPURL(field, s string) error {
 		return fmt.Errorf("%s %q missing host", field, s)
 	}
 	return nil
+}
+
+// ParseLoopbackURL validates raw is a plain http://127.0.0.1|localhost[:port] URL
+// (no userinfo, no https / remote host) and returns it. The one definition the
+// codex-oauth validate path and the codex proxy daemon both use, so the loopback
+// invariant can't drift between load-time rejection and run-time defense.
+func ParseLoopbackURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, fmt.Errorf("%q is not a valid URL: %w", raw, err)
+	}
+	if u.Scheme != "http" {
+		return nil, fmt.Errorf("%q must use http (loopback only)", raw)
+	}
+	if u.User != nil {
+		return nil, fmt.Errorf("%q must not carry userinfo", raw)
+	}
+	if h := u.Hostname(); h != "127.0.0.1" && h != "localhost" {
+		return nil, fmt.Errorf("%q must be loopback (127.0.0.1 or localhost), got %q", raw, h)
+	}
+	return u, nil
 }

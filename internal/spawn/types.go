@@ -116,6 +116,7 @@ const (
 	ErrCodeModelNotFound      = "MODEL_NOT_FOUND"
 	ErrCodeFingerprintMissing = "FINGERPRINT_MISSING"
 	ErrCodeFingerprintStale   = "FINGERPRINT_STALE"
+	ErrCodeProxyUnavailable   = "CODEX_PROXY_UNAVAILABLE"
 	ErrCodeNoLeadSession      = "NO_LEAD_SESSION"
 	ErrCodeTeamNotFound       = "TEAM_NOT_FOUND"
 	ErrCodePaneCreationFailed = "PANE_CREATION_FAILED"

@@ -168,5 +168,6 @@ Default seeds for the five built-in vendors. URLs may shift; always confirm via 
 | `glm` (智谱) | `https://open.bigmodel.cn/api/anthropic` | `glm-4.6`, `glm-4.5` | Domain Chinese, industry vertical. |
 | `qwen` (DashScope) | `https://dashscope.aliyuncs.com/...` | varies by region | Often needs OpenAI-format conversion; consult user docs if `refresh` fails. |
 | `minimax` | `https://api.minimaxi.com/v1/anthropic` | `MiniMax-M2`, `abab7-chat-preview` | — |
+| `codex` (ChatGPT subscription) | `http://127.0.0.1:<port>/` (local conversion daemon) | `gpt-5.5`, `gpt-5.3-codex` | Setup: `cc-fleet codex add` + `cc-fleet codex login` (user-run). Quota = the subscription; a 429 carries its reset time. |
 
 For a vendor not in this table, it works the same way — the user runs `cc-fleet add <vendor> --base-url <url> --models-endpoint <url> --default-model <id> --api-key-stdin <<<"$KEY"` first (use `--api-key-stdin` or `--api-key-file`; **never** put the raw key in argv).

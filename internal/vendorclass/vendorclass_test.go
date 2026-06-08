@@ -22,6 +22,10 @@ func TestMatchClass(t *testing.T) {
 		{"auth word", "API Error: Unauthorized", ClassAuth},
 		{"auth invalid key", "invalid api key provided", ClassAuth},
 		{"auth paren 403", "request failed (403)", ClassAuth},
+		{"cloudflare marker", "API Error: blocked by Cloudflare (codex backend rejected this IP/client)", ClassCloudflareBlocked},
+		{"cloudflare header echo", "edge returned cf-mitigated: challenge", ClassCloudflareBlocked},
+		// A Cloudflare block answers 403 — it must beat the generic auth rule.
+		{"priority cloudflare over auth", "(403) blocked by cloudflare", ClassCloudflareBlocked},
 		{"rate phrase", "rate limit exceeded, retrying", ClassRateLimit},
 		{"rate 429 paren", "got (429) from upstream", ClassRateLimit},
 		{"generic api", "API Error: something unexpected happened", ClassAPIError},

@@ -30,6 +30,8 @@ Dispatch on `error_code` — do **not** parse `error_msg` prose.
 | `PANE_CREATION_FAILED` | tmux `split-window` returned non-zero (in-tmux path). | Check tmux is running. If NOT inside tmux (`$TMUX` empty), spawn auto-builds an out-of-tmux swarm session instead — this error only fires on genuine in-tmux split failures. (If the team already has a live swarm under the same name, tear it down or use a fresh team name.) |
 | `UNKNOWN_VENDOR` | The vendor name isn't in `vendors.toml`. | `cc-fleet list --json` to see configured vendors; tell the user to `cc-fleet add <vendor>` first. Don't guess. |
 | `VENDOR_DISABLED` | The vendor row has `enabled = false`. | Pick a different vendor or tell the user to `cc-fleet edit <vendor> --enable`. |
+| `CODEX_PROXY_UNAVAILABLE` | The codex conversion daemon could not start or its loopback port is held by another process. | Tell the user: `cc-fleet codex login` if not logged in; otherwise free the port in the codex `base_url` (or re-add with `cc-fleet codex add --port <n>`). |
+| `CODEX_CLOUDFLARE_BLOCKED` | The ChatGPT backend's edge (Cloudflare) blocked this IP/client — NOT a bad key. | Switch network/IP or retry later; rotating credentials won't help. |
 | (rate-limit class) | Vendor returns 429 / rate-limit text in `error_msg`. | Wait 30–60s and retry once; if it persists, switch vendor. Don't loop tightly. |
 
 ## General rules

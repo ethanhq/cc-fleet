@@ -139,6 +139,11 @@ func classify(req Request, model string, stdout, stderr []byte, exitCode int, ti
 func classifyError(inner innerEnvelope) string {
 	switch inner.APIErrorStatus {
 	case 401, 403:
+		// A Cloudflare edge block answers 403 — an IP/client problem, not a bad
+		// key, so it must not surface as KEY_INVALID.
+		if vendorclass.MatchClass(inner.Result) == vendorclass.ClassCloudflareBlocked {
+			return ErrCodeCloudflareBlocked
+		}
 		return ErrCodeKeyInvalid
 	case 429, 402:
 		// Balance outranks a bare 429 — a retry can't fix being out of credit.
@@ -181,6 +186,8 @@ func errorMessage(code string, inner innerEnvelope) string {
 		return "vendor out of balance/quota (HTTP 429/402)"
 	case ErrCodeModelNotFound:
 		return "vendor rejected the model name (HTTP 400)"
+	case ErrCodeCloudflareBlocked:
+		return "vendor edge (Cloudflare) blocked this IP/client (HTTP 403)"
 	case ErrCodeVendorUnreachable:
 		return "vendor unreachable (transport failure reported by claude)"
 	case ErrCodeVendorAPIError:
@@ -243,8 +250,12 @@ func suggestionFor(code string) string {
 		return "Run cc-fleet edit <vendor> --enable"
 	case ErrCodeFingerprintMissing, ErrCodeFingerprintStale:
 		return "Run the FINGERPRINT self-heal flow (native probe → cc-fleet refresh-fingerprint), then retry"
+	case ErrCodeProxyUnavailable:
+		return "Run cc-fleet codex login (and check the codex base_url port is free), then retry"
 	case ErrCodeKeyInvalid:
 		return "Rotate the vendor API key; do not retry until fixed"
+	case ErrCodeCloudflareBlocked:
+		return "Switch network/IP or retry later; the key is not the problem"
 	case ErrCodeInsufficientBalance:
 		return "Vendor out of credit — top up, switch vendor, or fall back to native Agent"
 	case ErrCodeRateLimited:

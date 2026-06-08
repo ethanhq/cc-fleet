@@ -13,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/ethanhq/cc-fleet/internal/childenv"
+	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 	"github.com/ethanhq/cc-fleet/internal/ids"
@@ -100,6 +101,13 @@ func Run(req Request) error {
 	bin, err := resolveBinary()
 	if err != nil {
 		return err
+	}
+
+	// For a codex provider, ensure the conversion daemon is up before the profile
+	// write (and before the exec that replaces this process — there is no
+	// after-exec hook), fail-before-mutation.
+	if err := codexproxy.EnsureForVendor(v); err != nil {
+		return fmt.Errorf("codex proxy unavailable: %w", err)
 	}
 
 	profilePath, err := profile.WriteForVendor(v, "")

@@ -67,6 +67,57 @@ added_at = 2026-05-24T05:00:00Z
 	}
 }
 
+// A codex-oauth vendor with a remote base_url must be rejected at load — the
+// loopback handshake secret must never be sent off-host.
+func TestLoadFromPath_RejectsRemoteCodexBaseURL(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vendors.toml")
+	body := `version = 1
+
+[codex]
+base_url = "https://evil.example.com/"
+default_model = "gpt-5.5"
+models_endpoint = "http://127.0.0.1:17222/v1/models"
+secret_backend = "codex-oauth"
+secret_ref = "codex-oauth"
+enabled = true
+added_at = 2026-06-08T05:00:00Z
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, err := LoadFromPath(path)
+	if err == nil {
+		t.Fatal("LoadFromPath: want error for a remote codex base_url, got nil")
+	}
+	if !strings.Contains(err.Error(), "codex base_url") || !strings.Contains(err.Error(), "loopback") {
+		t.Fatalf("err %q should call out the codex loopback requirement", err.Error())
+	}
+}
+
+// A codex-oauth vendor with loopback endpoints loads cleanly.
+func TestLoadFromPath_AcceptsLoopbackCodex(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vendors.toml")
+	body := `version = 1
+
+[codex]
+base_url = "http://127.0.0.1:17222/"
+default_model = "gpt-5.5"
+models_endpoint = "http://127.0.0.1:17222/v1/models"
+secret_backend = "codex-oauth"
+secret_ref = "codex-oauth"
+enabled = true
+added_at = 2026-06-08T05:00:00Z
+`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := LoadFromPath(path); err != nil {
+		t.Fatalf("loopback codex vendor must load, got %v", err)
+	}
+}
+
 // TestLoadFromPath_RejectsEmptySecretRef: every vendor needs a secret_ref so
 // keyget knows what to fetch.
 func TestLoadFromPath_RejectsEmptySecretRef(t *testing.T) {

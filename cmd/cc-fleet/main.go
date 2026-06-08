@@ -46,6 +46,8 @@ teammate Claude Code sessions inside tmux windows.`,
 	root.AddCommand(newSubagentGCCmd())
 	root.AddCommand(newWorkflowCmd())
 	root.AddCommand(newRunCmd())
+	root.AddCommand(newCodexCmd())
+	root.AddCommand(newCodexProxyCmd())
 	root.AddCommand(newTeardownCmd())
 	root.AddCommand(newHideCmd())
 	root.AddCommand(newShowCmd())

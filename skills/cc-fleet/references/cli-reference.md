@@ -40,6 +40,19 @@ cc-fleet run <vendor>                    Launch an INTERACTIVE claude REPL on th
                                          --dangerously-skip-permissions, -- <claude args>.
                                          HUMAN-ONLY — never run it yourself (not a --json
                                          command; it would block + replace your process).
+cc-fleet codex add [--name|--port|--model]
+                                         Register the ChatGPT-subscription provider: picks
+                                         the conversion daemon's loopback port and scans
+                                         ~/.codex/config.toml for the default model.
+cc-fleet codex login [--accept-risk]     Device-code OAuth login on cc-fleet's OWN token
+                                         chain (~/.codex auth is never read or written).
+                                         Shows an account-risk notice first — subscription
+                                         reuse outside the codex CLI is unofficial.
+cc-fleet codex logout                    Remove cc-fleet's codex login; stops the daemon.
+cc-fleet codex status                    Show whether cc-fleet has a codex login.
+cc-fleet codex-proxy status              Inspect / stop the local conversion daemon (it is
+cc-fleet codex-proxy stop                started lazily by spawn / subagent / run and
+                                         self-exits when no codex worker remains).
 ```
 
 `ccf` is a short alias (symlink) for `cc-fleet` — every command works as `ccf …` too. (Install creates it; `make uninstall` removes it. The apiKeyHelper a spawn writes always points at the real `cc-fleet` path regardless.)

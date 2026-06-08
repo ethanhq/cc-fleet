@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/config"
 )
 
@@ -53,8 +54,17 @@ func Keyget(vendor string) ([]byte, error) {
 		return keygetVault(vendor, v)
 	case "keyring":
 		return keygetKeyring(vendor, v)
+	case "codex-oauth":
+		// The upstream OAuth bearer lives in the codex proxy daemon, never here:
+		// keyget hands the launched claude only the low-value loopback handshake
+		// secret that gates the daemon's /v1/messages.
+		secret, err := codexproxy.SecretForKeyget()
+		if err != nil {
+			return nil, fmt.Errorf("keyget %s: codex proxy secret: %w", vendor, err)
+		}
+		return []byte(secret), nil
 	default:
-		return nil, fmt.Errorf("keyget %s: unknown backend %q (want file|pass|1password|vault|keyring)",
+		return nil, fmt.Errorf("keyget %s: unknown backend %q (want file|pass|1password|vault|keyring|codex-oauth)",
 			vendor, v.SecretBackend)
 	}
 }
