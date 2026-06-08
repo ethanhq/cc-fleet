@@ -244,13 +244,27 @@ func accountIDFromTokens(tk *tokens) string {
 	return ""
 }
 
+// accountIDFromClaim derives chatgpt_account_id from one JWT's claims, trying the
+// top-level claim, the namespaced auth claim, then the first organization id.
 func accountIDFromClaim(claims map[string]any) string {
+	if id, _ := claims["chatgpt_account_id"].(string); id != "" {
+		return id
+	}
 	auth, ok := claims[jwtAuthClaim].(map[string]any)
 	if !ok {
 		return ""
 	}
-	id, _ := auth["chatgpt_account_id"].(string)
-	return id
+	if id, _ := auth["chatgpt_account_id"].(string); id != "" {
+		return id
+	}
+	if orgs, ok := auth["organizations"].([]any); ok && len(orgs) > 0 {
+		if org0, ok := orgs[0].(map[string]any); ok {
+			if id, _ := org0["id"].(string); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
 }
 
 // tokenExpiry reads the exp claim (unix seconds) from an access token JWT.

@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/userops"
 )
 
@@ -37,12 +38,13 @@ type formField struct {
 // parent model can drive it with key messages and unit tests can assert on it
 // without a running tea.Program.
 type form struct {
-	title  string
-	intro  string
-	submit string // submit button label, e.g. "Add" / "Save"
-	fields []formField
-	focus  int    // 0..len(fields)-1 = a field; len(fields) = the submit button
-	err    string // validation message shown beneath the form
+	title      string
+	intro      string
+	submit     string // submit button label, e.g. "Add" / "Save"
+	statusNote string // optional banner above the fields (e.g. the codex login source)
+	fields     []formField
+	focus      int    // 0..len(fields)-1 = a field; len(fields) = the submit button
+	err        string // validation message shown beneath the form
 }
 
 // newTextInput builds a textinput pre-populated with value. password fields
@@ -81,22 +83,79 @@ func newAddForm(t Template) form {
 	return f
 }
 
-// newEditForm builds the edit wizard, prefilled from the vendor's current
-// row. API-key rotation is intentionally out of scope here (it's a separate
-// secret-backend concern); edit covers the vendors.toml fields userops.Edit
-// accepts plus the enabled toggle.
+// newOpenAIAddForm builds the OpenAI-protocol add wizard. The loopback base_url
+// and the protocol are assigned on submit, so the form collects only the real
+// upstream + key; models_endpoint is prefilled from the upstream base.
+func newOpenAIAddForm(t OAITemplate) form {
+	models := ""
+	if t.UpstreamURL != "" {
+		models = strings.TrimRight(t.UpstreamURL, "/") + "/models"
+	}
+	f := form{
+		title:  "Add OpenAI provider",
+		intro:  "↑/↓ or tab move · enter advances · enter on [Add] submits · esc cancels",
+		submit: "Add",
+		fields: []formField{
+			{key: "name", label: "Name", kind: fieldText, input: newTextInput(t.Name, "provider id, e.g. openai", false)},
+			{key: "upstream_url", label: "Upstream URL", kind: fieldText, input: newTextInput(t.UpstreamURL, "https://api.openai.com/v1", false)},
+			{key: "models_endpoint", label: "Models endpoint", kind: fieldText, input: newTextInput(models, "https://…/v1/models", false)},
+			{key: "api_key", label: "API key", kind: fieldText, input: newTextInput("", "stored at <name>.key (mode 0600)", true)},
+			{key: "default_model", label: "Default model", kind: fieldText, input: newTextInput(t.DefaultModel, "model id", false)},
+		},
+	}
+	f.setFocus(0)
+	return f
+}
+
+// newCodexAddForm builds the minimal codex add wizard. The loopback base_url +
+// models_endpoint and the codex-oauth backend are assigned on submit; the
+// upstream is the fixed ChatGPT backend, so there is no key or URL to enter.
+func newCodexAddForm(defaultModel, statusNote string) form {
+	f := form{
+		title:      "Add codex provider",
+		intro:      "↑/↓ or tab move · enter on [Add] submits · esc cancels",
+		submit:     "Add",
+		statusNote: statusNote,
+		fields: []formField{
+			{key: "name", label: "Name", kind: fieldText, input: newTextInput("codex", "provider id", false)},
+			{key: "default_model", label: "Default model", kind: fieldText, input: newTextInput(defaultModel, "model id", false)},
+		},
+	}
+	f.setFocus(0)
+	return f
+}
+
+// newEditForm builds the edit wizard, prefilled from the vendor's current row.
+// The editable endpoint depends on the class: an Anthropic-native vendor edits its
+// real base_url; an openai-* vendor edits its real upstream_url (base_url is the
+// internal loopback daemon); codex has neither (its endpoints are loopback + the
+// upstream is the fixed ChatGPT backend). codex authenticates via OAuth, so it has
+// no API key set to rotate and the key manager is omitted.
 func newEditForm(v userops.VendorView) form {
+	var fields []formField
+	switch v.Protocol {
+	case config.ProtocolOpenAIChat, config.ProtocolOpenAIResponses:
+		fields = append(fields,
+			formField{key: "upstream_url", label: "Upstream URL", kind: fieldText, input: newTextInput(v.UpstreamURL, "https://api.openai.com/v1", false)},
+			formField{key: "models_endpoint", label: "Models endpoint", kind: fieldText, input: newTextInput(v.ModelsEndpoint, "https://…/v1/models", false)})
+	case config.ProtocolCodexOAuth:
+		// loopback base_url + models_endpoint are internal; nothing to edit there.
+	default:
+		fields = append(fields,
+			formField{key: "base_url", label: "Base URL", kind: fieldText, input: newTextInput(v.BaseURL, "https://…/anthropic", false)},
+			formField{key: "models_endpoint", label: "Models endpoint", kind: fieldText, input: newTextInput(v.ModelsEndpoint, "https://…/v1/models", false)})
+	}
+	fields = append(fields,
+		formField{key: "default_model", label: "Default model", kind: fieldText, input: newTextInput(v.DefaultModel, "model id", false)},
+		formField{key: "enabled", label: "Enabled", kind: fieldToggle, on: v.Enabled})
+	if v.SecretBackend != config.CodexOAuthBackend {
+		fields = append(fields, formField{key: "manage_keys", label: "Manage API keys →", kind: fieldAction})
+	}
 	f := form{
 		title:  "Edit provider: " + v.Name,
 		intro:  "↑/↓ or tab move · space toggles Enabled · enter on [Save] submits · esc cancels",
 		submit: "Save",
-		fields: []formField{
-			{key: "base_url", label: "Base URL", kind: fieldText, input: newTextInput(v.BaseURL, "https://…/anthropic", false)},
-			{key: "models_endpoint", label: "Models endpoint", kind: fieldText, input: newTextInput(v.ModelsEndpoint, "https://…/v1/models", false)},
-			{key: "default_model", label: "Default model", kind: fieldText, input: newTextInput(v.DefaultModel, "model id", false)},
-			{key: "enabled", label: "Enabled", kind: fieldToggle, on: v.Enabled},
-			{key: "manage_keys", label: "Manage API keys →", kind: fieldAction},
-		},
+		fields: fields,
 	}
 	f.setFocus(0)
 	return f
@@ -223,6 +282,8 @@ func cardKey(key string) string {
 	switch key {
 	case "base_url":
 		return "base url"
+	case "upstream_url":
+		return "upstream"
 	case "models_endpoint":
 		return "models"
 	case "default_model":
@@ -239,7 +300,7 @@ func cardKey(key string) string {
 // of "key  value" rows (the edit form adds the live status line its enabled toggle drives)
 // — so entering edit barely reshapes the pane. Text-field values always render through
 // input.View() (the focused input draws its cursor; a password field stays bullet-masked).
-func (f form) viewLines() []string {
+func (f form) viewLines(width int) []string {
 	var lines []string
 	// The edit form's enabled toggle mirrors the preview card's status line, live.
 	for _, fld := range f.fields {
@@ -248,29 +309,37 @@ func (f form) viewLines() []string {
 		}
 		status := okStyle.Render("● enabled")
 		if !fld.on {
-			status = faintStyle.Render("○ disabled")
+			status = liveStyle.Render("○ disabled")
 		}
 		if dm := f.value("default_model"); dm != "" {
-			status += faintStyle.Render(" · " + trunc(dm, 28))
+			status += liveStyle.Render(" · " + trunc(dm, 28))
 		}
 		lines = append(lines, status, "")
 		break
 	}
-	// The Note section sits ABOVE the fields and is always present (a fixed slot —
-	// moving focus swaps its text, never reflows the card); the focused field's
-	// note renders bright, the empty placeholder faint.
-	note := faintStyle.Render("—")
-	if f.focus < len(f.fields) {
-		switch fld := f.fields[f.focus]; {
-		case fld.key == "default_model" && f.value("models_endpoint") != "":
-			note = contentStyle.Render("enter picks from the provider's model list")
-		case fld.kind == fieldToggle:
-			note = contentStyle.Render("enter / space toggles")
-		case fld.key == "manage_keys":
-			note = contentStyle.Render("enter opens the key manager")
+	// The Note section sits ABOVE the fields. A form-level statusNote (e.g. which
+	// codex login a codex provider reuses) takes it and wraps to the pane width;
+	// otherwise it shows the focused field's contextual hint.
+	lines = append(lines, contentStyle.Render("Note"))
+	if f.statusNote != "" {
+		for _, w := range wrapTo(f.statusNote, width-2) {
+			lines = append(lines, " "+okStyle.Render(w))
 		}
+	} else {
+		note := faintStyle.Render("—")
+		if f.focus < len(f.fields) {
+			switch fld := f.fields[f.focus]; {
+			case fld.key == "default_model" && f.value("models_endpoint") != "":
+				note = contentStyle.Render("enter picks from the provider's model list")
+			case fld.kind == fieldToggle:
+				note = contentStyle.Render("enter / space toggles")
+			case fld.key == "manage_keys":
+				note = contentStyle.Render("enter opens the key manager")
+			}
+		}
+		lines = append(lines, " "+note)
 	}
-	lines = append(lines, contentStyle.Render("Note"), " "+note, "", faintStyle.Render("Config"))
+	lines = append(lines, "", faintStyle.Render("Config"))
 	for i, fld := range f.fields {
 		focused := i == f.focus
 		key := fmt.Sprintf("%-8s", cardKey(fld.key))

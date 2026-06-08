@@ -183,7 +183,7 @@ func TestAddRowOpensWizardAndPrefills(t *testing.T) {
 		t.Fatalf("enter on Add row: screen = %d, want screenPickTemplate", m.screen)
 	}
 	want := Templates[0]
-	m, _ = press(t, m, "enter")
+	m, _ = press(t, m, "enter") // choose DeepSeek -> add form
 	if m.screen != screenForm || m.formMode != modeAdd {
 		t.Fatalf("screen=%d formMode=%d, want screenForm+modeAdd", m.screen, m.formMode)
 	}
@@ -207,7 +207,7 @@ func TestAddRowOpensWizardAndPrefills(t *testing.T) {
 
 func TestAddFlowCustomIsBlank(t *testing.T) {
 	m := NewModel()
-	m, _ = press(t, m, "enter") // Add row -> template picker
+	m, _ = press(t, m, "enter") // Add row -> grouped picker (cursor 0 = DeepSeek)
 	for i := 0; i < len(Templates); i++ {
 		m, _ = press(t, m, "down") // walk to the synthetic Custom row
 	}
@@ -223,7 +223,7 @@ func TestAddFlowCustomIsBlank(t *testing.T) {
 
 func TestAddFormValidationBlocksEmptySubmit(t *testing.T) {
 	m := NewModel()
-	m, _ = press(t, m, "enter") // Add row -> template picker
+	m, _ = press(t, m, "enter") // Add row -> grouped picker (cursor 0 = DeepSeek)
 	for i := 0; i < len(Templates); i++ {
 		m, _ = press(t, m, "down") // Custom -> all fields empty
 	}
@@ -246,7 +246,7 @@ func TestAddFormValidationBlocksEmptySubmit(t *testing.T) {
 
 func TestAddFormTypingAndSubmitDispatches(t *testing.T) {
 	m := NewModel()
-	m, _ = press(t, m, "enter") // Add row -> template picker
+	m, _ = press(t, m, "enter") // Add row -> grouped picker (cursor 0 = DeepSeek)
 	m, _ = press(t, m, "enter") // choose Templates[0] -> form (prefilled)
 
 	// Focus the api_key field (index 3) and type a key.
@@ -391,8 +391,8 @@ func TestTemplatesSeedTable(t *testing.T) {
 func addFormOnDeepseek(t *testing.T) Model {
 	t.Helper()
 	m := NewModel()             // no vendors -> cursor 0 == Add row
-	m, _ = press(t, m, "enter") // template picker (cursor 0 = DeepSeek)
-	m, _ = press(t, m, "enter") // choose -> add form
+	m, _ = press(t, m, "enter") // +Add -> grouped picker (cursor 0 = DeepSeek)
+	m, _ = press(t, m, "enter") // choose DeepSeek -> add form
 	return m
 }
 
@@ -509,7 +509,7 @@ func TestModelPickerErrorFallsBackToManual(t *testing.T) {
 
 func TestModelPickerSkippedWhenNoEndpoint(t *testing.T) {
 	m := NewModel()
-	m, _ = press(t, m, "enter") // Add row -> template picker
+	m, _ = press(t, m, "enter") // Add row -> grouped picker (cursor 0 = DeepSeek)
 	for i := 0; i < len(Templates); i++ {
 		m, _ = press(t, m, "down") // walk to the synthetic Custom row
 	}

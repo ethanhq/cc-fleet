@@ -31,6 +31,7 @@ var handlers = map[screen]screenHandler{
 	screenKeys:          {update: Model.updateKeys, view: Model.viewKeys},
 	screenSetupTmux:     {update: Model.updateSetupTmux, view: Model.viewSetupTmux},
 	screenSetup:         {update: Model.updateSetup, view: Model.viewSetup},
+	screenCodexAuth:     {update: Model.updateCodexAuth, view: Model.viewCodexAuth},
 }
 
 // allScreens returns every screen constant defined in this package, in the
@@ -48,6 +49,7 @@ func allScreens() []screen {
 		screenKeys,
 		screenSetupTmux,
 		screenSetup,
+		screenCodexAuth,
 	}
 }
 

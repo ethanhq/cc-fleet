@@ -14,14 +14,6 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/userops"
 )
 
-// codexRiskNotice is the consent gate shown before the device-code login:
-// subscription reuse outside the codex CLI is unofficial, and the risk lives at
-// OpenAI's account level — cc-fleet's independent token chain cannot remove it.
-const codexRiskNotice = `Reusing a ChatGPT subscription outside the codex CLI is unofficial and may
-violate OpenAI's terms of use; the account could be rate-limited or banned.
-cc-fleet keeps its own login (it never reads or writes ~/.codex auth), but that
-does not remove the account-level risk.`
-
 // newCodexCmd builds `cc-fleet codex {login,logout,status,add}` — cc-fleet's own
 // OAuth login for reusing a ChatGPT subscription, kept on an independent token
 // chain that never touches ~/.codex (so the codex CLI's own login is unaffected).
@@ -65,13 +57,24 @@ func newCodexCmd() *cobra.Command {
 
 	cmd.AddCommand(&cobra.Command{
 		Use:   "status",
-		Short: "Show whether cc-fleet has a codex login",
+		Short: "Show codex credential sources (the codex CLI login and cc-fleet's own)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			loggedIn, account := codexproxy.LoginStatus()
-			if loggedIn {
-				fmt.Printf("logged in (account %s)\n", account)
+			st := codexproxy.StatusReport()
+			out := cmd.OutOrStdout()
+			ride := "unavailable"
+			if st.CLIRide {
+				ride = "available"
+			}
+			own := "absent"
+			if st.OwnLogin {
+				own = "present"
+			}
+			fmt.Fprintf(out, "cli-ride:  %s\n", ride)
+			fmt.Fprintf(out, "own-login: %s\n", own)
+			if st.Active == "none" {
+				fmt.Fprintln(out, "active:    none — log in with the codex CLI, or run: cc-fleet codex login")
 			} else {
-				fmt.Println("not logged in — run: cc-fleet codex login")
+				fmt.Fprintf(out, "active:    %s (account %s)\n", st.Active, st.Account)
 			}
 			return nil
 		},
@@ -126,7 +129,7 @@ func newCodexCmd() *cobra.Command {
 // confirmCodexRisk prints the risk notice and asks for explicit confirmation.
 // Non-interactive callers must pass --accept-risk (no silent opt-in).
 func confirmCodexRisk(cmd *cobra.Command) error {
-	fmt.Fprintln(cmd.OutOrStdout(), codexRiskNotice)
+	fmt.Fprintln(cmd.OutOrStdout(), codexproxy.RiskNotice)
 	if !term.IsTerminal(os.Stdin.Fd()) {
 		return errors.New("non-interactive session: pass --accept-risk to confirm")
 	}

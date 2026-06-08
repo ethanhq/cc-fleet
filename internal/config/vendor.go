@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -35,6 +36,21 @@ const CodexOAuthBackend = "codex-oauth"
 // validSecretBackends is the closed set of supported secret_backend values.
 // Order is the canonical order used in error messages.
 var validSecretBackends = []string{"file", "pass", "1password", "vault", "keyring", CodexOAuthBackend}
+
+// Wire protocol values for Vendor.protocol — orthogonal to secret_backend. "" is
+// Anthropic-native (the vendor speaks the Anthropic Messages API directly, no
+// daemon). The others ride the loopback conversion daemon: openai-chat and
+// openai-responses speak the OpenAI API with a real key; codex-oauth reuses a
+// ChatGPT subscription over OAuth.
+const (
+	ProtocolOpenAIChat      = "openai-chat"
+	ProtocolOpenAIResponses = "openai-responses"
+	ProtocolCodexOAuth      = CodexOAuthBackend // "codex-oauth"
+)
+
+// validProtocols is the closed set of supported protocol values (the empty
+// default included), rejected at Load like every other enum.
+var validProtocols = []string{"", ProtocolOpenAIChat, ProtocolOpenAIResponses, ProtocolCodexOAuth}
 
 // Config is the parsed contents of vendors.toml.
 //
@@ -63,7 +79,31 @@ type Vendor struct {
 	// off/single-key vendors' files byte-identical (no key_rotation line); an
 	// absent field parses as off.
 	KeyRotation string `toml:"key_rotation,omitempty"`
+	// Protocol is the wire class (one of validProtocols). "" = Anthropic-native;
+	// omitempty keeps every existing vendors.toml byte-identical. A codex-oauth
+	// secret_backend with no protocol is treated as the codex protocol — see
+	// EffectiveProtocol.
+	Protocol string `toml:"protocol,omitempty"`
+	// UpstreamURL is the real OpenAI-compatible base URL for an openai-* protocol
+	// (claude talks to the loopback daemon on base_url; the daemon forwards here).
+	// Required for openai-*, forbidden otherwise. May carry a clean path prefix,
+	// usually ending in /v1.
+	UpstreamURL string `toml:"upstream_url,omitempty"`
 }
+
+// EffectiveProtocol resolves the wire protocol, applying the backward-compat rule
+// that a codex-oauth secret_backend with no explicit protocol means the codex
+// protocol — the codex providers shipped before the protocol field existed.
+func (v *Vendor) EffectiveProtocol() string {
+	if v.Protocol == "" && v.SecretBackend == CodexOAuthBackend {
+		return ProtocolCodexOAuth
+	}
+	return v.Protocol
+}
+
+// DaemonBacked reports whether the vendor's traffic rides the loopback conversion
+// daemon (any non-Anthropic-native protocol).
+func (v *Vendor) DaemonBacked() bool { return v.EffectiveProtocol() != "" }
 
 // Load reads, parses, and returns the contents of the default vendors.toml.
 //
@@ -270,16 +310,12 @@ func (v *Vendor) validate(mapKey string) error {
 	if v.SecretRef == "" {
 		return fmt.Errorf("config: vendor %q: secret_ref is required", name)
 	}
-	// A codex-oauth vendor's endpoints must be loopback: keyget hands the launched
-	// claude only a handshake secret, and the proxy receives it on base_url — a
-	// remote/https endpoint would leak that secret off-host.
-	if v.SecretBackend == CodexOAuthBackend {
-		if _, err := ParseLoopbackURL(v.BaseURL); err != nil {
-			return fmt.Errorf("config: vendor %q: codex base_url %w", name, err)
-		}
-		if _, err := ParseLoopbackURL(v.ModelsEndpoint); err != nil {
-			return fmt.Errorf("config: vendor %q: codex models_endpoint %w", name, err)
-		}
+	if !isValidProtocol(v.Protocol) {
+		return fmt.Errorf("config: vendor %q: protocol %q invalid (want one of %v)",
+			name, v.Protocol, validProtocols)
+	}
+	if err := v.validateWire(name); err != nil {
+		return err
 	}
 	if !isValidKeyRotation(v.KeyRotation) {
 		return fmt.Errorf("config: vendor %q: key_rotation %q invalid (want one of %v)",
@@ -295,6 +331,105 @@ func isValidSecretBackend(b string) bool {
 		}
 	}
 	return false
+}
+
+func isValidProtocol(p string) bool {
+	for _, ok := range validProtocols {
+		if p == ok {
+			return true
+		}
+	}
+	return false
+}
+
+// validateWire enforces the protocol/secret_backend/upstream_url/loopback
+// cross-checks for the resolved (compat-normalized) wire protocol.
+func (v *Vendor) validateWire(name string) error {
+	switch v.EffectiveProtocol() {
+	case ProtocolCodexOAuth:
+		if v.SecretBackend != CodexOAuthBackend {
+			return fmt.Errorf("config: vendor %q: codex-oauth protocol requires secret_backend %q", name, CodexOAuthBackend)
+		}
+		if v.UpstreamURL != "" {
+			return fmt.Errorf("config: vendor %q: codex-oauth must not set upstream_url", name)
+		}
+		// keyget hands the launched claude only a handshake secret it presents on
+		// base_url, and a probe sends it to models_endpoint — both must be loopback
+		// http so that secret can never leave the host.
+		if _, err := ParseLoopbackURL(v.BaseURL); err != nil {
+			return fmt.Errorf("config: vendor %q: codex base_url %w", name, err)
+		}
+		if _, err := ParseLoopbackURL(v.ModelsEndpoint); err != nil {
+			return fmt.Errorf("config: vendor %q: codex models_endpoint %w", name, err)
+		}
+	case ProtocolOpenAIChat, ProtocolOpenAIResponses:
+		if v.SecretBackend == CodexOAuthBackend {
+			return fmt.Errorf("config: vendor %q: %s protocol carries a real key, not the codex-oauth backend", name, v.EffectiveProtocol())
+		}
+		if v.UpstreamURL == "" {
+			return fmt.Errorf("config: vendor %q: %s protocol requires upstream_url", name, v.EffectiveProtocol())
+		}
+		if err := ValidateUpstreamURL(v.UpstreamURL); err != nil {
+			return fmt.Errorf("config: vendor %q: upstream_url %w", name, err)
+		}
+		// claude talks to the loopback conversion daemon on base_url; the real
+		// upstream lives in upstream_url.
+		if _, err := ParseLoopbackURL(v.BaseURL); err != nil {
+			return fmt.Errorf("config: vendor %q: openai base_url %w", name, err)
+		}
+	default: // "" Anthropic-native — claude talks to the vendor directly.
+		if v.UpstreamURL != "" {
+			return fmt.Errorf("config: vendor %q: upstream_url is only valid for an openai-* protocol", name)
+		}
+	}
+	return nil
+}
+
+// ValidateUpstreamURL validates an openai-* upstream_url: an OpenAI-compatible
+// base URL (scheme://host[:port][/clean/prefix], the prefix usually ending in
+// /v1) onto which the daemon joins endpoint suffixes with url.JoinPath. https is
+// required for a remote host; http is allowed only for a loopback host (local
+// Ollama/vLLM). userinfo, query, fragment, and unclean or .. path segments are
+// rejected — it rides the daemon argv.
+func ValidateUpstreamURL(raw string) error {
+	// Validate the exact stored value (the daemon uses it verbatim): surrounding
+	// whitespace would pass a trimmed check yet break url.JoinPath at run time.
+	if raw != strings.TrimSpace(raw) {
+		return fmt.Errorf("%q must not have surrounding whitespace", raw)
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("%q is not a valid URL: %w", raw, err)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%q missing host", raw)
+	}
+	if u.User != nil {
+		return fmt.Errorf("%q must not carry userinfo", raw)
+	}
+	if u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("%q must not carry a query or fragment", raw)
+	}
+	if p := strings.TrimSuffix(u.Path, "/"); p != "" {
+		// path.Clean rejects every real traversal (".."/"."/"//"); an explicit
+		// Contains("..") would also reject a legitimate segment that merely contains
+		// the bytes, so it is not needed.
+		if !strings.HasPrefix(p, "/") || path.Clean(p) != p {
+			return fmt.Errorf("%q has an unsafe path %q", raw, u.Path)
+		}
+	}
+	loopback := u.Hostname() == "127.0.0.1" || u.Hostname() == "localhost"
+	switch u.Scheme {
+	case "https":
+		// ok for any host
+	case "http":
+		if !loopback {
+			return fmt.Errorf("%q must use https for a remote host (http is loopback-only)", raw)
+		}
+	default:
+		return fmt.Errorf("%q must use http or https (got %q)", raw, u.Scheme)
+	}
+	return nil
 }
 
 func isValidKeyRotation(r string) bool {

@@ -16,6 +16,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/models"
 	"github.com/ethanhq/cc-fleet/internal/onboarding"
@@ -44,6 +45,24 @@ const (
 	screenKeys      // EDIT form → "Manage API keys →": per-vendor multi-key manager
 	screenSetupTmux // first-run tmux setup nudge; shown before agent-teams/hub
 	screenSetup     // first-run agent-teams setup nudge; shown before the hub
+	screenCodexAuth // CLI-auth → codex: consent → device-code login
+)
+
+// addCategory is the provider class a picker row belongs to.
+type addCategory int
+
+const (
+	addCatAnthropic addCategory = iota // Anthropic-native API (today's templates)
+	addCatOpenAI                       // OpenAI-protocol API (chat / responses)
+	addCatCLI                          // CLI auth (codex)
+)
+
+// codexAuthStage is the sub-state of screenCodexAuth.
+type codexAuthStage int
+
+const (
+	codexAuthConsent codexAuthStage = iota // risk notice; enter accepts
+	codexAuthDevice                        // device-code shown; polling for authorization
 )
 
 // formMode records whether the active form is an add or an edit so submit
@@ -85,8 +104,17 @@ type Model struct {
 	vendorsErr   error
 	vendorCursor int
 
-	// Add-wizard template picker.
-	tmplCursor int
+	// Add-wizard: the single grouped picker (cursor over the flat selectable rows)
+	// and the protocol the chosen row implies (carried into submitAdd).
+	tmplCursor  int
+	addProtocol string
+
+	// screenCodexAuth: consent → device-code login session. codexAuthEpoch tags
+	// each login attempt so a prior visit's async msgs (esc then re-enter) drop.
+	codexAuthStage codexAuthStage
+	codexAuth      *codexproxy.LoginSession
+	codexAuthErr   string
+	codexAuthEpoch int
 
 	// Agents Board (screenSpawn): live teammates, workflow runs, and async subagent
 	// jobs in one master-detail board. asMode re-roots the levels (projects → sessions →
@@ -1162,6 +1190,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case vendorsMsg:
 		m.loading = false
 		m.vendors = msg.vendors
+		// Group the list by wire class (stable, so the name order within a class
+		// that List returns is preserved).
+		sort.SliceStable(m.vendors, func(i, j int) bool {
+			return vendorClassRank(m.vendors[i].Protocol) < vendorClassRank(m.vendors[j].Protocol)
+		})
 		m.vendorsErr = msg.err
 		// The cursor may also rest on the trailing "+ Add provider…" row at index
 		// len(vendors); clamp to that, not len-1.
@@ -1401,6 +1434,48 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case codexAuthBegunMsg:
+		// Drop a begin from a prior login attempt (esc then re-enter starts a new
+		// epoch); the owningScreen gate alone can't tell visits apart.
+		if msg.epoch != m.codexAuthEpoch {
+			return m, nil
+		}
+		m.loading = false
+		if msg.err != nil {
+			m.codexAuthErr = msg.err.Error()
+			return m, nil
+		}
+		m.codexAuth = msg.session
+		return m, pollCodexAuthCmd(m.codexAuthEpoch, msg.session)
+
+	case codexAuthPollMsg:
+		if msg.epoch != m.codexAuthEpoch {
+			return m, nil
+		}
+		if msg.err != nil {
+			m.codexAuthErr = msg.err.Error()
+			m.codexAuth = nil
+			return m, nil
+		}
+		if msg.done {
+			m.codexAuth = nil
+			m.form = newCodexAddForm(codexproxy.ScanDefaultModel("gpt-5.5"), codexSourceNote(codexproxy.StatusReport()))
+			m.formMode = modeAdd
+			m.addProtocol = config.ProtocolCodexOAuth
+			m.screen = screenForm
+			return m, textinput.Blink
+		}
+		if m.codexAuth == nil {
+			return m, nil
+		}
+		return m, codexAuthTickCmd(m.codexAuthEpoch, m.codexAuth.Interval())
+
+	case codexAuthTickMsg:
+		if msg.epoch != m.codexAuthEpoch || m.codexAuth == nil || m.screen != screenCodexAuth {
+			return m, nil
+		}
+		return m, pollCodexAuthCmd(m.codexAuthEpoch, m.codexAuth)
+
 	case keysetMsg:
 		if msg.err != nil {
 			m.keyErr = msg.err.Error()
@@ -1465,6 +1540,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateSetup(msg)
 		case screenSetupTmux:
 			return m.updateSetupTmux(msg)
+		case screenCodexAuth:
+			return m.updateCodexAuth(msg)
 		}
 	}
 	return m, nil
@@ -1531,6 +1608,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.form = newEditForm(v)
 		m.formMode = modeEdit
 		m.editName = v.Name
+		m.addProtocol = v.Protocol // the form's provider class (drives the codex model picker)
 		m.screen = screenForm
 		return m, textinput.Blink
 	case "d":
@@ -2654,8 +2732,55 @@ func saveWorkflowCmd(runID, name, sessionID, description string, epoch int) tea.
 	}
 }
 
+// addItem is one selectable row of the grouped add picker: a provider class plus
+// the seed it implies (a Templates index, an OAITemplates index, or neither for a
+// Custom / codex row).
+type addItem struct {
+	label string
+	class addCategory
+	tIdx  int // Templates index, or -1
+	oIdx  int // OAITemplates index, or -1
+}
+
+type addGroup struct {
+	header string
+	items  []addItem
+}
+
+// addGroups builds the grouped add picker: every provider class with its seeds
+// under one header, so a provider is chosen in a single screen.
+func addGroups() []addGroup {
+	a := addGroup{header: "Anthropic-protocol API  (DeepSeek / GLM / Kimi / Qwen / …)"}
+	for i := range Templates {
+		a.items = append(a.items, addItem{Templates[i].Label, addCatAnthropic, i, -1})
+	}
+	a.items = append(a.items, addItem{"Custom (fill everything manually)", addCatAnthropic, -1, -1})
+
+	o := addGroup{header: "OpenAI-protocol API  (OpenAI / Groq / Together / vLLM …)"}
+	for i := range OAITemplates {
+		o.items = append(o.items, addItem{OAITemplates[i].Label, addCatOpenAI, -1, i})
+	}
+	o.items = append(o.items, addItem{"Custom OpenAI-compatible (fill everything manually)", addCatOpenAI, -1, -1})
+
+	c := addGroup{header: "CLI auth  (reuse a ChatGPT subscription via codex)"}
+	c.items = append(c.items, addItem{"Codex", addCatCLI, -1, -1})
+
+	return []addGroup{a, o, c}
+}
+
+// addItems flattens the groups to the selectable rows the cursor walks.
+func addItems() []addItem {
+	var xs []addItem
+	for _, g := range addGroups() {
+		xs = append(xs, g.items...)
+	}
+	return xs
+}
+
+// updatePickTemplate drives the single grouped add picker: one cursor over every
+// provider across all three classes; enter/→ opens the chosen class's add form.
 func (m Model) updatePickTemplate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	n := len(Templates) + 1 // + synthetic "Custom" row
+	items := addItems()
 	switch msg.String() {
 	case "esc", "q", "left":
 		return m.toList()
@@ -2664,20 +2789,180 @@ func (m Model) updatePickTemplate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.tmplCursor--
 		}
 	case "down", "j":
-		if m.tmplCursor < n-1 {
+		if m.tmplCursor < len(items)-1 {
 			m.tmplCursor++
 		}
-	case "enter":
+	case "enter", "right":
+		if m.tmplCursor >= 0 && m.tmplCursor < len(items) {
+			return m.chooseAddItem(items[m.tmplCursor])
+		}
+	}
+	return m, nil
+}
+
+// chooseAddItem opens the add form (or the codex auth flow) for a picked row.
+func (m Model) chooseAddItem(it addItem) (tea.Model, tea.Cmd) {
+	switch it.class {
+	case addCatCLI:
+		return m.enterCodexFlow()
+	case addCatOpenAI:
+		var t OAITemplate
+		protocol := config.ProtocolOpenAIChat // a Custom entry defaults to Chat
+		if it.oIdx >= 0 {
+			t = OAITemplates[it.oIdx]
+			protocol = t.Protocol
+		}
+		m.form = newOpenAIAddForm(t)
+		m.addProtocol = protocol
+	default: // addCatAnthropic
 		var t Template // zero value = Custom (blank fields)
-		if m.tmplCursor < len(Templates) {
-			t = Templates[m.tmplCursor]
+		if it.tIdx >= 0 {
+			t = Templates[it.tIdx]
 		}
 		m.form = newAddForm(t)
+		m.addProtocol = ""
+	}
+	m.formMode = modeAdd
+	m.screen = screenForm
+	return m, textinput.Blink
+}
+
+// enterCodexFlow opens the codex add form when a usable credential source already
+// exists (reusing the codex CLI login, or cc-fleet's own), naming the source so the
+// user sees no key is needed; with no source it routes to the consent + device-code
+// login screen.
+func (m Model) enterCodexFlow() (tea.Model, tea.Cmd) {
+	if st := codexproxy.StatusReport(); st.Active != "none" {
+		m.form = newCodexAddForm(codexproxy.ScanDefaultModel("gpt-5.5"), codexSourceNote(st))
 		m.formMode = modeAdd
+		m.addProtocol = config.ProtocolCodexOAuth
 		m.screen = screenForm
 		return m, textinput.Blink
 	}
+	m.screen = screenCodexAuth
+	m.codexAuthStage = codexAuthConsent
+	m.codexAuthErr = ""
 	return m, nil
+}
+
+// vendorClassRank and vendorClassHeader group the providers list by wire class:
+// Anthropic-protocol (0) < OpenAI-protocol (1) < CLI auth (2).
+func vendorClassRank(protocol string) int {
+	switch protocol {
+	case config.ProtocolOpenAIChat, config.ProtocolOpenAIResponses:
+		return 1
+	case config.ProtocolCodexOAuth:
+		return 2
+	default:
+		return 0
+	}
+}
+
+func vendorClassHeader(protocol string) string {
+	switch protocol {
+	case config.ProtocolOpenAIChat, config.ProtocolOpenAIResponses:
+		return "OpenAI-protocol"
+	case config.ProtocolCodexOAuth:
+		return "CLI auth"
+	default:
+		return "Anthropic-protocol"
+	}
+}
+
+// codexStaticModelList wraps the static codex model ids as the picker's model
+// list (codex has no live models endpoint to probe at add time).
+func codexStaticModelList() []models.Model {
+	ids := codexproxy.StaticModels()
+	out := make([]models.Model, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, models.Model{ID: id})
+	}
+	return out
+}
+
+// codexSourceNote names the login a codex provider will use, shown on the add form.
+func codexSourceNote(st codexproxy.CredStatus) string {
+	switch st.Active {
+	case "cli-ride":
+		return "reuses the codex CLI login (account " + st.Account + ") — no key needed; if it stops working, run: cc-fleet codex login"
+	case "own":
+		return "uses cc-fleet's own codex login (account " + st.Account + ")"
+	default:
+		return ""
+	}
+}
+
+// updateCodexAuth drives the codex CLI-auth screen: a consent gate, then a
+// device-code login polled on its own interval until the user authorizes.
+func (m Model) updateCodexAuth(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.codexAuthStage {
+	case codexAuthConsent:
+		switch msg.String() {
+		case "esc", "q", "left", "n":
+			m.screen = screenPickTemplate
+			return m, nil
+		case "enter", "y":
+			m.codexAuthStage = codexAuthDevice
+			m.codexAuthErr = ""
+			m.loading = true
+			m.codexAuthEpoch++ // a fresh login attempt; a prior visit's in-flight msgs fail the gate
+			return m, beginCodexAuthCmd(m.codexAuthEpoch)
+		}
+	case codexAuthDevice:
+		if s := msg.String(); s == "esc" || s == "q" {
+			m.codexAuth = nil
+			m.loading = false
+			return m.toList()
+		}
+	}
+	return m, nil
+}
+
+// codexAuthBegunMsg carries a started device-code session (URL + code to show);
+// codexAuthPollMsg an authorization poll result; codexAuthTickMsg the interval to
+// poll again. All carry the login attempt's epoch and are owned by screenCodexAuth,
+// so a result from a prior visit (esc then re-enter) or from after the user left
+// the screen is dropped.
+type codexAuthBegunMsg struct {
+	epoch   int
+	session *codexproxy.LoginSession
+	err     error
+}
+
+func (codexAuthBegunMsg) owningScreen() screen { return screenCodexAuth }
+
+type codexAuthPollMsg struct {
+	epoch int
+	done  bool
+	err   error
+}
+
+func (codexAuthPollMsg) owningScreen() screen { return screenCodexAuth }
+
+type codexAuthTickMsg struct{ epoch int }
+
+func (codexAuthTickMsg) owningScreen() screen { return screenCodexAuth }
+
+func beginCodexAuthCmd(epoch int) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		s, err := codexproxy.BeginDeviceLogin(ctx)
+		return codexAuthBegunMsg{epoch: epoch, session: s, err: err}
+	}
+}
+
+func pollCodexAuthCmd(epoch int, s *codexproxy.LoginSession) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		done, err := s.Poll(ctx)
+		return codexAuthPollMsg{epoch: epoch, done: done, err: err}
+	}
+}
+
+func codexAuthTickCmd(epoch int, d time.Duration) tea.Cmd {
+	return tea.Tick(d, func(time.Time) tea.Msg { return codexAuthTickMsg{epoch: epoch} })
 }
 
 func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -2700,9 +2985,22 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.keys = nil
 		return m, loadKeysetCmd(m.editName)
 	}
-	// Enter on the Default model field opens the model picker instead of
-	// advancing ("pick, don't type"). It requires a models_endpoint to hit;
-	// custom vendors without one fall through to manual text entry.
+	// Enter on the Default model field opens the model picker ("pick, don't type").
+	// codex has no probeable models endpoint (its /v1/models is the lazily-started
+	// loopback daemon), so it seeds the picker from the static codex model list
+	// instead of a fetch — for both add and edit.
+	if msg.String() == "enter" && m.form.focusedKey() == "default_model" &&
+		m.addProtocol == config.ProtocolCodexOAuth {
+		m.screen = screenModelPick
+		m.loading = false
+		m.modelList = codexStaticModelList()
+		m.modelsErr = nil
+		m.modelCursor = 0
+		m.modelFilter = ""
+		return m, nil
+	}
+	// Other providers hit their models_endpoint; custom vendors without one fall
+	// through to manual text entry.
 	if msg.String() == "enter" && m.form.focusedKey() == "default_model" &&
 		m.form.value("models_endpoint") != "" {
 		m.screen = screenModelPick
@@ -2735,7 +3033,7 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	filtered := m.filteredModels()
 	switch msg.String() {
-	case "esc":
+	case "esc", "left":
 		m.screen = screenForm
 		return m, textinput.Blink
 	case "enter":
@@ -3020,10 +3318,94 @@ func (m Model) keyLabel(idx int) string {
 	return fmt.Sprintf("key%d", idx+1)
 }
 
-// submitAdd validates the add form and dispatches userops.Add. Required-field
-// gaps are surfaced inline (no command) so the user can fix them in place;
-// vendor-side errors (bad key, unreachable) come back via opDoneMsg.
+// submitAdd dispatches the add form by provider class. Required-field gaps are
+// surfaced inline (no command) so the user can fix them in place; vendor-side
+// errors (bad key, unreachable) come back via opDoneMsg.
 func (m Model) submitAdd() (tea.Model, tea.Cmd) {
+	switch m.addProtocol {
+	case config.ProtocolCodexOAuth:
+		return m.submitAddCodex()
+	case config.ProtocolOpenAIChat, config.ProtocolOpenAIResponses:
+		return m.submitAddOpenAI()
+	default:
+		return m.submitAddAnthropic()
+	}
+}
+
+// submitAddOpenAI commits an OpenAI-protocol provider: the loopback base_url is
+// assigned from a free daemon port; the real upstream + key ride the form.
+func (m Model) submitAddOpenAI() (tea.Model, tea.Cmd) {
+	name := m.form.value("name")
+	upstream := m.form.value("upstream_url")
+	modelsEndpoint := m.form.value("models_endpoint")
+	apiKey := m.form.value("api_key")
+	defaultModel := m.form.value("default_model")
+
+	if missing := missingLabels(map[string]string{
+		"Name":            name,
+		"Upstream URL":    upstream,
+		"Models endpoint": modelsEndpoint,
+		"API key":         apiKey,
+		"Default model":   defaultModel,
+	}, []string{"Name", "Upstream URL", "Models endpoint", "API key", "Default model"}); len(missing) > 0 {
+		m.form.err = "required: " + strings.Join(missing, ", ")
+		return m, nil
+	}
+	port, err := codexproxy.ChoosePort(0)
+	if err != nil {
+		m.form.err = err.Error()
+		return m, nil
+	}
+	m.form.err = ""
+	m.loading = true
+	return m, addVendorCmd(userops.AddRequest{
+		Name:           name,
+		BaseURL:        fmt.Sprintf("http://127.0.0.1:%d/", port),
+		ModelsEndpoint: modelsEndpoint,
+		DefaultModel:   defaultModel,
+		SecretBackend:  "file",
+		SecretRef:      name + ".key",
+		Protocol:       m.addProtocol,
+		UpstreamURL:    upstream,
+		APIKey:         apiKey,
+		Enabled:        true,
+	})
+}
+
+// submitAddCodex commits a codex provider: a free loopback port + the codex-oauth
+// backend; the upstream is the fixed ChatGPT backend, so there is no key.
+func (m Model) submitAddCodex() (tea.Model, tea.Cmd) {
+	name := m.form.value("name")
+	defaultModel := m.form.value("default_model")
+	if missing := missingLabels(map[string]string{
+		"Name":          name,
+		"Default model": defaultModel,
+	}, []string{"Name", "Default model"}); len(missing) > 0 {
+		m.form.err = "required: " + strings.Join(missing, ", ")
+		return m, nil
+	}
+	port, err := codexproxy.ChoosePort(0)
+	if err != nil {
+		m.form.err = err.Error()
+		return m, nil
+	}
+	base := fmt.Sprintf("http://127.0.0.1:%d/", port)
+	m.form.err = ""
+	m.loading = true
+	return m, addVendorCmd(userops.AddRequest{
+		Name:           name,
+		BaseURL:        base,
+		ModelsEndpoint: base + "v1/models",
+		DefaultModel:   defaultModel,
+		SecretBackend:  codexproxy.SecretBackend,
+		SecretRef:      codexproxy.SecretRef,
+		Protocol:       config.ProtocolCodexOAuth,
+		Enabled:        true,
+	})
+}
+
+// submitAddAnthropic validates the Anthropic-native add form and dispatches Add.
+func (m Model) submitAddAnthropic() (tea.Model, tea.Cmd) {
 	name := m.form.value("name")
 	baseURL := m.form.value("base_url")
 	modelsEndpoint := m.form.value("models_endpoint")
@@ -3057,29 +3439,38 @@ func (m Model) submitAdd() (tea.Model, tea.Cmd) {
 
 // submitEdit validates the edit form and dispatches userops.Edit.
 func (m Model) submitEdit() (tea.Model, tea.Cmd) {
-	baseURL := m.form.value("base_url")
-	modelsEndpoint := m.form.value("models_endpoint")
 	defaultModel := m.form.value("default_model")
 	enabled := m.form.boolValue("enabled")
+	req := userops.EditRequest{Name: m.editName, DefaultModel: &defaultModel, Enabled: &enabled}
 
-	if missing := missingLabels(map[string]string{
-		"Base URL":        baseURL,
-		"Models endpoint": modelsEndpoint,
-		"Default model":   defaultModel,
-	}, []string{"Base URL", "Models endpoint", "Default model"}); len(missing) > 0 {
+	// The editable endpoint follows the form's class (newEditForm): openai-* edits
+	// upstream_url, codex edits neither (loopback/internal), others edit base_url.
+	required := map[string]string{"Default model": defaultModel}
+	order := []string{"Default model"}
+	switch m.addProtocol { // set to the edited vendor's protocol on edit entry
+	case config.ProtocolOpenAIChat, config.ProtocolOpenAIResponses:
+		upstream := m.form.value("upstream_url")
+		models := m.form.value("models_endpoint")
+		req.UpstreamURL, req.ModelsEndpoint = &upstream, &models
+		required["Upstream URL"], required["Models endpoint"] = upstream, models
+		order = append([]string{"Upstream URL", "Models endpoint"}, order...)
+	case config.ProtocolCodexOAuth:
+		// only default_model + enabled are editable
+	default:
+		baseURL := m.form.value("base_url")
+		models := m.form.value("models_endpoint")
+		req.BaseURL, req.ModelsEndpoint = &baseURL, &models
+		required["Base URL"], required["Models endpoint"] = baseURL, models
+		order = append([]string{"Base URL", "Models endpoint"}, order...)
+	}
+
+	if missing := missingLabels(required, order); len(missing) > 0 {
 		m.form.err = "required: " + strings.Join(missing, ", ")
 		return m, nil
 	}
-
 	m.form.err = ""
 	m.loading = true
-	return m, editVendorCmd(userops.EditRequest{
-		Name:           m.editName,
-		BaseURL:        &baseURL,
-		ModelsEndpoint: &modelsEndpoint,
-		DefaultModel:   &defaultModel,
-		Enabled:        &enabled,
-	})
+	return m, editVendorCmd(req)
 }
 
 // missingLabels returns the labels (in the given order) whose value is empty.

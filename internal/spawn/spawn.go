@@ -164,8 +164,9 @@ func Spawn(req Request) Result {
 	// 4. Optional vendor probe (3s GET against models_endpoint, with key).
 	//    Skipped for a codex provider: its models endpoint is served by the
 	//    lazily-started conversion daemon, so probing here (before 5c starts it)
-	//    would always fail — daemon readiness at 5c is the real health signal.
-	if req.Probe && v.SecretBackend != codexproxy.SecretBackend {
+	//    would always fail — daemon readiness at 5c is the real health signal. An
+	//    openai-* provider still probes (its models_endpoint is the real upstream).
+	if req.Probe && v.EffectiveProtocol() != config.ProtocolCodexOAuth {
 		if res := probeVendor(v); res != nil {
 			res.Vendor = req.Vendor
 			return *res

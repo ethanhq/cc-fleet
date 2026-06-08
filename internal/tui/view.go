@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/secrets"
 	"github.com/ethanhq/cc-fleet/internal/sessiontitle"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
@@ -62,6 +63,8 @@ func (m Model) View() string {
 		return m.viewSetup()
 	case screenSetupTmux:
 		return m.viewSetupTmux()
+	case screenCodexAuth:
+		return m.viewCodexAuth()
 	}
 	return ""
 }
@@ -155,14 +158,13 @@ func (m Model) viewList() string {
 		}
 		right = state + " · " + vendorCacheFig(v)
 	}
-	var leftLines []string
-	for i, v := range m.vendors {
+	leftLines, cursorVisualLine := m.providerRail(m.vendorCursor, func(i int, v userops.VendorView) string {
 		marker := "  "
 		dot := okStyle.Render("●")
 		if !v.Enabled {
 			dot = faintStyle.Render("○")
 		}
-		name := trunc(v.Name, 24)
+		name := trunc(v.Name, 22)
 		switch {
 		case i == m.vendorCursor:
 			marker = cursorStyle.Render("❯ ")
@@ -172,8 +174,8 @@ func (m Model) viewList() string {
 		default:
 			name = faintStyle.Render(name)
 		}
-		leftLines = append(leftLines, marker+dot+" "+name)
-	}
+		return "  " + marker + dot + " " + name
+	})
 	if len(m.vendors) == 0 {
 		leftLines = append(leftLines, faintStyle.Render("  (none yet)"))
 	}
@@ -184,18 +186,20 @@ func (m Model) viewList() string {
 		addMarker = cursorStyle.Render("❯ ")
 		addLabel = selectedStyle.Render("+ Add provider…")
 	}
-	leftLines = append(leftLines, "  "+faintStyle.Render(strings.Repeat("─", 12)), addMarker+addLabel)
+	addLine := addMarker + addLabel
 	listTitle := fmt.Sprintf("Providers · %d", len(m.vendors))
+	// Size the rail to the rows + add line, then draw the divider to that width.
+	leftLines = append(leftLines, addLine)
 	leftW, rightW := m.paneWidths(leftWidth(listTitle, leftLines, m.boardInner()))
-	cardTitle := "add provider"
-	rightLines := []string{contentStyle.Render("Note"),
-		" " + contentStyle.Render("→/⏎ opens the add-provider wizard")}
+	leftLines = append(leftLines[:len(leftLines)-1], railSeparator(leftW), addLine)
+	cardTitle := "pick a provider"
+	rightLines := m.addPickerLines(-1) // read-only preview of the grouped list
 	if m.vendorCursor < addRow {
 		v := m.vendors[m.vendorCursor]
 		cardTitle = trunc(v.Name, 24)
 		rightLines = vendorDetailLines(v, rightW)
 	}
-	cursorLine := m.vendorCursor
+	cursorLine := cursorVisualLine
 	if m.vendorCursor >= addRow {
 		cursorLine = len(leftLines) - 1
 	}
@@ -222,10 +226,10 @@ func vendorCacheFig(v userops.VendorView) string {
 func vendorDetailLines(v userops.VendorView, rightW int) []string {
 	status := okStyle.Render("● enabled")
 	if !v.Enabled {
-		status = faintStyle.Render("○ disabled")
+		status = liveStyle.Render("○ disabled")
 	}
 	if v.DefaultModel != "" {
-		status += faintStyle.Render(" · " + trunc(v.DefaultModel, 28))
+		status += liveStyle.Render(" · " + trunc(v.DefaultModel, 28))
 	}
 	lines := []string{status, "", contentStyle.Render("Note"),
 		" " + contentStyle.Render("→/⏎ edit · d delete"), "", faintStyle.Render("Config")}
@@ -240,41 +244,82 @@ func vendorDetailLines(v userops.VendorView, rightW int) []string {
 	return lines
 }
 
+// railSeparator is the divider above "+ Add provider…": dashes spanning the rail
+// to one column shy of each edge, so it reads a touch longer than the widest
+// header/label with a small margin on each side.
+func railSeparator(leftW int) string {
+	n := leftW - 2
+	if n < 4 {
+		n = 4
+	}
+	return " " + faintStyle.Render(strings.Repeat("─", n))
+}
+
+// providerRail renders the provider list grouped by wire class (one header per
+// class, vendors indented under it). row(i, v) renders each vendor's line; the
+// returned int is the visual line index of the vendor at activeIdx (-1 if none),
+// for cursor windowing. Shared by the home list and the flow screens so their
+// rails stay identical.
+func (m Model) providerRail(activeIdx int, row func(i int, v userops.VendorView) string) ([]string, int) {
+	var lines []string
+	prevRank := -1
+	activeLine := -1
+	for i, v := range m.vendors {
+		if r := vendorClassRank(v.Protocol); r != prevRank {
+			if prevRank != -1 {
+				lines = append(lines, "")
+			}
+			lines = append(lines, "  "+faintStyle.Render(vendorClassHeader(v.Protocol)))
+			prevRank = r
+		}
+		if i == activeIdx {
+			activeLine = len(lines)
+		}
+		lines = append(lines, row(i, v))
+	}
+	return lines, activeLine
+}
+
 // vendorFlowView wraps a vendor flow (edit / add / model pick / keys / confirm / result)
 // in the hub chrome: the SAME master-detail box as the list, the inert provider rail on
 // the left keeping the spatial anchor, the flow's pane on the right. active highlights
 // the provider the flow concerns ("+" highlights the Add row, "" none); ctx/ctxRight fill
 // the header line; rightLines builds the pane content for its column budget.
 func (m Model) vendorFlowView(ctx, ctxRight, active, rightTitle, hint string, rightLines func(rightW int) []string) string {
-	var leftLines []string
-	for _, v := range m.vendors {
+	activeVendorIdx := -1
+	for i, v := range m.vendors {
+		if v.Name == active {
+			activeVendorIdx = i
+		}
+	}
+	leftLines, activeLine := m.providerRail(activeVendorIdx, func(i int, v userops.VendorView) string {
 		dot := okStyle.Render("●")
 		if !v.Enabled {
 			dot = faintStyle.Render("○")
 		}
-		name := trunc(v.Name, 24)
+		name := trunc(v.Name, 22)
 		if v.Name == active {
 			name = selectedStyle.Render(name)
 		} else {
 			name = faintStyle.Render(name)
 		}
-		leftLines = append(leftLines, "  "+dot+" "+name)
-	}
+		return "    " + dot + " " + name
+	})
 	addLabel := faintStyle.Render("+ Add provider…")
 	if active == "+" {
 		addLabel = selectedStyle.Render("+ Add provider…")
 	}
-	leftLines = append(leftLines, "  "+faintStyle.Render(strings.Repeat("─", 12)), "  "+addLabel)
+	addLine := "  " + addLabel
 	listTitle := fmt.Sprintf("Providers · %d", len(m.vendors))
+	leftLines = append(leftLines, addLine)
 	leftW, rightW := m.paneWidths(leftWidth(listTitle, leftLines, m.boardInner()))
+	leftLines = append(leftLines[:len(leftLines)-1], railSeparator(leftW), addLine)
 	bodyH := m.boardBodyHeight()
 	// Window the rail on the flow's provider (the Add row when none) so it stays
 	// visible past the box height.
-	activeIdx := len(leftLines) - 1
-	for i, v := range m.vendors {
-		if v.Name == active {
-			activeIdx = i
-		}
+	activeIdx := activeLine
+	if activeIdx < 0 {
+		activeIdx = len(leftLines) - 1
 	}
 	board := renderBoard(listTitle, windowLines(leftLines, activeIdx, bodyH), rightTitle, rightLines(rightW), leftW, rightW, bodyH, 0)
 	pad := strings.Repeat(" ", boardMargin)
@@ -291,7 +336,7 @@ func (m Model) viewForm() string {
 		active, rightTitle = m.editName, "edit "+trunc(m.editName, 20)
 	}
 	return m.vendorFlowView(m.form.title, "", active, rightTitle, m.form.intro,
-		func(rightW int) []string { return m.form.viewLines() })
+		func(rightW int) []string { return m.form.viewLines(rightW) })
 }
 
 // viewSpawn renders the Agents Board: a project-first master-detail. asMode re-roots
@@ -2660,40 +2705,118 @@ func shortJobID(id string) string {
 	return id
 }
 
-// viewPickTemplate renders the add flow's template picker in the hub box: template rows
-// above the highlighted template's seed-value preview, so the user sees what will be
-// prefilled before committing to the form.
+// viewPickTemplate renders the single grouped add picker: every provider class
+// with its seeds under one header (indented), one cursor over the flat selectable
+// rows, and a seed preview for the highlighted row.
 func (m Model) viewPickTemplate() string {
-	return m.vendorFlowView("Add provider · pick a template", "", "+", "templates",
-		"↑/↓ move · enter choose · esc cancel", func(rightW int) []string {
-			rows := make([]string, 0, len(Templates)+1)
-			for _, t := range Templates {
-				rows = append(rows, t.Label)
-			}
-			rows = append(rows, "Custom provider (fill everything manually)")
-			var lines []string
-			for i, label := range rows {
-				cursor := "  "
-				if i == m.tmplCursor {
-					cursor = cursorStyle.Render("❯ ")
-					label = selectedStyle.Render(label)
-				} else {
-					label = contentStyle.Render(label)
-				}
-				lines = append(lines, cursor+label)
-			}
+	return m.vendorFlowView("Add provider", "", "+", "pick a provider",
+		"↑/↓ move · enter/→ choose · esc cancel", func(rightW int) []string {
+			return m.addPickerLines(m.tmplCursor)
+		})
+}
+
+// addPickerLines renders the grouped provider list. cursor >= 0 highlights that
+// flat item index and appends its seed preview; cursor < 0 is a read-only preview
+// (used as the home list's "+ Add provider…" hover detail).
+func (m Model) addPickerLines(cursor int) []string {
+	var lines []string
+	idx := 0
+	for gi, g := range addGroups() {
+		if gi > 0 {
 			lines = append(lines, "")
-			if m.tmplCursor < len(Templates) {
-				t := Templates[m.tmplCursor]
-				lines = append(lines,
-					faintStyle.Render("  base_url        "+t.BaseURL),
-					faintStyle.Render("  models_endpoint "+t.ModelsEndpoint),
-					faintStyle.Render("  default_model   "+t.DefaultModel))
-				if t.Note != "" {
-					lines = append(lines, errStyle.Render("  note: "+t.Note))
+		}
+		lines = append(lines, faintStyle.Render(g.header))
+		for _, it := range g.items {
+			marker := "  "
+			label := contentStyle.Render(it.label)
+			if idx == cursor {
+				marker = cursorStyle.Render("❯ ")
+				label = selectedStyle.Render(it.label)
+			}
+			lines = append(lines, "  "+marker+label)
+			idx++
+		}
+	}
+	if cursor >= 0 {
+		lines = append(lines, "")
+		lines = append(lines, m.addItemDetail()...)
+	}
+	return lines
+}
+
+// addItemDetail is the seed/source preview for the highlighted picker row.
+func (m Model) addItemDetail() []string {
+	items := addItems()
+	if m.tmplCursor < 0 || m.tmplCursor >= len(items) {
+		return nil
+	}
+	switch it := items[m.tmplCursor]; it.class {
+	case addCatCLI:
+		if st := codexproxy.StatusReport(); st.Active != "none" {
+			return []string{faintStyle.Render("  reuses the codex login (" + st.Active + ", account " + st.Account + ") — no key needed")}
+		}
+		return []string{faintStyle.Render("  not logged in — you'll authorize next (or run: cc-fleet codex login)")}
+	case addCatOpenAI:
+		if it.oIdx < 0 {
+			return []string{faintStyle.Render("  protocol  openai-chat · fill upstream_url + key")}
+		}
+		t := OAITemplates[it.oIdx]
+		lines := []string{
+			faintStyle.Render("  protocol      " + t.Protocol),
+			faintStyle.Render("  upstream_url  " + t.UpstreamURL),
+		}
+		if t.Note != "" {
+			lines = append(lines, errStyle.Render("  note: "+t.Note))
+		}
+		return lines
+	default:
+		if it.tIdx < 0 {
+			return []string{faintStyle.Render("  all fields start blank")}
+		}
+		t := Templates[it.tIdx]
+		lines := []string{
+			faintStyle.Render("  base_url        " + t.BaseURL),
+			faintStyle.Render("  models_endpoint " + t.ModelsEndpoint),
+			faintStyle.Render("  default_model   " + t.DefaultModel),
+		}
+		if t.Note != "" {
+			lines = append(lines, errStyle.Render("  note: "+t.Note))
+		}
+		return lines
+	}
+}
+
+func (m Model) viewCodexAuth() string {
+	if m.codexAuthStage == codexAuthDevice {
+		return m.vendorFlowView("Add codex provider · authorize", "", "+", "device login",
+			"esc cancel", func(rightW int) []string {
+				var lines []string
+				if m.codexAuth != nil {
+					lines = append(lines,
+						contentStyle.Render("Open this URL and enter the code:"), "",
+						"  "+selectedStyle.Render(m.codexAuth.VerifyURL),
+						"  code: "+selectedStyle.Render(m.codexAuth.UserCode), "",
+						faintStyle.Render("  waiting for authorization…"))
+				} else {
+					lines = append(lines, faintStyle.Render("  starting device login…"))
 				}
-			} else {
-				lines = append(lines, faintStyle.Render("  all fields start blank"))
+				if m.codexAuthErr != "" {
+					lines = append(lines, "", errStyle.Render("  "+m.codexAuthErr))
+				}
+				return lines
+			})
+	}
+	return m.vendorFlowView("Add codex provider · consent", "", "+", "account risk",
+		"enter accept · esc cancel", func(rightW int) []string {
+			var lines []string
+			for _, seg := range strings.Split(codexproxy.RiskNotice, "\n") {
+				for _, w := range wrapTo(seg, rightW-2) {
+					lines = append(lines, contentStyle.Render(w))
+				}
+			}
+			lines = append(lines, "", faintStyle.Render("enter starts the device-code login · esc cancels"))
+			if m.codexAuthErr != "" {
+				lines = append(lines, "", errStyle.Render(m.codexAuthErr))
 			}
 			return lines
 		})

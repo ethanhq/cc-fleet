@@ -70,6 +70,10 @@ type responsesRequest struct {
 	Store             bool            `json:"store"`
 	Stream            bool            `json:"stream"`
 	PromptCacheKey    string          `json:"prompt_cache_key,omitempty"`
+	// MaxOutputTokens is set only by the openai-responses upstream (a billed
+	// account honors the cap); the codex backend 400s on it, so translateRequest
+	// leaves it 0 and omitempty drops it.
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
 }
 
 type reasoningOpt struct {

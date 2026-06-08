@@ -32,20 +32,36 @@ const (
 	upBadRequest                     // 4xx request shape
 )
 
-// upstreamClient POSTs to the ChatGPT Responses backend with the reused bearer and
-// the codex client headers, refreshing once on a 401.
-type upstreamClient struct {
+// codexUpstream POSTs to the ChatGPT Responses backend with the reused
+// subscription bearer and the codex client headers, refreshing once on a 401. It
+// is the upstream implementation for the codex-oauth protocol.
+type codexUpstream struct {
 	http   *http.Client
 	source tokenSource
 }
 
-func newUpstreamClient(source tokenSource) *upstreamClient {
-	return &upstreamClient{http: &http.Client{Timeout: 0}, source: source}
+func newCodexUpstream(source tokenSource) *codexUpstream {
+	return &codexUpstream{http: &http.Client{Timeout: 0}, source: source}
 }
 
-// call sends the Responses body and returns the streaming response on success. The
-// caller owns resp.Body. On failure it returns a classified *upstreamError.
-func (u *upstreamClient) call(ctx context.Context, body []byte) (*http.Response, error) {
+func (u *codexUpstream) models() []string { return append([]string(nil), codexModels...) }
+
+func (u *codexUpstream) convert(body io.Reader, sink sseSink, model, _ string) error {
+	// codex's upstream errors are canonical (no key), so no redactor is needed.
+	return newStreamConverter(sink, model).Convert(body)
+}
+
+// call translates the Anthropic request to a Responses request, sends it, and
+// returns the streaming body on success (the caller owns it). apiKey is ignored —
+// codex authenticates with its OAuth bearer. On failure it returns a classified
+// *upstreamError; a 401 triggers one refresh+retry.
+func (u *codexUpstream) call(ctx context.Context, areq *anthropicRequest, _ string) (io.ReadCloser, error) {
+	rreq, err := translateRequest(areq)
+	if err != nil {
+		return nil, &upstreamError{upBadRequest, http.StatusBadRequest, err.Error()}
+	}
+	body, _ := json.Marshal(rreq)
+
 	resp, gen, err := u.do(ctx, body)
 	if err != nil {
 		return nil, err
@@ -66,14 +82,14 @@ func (u *upstreamClient) call(ctx context.Context, body []byte) (*http.Response,
 		}
 	}
 	if resp.StatusCode/100 == 2 {
-		return resp, nil
+		return resp.Body, nil
 	}
 	return nil, classifyUpstream(resp)
 }
 
 // do sends one upstream request, returning the bearer generation it used so a
 // 401 can invalidate precisely that credential.
-func (u *upstreamClient) do(ctx context.Context, body []byte) (*http.Response, uint64, error) {
+func (u *codexUpstream) do(ctx context.Context, body []byte) (*http.Response, uint64, error) {
 	bear, err := u.source.token(ctx)
 	if err != nil {
 		if errors.Is(err, ErrReauth) {

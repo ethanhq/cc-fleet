@@ -28,11 +28,21 @@ const (
 	readyTimeout = 10 * time.Second
 )
 
-func stateDir() (string, error)   { return config.ConfigDir() }
-func statePath() (string, error)  { return joinConfig("codex-proxy.json") }
-func secretPath() (string, error) { return joinConfig("codex-proxy-secret") }
-func lockPath() (string, error)   { return joinConfig(".cc-fleet-codex-proxy.lock") }
-func leasesDir() (string, error)  { return joinConfig("codex-proxy-leases") }
+// Daemon state is per-port: a state file, a start/exit lock, and a lease dir keyed
+// by port, so a codex daemon and an openai daemon (or two openai daemons) coexist
+// without overwriting each other. The handshake secret + its create-once lock and
+// the token lock stay GLOBAL (one per install), shared by all codex daemons.
+func statePath(port int) (string, error) {
+	return joinConfig(fmt.Sprintf("codex-proxy-%d.json", port))
+}
+func lockPath(port int) (string, error) {
+	return joinConfig(fmt.Sprintf(".cc-fleet-codex-proxy-%d.lock", port))
+}
+func leasesDir(port int) (string, error) {
+	return joinConfig(fmt.Sprintf("codex-proxy-leases-%d", port))
+}
+func secretPath() (string, error)     { return joinConfig("codex-proxy-secret") }
+func secretLockPath() (string, error) { return joinConfig(".cc-fleet-codex-secret.lock") }
 
 func joinConfig(name string) (string, error) {
 	dir, err := config.ConfigDir()
@@ -42,30 +52,47 @@ func joinConfig(name string) (string, error) {
 	return filepath.Join(dir, name), nil
 }
 
-// proxyState is the persisted daemon descriptor (pid + procStart guard against PID
-// reuse; the port the daemon is bound to).
+// proxyState is the persisted daemon descriptor: pid + procStart guard against PID
+// reuse; the bound port; and the identity (protocol + upstream URL) a reuse check
+// matches against so a daemon left from a different vendor is never reused.
 type proxyState struct {
-	Port      int    `json:"port"`
-	PID       int    `json:"pid"`
-	ProcStart string `json:"proc_start"`
+	Port        int    `json:"port"`
+	PID         int    `json:"pid"`
+	ProcStart   string `json:"proc_start"`
+	Protocol    string `json:"protocol"`
+	UpstreamURL string `json:"upstream_url,omitempty"`
 }
 
-// withProxyLock serializes daemon start / exit decisions. It is the FIFTH flock
-// scope and is held with NONE of the other four (vendors / team / server / run),
-// so it cannot form a lock-order cycle.
-func withProxyLock(fn func() error) error {
-	p, err := lockPath()
+// withProxyLock serializes a single port's daemon start / exit decisions. It is a
+// standalone flock scope, held with none of the others (vendors / team / server /
+// run / secret / token), so it cannot form a lock-order cycle.
+func withProxyLock(port int, fn func() error) error {
+	p, err := lockPath(port)
 	if err != nil {
 		return err
 	}
 	return config.WithFlock(p, fn)
 }
 
-// SecretForKeyget returns the stable loopback handshake secret, creating it once.
-// keyget hands this (not the upstream token) to the claude process.
+// withSecretLock serializes the handshake secret's create-once. It is global (the
+// secret is per-install), so two first-time daemons on different ports never
+// race-overwrite it (which would desync keyget from a running daemon). Standalone
+// — acquired and released before the per-port proxy lock in EnsureDaemon, never
+// nested with it, so no ordering cycle.
+func withSecretLock(fn func() error) error {
+	p, err := secretLockPath()
+	if err != nil {
+		return err
+	}
+	return config.WithFlock(p, fn)
+}
+
+// SecretForKeyget returns the stable loopback handshake secret, creating it once
+// under the global secret lock. keyget hands this (not the upstream token) to the
+// claude process.
 func SecretForKeyget() (string, error) {
 	var secret string
-	err := withProxyLock(func() error {
+	err := withSecretLock(func() error {
 		s, e := loadOrCreateSecret()
 		secret = s
 		return e
@@ -92,17 +119,17 @@ func loadOrCreateSecret() (string, error) {
 	return secret, nil
 }
 
-// PortFromBaseURL extracts the loopback port from a codex vendor's base_url,
-// validating it is a plain loopback http URL first (config.ParseLoopbackURL is
-// the shared definition, also used at config load/validate time).
+// PortFromBaseURL extracts the loopback port from a daemon-backed vendor's
+// base_url, validating it is a plain loopback http URL first (config.ParseLoopbackURL
+// is the shared definition, also used at config load/validate time).
 func PortFromBaseURL(baseURL string) (int, error) {
 	u, err := config.ParseLoopbackURL(baseURL)
 	if err != nil {
-		return 0, fmt.Errorf("codex base_url %w", err)
+		return 0, fmt.Errorf("base_url %w", err)
 	}
 	port, err := strconv.Atoi(u.Port())
 	if err != nil || port <= 0 {
-		return 0, fmt.Errorf("codex base_url %q has no valid port", baseURL)
+		return 0, fmt.Errorf("base_url %q has no valid port", baseURL)
 	}
 	return port, nil
 }
@@ -119,58 +146,92 @@ func EnsureForVendorName(name string) error {
 	return EnsureForVendor(cfg.Vendors[name])
 }
 
-// EnsureForVendor ensures the proxy daemon is up for a codex provider (a no-op for
-// any other vendor). Call it after the fingerprint gate and before the profile write.
+// EnsureForVendor ensures the proxy daemon is up for a daemon-backed provider (a
+// no-op for an Anthropic-native vendor). Call it after the fingerprint gate and
+// before the profile write. Keys on the normalized protocol so a codex row
+// predating the protocol field (codex-oauth backend, no protocol) is recognized.
 func EnsureForVendor(v *config.Vendor) error {
-	if v == nil || v.SecretBackend != SecretBackend {
+	if v == nil || !v.DaemonBacked() {
 		return nil
-	}
-	// models_endpoint must also stay loopback — a probe sends the handshake secret
-	// there, so a remote one would leak it off-host.
-	if v.ModelsEndpoint != "" {
-		if _, err := config.ParseLoopbackURL(v.ModelsEndpoint); err != nil {
-			return fmt.Errorf("codex models_endpoint %w", err)
-		}
 	}
 	port, err := PortFromBaseURL(v.BaseURL)
 	if err != nil {
 		return err
 	}
-	return EnsureDaemon(port)
+	// codex also serves its models_endpoint from the daemon, and a probe sends the
+	// handshake secret there, so it too must stay loopback.
+	if v.EffectiveProtocol() == config.ProtocolCodexOAuth && v.ModelsEndpoint != "" {
+		if _, err := config.ParseLoopbackURL(v.ModelsEndpoint); err != nil {
+			return fmt.Errorf("codex models_endpoint %w", err)
+		}
+	}
+	return EnsureDaemon(port, v.EffectiveProtocol(), v.UpstreamURL)
 }
 
-// EnsureDaemon makes the codex proxy daemon reachable on port, lazily and
-// single-flight under the proxy lock, and registers a launch lease that keeps the
-// daemon alive across the window before the launched claude is visible. Slot it
-// after the fingerprint gate and before the profile-write side effect.
-func EnsureDaemon(port int) error {
-	return withProxyLock(func() error {
-		if _, err := loadOrCreateSecret(); err != nil {
+// EnsureDaemon makes the proxy daemon for (port, protocol, upstreamURL) reachable,
+// lazily and single-flight under that port's proxy lock, and registers a launch
+// lease that keeps it alive across the window before the launched claude is
+// visible. A live daemon is reused only if its persisted identity matches; a
+// mismatch is torn down and restarted. Slot it after the fingerprint gate and
+// before the profile-write side effect.
+func EnsureDaemon(port int, protocol, upstreamURL string) error {
+	if protocol == config.ProtocolCodexOAuth {
+		if err := withSecretLock(func() error { _, e := loadOrCreateSecret(); return e }); err != nil {
 			return err
 		}
-		if !healthy(port) {
-			if err := startDetached(port); err != nil {
+	}
+	return withProxyLock(port, func() error {
+		if !healthy(port, protocol, upstreamURL) {
+			stopStaleDaemon(port)
+			if err := startDetached(port, protocol, upstreamURL); err != nil {
 				return err
 			}
 			if err := waitReady(port); err != nil {
 				return err
 			}
 		}
-		return registerLease()
+		return registerLease(port)
 	})
 }
 
-func healthy(port int) bool {
-	st, err := readState()
+// healthy reports whether a live daemon on port already serves this exact identity.
+// A dead pid, a different protocol/upstream (port reuse or an edited vendor), or an
+// unresponsive port all return false. Readiness is the upstream-independent
+// /healthz: an openai daemon's /v1/models returns an empty list (its models come
+// from the real upstream), so it is no readiness signal.
+func healthy(port int, protocol, upstreamURL string) bool {
+	st, err := readState(port)
 	if err != nil || st.Port != port || st.PID <= 0 || !pidAlive(st.PID, st.ProcStart) {
+		return false
+	}
+	if st.Protocol != protocol || st.UpstreamURL != upstreamURL {
 		return false
 	}
 	return portResponds(port)
 }
 
+// stopStaleDaemon interrupts a live daemon whose identity no longer matches and
+// waits briefly for it to free the port, so EnsureDaemon can rebind it. A no-op
+// when no daemon (or a dead one) holds the port.
+func stopStaleDaemon(port int) {
+	st, err := readState(port)
+	if err != nil {
+		return
+	}
+	if st.PID > 0 && pidAlive(st.PID, st.ProcStart) {
+		if proc, e := os.FindProcess(st.PID); e == nil {
+			_ = proc.Signal(os.Interrupt)
+		}
+		for i := 0; i < 20 && whoHoldsPort(port); i++ {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	clearState(port)
+}
+
 func portResponds(port int) bool {
 	c := &http.Client{Timeout: 1500 * time.Millisecond}
-	resp, err := c.Get(fmt.Sprintf("http://127.0.0.1:%d/v1/models", port))
+	resp, err := c.Get(fmt.Sprintf("http://127.0.0.1:%d/healthz", port))
 	if err != nil {
 		return false
 	}
@@ -178,18 +239,23 @@ func portResponds(port int) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-func startDetached(port int) error {
+func startDetached(port int, protocol, upstreamURL string) error {
 	if held := whoHoldsPort(port); held {
-		return fmt.Errorf("port %d is held by another process; free it or set a different codex base_url port", port)
+		return fmt.Errorf("port %d is held by another process; free it or set a different base_url port", port)
 	}
 	bin, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(bin, "codex-proxy", "serve", "--port", strconv.Itoa(port))
+	args := []string{"codex-proxy", "serve", "--port", strconv.Itoa(port), "--protocol", protocol}
+	if upstreamURL != "" {
+		args = append(args, "--upstream-url", upstreamURL)
+	}
+	cmd := exec.Command(bin, args...)
 	cmd.Stdout, cmd.Stderr = nil, nil
 	// Scrub the launcher's creds + nested-CC/teams markers from the long-lived
-	// daemon (it authenticates via its own OAuth chain, never the lead's env).
+	// daemon (codex authenticates via its own OAuth chain; an openai daemon takes
+	// the key per request, never from the lead's env).
 	cmd.Env = childenv.Clean(os.Environ())
 	detach(cmd)
 	if err := cmd.Start(); err != nil {
@@ -222,9 +288,9 @@ func waitReady(port int) error {
 	return fmt.Errorf("codex proxy did not become ready on port %d", port)
 }
 
-func readState() (proxyState, error) {
+func readState(port int) (proxyState, error) {
 	var st proxyState
-	p, err := statePath()
+	p, err := statePath(port)
 	if err != nil {
 		return st, err
 	}
@@ -236,12 +302,40 @@ func readState() (proxyState, error) {
 }
 
 func writeState(st proxyState) error {
-	p, err := statePath()
+	p, err := statePath(st.Port)
 	if err != nil {
 		return err
 	}
 	b, _ := json.MarshalIndent(st, "", "  ")
 	return fileutil.AtomicWrite(p, b, 0o600)
+}
+
+// listStates returns every persisted per-port daemon descriptor.
+func listStates() []proxyState {
+	dir, err := config.ConfigDir()
+	if err != nil {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []proxyState
+	for _, e := range entries {
+		name := e.Name()
+		if !strings.HasPrefix(name, "codex-proxy-") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		var st proxyState
+		if json.Unmarshal(b, &st) == nil && st.Port > 0 {
+			out = append(out, st)
+		}
+	}
+	return out
 }
 
 func pidAlive(pid int, procStart string) bool {
@@ -253,8 +347,8 @@ func pidAlive(pid int, procStart string) bool {
 
 // registerLease writes a short-TTL lease so the daemon won't exit during the window
 // between ensureDaemon returning and the launched claude appearing in the table.
-func registerLease() error {
-	dir, err := leasesDir()
+func registerLease(port int) error {
+	dir, err := leasesDir(port)
 	if err != nil {
 		return err
 	}
@@ -268,9 +362,9 @@ func registerLease() error {
 	return fileutil.AtomicWrite(filepath.Join(dir, name), []byte(strconv.FormatInt(expires, 10)), 0o600)
 }
 
-// activeLeases counts unexpired leases and prunes expired ones.
-func activeLeases() int {
-	dir, err := leasesDir()
+// activeLeases counts unexpired leases for a port and prunes expired ones.
+func activeLeases(port int) int {
+	dir, err := leasesDir(port)
 	if err != nil {
 		return 0
 	}
@@ -296,9 +390,9 @@ func activeLeases() int {
 	return active
 }
 
-// liveCodexWorkers counts running claude processes whose --settings profile points
-// at this proxy's port. A scan error returns -1 ("unknown" -> daemon stays alive).
-func liveCodexWorkers(port int) int {
+// liveWorkers counts running claude processes whose --settings profile points at
+// this proxy's port. A scan error returns -1 ("unknown" -> daemon stays alive).
+func liveWorkers(port int) int {
 	table, err := procintrospect.ProcessTable()
 	if err != nil {
 		return -1

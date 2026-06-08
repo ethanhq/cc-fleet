@@ -37,6 +37,10 @@ type blockState struct {
 type streamConverter struct {
 	out   sseSink
 	model string
+	// redact masks a streaming error message before it reaches the client (set by
+	// the openai-responses upstream to scrub an echoed key); nil for codex, whose
+	// upstream error messages are canonical.
+	redact func(string) string
 
 	started         bool
 	failed          bool // an upstream failure was surfaced as an Anthropic error event
@@ -135,8 +139,13 @@ func (c *streamConverter) handle(ev *responsesEvent) error {
 		return c.blockDelta(ev, "text_delta", "text", ev.Delta)
 	case ev.Type == "response.function_call_arguments.delta":
 		return c.blockDelta(ev, "input_json_delta", "partial_json", ev.Delta)
-	case ev.Type == "response.reasoning_summary_text.delta":
+	case ev.Type == "response.reasoning_summary_text.delta" || ev.Type == "response.reasoning_text.delta":
+		// Some models stream reasoning as reasoning_text.* rather than the summary
+		// variant; both map to the thinking block.
 		return c.blockDelta(ev, "thinking_delta", "thinking", ev.Delta)
+	case ev.Type == "response.refusal.delta":
+		// A refusal is visible model output — surface it as text, never drop it.
+		return c.blockDelta(ev, "text_delta", "text", ev.Delta)
 	case ev.Type == "response.output_item.done":
 		return c.finishItem(ev)
 	case ev.Type == "response.completed" || ev.Type == "response.done" || ev.Type == "response.incomplete":
@@ -193,6 +202,9 @@ func (c *streamConverter) emitError(msg string) error {
 		return err
 	}
 	c.failed = true
+	if c.redact != nil {
+		msg = c.redact(msg)
+	}
 	return c.out.event("error", map[string]any{
 		"type": "error", "error": map[string]any{"type": "api_error", "message": msg},
 	})

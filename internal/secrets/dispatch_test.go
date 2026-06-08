@@ -79,6 +79,38 @@ func fileVendor(name, ref string) *config.Config {
 	}
 }
 
+// An openai-* provider carries a real key via a normal backend (b1): keyget
+// returns that key for the daemon to forward, never the codex handshake secret.
+func TestKeyget_OpenAIChat_ReturnsRealKey(t *testing.T) {
+	cfg := &config.Config{
+		Version: config.SchemaVersion,
+		Vendors: map[string]*config.Vendor{
+			"groq": {
+				Name:           "groq",
+				BaseURL:        "http://127.0.0.1:17240/",
+				DefaultModel:   "llama-3.3",
+				ModelsEndpoint: "https://api.groq.com/openai/v1/models",
+				SecretBackend:  "file",
+				SecretRef:      "groq.key",
+				Protocol:       config.ProtocolOpenAIChat,
+				UpstreamURL:    "https://api.groq.com/openai/v1",
+				Enabled:        true,
+				AddedAt:        time.Date(2026, 6, 8, 0, 0, 0, 0, time.UTC),
+			},
+		},
+	}
+	setupConfig(t, cfg)
+	writeSecretFile(t, "groq.key", []byte("sk-real-groq-key"))
+
+	got, err := Keyget("groq")
+	if err != nil {
+		t.Fatalf("Keyget: %v", err)
+	}
+	if string(got) != "sk-real-groq-key" {
+		t.Fatalf("Keyget = %q, want the real key (b1, not the handshake secret)", got)
+	}
+}
+
 func TestKeyget_File_OK(t *testing.T) {
 	setupConfig(t, fileVendor("deepseek", "deepseek.key"))
 	writeSecretFile(t, "deepseek.key", []byte("sk-deepseek-abc123"))

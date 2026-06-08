@@ -80,7 +80,9 @@ func newOwnStore() (*ownStore, error) {
 	if err != nil {
 		return nil, err
 	}
-	s := &ownStore{path: p, oauth: newOAuthClient()}
+	// gen starts at 1 so an own-chain bearer is never generation 0, which the
+	// cliRideStore reserves for its read-only CLI-ride token.
+	s := &ownStore{path: p, oauth: newOAuthClient(), gen: 1}
 	if err := s.load(); err != nil {
 		return nil, err
 	}

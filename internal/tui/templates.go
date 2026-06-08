@@ -1,5 +1,7 @@
 package tui
 
+import "github.com/ethanhq/cc-fleet/internal/config"
+
 // Template is a built-in vendor seed: prefill values for the add wizard so a
 // user picking "DeepSeek" doesn't have to type the base_url / models_endpoint
 // by hand. These are SEEDS — vendor URLs and model ids drift over time, so the
@@ -19,6 +21,43 @@ type Template struct {
 	ModelsEndpoint string // /v1/models URL used for the probe + refresh
 	DefaultModel   string // suggested default model id
 	Note           string // optional caveat shown in the picker preview
+}
+
+// OAITemplate seeds the OpenAI-protocol add form. base_url is the loopback
+// conversion-daemon URL (auto-assigned on add), so it is NOT a template field;
+// upstream_url is the real OpenAI-compatible endpoint and Protocol selects the
+// wire surface (Chat Completions vs Responses).
+type OAITemplate struct {
+	Label        string // picker label
+	Name         string // default provider id
+	Protocol     string // config.ProtocolOpenAIChat | config.ProtocolOpenAIResponses
+	UpstreamURL  string // real OpenAI-compatible base, usually ending in /v1
+	DefaultModel string // suggested default (blank → pick from the probed list)
+	Note         string
+}
+
+// OAITemplates seeds the OpenAI-protocol picker. A synthetic "Custom" entry is
+// appended by the picker, so it is intentionally NOT in this slice.
+var OAITemplates = []OAITemplate{
+	{
+		Label:       "OpenAI · Responses API (official)",
+		Name:        "openai",
+		Protocol:    config.ProtocolOpenAIResponses,
+		UpstreamURL: "https://api.openai.com/v1",
+		Note:        "High-fidelity reasoning surface; pick the default model from the probed list.",
+	},
+	{
+		Label:       "OpenAI · Chat Completions (official)",
+		Name:        "openai-chat",
+		Protocol:    config.ProtocolOpenAIChat,
+		UpstreamURL: "https://api.openai.com/v1",
+	},
+	{
+		Label:    "OpenAI-compatible · Chat (Groq / Together / Fireworks / vLLM …)",
+		Name:     "",
+		Protocol: config.ProtocolOpenAIChat,
+		Note:     "Set upstream_url to the vendor's base (often …/v1, e.g. https://api.groq.com/openai/v1).",
+	},
 }
 
 // Templates is the built-in seed table. Order is the display order in the

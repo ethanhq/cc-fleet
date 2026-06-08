@@ -16,20 +16,26 @@ func newCodexProxyCmd() *cobra.Command {
 		Use:   "codex-proxy",
 		Short: "Manage the codex conversion daemon",
 	}
-	var port int
+	var (
+		port        int
+		protocol    string
+		upstreamURL string
+	)
 	serve := &cobra.Command{
 		Use:           "serve",
-		Short:         "Run the codex conversion daemon (loopback only)",
+		Short:         "Run the conversion daemon (loopback only)",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if port <= 0 {
 				return fmt.Errorf("--port is required")
 			}
-			return codexproxy.Serve(port)
+			return codexproxy.Serve(port, protocol, upstreamURL)
 		},
 	}
 	serve.Flags().IntVar(&port, "port", 0, "loopback port to bind")
+	serve.Flags().StringVar(&protocol, "protocol", "", "wire protocol (default: codex-oauth)")
+	serve.Flags().StringVar(&upstreamURL, "upstream-url", "", "real upstream base URL (openai-* protocols)")
 	cmd.AddCommand(serve)
 	cmd.AddCommand(&cobra.Command{
 		Use:   "stop",
@@ -40,13 +46,15 @@ func newCodexProxyCmd() *cobra.Command {
 	})
 	cmd.AddCommand(&cobra.Command{
 		Use:   "status",
-		Short: "Show the codex conversion daemon status",
+		Short: "Show the conversion daemon status",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			running, p := codexproxy.Status()
-			if running {
-				fmt.Printf("running on 127.0.0.1:%d\n", p)
-			} else {
+			daemons := codexproxy.RunningDaemons()
+			if len(daemons) == 0 {
 				fmt.Println("not running")
+				return nil
+			}
+			for _, d := range daemons {
+				fmt.Printf("running on 127.0.0.1:%d (%s)\n", d.Port, d.Protocol)
 			}
 			return nil
 		},

@@ -1,0 +1,5 @@
+data: {"choices":[{"index":0,"delta":{"role":"assistant","content":"part"},"finish_reason":null}]}
+
+data: {"error":{"message":"bad key sk-SECRET12345678 rejected","type":"invalid_request_error"}}
+
+data: [DONE]

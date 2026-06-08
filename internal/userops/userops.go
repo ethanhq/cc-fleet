@@ -201,6 +201,8 @@ type AddRequest struct {
 	DefaultModel   string
 	SecretBackend  string
 	SecretRef      string
+	Protocol       string // "" Anthropic-native | openai-chat | openai-responses | codex-oauth
+	UpstreamURL    string // real OpenAI base URL; required for openai-* protocols
 	APIKey         string // raw key bytes; only valid with SecretBackend=="file"
 	Enabled        bool   // defaults to true at the caller layer
 }
@@ -274,6 +276,8 @@ func addLocked(req AddRequest) (*AddResult, error) {
 		DefaultModel:   req.DefaultModel,
 		SecretBackend:  req.SecretBackend,
 		SecretRef:      req.SecretRef,
+		Protocol:       req.Protocol,
+		UpstreamURL:    req.UpstreamURL,
 		Enabled:        req.Enabled,
 		AddedAt:        time.Now().UTC(),
 	}
@@ -305,7 +309,7 @@ func addLocked(req AddRequest) (*AddResult, error) {
 	// it). Instead the cache is seeded with codex's static model list so a fresh
 	// entry carries the real models (not zero) and model resolution works at once.
 	var fetched []models.Model
-	if v.SecretBackend == codexproxy.SecretBackend {
+	if v.EffectiveProtocol() == config.ProtocolCodexOAuth {
 		for _, id := range codexproxy.StaticModels() {
 			fetched = append(fetched, models.Model{ID: id})
 		}
@@ -436,6 +440,7 @@ func updateModelsCache(vendor, endpoint string, fetched []models.Model) error {
 type EditRequest struct {
 	Name           string  // required
 	BaseURL        *string // nil = no change
+	UpstreamURL    *string // openai-* real upstream base
 	ModelsEndpoint *string
 	DefaultModel   *string
 	SecretBackend  *string
@@ -487,6 +492,9 @@ func editLocked(req EditRequest) (*EditResult, error) {
 	if req.BaseURL != nil && *req.BaseURL != v.BaseURL {
 		v.BaseURL = *req.BaseURL
 		baseURLChanged = true
+	}
+	if req.UpstreamURL != nil {
+		v.UpstreamURL = *req.UpstreamURL
 	}
 	if req.ModelsEndpoint != nil {
 		v.ModelsEndpoint = *req.ModelsEndpoint
@@ -679,6 +687,8 @@ type VendorView struct {
 	ModelsEndpoint string `json:"models_endpoint"`
 	SecretBackend  string `json:"secret_backend"`
 	SecretRef      string `json:"secret_ref"`
+	Protocol       string `json:"protocol"`     // resolved wire class: "" | openai-chat | openai-responses | codex-oauth
+	UpstreamURL    string `json:"upstream_url"` // real OpenAI base for openai-* (base_url is the loopback daemon)
 	Enabled        bool   `json:"enabled"`
 	ModelsCount    int    `json:"models_count"`
 	ModelsStale    bool   `json:"models_stale"`
@@ -719,6 +729,8 @@ func List() (*ListResult, error) {
 			ModelsEndpoint: v.ModelsEndpoint,
 			SecretBackend:  v.SecretBackend,
 			SecretRef:      v.SecretRef,
+			Protocol:       v.EffectiveProtocol(),
+			UpstreamURL:    v.UpstreamURL,
 			Enabled:        v.Enabled,
 		}
 		if vc, ok := cache.Vendors[name]; ok && vc != nil {

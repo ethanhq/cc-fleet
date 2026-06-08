@@ -1,10 +1,13 @@
 package codexproxy
 
 import (
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/ethanhq/cc-fleet/internal/config"
 )
 
 func TestScanDefaultModel(t *testing.T) {
@@ -54,6 +57,44 @@ func TestChoosePort(t *testing.T) {
 	}
 	if got < defaultPortBase || got >= defaultPortBase+portScanWidth {
 		t.Fatalf("auto port %d outside the reserved range", got)
+	}
+}
+
+// A port already assigned to a daemon-backed vendor in vendors.toml is never
+// handed to a new provider (daemons start lazily, so the bind check alone would
+// let two providers collide on one port).
+func TestChoosePort_SkipsAssigned(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	base := fmt.Sprintf("http://127.0.0.1:%d/", defaultPortBase)
+	cfg := &config.Config{Version: config.SchemaVersion, Vendors: map[string]*config.Vendor{
+		"codex": {
+			Name: "codex", BaseURL: base, ModelsEndpoint: base + "v1/models",
+			DefaultModel: "gpt-5.5", SecretBackend: config.CodexOAuthBackend,
+			SecretRef: config.CodexOAuthBackend, Enabled: true,
+		},
+	}}
+	p, err := config.VendorsPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveToPath(cfg, p); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ChoosePort(0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == defaultPortBase {
+		t.Fatalf("auto-pick must skip the assigned port %d, got %d", defaultPortBase, got)
+	}
+	if _, err := ChoosePort(defaultPortBase); err == nil {
+		t.Fatalf("preferring the assigned port %d must fail", defaultPortBase)
 	}
 }
 
