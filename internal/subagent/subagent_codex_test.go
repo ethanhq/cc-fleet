@@ -8,6 +8,7 @@ import (
 
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/config"
+	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 )
 
 // A codex daemon-ensure failure is fail-before-mutation: classified result and
@@ -18,13 +19,18 @@ func TestRun_CodexDaemonFailure_FailsBeforeProfileWrite(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
-	// Fake claude on PATH so the fingerprint gate passes and 3b is reached.
-	binDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(binDir, "claude"),
-		[]byte("#!/bin/sh\ncase \"$1\" in --version) echo \"2.1.150\";; esac\nexit 0\n"), 0o755); err != nil {
+	// Inject a fingerprint pointing at a placeholder binary so the gate passes and
+	// 3b is reached. The gate only os.Stats the path, so any file works; a PATH
+	// lookup would need a claude.exe on Windows.
+	binPath := filepath.Join(t.TempDir(), "claude-2.1.150")
+	if err := os.WriteFile(binPath, []byte("placeholder"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	origFP := loadFP
+	loadFP = func() (*fingerprint.Fingerprint, error) {
+		return &fingerprint.Fingerprint{BinaryPath: binPath}, nil
+	}
+	t.Cleanup(func() { loadFP = origFP })
 
 	dir := filepath.Join(xdg, "cc-fleet")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
