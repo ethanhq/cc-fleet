@@ -30,18 +30,16 @@ func newOpenAIChatUpstream(baseURL string) *openaiChatUpstream {
 // models_endpoint (probed directly with the key), never from this daemon.
 func (u *openaiChatUpstream) models() []string { return nil }
 
-func (u *openaiChatUpstream) convert(body io.Reader, sink sseSink, model, apiKey string) error {
-	c := newChatStreamConverter(sink, model)
-	c.redact = func(s string) string { return redactKey(s, apiKey) }
-	return c.Convert(body)
+func (u *openaiChatUpstream) convert(body io.Reader, sink sseSink, cc *convCtx) error {
+	return newChatStreamConverter(sink, cc).Convert(body)
 }
 
 // call translates the Anthropic request to a Chat Completions request, sends it
 // with Authorization: Bearer <apiKey>, and returns the streaming body. On a
 // non-2xx the response body is redacted (an arbitrary endpoint may echo the key)
 // before it becomes a classified *upstreamError.
-func (u *openaiChatUpstream) call(ctx context.Context, areq *anthropicRequest, apiKey string) (io.ReadCloser, error) {
-	creq, err := translateChatRequest(areq)
+func (u *openaiChatUpstream) call(ctx context.Context, areq *anthropicRequest, cc *convCtx) (io.ReadCloser, error) {
+	creq, err := translateChatRequest(areq, cc)
 	if err != nil {
 		return nil, &upstreamError{upBadRequest, http.StatusBadRequest, err.Error()}
 	}
@@ -51,17 +49,17 @@ func (u *openaiChatUpstream) call(ctx context.Context, areq *anthropicRequest, a
 		return nil, &upstreamError{upBadRequest, http.StatusBadRequest, "invalid upstream url"}
 	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Authorization", "Bearer "+cc.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
 	resp, err := u.http.Do(req)
 	if err != nil {
-		return nil, &upstreamError{upTransient, http.StatusBadGateway, "openai upstream: " + redactKey(err.Error(), apiKey)}
+		return nil, &upstreamError{upTransient, http.StatusBadGateway, "openai upstream: " + redactKey(err.Error(), cc.apiKey)}
 	}
 	if resp.StatusCode/100 == 2 {
 		return resp.Body, nil
 	}
-	return nil, classifyOpenAI(resp, apiKey)
+	return nil, classifyOpenAI(resp, cc.apiKey)
 }
 
 // classifyOpenAI maps a non-2xx Chat/Responses status to an upstreamError. Unlike
@@ -121,7 +119,7 @@ type chatFunction struct {
 // translateChatRequest maps an Anthropic Messages request to a Chat Completions
 // request. thinking is dropped (most compatible endpoints don't accept it); the
 // usage chunk is requested via stream_options.include_usage.
-func translateChatRequest(a *anthropicRequest) (*chatRequest, error) {
+func translateChatRequest(a *anthropicRequest, cc *convCtx) (*chatRequest, error) {
 	r := &chatRequest{
 		Model:         a.Model,
 		MaxTokens:     a.MaxTokens,
@@ -132,7 +130,7 @@ func translateChatRequest(a *anthropicRequest) (*chatRequest, error) {
 		r.Messages = append(r.Messages, map[string]any{"role": "system", "content": sys})
 	}
 	for _, m := range a.Messages {
-		items, err := translateChatMessage(m)
+		items, err := translateChatMessage(m, cc)
 		if err != nil {
 			return nil, err
 		}
@@ -140,10 +138,10 @@ func translateChatRequest(a *anthropicRequest) (*chatRequest, error) {
 	}
 	for _, t := range a.Tools {
 		r.Tools = append(r.Tools, chatTool{Type: "function", Function: chatFunction{
-			Name: t.Name, Description: t.Description, Parameters: t.InputSchema,
+			Name: cc.toolMap.sanitize(t.Name), Description: t.Description, Parameters: t.InputSchema,
 		}})
 	}
-	r.ToolChoice, r.ParallelToolCalls = translateChatToolChoice(a.ToolChoice)
+	r.ToolChoice, r.ParallelToolCalls = translateChatToolChoice(a.ToolChoice, cc)
 	return r, nil
 }
 
@@ -151,7 +149,7 @@ func translateChatRequest(a *anthropicRequest) (*chatRequest, error) {
 // tool_result blocks become role:"tool" messages emitted FIRST (Chat requires a
 // tool result to immediately follow the assistant turn that called it); text +
 // images form the message content; assistant tool_use blocks become tool_calls.
-func translateChatMessage(m anthropicMessage) ([]any, error) {
+func translateChatMessage(m anthropicMessage, cc *convCtx) ([]any, error) {
 	if s := stringContent(m.Content); s != nil {
 		return []any{map[string]any{"role": m.Role, "content": *s}}, nil
 	}
@@ -180,11 +178,11 @@ func translateChatMessage(m anthropicMessage) ([]any, error) {
 		case "tool_use":
 			toolCalls = append(toolCalls, map[string]any{
 				"id": b.ID, "type": "function",
-				"function": map[string]any{"name": b.Name, "arguments": string(rawOrEmptyObject(b.Input))},
+				"function": map[string]any{"name": cc.toolMap.sanitize(b.Name), "arguments": string(rawOrEmptyObject(b.Input))},
 			})
 		case "tool_result":
 			toolMsgs = append(toolMsgs, map[string]any{
-				"role": "tool", "tool_call_id": b.ToolUseID, "content": toolResultText(b.Content),
+				"role": "tool", "tool_call_id": b.ToolUseID, "content": toolResultOutput(b),
 			})
 		case "thinking":
 			// dropped — Chat Completions has no thinking input channel.
@@ -227,7 +225,7 @@ func stringContent(raw json.RawMessage) *string {
 // translateChatToolChoice maps Anthropic tool_choice to the Chat form plus the
 // parallel-tool-calls flag (set only when explicitly disabled). auto->auto,
 // any->required, {type:tool,name}->{type:function,function:{name}}, none->none.
-func translateChatToolChoice(raw json.RawMessage) (choice any, parallel *bool) {
+func translateChatToolChoice(raw json.RawMessage, cc *convCtx) (choice any, parallel *bool) {
 	if len(raw) == 0 {
 		return nil, nil
 	}
@@ -247,7 +245,7 @@ func translateChatToolChoice(raw json.RawMessage) (choice any, parallel *bool) {
 	case "any":
 		return "required", parallel
 	case "tool":
-		return map[string]any{"type": "function", "function": map[string]any{"name": tc.Name}}, parallel
+		return map[string]any{"type": "function", "function": map[string]any{"name": cc.toolMap.sanitize(tc.Name)}}, parallel
 	case "none":
 		return "none", parallel
 	default:

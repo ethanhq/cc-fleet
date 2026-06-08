@@ -89,7 +89,10 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	body, err := s.up.call(r.Context(), &areq, upstreamKey)
+	// One per-request conversion context (model + upstream key + tool-name map),
+	// shared read-only by call and convert.
+	cc := newConvCtx(&areq, upstreamKey)
+	body, err := s.up.call(r.Context(), &areq, cc)
 	if err != nil {
 		ue, _ := err.(*upstreamError)
 		status, etype, msg := anthropicErrorFor(ue)
@@ -105,7 +108,7 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// convert already emitted the client-visible terminal event (a clean
 	// message_stop, or an error event on a failed-upstream / read-error stream),
 	// so its returned error needs no further handling on the wire.
-	_ = s.up.convert(body, sink, areq.Model, upstreamKey)
+	_ = s.up.convert(body, sink, cc)
 }
 
 // httpSSE writes Anthropic SSE events to the response and flushes each one.

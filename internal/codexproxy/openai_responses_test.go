@@ -35,12 +35,12 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{"in
 
 	u := newOpenAIResponsesUpstream(srv.URL + "/v1")
 	a := parseReq(t, `{"model":"gpt-x","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}`)
-	body, err := u.call(context.Background(), a, "sk-billed-123")
+	body, err := u.call(context.Background(), a, newConvCtx(a, "sk-billed-123"))
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
 	sink := &recSink{}
-	_ = u.convert(body, sink, "gpt-x", "sk-billed-123")
+	_ = u.convert(body, sink, ccKey("gpt-x", "sk-billed-123"))
 	body.Close()
 
 	if gotPath != "/v1/responses" {
@@ -64,7 +64,7 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{"in
 // backend 400s on it, so omitempty must drop it.
 func TestResponsesTranslate_CodexOmitsMaxOutput(t *testing.T) {
 	a := parseReq(t, `{"model":"m","max_tokens":256,"messages":[{"role":"user","content":"hi"}]}`)
-	r, _ := translateRequest(a)
+	r, _ := translateRequest(a, newConvCtx(a, ""))
 	b, _ := json.Marshal(r)
 	if strings.Contains(string(b), "max_output_tokens") {
 		t.Fatalf("codex request must omit max_output_tokens: %s", b)
@@ -79,14 +79,14 @@ func TestOpenAIConvert_RedactsStreamingErrorKey(t *testing.T) {
 
 	chatBody := `data: {"error":{"message":"upstream rejected ` + key + ` here"}}` + "\n\n"
 	csink := &recSink{}
-	_ = newOpenAIChatUpstream("https://x/v1").convert(strings.NewReader(chatBody), csink, "m", key)
+	_ = newOpenAIChatUpstream("https://x/v1").convert(strings.NewReader(chatBody), csink, ccKey("m", key))
 	if msg := errMessage(csink); strings.Contains(msg, key) {
 		t.Fatalf("chat streaming error leaked the key: %q", msg)
 	}
 
 	respBody := `data: {"type":"response.failed","response":{"error":{"message":"bad ` + key + ` token"}}}` + "\n\n"
 	rsink := &recSink{}
-	_ = newOpenAIResponsesUpstream("https://x/v1").convert(strings.NewReader(respBody), rsink, "m", key)
+	_ = newOpenAIResponsesUpstream("https://x/v1").convert(strings.NewReader(respBody), rsink, ccKey("m", key))
 	if msg := errMessage(rsink); strings.Contains(msg, key) {
 		t.Fatalf("responses streaming error leaked the key: %q", msg)
 	}

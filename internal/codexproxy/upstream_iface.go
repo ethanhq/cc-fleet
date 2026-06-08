@@ -15,11 +15,11 @@ import (
 // /v1/models list (static for codex, unused for openai — its models come from the
 // real upstream's models_endpoint, not this daemon).
 type upstream interface {
-	call(ctx context.Context, areq *anthropicRequest, apiKey string) (io.ReadCloser, error)
-	// convert runs the upstream's SSE→Anthropic converter. apiKey is the presented
-	// key (openai-*) so a streaming error chunk that echoes it is redacted before
-	// it reaches the client; codex ignores it (its bearer is OAuth, not the key).
-	convert(body io.Reader, sink sseSink, model, apiKey string) error
+	call(ctx context.Context, areq *anthropicRequest, cc *convCtx) (io.ReadCloser, error)
+	// convert runs the upstream's SSE→Anthropic converter. cc carries the model, the
+	// presented key (openai-*, so a streaming error chunk that echoes it is redacted —
+	// codex has none), and the per-request tool-name map (sanitized→original restore).
+	convert(body io.Reader, sink sseSink, cc *convCtx) error
 	models() []string
 }
 

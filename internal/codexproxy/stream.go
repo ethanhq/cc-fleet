@@ -35,11 +35,12 @@ type blockState struct {
 // transport read error instead ends on an Anthropic error event (open blocks
 // closed first), never a clean message_stop.
 type streamConverter struct {
-	out   sseSink
-	model string
-	// redact masks a streaming error message before it reaches the client (set by
-	// the openai-responses upstream to scrub an echoed key); nil for codex, whose
-	// upstream error messages are canonical.
+	out     sseSink
+	model   string
+	toolMap *toolNameMap // restores a sanitized tool name onto the response tool_use block
+	// redact masks a streaming error message before it reaches the client (set when a
+	// real key is presented — openai-* — to scrub an echoed key); nil for codex, whose
+	// upstream error messages are canonical (no key).
 	redact func(string) string
 
 	started         bool
@@ -52,8 +53,14 @@ type streamConverter struct {
 	cacheReadTokens int
 }
 
-func newStreamConverter(out sseSink, model string) *streamConverter {
-	return &streamConverter{out: out, model: model, blocks: map[string]*blockState{}, stopReason: "end_turn"}
+func newStreamConverter(out sseSink, cc *convCtx) *streamConverter {
+	c := &streamConverter{out: out, model: cc.model, toolMap: cc.toolMap, blocks: map[string]*blockState{}, stopReason: "end_turn"}
+	if cc.apiKey != "" {
+		// openai-* presents a real key — scrub it (exact + pattern) from any error chunk.
+		// codex has none (cc.apiKey == "") so redact stays nil and its errors pass through.
+		c.redact = func(s string) string { return redactKey(s, cc.apiKey) }
+	}
+	return c
 }
 
 // responsesEvent is the union of Responses streaming event fields we read.
@@ -223,7 +230,7 @@ func (c *streamConverter) openBlock(ev *responsesEvent) error {
 	case "function_call":
 		kind = blockToolUse
 		c.stopReason = "tool_use"
-		cb = map[string]any{"type": "tool_use", "id": ev.Item.CallID, "name": ev.Item.Name, "input": map[string]any{}}
+		cb = map[string]any{"type": "tool_use", "id": ev.Item.CallID, "name": c.toolMap.restore(ev.Item.Name), "input": map[string]any{}}
 	case "reasoning":
 		kind = blockThinking
 		cb = map[string]any{"type": "thinking", "thinking": "", "signature": ""}

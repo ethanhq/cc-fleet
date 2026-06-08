@@ -9,6 +9,12 @@ import (
 	"testing"
 )
 
+// ccTest / ccKey build a minimal per-request convCtx for converter + translation
+// tests (a nil toolMap makes sanitize/restore no-ops; an empty apiKey installs no
+// redactor, matching the codex lane).
+func ccTest(model string) *convCtx        { return &convCtx{model: model} }
+func ccKey(model, apiKey string) *convCtx { return &convCtx{model: model, apiKey: apiKey} }
+
 // Fixture replay: live-captured (sanitized) Responses SSE streams from the
 // ChatGPT codex backend, run through the converter and held to the full
 // Anthropic stream grammar. These pin the converter against the real wire
@@ -21,7 +27,7 @@ func replayFixture(t *testing.T, name string) *recSink {
 		t.Fatal(err)
 	}
 	sink := &recSink{}
-	c := newStreamConverter(sink, "gpt-5.5")
+	c := newStreamConverter(sink, ccTest("gpt-5.5"))
 	if err := c.Convert(bytes.NewReader(b)); err != nil {
 		t.Fatalf("convert %s: %v", name, err)
 	}

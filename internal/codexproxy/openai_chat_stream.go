@@ -16,8 +16,9 @@ import (
 // transport read error ends on an Anthropic error event with open blocks closed,
 // never a clean message_stop.
 type chatStreamConverter struct {
-	out   sseSink
-	model string
+	out     sseSink
+	model   string
+	toolMap *toolNameMap // restores a sanitized tool name onto the response tool_use block
 	// redact masks a streaming error message before it reaches the client (set by
 	// the openai-chat upstream to scrub an echoed key, exact + pattern). When nil
 	// it falls back to the generic key-pattern mask.
@@ -32,16 +33,21 @@ type chatStreamConverter struct {
 	tools     map[int]int  // chat tool_calls index -> Anthropic block index
 	toolOpen  map[int]bool // chat tool_calls index -> open
 
-	stopReason string
-	inTokens   int
-	outTokens  int
+	stopReason      string
+	inTokens        int
+	outTokens       int
+	cacheReadTokens int
 }
 
-func newChatStreamConverter(out sseSink, model string) *chatStreamConverter {
-	return &chatStreamConverter{
-		out: out, model: model, textIndex: -1,
+func newChatStreamConverter(out sseSink, cc *convCtx) *chatStreamConverter {
+	c := &chatStreamConverter{
+		out: out, model: cc.model, toolMap: cc.toolMap, textIndex: -1,
 		tools: map[int]int{}, toolOpen: map[int]bool{}, stopReason: "end_turn",
 	}
+	if cc.apiKey != "" {
+		c.redact = func(s string) string { return redactKey(s, cc.apiKey) }
+	}
+	return c
 }
 
 type chatChunk struct {
@@ -73,8 +79,11 @@ type chatToolCallDelta struct {
 }
 
 type chatUsage struct {
-	PromptTokens     int `json:"prompt_tokens"`
-	CompletionTokens int `json:"completion_tokens"`
+	PromptTokens        int `json:"prompt_tokens"`
+	CompletionTokens    int `json:"completion_tokens"`
+	PromptTokensDetails struct {
+		CachedTokens int `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
 }
 
 type chatError struct {
@@ -123,7 +132,14 @@ func (c *chatStreamConverter) Convert(body io.Reader) error {
 func (c *chatStreamConverter) handle(ev *chatChunk) error {
 	if ev.Usage != nil {
 		if ev.Usage.PromptTokens > 0 {
-			c.inTokens = ev.Usage.PromptTokens
+			// OpenAI prompt_tokens INCLUDES the cached prefix; Anthropic's input_tokens
+			// excludes cache reads, so split the cached count into cache_read_input_tokens.
+			cached := ev.Usage.PromptTokensDetails.CachedTokens
+			if cached < 0 || cached > ev.Usage.PromptTokens {
+				cached = 0
+			}
+			c.inTokens = ev.Usage.PromptTokens - cached
+			c.cacheReadTokens = cached
 		}
 		if ev.Usage.CompletionTokens > 0 {
 			c.outTokens = ev.Usage.CompletionTokens
@@ -194,7 +210,7 @@ func (c *chatStreamConverter) toolDelta(tc chatToolCallDelta) error {
 		c.stopReason = "tool_use"
 		if err := c.out.event("content_block_start", map[string]any{
 			"type": "content_block_start", "index": idx,
-			"content_block": map[string]any{"type": "tool_use", "id": tc.ID, "name": tc.Function.Name, "input": map[string]any{}},
+			"content_block": map[string]any{"type": "tool_use", "id": tc.ID, "name": c.toolMap.restore(tc.Function.Name), "input": map[string]any{}},
 		}); err != nil {
 			return err
 		}
@@ -246,7 +262,11 @@ func (c *chatStreamConverter) finish() {
 	_ = c.out.event("message_delta", map[string]any{
 		"type":  "message_delta",
 		"delta": map[string]any{"stop_reason": c.stopReason, "stop_sequence": nil},
-		"usage": map[string]any{"input_tokens": c.inTokens, "output_tokens": c.outTokens},
+		"usage": map[string]any{
+			"input_tokens":            c.inTokens,
+			"output_tokens":           c.outTokens,
+			"cache_read_input_tokens": c.cacheReadTokens,
+		},
 	})
 	_ = c.out.event("message_stop", map[string]any{"type": "message_stop"})
 }

@@ -46,17 +46,18 @@ func newCodexUpstream(source tokenSource) *codexUpstream {
 
 func (u *codexUpstream) models() []string { return append([]string(nil), codexModels...) }
 
-func (u *codexUpstream) convert(body io.Reader, sink sseSink, model, _ string) error {
-	// codex's upstream errors are canonical (no key), so no redactor is needed.
-	return newStreamConverter(sink, model).Convert(body)
+func (u *codexUpstream) convert(body io.Reader, sink sseSink, cc *convCtx) error {
+	// codex's upstream errors are canonical (no key), so newStreamConverter installs
+	// no redactor (cc.apiKey is "").
+	return newStreamConverter(sink, cc).Convert(body)
 }
 
 // call translates the Anthropic request to a Responses request, sends it, and
-// returns the streaming body on success (the caller owns it). apiKey is ignored —
+// returns the streaming body on success (the caller owns it). cc.apiKey is unused —
 // codex authenticates with its OAuth bearer. On failure it returns a classified
 // *upstreamError; a 401 triggers one refresh+retry.
-func (u *codexUpstream) call(ctx context.Context, areq *anthropicRequest, _ string) (io.ReadCloser, error) {
-	rreq, err := translateRequest(areq)
+func (u *codexUpstream) call(ctx context.Context, areq *anthropicRequest, cc *convCtx) (io.ReadCloser, error) {
+	rreq, err := translateRequest(areq, cc)
 	if err != nil {
 		return nil, &upstreamError{upBadRequest, http.StatusBadRequest, err.Error()}
 	}

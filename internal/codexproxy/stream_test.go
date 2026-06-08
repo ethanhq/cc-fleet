@@ -38,7 +38,7 @@ func (r *recSink) payload(name string, i int) map[string]any {
 func runConvert(t *testing.T, sse string) *recSink {
 	t.Helper()
 	sink := &recSink{}
-	c := newStreamConverter(sink, "gpt-5.5")
+	c := newStreamConverter(sink, ccTest("gpt-5.5"))
 	if err := c.Convert(strings.NewReader(sse)); err != nil {
 		t.Fatalf("convert: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestConvert_ReadErrorEmitsErrorNotCleanStop(t *testing.T) {
 		"", // ensure the last data line is newline-terminated for the scanner
 	}, "\n\n")
 	sink := &recSink{}
-	c := newStreamConverter(sink, "gpt-5.5")
+	c := newStreamConverter(sink, ccTest("gpt-5.5"))
 	err := c.Convert(&errAfterReader{data: data})
 	if err == nil {
 		t.Fatal("Convert must return the read error, not swallow it")

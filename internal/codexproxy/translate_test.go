@@ -37,7 +37,7 @@ func TestTranslateToolChoice(t *testing.T) {
 		{`{"type":"auto","disable_parallel_tool_use":true}`, "auto", false},
 	}
 	for _, c := range cases {
-		got, parallel := translateToolChoice(json.RawMessage(c.raw))
+		got, parallel := translateToolChoice(json.RawMessage(c.raw), &convCtx{})
 		if parallel != c.wantParallel {
 			t.Fatalf("toolChoice(%s) parallel=%v want %v", c.raw, parallel, c.wantParallel)
 		}
@@ -75,7 +75,7 @@ func TestTranslateRequest_OmitsForbiddenFieldsAndForcesStore(t *testing.T) {
 		},
 	}
 	a.Metadata.UserID = "user_abc_session_123"
-	r, err := translateRequest(a)
+	r, err := translateRequest(a, newConvCtx(a, ""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestTranslateMessage_SystemRoleRidesAsDeveloper(t *testing.T) {
 	items, err := translateMessage(anthropicMessage{
 		Role:    "system",
 		Content: json.RawMessage(`"The following skills are available"`),
-	})
+	}, &convCtx{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestTranslateMessage_ThinkingReplaysEncryptedReasoning(t *testing.T) {
 			{"type":"thinking","thinking":"no signature -> skipped"},
 			{"type":"text","text":"answer"}
 		]`),
-	})
+	}, &convCtx{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,7 +151,7 @@ func TestTranslateMessage_ToolUseAndResult(t *testing.T) {
 	items, err := translateMessage(anthropicMessage{
 		Role:    "assistant",
 		Content: json.RawMessage(`[{"type":"tool_use","id":"toolu_1","name":"grep","input":{"q":"x"}}]`),
-	})
+	}, &convCtx{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +169,7 @@ func TestTranslateMessage_ToolUseAndResult(t *testing.T) {
 	items, _ = translateMessage(anthropicMessage{
 		Role:    "user",
 		Content: json.RawMessage(`[{"type":"tool_result","tool_use_id":"toolu_1","content":"42"}]`),
-	})
+	}, &convCtx{})
 	m = items[0].(map[string]any)
 	if m["type"] != "function_call_output" || m["call_id"] != "toolu_1" || m["output"] != "42" {
 		t.Fatalf("bad function_call_output item: %v", m)

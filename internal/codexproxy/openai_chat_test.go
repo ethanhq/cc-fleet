@@ -34,7 +34,7 @@ func asMap(t *testing.T, v any) map[string]any {
 
 func TestChatTranslate_SystemAndText(t *testing.T) {
 	a := parseReq(t, `{"model":"m","max_tokens":10,"system":"be brief","messages":[{"role":"user","content":"hi"}]}`)
-	r, err := translateChatRequest(a)
+	r, err := translateChatRequest(a, newConvCtx(a, ""))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestChatTranslate_SystemAndText(t *testing.T) {
 func TestChatTranslate_AssistantTextAndToolUse(t *testing.T) {
 	content := `[{"type":"text","text":"let me check"},{"type":"tool_use","id":"t1","name":"lookup","input":{"k":"v"}}]`
 	a := parseReq(t, `{"model":"m","max_tokens":10,"messages":[{"role":"assistant","content":`+content+`}]}`)
-	r, _ := translateChatRequest(a)
+	r, _ := translateChatRequest(a, newConvCtx(a, ""))
 	if len(r.Messages) != 1 {
 		t.Fatalf("a text+tool_use assistant turn must be ONE message, got %d", len(r.Messages))
 	}
@@ -81,7 +81,7 @@ func TestChatTranslate_AssistantTextAndToolUse(t *testing.T) {
 func TestChatTranslate_ToolResultOrderedFirst(t *testing.T) {
 	content := `[{"type":"tool_result","tool_use_id":"t1","content":"the result"},{"type":"text","text":"thanks"}]`
 	a := parseReq(t, `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":`+content+`}]}`)
-	r, _ := translateChatRequest(a)
+	r, _ := translateChatRequest(a, newConvCtx(a, ""))
 	if len(r.Messages) != 2 {
 		t.Fatalf("messages = %d, want tool then user", len(r.Messages))
 	}
@@ -99,7 +99,7 @@ func TestChatTranslate_ToolChoiceAndTools(t *testing.T) {
 	a := parseReq(t, `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}],
 		"tools":[{"name":"lookup","description":"d","input_schema":{"type":"object"}}],
 		"tool_choice":{"type":"any","disable_parallel_tool_use":true}}`)
-	r, _ := translateChatRequest(a)
+	r, _ := translateChatRequest(a, newConvCtx(a, ""))
 	if len(r.Tools) != 1 || r.Tools[0].Function.Name != "lookup" {
 		t.Fatalf("tools = %#v", r.Tools)
 	}
@@ -114,7 +114,7 @@ func TestChatTranslate_ToolChoiceAndTools(t *testing.T) {
 func TestChatTranslate_Image(t *testing.T) {
 	content := `[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAAA"}},{"type":"text","text":"see"}]`
 	a := parseReq(t, `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":`+content+`}]}`)
-	r, _ := translateChatRequest(a)
+	r, _ := translateChatRequest(a, newConvCtx(a, ""))
 	m := asMap(t, r.Messages[0])
 	parts, ok := m["content"].([]map[string]any)
 	if !ok || len(parts) != 2 {
@@ -135,7 +135,7 @@ func replayChat(t *testing.T, name string) *recSink {
 		t.Fatal(err)
 	}
 	sink := &recSink{}
-	if err := newChatStreamConverter(sink, "gpt-x").Convert(bytes.NewReader(b)); err != nil {
+	if err := newChatStreamConverter(sink, ccTest("gpt-x")).Convert(bytes.NewReader(b)); err != nil {
 		t.Fatalf("convert %s: %v", name, err)
 	}
 	return sink
@@ -213,12 +213,12 @@ func TestOpenAIChatUpstream_CallConvertAndRedact(t *testing.T) {
 	defer ok.Close()
 	u := newOpenAIChatUpstream(ok.URL + "/v1")
 	a := parseReq(t, `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`)
-	body, err := u.call(context.Background(), a, key)
+	body, err := u.call(context.Background(), a, newConvCtx(a, key))
 	if err != nil {
 		t.Fatalf("call: %v", err)
 	}
 	sink := &recSink{}
-	_ = u.convert(body, sink, "m", key)
+	_ = u.convert(body, sink, ccKey("m", key))
 	body.Close()
 	if got := collectDeltas(sink, "text_delta", "text"); got != "hi" {
 		t.Fatalf("converted text = %q", got)
@@ -229,7 +229,7 @@ func TestOpenAIChatUpstream_CallConvertAndRedact(t *testing.T) {
 		_, _ = w.Write([]byte("invalid key " + key + " rejected"))
 	}))
 	defer bad.Close()
-	_, err = newOpenAIChatUpstream(bad.URL+"/v1").call(context.Background(), a, key)
+	_, err = newOpenAIChatUpstream(bad.URL+"/v1").call(context.Background(), a, newConvCtx(a, key))
 	ue, ok2 := err.(*upstreamError)
 	if !ok2 || ue.kind != upAuth {
 		t.Fatalf("want upAuth upstreamError, got %v", err)

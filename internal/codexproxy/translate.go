@@ -3,6 +3,7 @@ package codexproxy
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 // anthropicRequest is the subset of the Anthropic Messages request that the claude
@@ -19,6 +20,12 @@ type anthropicRequest struct {
 	Metadata   struct {
 		UserID string `json:"user_id"`
 	} `json:"metadata"`
+	// OutputConfig.Effort is the modern thinking-strength control
+	// (low|medium|high|xhigh|max); adaptive thinking + this superseded the deprecated
+	// thinking.budget_tokens, so a modern claude sends it and no budget.
+	OutputConfig struct {
+		Effort string `json:"effort"`
+	} `json:"output_config"`
 }
 
 type anthropicThinking struct {
@@ -48,6 +55,7 @@ type contentBlock struct {
 	Source    *imageSource    `json:"source"`      // image
 	Thinking  string          `json:"thinking"`    // thinking block text
 	Signature string          `json:"signature"`   // thinking block signature = the replayed encrypted_content
+	IsError   bool            `json:"is_error"`    // tool_result: the tool call failed
 }
 
 type imageSource struct {
@@ -77,7 +85,7 @@ type responsesRequest struct {
 }
 
 type reasoningOpt struct {
-	Effort  string `json:"effort"`
+	Effort  string `json:"effort,omitempty"`
 	Summary string `json:"summary"`
 }
 
@@ -92,8 +100,8 @@ type responsesTool struct {
 // max_tokens and temperature are intentionally omitted (the ChatGPT backend 400s
 // on them). store is forced false. The claude session id inside metadata.user_id
 // becomes prompt_cache_key so the backend's prompt cache follows the conversation.
-func translateRequest(a *anthropicRequest) (*responsesRequest, error) {
-	choice, parallel := translateToolChoice(a.ToolChoice)
+func translateRequest(a *anthropicRequest, cc *convCtx) (*responsesRequest, error) {
+	choice, parallel := translateToolChoice(a.ToolChoice, cc)
 	r := &responsesRequest{
 		Model:             a.Model,
 		Instructions:      systemText(a.System),
@@ -104,7 +112,7 @@ func translateRequest(a *anthropicRequest) (*responsesRequest, error) {
 		PromptCacheKey:    a.Metadata.UserID,
 	}
 	for _, m := range a.Messages {
-		items, err := translateMessage(m)
+		items, err := translateMessage(m, cc)
 		if err != nil {
 			return nil, err
 		}
@@ -112,14 +120,16 @@ func translateRequest(a *anthropicRequest) (*responsesRequest, error) {
 	}
 	for _, t := range a.Tools {
 		r.Tools = append(r.Tools, responsesTool{
-			Type: "function", Name: t.Name, Description: t.Description, Parameters: t.InputSchema,
+			Type: "function", Name: cc.toolMap.sanitize(t.Name), Description: t.Description, Parameters: t.InputSchema,
 		})
 	}
-	// "enabled" carries a budget; "adaptive" (claude's default-on mode) has none
-	// and lands in the low bucket. Either way the model reasons — requesting the
-	// summary + encrypted_content keeps that reasoning replayable across turns.
+	// With thinking enabled (legacy budget) or adaptive (claude's default-on mode) the
+	// model reasons; requesting the summary + encrypted_content keeps that reasoning
+	// replayable across turns.
 	if a.Thinking != nil && (a.Thinking.Type == "enabled" || a.Thinking.Type == "adaptive") {
-		r.Reasoning = &reasoningOpt{Effort: effortBucket(a.Thinking.BudgetTokens), Summary: "auto"}
+		// effortFor reads the modern output_config.effort; absent → "" so the field is
+		// omitted and the backend uses its own default rather than us forcing a level.
+		r.Reasoning = &reasoningOpt{Effort: effortFor(a), Summary: "auto"}
 		r.Include = []string{"reasoning.encrypted_content"}
 	}
 	return r, nil
@@ -139,16 +149,26 @@ func systemText(raw json.RawMessage) string {
 	if json.Unmarshal(raw, &blocks) == nil {
 		out := ""
 		for _, b := range blocks {
-			if b.Type == "text" {
-				if out != "" {
-					out += "\n"
-				}
-				out += b.Text
+			// Drop Claude Code's volatile attribution header
+			// (x-anthropic-billing-header: …cch=…): its per-request value would lead the
+			// instructions prefix and bust the upstream prompt cache every call.
+			if b.Type != "text" || isBillingHeaderBlock(b.Text) {
+				continue
 			}
+			if out != "" {
+				out += "\n"
+			}
+			out += b.Text
 		}
 		return out
 	}
 	return ""
+}
+
+// isBillingHeaderBlock reports whether a system text block is Claude Code's volatile
+// attribution header (x-anthropic-billing-header: …); see systemText.
+func isBillingHeaderBlock(text string) bool {
+	return strings.HasPrefix(strings.TrimSpace(text), "x-anthropic-billing-header:")
 }
 
 // translateToolChoice maps Anthropic tool_choice to the Responses form plus the
@@ -156,7 +176,7 @@ func systemText(raw json.RawMessage) string {
 // {type:function,name}; nil/absent -> auto. It is NOT hard-forced to auto (that
 // would break forced-tool / StructuredOutput paths). disable_parallel_tool_use
 // flips parallel_tool_calls off.
-func translateToolChoice(raw json.RawMessage) (choice any, parallel bool) {
+func translateToolChoice(raw json.RawMessage, cc *convCtx) (choice any, parallel bool) {
 	if len(raw) == 0 {
 		return "auto", true
 	}
@@ -173,13 +193,42 @@ func translateToolChoice(raw json.RawMessage) (choice any, parallel bool) {
 	case "any":
 		return "required", parallel
 	case "tool":
-		return map[string]any{"type": "function", "name": tc.Name}, parallel
+		return map[string]any{"type": "function", "name": cc.toolMap.sanitize(tc.Name)}, parallel
+	case "none":
+		return "none", parallel
 	default:
 		return "auto", parallel
 	}
 }
 
-// effortBucket maps an Anthropic thinking budget to a Responses reasoning effort.
+// effortFor resolves the Responses reasoning effort from the Anthropic request: the
+// modern top-level output_config.effort wins, then a legacy thinking.budget_tokens
+// bucket, else "" (omit the field; the backend uses its own default).
+func effortFor(a *anthropicRequest) string {
+	if e := mapEffort(a.OutputConfig.Effort); e != "" {
+		return e
+	}
+	if a.Thinking != nil && a.Thinking.Type == "enabled" && a.Thinking.BudgetTokens > 0 {
+		return effortBucket(a.Thinking.BudgetTokens)
+	}
+	return ""
+}
+
+// mapEffort maps an Anthropic effort to a Responses effort: low/medium/high/xhigh
+// pass through (gpt-5.5 supports xhigh), Anthropic-only "max" clamps to xhigh (its
+// ceiling), and an unset/unknown value yields "" so the caller omits the field.
+func mapEffort(e string) string {
+	switch e {
+	case "low", "medium", "high", "xhigh":
+		return e
+	case "max":
+		return "xhigh"
+	default:
+		return ""
+	}
+}
+
+// effortBucket maps a legacy Anthropic thinking budget to a Responses reasoning effort.
 func effortBucket(budget int) string {
 	switch {
 	case budget <= 0:
@@ -192,7 +241,7 @@ func effortBucket(budget int) string {
 }
 
 // translateMessage maps one Anthropic message to one or more Responses input items.
-func translateMessage(m anthropicMessage) ([]any, error) {
+func translateMessage(m anthropicMessage, cc *convCtx) ([]any, error) {
 	// claude -p sends mid-conversation system-role messages (e.g. the skills
 	// listing); the codex backend rejects role "system" in input, so they ride
 	// as "developer" (same authority tier in the Responses role hierarchy).
@@ -227,9 +276,10 @@ func translateMessage(m anthropicMessage) ([]any, error) {
 			}
 		case "thinking":
 			// Reasoning continuity: the block's signature carries the Responses
-			// encrypted_content the stream converter emitted; replay it as a
-			// reasoning item WITHOUT an id (store:false rejects replayed ids).
-			// A signature-less thinking block has nothing replayable — skip it.
+			// encrypted_content the stream converter emitted; replay it as a reasoning
+			// item WITHOUT an id (codex's store:false backend rejects a replayed id).
+			// (The openai-responses lane may need different replay-id handling; this is
+			// where it would branch.) A signature-less block is unreplayable — skip.
 			if b.Signature == "" {
 				continue
 			}
@@ -244,13 +294,13 @@ func translateMessage(m anthropicMessage) ([]any, error) {
 		case "tool_use":
 			flushText()
 			items = append(items, map[string]any{
-				"type": "function_call", "call_id": b.ID, "name": b.Name,
+				"type": "function_call", "call_id": b.ID, "name": cc.toolMap.sanitize(b.Name),
 				"arguments": string(rawOrEmptyObject(b.Input)),
 			})
 		case "tool_result":
 			flushText()
 			items = append(items, map[string]any{
-				"type": "function_call_output", "call_id": b.ToolUseID, "output": toolResultText(b.Content),
+				"type": "function_call_output", "call_id": b.ToolUseID, "output": toolResultOutput(b),
 			})
 		}
 	}
@@ -289,6 +339,16 @@ func rawOrEmptyObject(raw json.RawMessage) json.RawMessage {
 		return json.RawMessage("{}")
 	}
 	return raw
+}
+
+// toolResultOutput renders a tool_result for the upstream, prefixing a failed result
+// so the model sees the error (the OpenAI tool-output channel has no is_error flag).
+func toolResultOutput(b contentBlock) string {
+	out := toolResultText(b.Content)
+	if b.IsError {
+		return "[tool error] " + out
+	}
+	return out
 }
 
 // toolResultText flattens an Anthropic tool_result content (string OR []block) to

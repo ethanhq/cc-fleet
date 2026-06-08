@@ -24,14 +24,14 @@ type stubUpstream struct {
 	gotKey string
 }
 
-func (s *stubUpstream) call(_ context.Context, _ *anthropicRequest, apiKey string) (io.ReadCloser, error) {
+func (s *stubUpstream) call(_ context.Context, _ *anthropicRequest, cc *convCtx) (io.ReadCloser, error) {
 	s.mu.Lock()
-	s.gotKey = apiKey
+	s.gotKey = cc.apiKey
 	s.mu.Unlock()
 	return io.NopCloser(strings.NewReader("")), nil
 }
 
-func (s *stubUpstream) convert(_ io.Reader, sink sseSink, _, _ string) error {
+func (s *stubUpstream) convert(_ io.Reader, sink sseSink, _ *convCtx) error {
 	return sink.event("message_stop", map[string]any{"type": "message_stop"})
 }
 
