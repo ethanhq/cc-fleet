@@ -38,5 +38,9 @@ func runTUIIfInteractive(args []string) (handled bool, err error) {
 	if !shouldEnterTUI(args, stdinTTY, stdoutTTY) {
 		return false, nil
 	}
+	// Pre-TUI (terminal still in normal mode): offer a once-a-day update if a
+	// newer release is cached. Gated to exactly this bare-interactive path, so
+	// keyget / subagent / spawn / --json / non-TTY callers never reach it.
+	maybePromptUpdate()
 	return true, tui.Run()
 }

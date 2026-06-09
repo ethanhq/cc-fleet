@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/ethanhq/cc-fleet/internal/version"
 )
@@ -239,7 +240,124 @@ func TestRun_DevBuildIsNoOp(t *testing.T) {
 	}
 }
 
+// --- cache / startup prompt --------------------------------------------------
+
+func TestPromptTag_FreshNewer(t *testing.T) {
+	setHome(t)
+	withVersion(t, "v0.1.0")
+	writeCache(t, `{"latest_tag":"v0.1.8"}`)
+	tag, ok := PromptTag(time.Unix(1_000_000, 0))
+	if !ok || tag != "v0.1.8" {
+		t.Fatalf("PromptTag = (%q,%v), want (v0.1.8,true)", tag, ok)
+	}
+}
+
+func TestPromptTag_NotNewer(t *testing.T) {
+	setHome(t)
+	withVersion(t, "v0.1.8")
+	writeCache(t, `{"latest_tag":"v0.1.8"}`)
+	if _, ok := PromptTag(time.Unix(1_000_000, 0)); ok {
+		t.Fatalf("PromptTag ok=true, want false when latest == current")
+	}
+}
+
+func TestPromptTag_DevBuildNeverPrompts(t *testing.T) {
+	setHome(t)
+	withVersion(t, "0.1.0-dev")
+	writeCache(t, `{"latest_tag":"v9.9.9"}`)
+	if _, ok := PromptTag(time.Unix(1_000_000, 0)); ok {
+		t.Fatalf("PromptTag ok=true for a dev build, want false")
+	}
+}
+
+func TestPromptTag_OptedOut(t *testing.T) {
+	setHome(t)
+	withVersion(t, "v0.1.0")
+	writeCache(t, `{"latest_tag":"v0.1.8"}`)
+	t.Setenv(OptOutEnv, "1")
+	if _, ok := PromptTag(time.Unix(1_000_000, 0)); ok {
+		t.Fatalf("PromptTag ok=true while opted out, want false")
+	}
+}
+
+func TestPromptTag_DismissedWindow(t *testing.T) {
+	setHome(t)
+	withVersion(t, "v0.1.0")
+	now := time.Unix(1_000_000, 0)
+	// Dismissed just now → suppressed.
+	writeCache(t, `{"latest_tag":"v0.1.8","dismissed_tag":"v0.1.8","dismissed_at":1000000}`)
+	if _, ok := PromptTag(now); ok {
+		t.Fatalf("PromptTag ok=true right after dismissal, want false")
+	}
+	// Dismissed > 24h ago → prompts again.
+	later := now.Add(25 * time.Hour)
+	if _, ok := PromptTag(later); !ok {
+		t.Fatalf("PromptTag ok=false 25h after dismissal, want true")
+	}
+}
+
+func TestDismissSuppresses(t *testing.T) {
+	setHome(t)
+	withVersion(t, "v0.1.0")
+	writeCache(t, `{"latest_tag":"v0.1.8"}`)
+	now := time.Unix(1_000_000, 0)
+	if _, ok := PromptTag(now); !ok {
+		t.Fatalf("precondition: PromptTag should be true before dismissal")
+	}
+	if err := Dismiss("v0.1.8", now); err != nil {
+		t.Fatalf("Dismiss: %v", err)
+	}
+	if _, ok := PromptTag(now); ok {
+		t.Fatalf("PromptTag ok=true after Dismiss within the window, want false")
+	}
+}
+
+func TestRefreshCache(t *testing.T) {
+	setHome(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Location", "/"+repo+"/releases/tag/v9.9.9")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer srv.Close()
+	withGitHubBase(t, srv.URL)
+
+	now := time.Unix(2_000_000, 0)
+	RefreshCache(context.Background(), now) // empty cache → fetches
+	c := loadCache()
+	if c.LatestTag != "v9.9.9" || c.LastChecked != now.Unix() {
+		t.Fatalf("after refresh cache = %+v, want latest v9.9.9 @ %d", c, now.Unix())
+	}
+
+	// A fresh cache (checked just now) is not re-queried even if the server moves.
+	RefreshCache(context.Background(), now.Add(time.Hour))
+	if c2 := loadCache(); c2.LatestTag != "v9.9.9" || c2.LastChecked != now.Unix() {
+		t.Fatalf("fresh cache was re-queried: %+v", c2)
+	}
+}
+
 // --- helpers -----------------------------------------------------------------
+
+func setHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	return home
+}
+
+func writeCache(t *testing.T, body string) {
+	t.Helper()
+	p, err := cachePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func withGitHubBase(t *testing.T, base string) {
 	t.Helper()
