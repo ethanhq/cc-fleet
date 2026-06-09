@@ -119,23 +119,78 @@ func smokeTest(ctx context.Context, staged, tag string) error {
 	return nil
 }
 
-// swapBinary backs the current binary up to <exe>.previous and renames the
-// staged binary into place. On unix a running executable's file can be renamed
-// (the live process keeps its open inode); staged, exe, and the backup share a
-// directory so every rename is atomic and same-filesystem.
+// swapBinary backs the current binary up to <exe>.previous and replaces it with
+// the staged binary. It COPIES exe to the backup (leaving exe in place), then
+// does a single atomic rename of staged over exe — so exe is never momentarily
+// absent and a crash mid-swap leaves either the old or the new binary, never
+// none. On unix a running executable's file can be renamed (the live process
+// keeps its open inode); staged, exe, and the backup share a directory so the
+// rename is atomic and same-filesystem.
 func swapBinary(exe, staged, oldVer, newVer string, out io.Writer) error {
+	// If the on-disk binary already matches staged (a concurrent updater swapped
+	// it in first), there's nothing to do — overwriting .previous now would lose
+	// the genuine old binary the rollback target holds.
+	if same, _ := sameContent(exe, staged); same {
+		_ = os.Remove(staged)
+		fmt.Fprintf(out, "  ✔ binary already at %s\n", newVer)
+		return nil
+	}
 	backup := exe + ".previous"
-	if err := os.Rename(exe, backup); err != nil {
+	if err := copyFile(exe, backup, 0o755); err != nil {
 		_ = os.Remove(staged)
 		return fmt.Errorf("back up current binary: %w", err)
 	}
 	if err := os.Rename(staged, exe); err != nil {
-		_ = os.Rename(backup, exe) // restore
+		_ = os.Remove(staged)
 		return fmt.Errorf("install new binary: %w", err)
 	}
 	fmt.Fprintf(out, "  ✔ binary %s → %s  (%s; previous kept at %s)\n",
 		oldVer, newVer, exe, filepath.Base(backup))
 	return nil
+}
+
+// copyFile copies src to dst (truncating dst) with the given mode.
+func copyFile(src, dst string, mode os.FileMode) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = in.Close() }()
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(out, in); err != nil {
+		_ = out.Close()
+		return err
+	}
+	return out.Close()
+}
+
+// sameContent reports whether two files have identical sha256 digests.
+func sameContent(a, b string) (bool, error) {
+	ha, err := fileSha256(a)
+	if err != nil {
+		return false, err
+	}
+	hb, err := fileSha256(b)
+	if err != nil {
+		return false, err
+	}
+	return ha == hb, nil
+}
+
+func fileSha256(p string) (string, error) {
+	f, err := os.Open(p)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Rollback restores the <exe>.previous backup left by the last self-update.

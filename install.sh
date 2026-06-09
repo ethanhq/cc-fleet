@@ -159,9 +159,10 @@ ln -sf cc-fleet "${PREFIX}/ccf"
 echo "==> Installed ${PREFIX}/cc-fleet (+ ccf alias)"
 
 # Install manifest (co-located with the binary) so `cc-fleet update` self-updates
-# in place without guessing how it was installed.
+# in place without guessing the method, preserves the plugin scope, and leaves
+# the plugin alone for a --skill none/global install.
 cat > "${PREFIX}/.cc-fleet-install.json" <<EOF
-{"method":"tarball","prefix":"${PREFIX}","plugin_scope":"${SCOPE}","marketplace":"${MARKETPLACE}"}
+{"method":"tarball","plugin_scope":"${SCOPE}","skill":"${SKILL_MODE}"}
 EOF
 
 # --- skill --------------------------------------------------------------------

@@ -59,12 +59,13 @@ type Status struct {
 	NewerAvailable bool   // Comparable && Latest is newer than Current
 }
 
-// manifest is the co-located install record (next to the binary).
+// manifest is the co-located install record (next to the binary) install.sh /
+// npm write so update knows the install method, the plugin scope to preserve,
+// and the skill choice (so a --skill none/global user isn't force-fed a plugin).
 type manifest struct {
 	Method      string `json:"method"`
-	Prefix      string `json:"prefix,omitempty"`
 	PluginScope string `json:"plugin_scope,omitempty"`
-	Marketplace string `json:"marketplace,omitempty"`
+	Skill       string `json:"skill,omitempty"` // plugin | global | none
 }
 
 // Options tunes Run.
@@ -226,7 +227,18 @@ func runLocked(ctx context.Context, opts Options, out io.Writer) error {
 	//    tarball install this downloads + verifies + smoke-tests into a staged
 	//    temp file; commitBinary then renames it in. For npm/go there is no
 	//    dry-run, so commitBinary runs the package manager.
-	var commitBinary func() error
+	var (
+		commitBinary func() error
+		stagedPath   string
+		committed    bool
+	)
+	// Remove a staged-but-uncommitted binary on any early return after staging
+	// (e.g. the plugin step fails and we abort before the swap).
+	defer func() {
+		if stagedPath != "" && !committed {
+			_ = os.Remove(stagedPath)
+		}
+	}()
 	switch {
 	case !st.NewerAvailable:
 		fmt.Fprintf(out, "Binary already at the latest (%s).\n", st.Current)
@@ -235,6 +247,7 @@ func runLocked(ctx context.Context, opts Options, out io.Writer) error {
 		if perr != nil {
 			return perr
 		}
+		stagedPath = staged
 		commitBinary = func() error { return swapBinary(exe, staged, st.Current, st.Latest, out) }
 	case method == MethodNpm:
 		commitBinary = func() error { return updateViaPkgManager(ctx, out, "npm", "install", "-g", "@ethanhq/cc-fleet@latest") }
@@ -248,7 +261,7 @@ func runLocked(ctx context.Context, opts Options, out io.Writer) error {
 
 	// 2. Plugin update (independent of the binary; runs before the binary swap).
 	if !opts.BinaryOnly {
-		if perr := updatePlugin(ctx, man.PluginScope, out); perr != nil {
+		if perr := updatePlugin(ctx, man.PluginScope, man.Skill, out); perr != nil {
 			if commitBinary != nil {
 				return fmt.Errorf("plugin update failed; binary left unchanged to avoid a version skew (rerun with --binary-only to update the binary anyway): %w", perr)
 			}
@@ -261,6 +274,7 @@ func runLocked(ctx context.Context, opts Options, out io.Writer) error {
 		if cerr := commitBinary(); cerr != nil {
 			return cerr
 		}
+		committed = true
 	}
 	return nil
 }

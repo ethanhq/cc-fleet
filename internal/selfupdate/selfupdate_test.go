@@ -159,6 +159,35 @@ func TestSwapBinaryAndRollback(t *testing.T) {
 	}
 }
 
+// TestSwapBinary_AlreadyEqualSkips: when the on-disk binary already matches the
+// staged one (a concurrent updater swapped it in first), swapBinary is a no-op
+// and must NOT overwrite an existing .previous (which would lose the real old
+// binary the rollback target holds).
+func TestSwapBinary_AlreadyEqualSkips(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "cc-fleet")
+	if err := os.WriteFile(exe, []byte("NEW"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A genuine OLD backup from a prior update.
+	if err := os.WriteFile(exe+".previous", []byte("OLD"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	staged := filepath.Join(dir, ".cc-fleet-update-staged")
+	if err := os.WriteFile(staged, []byte("NEW"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := swapBinary(exe, staged, "v0.1.0", "v9.9.9", &bytes.Buffer{}); err != nil {
+		t.Fatalf("swapBinary: %v", err)
+	}
+	if b, _ := os.ReadFile(exe + ".previous"); string(b) != "OLD" {
+		t.Fatalf(".previous clobbered to %q, want OLD preserved", b)
+	}
+	if _, err := os.Stat(staged); !os.IsNotExist(err) {
+		t.Fatalf("staged file should be removed when already up to date")
+	}
+}
+
 func TestRollback_NoBackup(t *testing.T) {
 	dir := t.TempDir()
 	exe := filepath.Join(dir, "cc-fleet")

@@ -11,18 +11,21 @@ import (
 )
 
 // updatePlugin brings the Claude Code plugin to the latest version, preserving
-// the install scope. If `claude` is not on PATH the plugin step is skipped (not
-// an error — the binary still updates). An installed plugin is refreshed via
-// `marketplace update` + `plugin update`, falling back to a same-scope
-// uninstall + reinstall; an absent plugin is installed.
-func updatePlugin(ctx context.Context, scope string, out io.Writer) error {
+// the install scope. A user who installed with --skill none or global declined
+// the plugin, so it is left alone. If `claude` is not on PATH the plugin step is
+// skipped (not an error — the binary still updates). An installed plugin is
+// refreshed via `marketplace update` + `plugin update`; the fallback
+// uninstall + reinstall runs ONLY when the scope is known, so an unknown-scope
+// install is never silently moved to user scope. An absent plugin is installed.
+func updatePlugin(ctx context.Context, scope, skill string, out io.Writer) error {
+	if skill == "none" || skill == "global" {
+		fmt.Fprintf(out, "  skill installed via --skill %s — leaving the plugin alone\n", skill)
+		return nil
+	}
 	claude, err := exec.LookPath("claude")
 	if err != nil {
 		fmt.Fprintln(out, "  claude not on PATH — skipping the plugin update")
 		return nil
-	}
-	if scope == "" {
-		scope = "user"
 	}
 
 	if pluginInstalled() {
@@ -33,12 +36,17 @@ func updatePlugin(ctx context.Context, scope string, out io.Writer) error {
 		if err := runCmd(ctx, out, claude, "plugin", "update", pluginRef); err == nil {
 			return nil
 		}
-		// Fall back to a clean reinstall in the same scope.
-		fmt.Fprintln(out, "  plugin update failed — reinstalling")
+		if scope == "" {
+			return fmt.Errorf("plugin update failed and the install scope is unknown — reinstall manually: claude plugin install %s --scope <user|project|local>", pluginRef)
+		}
+		fmt.Fprintln(out, "  plugin update failed — reinstalling in the "+scope+" scope")
 		_ = runCmd(ctx, out, claude, "plugin", "uninstall", pluginRef)
 		return runCmd(ctx, out, claude, "plugin", "install", pluginRef, "--scope", scope)
 	}
 
+	if scope == "" {
+		scope = "user"
+	}
 	fmt.Fprintln(out, "  ↓ installing plugin "+pluginRef)
 	if err := runCmd(ctx, out, claude, "plugin", "marketplace", "add", repo, "--scope", scope); err != nil {
 		return fmt.Errorf("claude plugin marketplace add: %w", err)
