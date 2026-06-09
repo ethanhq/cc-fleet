@@ -9,7 +9,16 @@ permissions:
   contents: write
 
 jobs:
+  # Runs before any artifact is built: a stale plugin.json or npm version fails
+  # the whole release (the marketplace serves the committed plugin.json).
+  version-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: bash scripts/version-guard.sh "${GITHUB_REF_NAME}"
+
   goreleaser:
+    needs: version-guard
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -27,7 +36,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   npm-publish:
-    needs: goreleaser
+    needs: [version-guard, goreleaser]
     # OIDC trusted publishing (no stored token). Gated until cc-fleet's first
     # publish is done manually and a trusted publisher is configured on npmjs.
     if: vars.NPM_TRUSTED_PUBLISHING == 'true'
