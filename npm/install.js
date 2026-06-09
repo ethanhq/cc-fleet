@@ -85,6 +85,12 @@ async function main() {
     const dest = path.join(binDir, "cc-fleet");
     fs.copyFileSync(extracted, dest);
     fs.chmodSync(dest, 0o755);
+    // Install manifest (co-located with the binary): `cc-fleet update` reads it
+    // and delegates to npm instead of self-replacing an npm-managed binary.
+    fs.writeFileSync(
+      path.join(binDir, ".cc-fleet-install.json"),
+      JSON.stringify({ method: "npm" })
+    );
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

@@ -64,6 +64,7 @@ teammate Claude Code sessions inside tmux windows.`,
 	root.AddCommand(newListCmd())
 	root.AddCommand(newRepairCmd())
 	root.AddCommand(newUninstallCmd())
+	root.AddCommand(newUpdateCmd())
 	return root
 }
 

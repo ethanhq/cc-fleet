@@ -3,16 +3,13 @@
 A prebuilt `cc-fleet` binary plus the `cc-fleet` skill. No Go toolchain
 needed — this archive ships a compiled binary for your platform.
 
-## Install (3 steps)
+## Install
 
 ```bash
 # 1. install the binary (+ ccf alias) and the skill (skill via the plugin by default)
 ./install.sh --prefix ~/.local/bin
 
-# 2. first-time setup
-cc-fleet init
-
-# 3. add a vendor — pipe the key on stdin, never inline it in argv (it leaks
+# 2. add a vendor — pipe the key on stdin, never inline it in argv (it leaks
 #    to shell history / `ps`)
 printf '%s' "$DEEPSEEK_KEY" | cc-fleet add deepseek \
   --base-url https://api.deepseek.com/anthropic \
@@ -21,7 +18,10 @@ printf '%s' "$DEEPSEEK_KEY" | cc-fleet add deepseek \
   --secret-backend file --secret-ref deepseek.key --api-key-stdin
 ```
 
-Then `cc-fleet doctor` to health-check and `cc-fleet list` to see what's configured.
+The config tree is created automatically on first use — `cc-fleet init` is optional
+(run it only to create the tree and health-check up front). Then `cc-fleet doctor` to
+health-check, `cc-fleet list` to see what's configured, and `cc-fleet update` to update
+the binary + plugin later.
 
 > **Skill channel.** By default `install.sh` installs the skill via the Claude Code
 > plugin (`--skill plugin`). Use `--skill global` to copy the bundled `SKILL.md`

@@ -158,6 +158,12 @@ chmod 0755 "${PREFIX}/cc-fleet"
 ln -sf cc-fleet "${PREFIX}/ccf"
 echo "==> Installed ${PREFIX}/cc-fleet (+ ccf alias)"
 
+# Install manifest (co-located with the binary) so `cc-fleet update` self-updates
+# in place without guessing how it was installed.
+cat > "${PREFIX}/.cc-fleet-install.json" <<EOF
+{"method":"tarball","prefix":"${PREFIX}","plugin_scope":"${SCOPE}","marketplace":"${MARKETPLACE}"}
+EOF
+
 # --- skill --------------------------------------------------------------------
 
 case "$SKILL_MODE" in
@@ -190,6 +196,17 @@ case "$SKILL_MODE" in
         ;;
 esac
 
+# --- Claude Code precondition note --------------------------------------------
+
+if ! have claude; then
+    cat <<EOF
+
+==> Note: Claude Code ('claude') was not found on PATH.
+    cc-fleet drives Claude Code — install it to run teammates / subagents / workflows:
+    https://docs.anthropic.com/claude-code
+EOF
+fi
+
 # --- PATH check + next steps --------------------------------------------------
 
 case ":${PATH}:" in
@@ -212,4 +229,7 @@ cat <<EOF
    cc-fleet             # launch the interactive TUI — register a vendor and get started
                         #   (config is auto-created on first save; no init needed)
    cc-fleet doctor      # optional: run the health checks
+   cc-fleet update      # later: update cc-fleet + the plugin to the latest release
+
+   tmux is needed only for live teammates; subagent / workflow / run work without it.
 EOF
