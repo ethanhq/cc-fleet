@@ -65,10 +65,15 @@ func press(t *testing.T, m Model, key string) (Model, tea.Cmd) {
 	return step(t, m, keyMsg(key))
 }
 
-// withVendors returns a fresh model on the Model Providers list with vs already loaded.
+// withVendors returns a fresh model on the Model Providers list with vs already
+// loaded. It pins screenList so the screenList-owned vendorsMsg is always applied —
+// otherwise a fresh install with no tmux/agent-teams (CI) opens on a setup nudge and
+// the message is dropped, leaving m.vendors empty.
 func withVendors(t *testing.T, vs ...userops.VendorView) Model {
 	t.Helper()
-	m, _ := step(t, NewModel(), vendorsMsg{vendors: vs})
+	m := NewModel()
+	m.screen, m.loading = screenList, true
+	m, _ = step(t, m, vendorsMsg{vendors: vs})
 	return m
 }
 
