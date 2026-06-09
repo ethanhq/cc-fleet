@@ -4,35 +4,39 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"text/tabwriter"
-	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/ethanhq/cc-fleet/internal/models"
+	"github.com/ethanhq/cc-fleet/internal/config"
 )
 
-// modelsEnvelope is the JSON shape `cc-fleet models <vendor> --json` emits.
-// Models is always serialized (even when empty) so skill code can iterate
-// without a presence check.
+// modelRole is one configured capability slot of a provider's roster.
+type modelRole struct {
+	Role string `json:"role"` // default | strong | fast
+	ID   string `json:"id"`   // the model id passed to claude (may carry the [1m] marker)
+}
+
+// modelsEnvelope is the JSON shape `cc-fleet models <provider> --json` emits: the
+// provider's configured capability roster (default/strong/fast), NOT the full
+// upstream catalog. The full /v1/models list stays in the cache for the TUI model
+// picker; the agent-facing command shows only the few configured slots so a
+// provider with a large catalog can't flood the orchestrator. Models is always
+// serialized (even when empty) so skill code can iterate without a presence check.
 type modelsEnvelope struct {
-	OK         bool           `json:"ok"`
-	Vendor     string         `json:"vendor"`
-	Endpoint   string         `json:"endpoint,omitempty"`
-	FetchedAt  time.Time      `json:"fetched_at,omitempty"`
-	Stale      bool           `json:"stale"`
-	Models     []models.Model `json:"models"`
-	Error      string         `json:"error,omitempty"`
-	ErrorCode  string         `json:"error_code,omitempty"`
-	Suggestion string         `json:"suggestion,omitempty"`
+	OK         bool        `json:"ok"`
+	Vendor     string      `json:"vendor"`
+	Models     []modelRole `json:"models"`
+	Error      string      `json:"error,omitempty"`
+	ErrorCode  string      `json:"error_code,omitempty"`
+	Suggestion string      `json:"suggestion,omitempty"`
 }
 
 // Error codes for `cc-fleet models <vendor>` — kept stable so the skill can
 // dispatch on them without prose parsing.
 const (
-	codeModelsVendorNotInCache = "VENDOR_NOT_IN_CACHE"
-	codeModelsCacheLoadFailed  = "CACHE_LOAD_FAILED"
+	codeModelsVendorUnknown    = "VENDOR_UNKNOWN"
+	codeModelsConfigLoadFailed = "CONFIG_LOAD_FAILED"
 )
 
 func newModelsCmd() *cobra.Command {
@@ -40,15 +44,15 @@ func newModelsCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "models <vendor>",
-		Short: "List cached models for a vendor",
-		Long: `List models in the local cache for <vendor>.
+		Short: "List a provider's configured model roster (default/strong/fast)",
+		Long: `List the configured capability roster for <vendor>: the default, strong, and
+fast model slots from vendors.toml (a blank strong/fast slot follows the
+default). This is intentionally NOT the full ` + "`/v1/models`" + ` catalog — that
+list is only used by the TUI model picker; ` + "`cc-fleet models`" + ` shows just the
+few configured slots so a provider with a large catalog can't flood an agent.
 
-The cache is populated by ` + "`cc-fleet refresh <vendor>`" + `. If <vendor>
-is not in the cache, the command reports an error and tells the user to
-run refresh. Cache entries older than ~/.config/cc-fleet/models-cache.json's
-7-day window are flagged (stale=true in --json; "(stale)" in pretty output).
-
-Use --json for skill consumption.`,
+Use ` + "`--model default|strong|fast`" + ` (or a literal id) on spawn/subagent/run to
+select a slot. Use --json for skill consumption.`,
 		Args:          cobra.ExactArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -64,33 +68,28 @@ Use --json for skill consumption.`,
 }
 
 func runModels(vendor string, asJSON bool) error {
-	cache, err := models.Load()
+	cfg, err := config.Load()
 	if err != nil {
-		return reportModelsErr(asJSON, vendor, codeModelsCacheLoadFailed,
-			fmt.Errorf("load cache: %w", err),
-			"check ~/.config/cc-fleet/models-cache.json")
+		return reportModelsErr(asJSON, vendor, codeModelsConfigLoadFailed,
+			fmt.Errorf("load vendors.toml: %w", err),
+			"check ~/.config/cc-fleet/vendors.toml")
 	}
 
-	vc, ok := cache.Vendors[vendor]
+	v, ok := cfg.Vendors[vendor]
 	if !ok {
-		return reportModelsErr(asJSON, vendor, codeModelsVendorNotInCache,
-			fmt.Errorf("vendor not in cache (run: cc-fleet refresh %s)", vendor),
-			fmt.Sprintf("cc-fleet refresh %s", vendor))
+		return reportModelsErr(asJSON, vendor, codeModelsVendorUnknown,
+			fmt.Errorf("vendor %q not in vendors.toml (run: cc-fleet list)", vendor),
+			"cc-fleet list")
 	}
 
-	stale := models.IsStale(vc)
+	roster := []modelRole{
+		{Role: config.ModelSlotDefault, ID: v.DefaultModel},
+		{Role: config.ModelSlotStrong, ID: v.StrongModelOrDefault()},
+		{Role: config.ModelSlotFast, ID: v.FastModelOrDefault()},
+	}
+
 	if asJSON {
-		env := modelsEnvelope{
-			OK:        true,
-			Vendor:    vc.Vendor,
-			Endpoint:  vc.Endpoint,
-			FetchedAt: vc.FetchedAt,
-			Stale:     stale,
-			Models:    vc.Models,
-		}
-		if env.Models == nil {
-			env.Models = []models.Model{}
-		}
+		env := modelsEnvelope{OK: true, Vendor: v.Name, Models: roster}
 		data, mErr := json.Marshal(env)
 		if mErr != nil {
 			fmt.Fprintln(os.Stderr, "models: marshal:", mErr)
@@ -100,28 +99,11 @@ func runModels(vendor string, asJSON bool) error {
 		return nil
 	}
 
-	// Pretty mode: header line + table.
-	staleTag := ""
-	if stale {
-		staleTag = " (stale)"
-	}
-	fmt.Printf("vendor %s — %d model(s), fetched %s%s\n",
-		vc.Vendor, len(vc.Models),
-		vc.FetchedAt.Format(time.RFC3339), staleTag)
-
-	if len(vc.Models) == 0 {
-		fmt.Println("(no models — try cc-fleet refresh", vendor+")")
-		return nil
-	}
-
-	// Stable, alphabetical order so successive runs diff cleanly.
-	sorted := append([]models.Model(nil), vc.Models...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].ID < sorted[j].ID })
-
+	fmt.Printf("provider %s — configured model roster:\n", v.Name)
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tOWNED_BY")
-	for _, m := range sorted {
-		fmt.Fprintf(w, "%s\t%s\n", m.ID, m.OwnedBy)
+	fmt.Fprintln(w, "ROLE\tMODEL")
+	for _, m := range roster {
+		fmt.Fprintf(w, "%s\t%s\n", m.Role, m.ID)
 	}
 	return w.Flush()
 }
@@ -135,8 +117,7 @@ func reportModelsErr(asJSON bool, vendor, code string, err error, suggestion str
 		env := modelsEnvelope{
 			OK:         false,
 			Vendor:     vendor,
-			Stale:      false,
-			Models:     []models.Model{},
+			Models:     []modelRole{},
 			Error:      err.Error(),
 			ErrorCode:  code,
 			Suggestion: suggestion,

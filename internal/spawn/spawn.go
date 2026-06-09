@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ethanhq/cc-fleet/internal/childenv"
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/fingerprint"
@@ -155,11 +156,9 @@ func Spawn(req Request) Result {
 			"team (--team) is required", req.Vendor, "")
 	}
 
-	// 3. Resolve model.
-	model := req.Model
-	if model == "" {
-		model = v.DefaultModel
-	}
+	// 3. Resolve model (capability keyword default/strong/fast → slot id, else a
+	//    literal id, "" → default_model).
+	model := v.ResolveModel(req.Model)
 
 	// 4. Optional vendor probe (3s GET against models_endpoint, with key).
 	//    Skipped for a codex provider: its models endpoint is served by the
@@ -695,6 +694,12 @@ func buildSpawnCommand(fp *fingerprint.Fingerprint, ctx fingerprint.SpawnContext
 	}
 
 	parts := []string{"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN"}
+	// The provider profile owns model/effort selection; unset any value the
+	// launching shell exported so it can't override the profile (mirrors childenv
+	// on the subagent/run path — one shared key list, no drift).
+	for _, k := range childenv.ModelEnvKeys {
+		parts = append(parts, "-u", k)
+	}
 	// Sort env keys for deterministic output (helps tests + diffs).
 	for _, k := range sortedKeys(fp.Env) {
 		parts = append(parts, tmux.Quote(k+"="+fp.Env[k]))

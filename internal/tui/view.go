@@ -32,6 +32,7 @@ var (
 	teamHdrStyle    = lipgloss.NewStyle().Bold(true) // team section header (flush-left bold title)
 	errStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 	okStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("78"))
+	noteStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("214")) // contextual Note hints — a warm tone above the gray body
 )
 
 // footer renders a dim key-hint line.
@@ -220,6 +221,24 @@ func vendorCacheFig(v userops.VendorView) string {
 	return fig
 }
 
+// resolvedSlot renders a capability slot for the read-only preview: a blank
+// strong/fast slot shows the default model it follows (the concrete model that
+// will run), not the word "blank". orOffLabel renders an unset effort/permission
+// as off.
+func resolvedSlot(slot, def string) string {
+	if slot == "" {
+		return def
+	}
+	return slot
+}
+
+func orOffLabel(s string) string {
+	if s == "" {
+		return "off"
+	}
+	return s
+}
+
 // vendorDetailLines is the Model Providers hub's read-only config card: the enabled state + default
 // model, then the vendors.toml fields. The key row shows only the secret backend + ref —
 // never key material (the status line already carries the model, so no separate field).
@@ -235,6 +254,15 @@ func vendorDetailLines(v userops.VendorView, rightW int) []string {
 		" " + contentStyle.Render("→/⏎ edit · d delete"), "", faintStyle.Render("Config")}
 	detailField(&lines, "base url", v.BaseURL, rightW)
 	detailField(&lines, "models", v.ModelsEndpoint, rightW)
+	// Surface the full capability roster + effort + run permission so the preview
+	// mirrors the edit form. Each slot shows the concrete model that will run (a
+	// blank strong/fast resolves to the default); effort/permission show off when
+	// unset.
+	detailField(&lines, "default", v.DefaultModel, rightW)
+	detailField(&lines, "strong", resolvedSlot(v.StrongModel, v.DefaultModel), rightW)
+	detailField(&lines, "fast", resolvedSlot(v.FastModel, v.DefaultModel), rightW)
+	detailField(&lines, "effort", orOffLabel(v.Effort), rightW)
+	detailField(&lines, "run perm", orOffLabel(v.DefaultPerm), rightW)
 	detailField(&lines, "cache", vendorCacheFig(v), rightW)
 	key := v.SecretBackend
 	if v.SecretRef != "" {
@@ -1134,19 +1162,45 @@ func wrapTo(s string, w int) []string {
 	var out []string
 	var cur strings.Builder
 	curW := 0
-	for _, r := range s {
-		rw := ansi.StringWidth(string(r))
-		if curW+rw > w && curW > 0 {
+	flush := func() {
+		if cur.Len() > 0 {
 			out = append(out, cur.String())
 			cur.Reset()
 			curW = 0
 		}
-		cur.WriteRune(r)
-		curW += rw
 	}
-	if cur.Len() > 0 {
-		out = append(out, cur.String())
+	for _, word := range strings.Fields(s) {
+		// A word too wide for any line (a long token, or a space-less script like
+		// CJK) is character-wrapped; otherwise words pack greedily, breaking only on
+		// spaces so a word is never split mid-token.
+		if ansi.StringWidth(word) > w {
+			flush()
+			for _, r := range word {
+				rw := ansi.StringWidth(string(r))
+				if curW+rw > w && curW > 0 {
+					flush()
+				}
+				cur.WriteRune(r)
+				curW += rw
+			}
+			continue
+		}
+		sep := 0
+		if curW > 0 {
+			sep = 1
+		}
+		if curW+sep+ansi.StringWidth(word) > w {
+			flush()
+			sep = 0
+		}
+		if sep == 1 {
+			cur.WriteByte(' ')
+			curW++
+		}
+		cur.WriteString(word)
+		curW += ansi.StringWidth(word)
 	}
+	flush()
 	return out
 }
 
@@ -2766,7 +2820,7 @@ func (m Model) addItemDetail() []string {
 			faintStyle.Render("  upstream_url  " + t.UpstreamURL),
 		}
 		if t.Note != "" {
-			lines = append(lines, errStyle.Render("  note: "+t.Note))
+			lines = append(lines, noteStyle.Render("  note: "+t.Note))
 		}
 		return lines
 	default:
@@ -2780,7 +2834,7 @@ func (m Model) addItemDetail() []string {
 			faintStyle.Render("  default_model   " + t.DefaultModel),
 		}
 		if t.Note != "" {
-			lines = append(lines, errStyle.Render("  note: "+t.Note))
+			lines = append(lines, noteStyle.Render("  note: "+t.Note))
 		}
 		return lines
 	}

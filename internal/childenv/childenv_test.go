@@ -46,6 +46,28 @@ func TestClean_StripsTheLoadBearingVars(t *testing.T) {
 	}
 }
 
+// TestClean_StripsModelEnvKeys: a model/effort var exported in the launching
+// shell must not reach the child — the provider profile is the sole authority, so
+// every ModelEnvKeys entry is stripped while unrelated vars survive.
+func TestClean_StripsModelEnvKeys(t *testing.T) {
+	var in []string
+	for _, k := range ModelEnvKeys {
+		in = append(in, k+"=leaked")
+	}
+	in = append(in, "PATH=/usr/bin")
+	out := Clean(in)
+	for _, k := range ModelEnvKeys {
+		for _, kv := range out {
+			if strings.HasPrefix(kv, k+"=") {
+				t.Fatalf("Clean leaked model env %q: %q", k, kv)
+			}
+		}
+	}
+	if !containsLine(out, "PATH=/usr/bin") {
+		t.Fatalf("Clean dropped an unrelated var: %v", out)
+	}
+}
+
 func containsLine(env []string, want string) bool {
 	for _, kv := range env {
 		if kv == want {

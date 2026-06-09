@@ -36,10 +36,16 @@ func isolateHome(t *testing.T) string {
 func TestGenerateForVendor_Snapshot(t *testing.T) {
 	v := sampleVendor()
 	const helper = "/usr/local/bin/cc-fleet"
+	// A single-model provider (no strong/fast/effort): every Claude Code model tier
+	// is pinned to the default so no built-in claude-* id can escape to the vendor.
 	const want = `{
   "apiKeyHelper": "/usr/local/bin/cc-fleet keyget deepseek",
   "env": {
-    "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic"
+    "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-flash",
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-flash",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-flash"
   }
 }`
 
@@ -65,6 +71,78 @@ func TestGenerateForVendor_Snapshot(t *testing.T) {
 	if back.Env["ANTHROPIC_BASE_URL"] != v.BaseURL {
 		t.Fatalf("env[ANTHROPIC_BASE_URL] = %q, want %q",
 			back.Env["ANTHROPIC_BASE_URL"], v.BaseURL)
+	}
+}
+
+// TestGenerateForVendor_TiersEffortAndStrip1M covers a provider that sets a strong
+// and fast slot, a 1M-marked default model, and a non-max effort: the tier env
+// must map opus→strong, sonnet→default, haiku/subagent→fast with the [1m] marker
+// STRIPPED from every tier value, and a non-max effort must ride the settings
+// effortLevel field (not the env).
+func TestGenerateForVendor_TiersEffortAndStrip1M(t *testing.T) {
+	v := &config.Vendor{
+		Name:           "deepseek",
+		BaseURL:        "https://api.deepseek.com/anthropic",
+		DefaultModel:   "deepseek-v4-pro[1m]",
+		StrongModel:    "deepseek-v4-max[1m]",
+		FastModel:      "deepseek-v4-flash",
+		Effort:         "high",
+		ModelsEndpoint: "https://api.deepseek.com/v1/models",
+		SecretBackend:  "file",
+		SecretRef:      "deepseek.key",
+		Enabled:        true,
+	}
+	got, err := GenerateForVendor(v, "/usr/local/bin/cc-fleet")
+	if err != nil {
+		t.Fatalf("GenerateForVendor: %v", err)
+	}
+	var back struct {
+		Env         map[string]string `json:"env"`
+		EffortLevel string            `json:"effortLevel"`
+	}
+	if err := json.Unmarshal(got, &back); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	want := map[string]string{
+		"ANTHROPIC_DEFAULT_OPUS_MODEL":   "deepseek-v4-max", // strong, [1m] stripped
+		"ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro", // default, [1m] stripped
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL":  "deepseek-v4-flash",
+		"CLAUDE_CODE_SUBAGENT_MODEL":     "deepseek-v4-pro", // default
+	}
+	for k, w := range want {
+		if back.Env[k] != w {
+			t.Errorf("env[%s] = %q, want %q", k, back.Env[k], w)
+		}
+	}
+	if _, ok := back.Env["CLAUDE_CODE_EFFORT_LEVEL"]; ok {
+		t.Errorf("a non-max effort must NOT set CLAUDE_CODE_EFFORT_LEVEL env, got %q", back.Env["CLAUDE_CODE_EFFORT_LEVEL"])
+	}
+	if back.EffortLevel != "high" {
+		t.Errorf("effortLevel = %q, want high", back.EffortLevel)
+	}
+}
+
+// TestGenerateForVendor_MaxEffortRidesEnv covers effort=max: it must ride the env
+// (the only knob that expresses max) and NOT the settings effortLevel field.
+func TestGenerateForVendor_MaxEffortRidesEnv(t *testing.T) {
+	v := sampleVendor()
+	v.Effort = "max"
+	got, err := GenerateForVendor(v, "/usr/local/bin/cc-fleet")
+	if err != nil {
+		t.Fatalf("GenerateForVendor: %v", err)
+	}
+	var back struct {
+		Env         map[string]string `json:"env"`
+		EffortLevel string            `json:"effortLevel"`
+	}
+	if err := json.Unmarshal(got, &back); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if back.Env["CLAUDE_CODE_EFFORT_LEVEL"] != "max" {
+		t.Errorf("env CLAUDE_CODE_EFFORT_LEVEL = %q, want max", back.Env["CLAUDE_CODE_EFFORT_LEVEL"])
+	}
+	if back.EffortLevel != "" {
+		t.Errorf("max effort must NOT set the settings effortLevel field, got %q", back.EffortLevel)
 	}
 }
 

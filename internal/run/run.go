@@ -22,8 +22,10 @@ import (
 )
 
 // Request is a lane-0 launch request. Model overrides the vendor's default_model
-// when non-empty; PermissionMode is a validated permmode value ("" = none, no
-// permission flag); ExtraArgs are passed through to claude after cc-fleet's flags.
+// when non-empty; PermissionMode is a validated permmode value — "" means the
+// caller passed no permission flag, so Run falls back to the provider's configured
+// default_permission (itself possibly "" → no permission flag); ExtraArgs are
+// passed through to claude after cc-fleet's flags.
 type Request struct {
 	Vendor         string
 	Model          string
@@ -89,10 +91,9 @@ func Run(req Request) error {
 		return fmt.Errorf("vendor %q is disabled", req.Vendor)
 	}
 
-	model := req.Model
-	if model == "" {
-		model = v.DefaultModel
-	}
+	// Resolve model (capability keyword default/strong/fast → slot id, else a
+	// literal id, "" → default_model).
+	model := v.ResolveModel(req.Model)
 	// config.Load guarantees a non-empty default_model; this guard is defensive.
 	if model == "" {
 		return fmt.Errorf("vendor %q has no default_model; pass --model", req.Vendor)
@@ -115,7 +116,14 @@ func Run(req Request) error {
 		return fmt.Errorf("write profile: %w", err)
 	}
 
-	argv := buildArgv(bin, profilePath, model, permmode.ExplicitFlags(req.PermissionMode), req.ExtraArgs)
+	// An explicit --permission-mode / --dangerously-skip-permissions (resolved by
+	// the caller into a non-empty PermissionMode) wins; otherwise fall back to the
+	// provider's default_permission ("" → no permission flag, Claude's default mode).
+	permMode := req.PermissionMode
+	if permMode == "" {
+		permMode = v.DefaultPermission
+	}
+	argv := buildArgv(bin, profilePath, model, permmode.ExplicitFlags(permMode), req.ExtraArgs)
 	return execClaude(bin, argv, childenv.Clean(os.Environ()))
 }
 

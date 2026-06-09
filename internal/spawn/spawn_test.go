@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethanhq/cc-fleet/internal/childenv"
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 	"github.com/ethanhq/cc-fleet/internal/tmux"
@@ -1124,6 +1125,11 @@ func TestBuildSpawnCommand_FrozenTemplate_StripsThenByteStable(t *testing.T) {
 	// permission flags STRIPPED + --settings + --model.
 	var want []string
 	want = append(want, "env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN")
+	// The model/effort env is unset so the launching shell can't override the
+	// profile (same key list childenv strips on the subagent/run path).
+	for _, k := range childenv.ModelEnvKeys {
+		want = append(want, "-u", k)
+	}
 	want = append(want, tmux.Quote("CLAUDECODE=1"))
 	want = append(want, tmux.Quote("/usr/bin/claude"))
 	for _, f := range stripPermissionFlags(fingerprint.Apply(fp, ctx)) {

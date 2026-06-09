@@ -21,6 +21,7 @@ import (
 
 	"github.com/ethanhq/cc-fleet/internal/fileutil"
 	"github.com/ethanhq/cc-fleet/internal/ids"
+	"github.com/ethanhq/cc-fleet/internal/permmode"
 )
 
 // SchemaVersion is the only supported vendors.toml schema version.
@@ -89,7 +90,114 @@ type Vendor struct {
 	// Required for openai-*, forbidden otherwise. May carry a clean path prefix,
 	// usually ending in /v1.
 	UpstreamURL string `toml:"upstream_url,omitempty"`
+	// StrongModel / FastModel are the optional "strong" and "fast" capability
+	// slots; blank → the slot follows DefaultModel. They populate the Claude Code
+	// model-tier env in the provider profile (opus/haiku aliases + subagent), so a
+	// teammate or subagent never falls back to a built-in claude-* id the provider
+	// can't serve. omitempty keeps existing files byte-stable.
+	StrongModel string `toml:"strong_model,omitempty"`
+	FastModel   string `toml:"fast_model,omitempty"`
+	// Effort is the optional reasoning-effort level (one of validEfforts; "" =
+	// unset). It is written into the profile by the least-intrusive knob that can
+	// express it — "max" via the CLAUDE_CODE_EFFORT_LEVEL env, the others via the
+	// settings effortLevel field — so a session /effort can still override a
+	// non-max default.
+	Effort string `toml:"effort,omitempty"`
+	// DefaultPermission is the permission mode cc-fleet run uses when the caller
+	// passes neither --permission-mode nor --dangerously-skip-permissions ("" = no
+	// default → Claude's own default mode). Run-only; spawn inherits the lead's
+	// mode and subagent keeps its own default.
+	DefaultPermission string `toml:"default_permission,omitempty"`
 }
+
+// The reserved capability keywords ResolveModel (and --model) accept in addition
+// to a literal model id.
+const (
+	ModelSlotDefault = "default"
+	ModelSlotStrong  = "strong"
+	ModelSlotFast    = "fast"
+)
+
+// contextMarker1M is Claude Code's model-id suffix that displays a 1M context
+// window; Claude Code strips it before the API request, so the provider never
+// sees it. Carried inside the stored model id — see With1M / Strip1M.
+const contextMarker1M = "[1m]"
+
+// validEfforts is the closed set of reasoning-effort levels ("" = unset
+// included), rejected at Load like every other enum.
+var validEfforts = []string{"", "low", "medium", "high", "xhigh", "max"}
+
+func isValidEffort(e string) bool {
+	for _, ok := range validEfforts {
+		if e == ok {
+			return true
+		}
+	}
+	return false
+}
+
+// EffortLevels returns the non-empty reasoning-effort levels in canonical order
+// (the dropdown vocabulary; "" / unset is handled at the UI boundary). One source
+// so the config validator and the TUI picker can't drift.
+func EffortLevels() []string {
+	out := make([]string, 0, len(validEfforts))
+	for _, e := range validEfforts {
+		if e != "" {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// StrongModelOrDefault / FastModelOrDefault resolve a capability slot to a
+// concrete model id, falling back to DefaultModel when the slot is blank.
+func (v *Vendor) StrongModelOrDefault() string {
+	if v.StrongModel != "" {
+		return v.StrongModel
+	}
+	return v.DefaultModel
+}
+
+func (v *Vendor) FastModelOrDefault() string {
+	if v.FastModel != "" {
+		return v.FastModel
+	}
+	return v.DefaultModel
+}
+
+// ResolveModel maps a requested model to a concrete vendor model id: the reserved
+// keywords default/strong/fast name the matching slot, any other value is a
+// literal id passed through, and "" is DefaultModel. Keyword-first — the three
+// reserved words always name a slot (a real model id is never one of these bare
+// words). One resolver for every launcher (spawn / subagent / run, and the
+// workflow leaf via subagent.Run) so the keyword semantics can't drift.
+func (v *Vendor) ResolveModel(requested string) string {
+	switch requested {
+	case "", ModelSlotDefault:
+		return v.DefaultModel
+	case ModelSlotStrong:
+		return v.StrongModelOrDefault()
+	case ModelSlotFast:
+		return v.FastModelOrDefault()
+	default:
+		return requested
+	}
+}
+
+// With1M appends the 1M-context marker to a model id, idempotently (never doubles
+// it); a blank id is returned unchanged. Strip1M removes a TRAILING marker (an
+// interior "[1m]" is left alone); Has1M reports a trailing marker (the TUI
+// toggle's on/off state).
+func With1M(id string) string {
+	if id == "" || strings.HasSuffix(id, contextMarker1M) {
+		return id
+	}
+	return id + contextMarker1M
+}
+
+func Strip1M(id string) string { return strings.TrimSuffix(id, contextMarker1M) }
+
+func Has1M(id string) bool { return strings.HasSuffix(id, contextMarker1M) }
 
 // EffectiveProtocol resolves the wire protocol, applying the backward-compat rule
 // that a codex-oauth secret_backend with no explicit protocol means the codex
@@ -320,6 +428,14 @@ func (v *Vendor) validate(mapKey string) error {
 	if !isValidKeyRotation(v.KeyRotation) {
 		return fmt.Errorf("config: vendor %q: key_rotation %q invalid (want one of %v)",
 			name, v.KeyRotation, ValidKeyRotations())
+	}
+	if !isValidEffort(v.Effort) {
+		return fmt.Errorf("config: vendor %q: effort %q invalid (want one of %v)",
+			name, v.Effort, validEfforts)
+	}
+	if v.DefaultPermission != "" && !permmode.IsValid(v.DefaultPermission) {
+		return fmt.Errorf("config: vendor %q: default_permission %q invalid (want one of %v)",
+			name, v.DefaultPermission, permmode.Modes)
 	}
 	return nil
 }

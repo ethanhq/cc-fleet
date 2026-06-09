@@ -121,11 +121,9 @@ func Run(req Request) Result {
 			req.Vendor, suggestionFor(ErrCodeVendorDisabled))
 	}
 
-	// 2. Resolve model.
-	model := req.Model
-	if model == "" {
-		model = v.DefaultModel
-	}
+	// 2. Resolve model (capability keyword default/strong/fast → slot id, else a
+	//    literal id, "" → default_model).
+	model := v.ResolveModel(req.Model)
 
 	// 3. Resolve the spawn recipe (probed fingerprint if present, else bundled
 	//    default). Use ONLY the binary path, never fp.Env — it carries the

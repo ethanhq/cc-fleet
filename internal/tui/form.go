@@ -8,8 +8,31 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/ethanhq/cc-fleet/internal/config"
+	"github.com/ethanhq/cc-fleet/internal/permmode"
 	"github.com/ethanhq/cc-fleet/internal/userops"
 )
+
+// effortChoices / permChoices are the static edit-form dropdown vocabularies;
+// the leading "off" maps to an unset field on submit. Built from the config /
+// permmode sources so the dropdowns can't drift from the validators.
+var (
+	effortChoices = append([]string{"off"}, config.EffortLevels()...)
+	permChoices   = append([]string{"off"}, permmode.Modes...)
+)
+
+// isModelSlotKey reports whether key is one of the three model-slot text fields
+// (default/strong/fast) — the fields that open the model picker on enter.
+func isModelSlotKey(key string) bool {
+	return key == "default_model" || key == "strong_model" || key == "fast_model"
+}
+
+// orOff maps an unset config value to the "off" dropdown option.
+func orOff(s string) string {
+	if s == "" {
+		return "off"
+	}
+	return s
+}
 
 // fieldKind distinguishes a free-text input, a boolean toggle, and an action
 // row (a focusable label the parent model activates on enter — e.g. the edit
@@ -20,16 +43,33 @@ const (
 	fieldText fieldKind = iota
 	fieldToggle
 	fieldAction
+	fieldChoice
 )
 
 // formField is one row of a form. For fieldText the value lives in input;
-// for fieldToggle it lives in on; fieldAction rows carry only a label.
+// for fieldToggle it lives in on; for fieldChoice it is choices[choiceIdx];
+// fieldAction rows carry only a label.
 type formField struct {
-	key   string // logical key (base_url, api_key, enabled, …)
-	label string
-	kind  fieldKind
-	input textinput.Model // used when kind == fieldText
-	on    bool            // used when kind == fieldToggle
+	key       string // logical key (base_url, api_key, enabled, …)
+	label     string
+	kind      fieldKind
+	input     textinput.Model // used when kind == fieldText
+	on        bool            // used when kind == fieldToggle
+	choices   []string        // used when kind == fieldChoice (cycled with space/←/→)
+	choiceIdx int             // used when kind == fieldChoice
+}
+
+// newChoiceField builds a choice row pre-selected to current (the first choice
+// when current isn't in the set).
+func newChoiceField(key, label string, choices []string, current string) formField {
+	idx := 0
+	for i, c := range choices {
+		if c == current {
+			idx = i
+			break
+		}
+	}
+	return formField{key: key, label: label, kind: fieldChoice, choices: choices, choiceIdx: idx}
 }
 
 // form is a tiny multi-field wizard built on bubbles/textinput. Focus walks
@@ -145,15 +185,25 @@ func newEditForm(v userops.VendorView) form {
 			formField{key: "base_url", label: "Base URL", kind: fieldText, input: newTextInput(v.BaseURL, "https://…/anthropic", false)},
 			formField{key: "models_endpoint", label: "Models endpoint", kind: fieldText, input: newTextInput(v.ModelsEndpoint, "https://…/v1/models", false)})
 	}
+	// Model slots: each holds the BARE id in its text field with the [1m]
+	// context marker carried by an adjacent toggle — recombined on submit (see
+	// submitEdit). strong/fast blank → that slot follows the default.
 	fields = append(fields,
-		formField{key: "default_model", label: "Default model", kind: fieldText, input: newTextInput(v.DefaultModel, "model id", false)},
+		formField{key: "default_model", label: "Default model", kind: fieldText, input: newTextInput(config.Strip1M(v.DefaultModel), "model id", false)},
+		formField{key: "default_1m", label: "1M context", kind: fieldToggle, on: config.Has1M(v.DefaultModel)},
+		formField{key: "strong_model", label: "Strong model", kind: fieldText, input: newTextInput(config.Strip1M(v.StrongModel), "blank → follows default", false)},
+		formField{key: "strong_1m", label: "1M context", kind: fieldToggle, on: config.Has1M(v.StrongModel)},
+		formField{key: "fast_model", label: "Fast model", kind: fieldText, input: newTextInput(config.Strip1M(v.FastModel), "blank → follows default", false)},
+		formField{key: "fast_1m", label: "1M context", kind: fieldToggle, on: config.Has1M(v.FastModel)},
+		newChoiceField("effort", "Effort", effortChoices, orOff(v.Effort)),
+		newChoiceField("permission", "Run perm", permChoices, orOff(v.DefaultPerm)),
 		formField{key: "enabled", label: "Enabled", kind: fieldToggle, on: v.Enabled})
 	if v.SecretBackend != config.CodexOAuthBackend {
 		fields = append(fields, formField{key: "manage_keys", label: "Manage API keys →", kind: fieldAction})
 	}
 	f := form{
 		title:  "Edit provider: " + v.Name,
-		intro:  "↑/↓ or tab move · space toggles Enabled · enter on [Save] submits · esc cancels",
+		intro:  "↑/↓ move rows · → 1M toggle · space toggles · enter on [Save] submits · esc cancels",
 		submit: "Save",
 		fields: fields,
 	}
@@ -189,10 +239,10 @@ func (f *form) setFocus(i int) {
 func (f form) Update(msg tea.KeyMsg) (form, tea.Cmd, bool) {
 	switch msg.String() {
 	case "up", "shift+tab":
-		f.setFocus(f.focus - 1)
+		f.setFocus(f.stepFocus(f.focus, -1))
 		return f, nil, false
 	case "down", "tab":
-		f.setFocus(f.focus + 1)
+		f.setFocus(f.stepFocus(f.focus, +1))
 		return f, nil, false
 	case "enter":
 		if f.focus == len(f.fields) {
@@ -202,19 +252,46 @@ func (f form) Update(msg tea.KeyMsg) (form, tea.Cmd, bool) {
 			f.fields[f.focus].on = !f.fields[f.focus].on
 			return f, nil, false
 		}
-		f.setFocus(f.focus + 1)
+		f.setFocus(f.stepFocus(f.focus, +1))
 		return f, nil, false
+	case "right":
+		// → on a model slot reaches its inline 1M toggle — only when that toggle
+		// exists (the add form has model fields but no 1M toggles, so → there falls
+		// through to the text cursor; a choice cycles below).
+		if mk := oneMKeyFor(f.focusedKey()); mk != "" {
+			if idx, ok := f.indexOfKey(mk); ok {
+				f.setFocus(idx)
+				return f, nil, false
+			}
+		}
+	case "left":
+		// ← on a 1M toggle returns to its model slot (a choice cycles instead).
+		if mk := modelKeyFor1m(f.focusedKey()); mk != "" {
+			if idx, ok := f.indexOfKey(mk); ok {
+				f.setFocus(idx)
+				return f, nil, false
+			}
+		}
 	}
 
-	// On a field: toggles consume space/left/right; text fields get the key;
-	// action rows swallow everything else (the parent handles their enter).
+	// On a field: a toggle flips on space; a choice cycles on space/←/→; text
+	// fields get the key; action rows swallow everything else (the parent handles
+	// their enter).
 	if f.focus < len(f.fields) {
 		fld := &f.fields[f.focus]
 		switch fld.kind {
 		case fieldToggle:
 			switch msg.String() {
-			case " ", "space", "left", "right":
+			case " ", "space":
 				fld.on = !fld.on
+			}
+			return f, nil, false
+		case fieldChoice:
+			switch msg.String() {
+			case " ", "space", "right":
+				fld.choiceIdx = (fld.choiceIdx + 1) % len(fld.choices)
+			case "left":
+				fld.choiceIdx = (fld.choiceIdx - 1 + len(fld.choices)) % len(fld.choices)
 			}
 			return f, nil, false
 		case fieldAction:
@@ -242,6 +319,150 @@ func (f form) value(key string) string {
 // the arrow keys for cursor movement).
 func (f form) focusedText() bool {
 	return f.focus < len(f.fields) && f.fields[f.focus].kind == fieldText
+}
+
+// focusedChoice reports whether focus sits on a choice field (which consumes ←/→
+// to cycle its options rather than letting ← navigate back to the list).
+func (f form) focusedChoice() bool {
+	return f.focus < len(f.fields) && f.fields[f.focus].kind == fieldChoice
+}
+
+// oneMKeyFor maps a model-slot text field to its inline 1M-context toggle key, or
+// "" for a non-slot field. The toggle renders as a trailing column on the model
+// row (see viewLines) instead of its own line, and is reached laterally with →.
+func oneMKeyFor(modelKey string) string {
+	switch modelKey {
+	case "default_model":
+		return "default_1m"
+	case "strong_model":
+		return "strong_1m"
+	case "fast_model":
+		return "fast_1m"
+	}
+	return ""
+}
+
+// modelKeyFor1m is the inverse of oneMKeyFor: the model-slot key a 1M toggle
+// belongs to, or "" when key isn't a 1M toggle.
+func modelKeyFor1m(oneMKey string) string {
+	switch oneMKey {
+	case "default_1m":
+		return "default_model"
+	case "strong_1m":
+		return "strong_model"
+	case "fast_1m":
+		return "fast_model"
+	}
+	return ""
+}
+
+func isOneMKey(key string) bool { return modelKeyFor1m(key) != "" }
+
+// focusedOneM reports whether focus sits on an inline 1M toggle (reached via →,
+// returned from via ←) — so the parent's ← "back to list" doesn't fire there.
+func (f form) focusedOneM() bool { return isOneMKey(f.focusedKey()) }
+
+// keyAt returns the field key at idx (or "" for the submit row / out of range).
+func (f form) keyAt(idx int) string {
+	if idx < 0 || idx >= len(f.fields) {
+		return ""
+	}
+	return f.fields[idx].key
+}
+
+// indexOfKey returns the field index for key and whether it exists — a model slot
+// has a 1M toggle only in the edit form, so callers must guard on the bool rather
+// than mis-focusing a not-found key.
+func (f form) indexOfKey(key string) (int, bool) {
+	for i := range f.fields {
+		if f.fields[i].key == key {
+			return i, true
+		}
+	}
+	return 0, false
+}
+
+// stepFocus returns the next focus index moving by dir (±1). The form is a small
+// grid: a model column (with the single-control rows) and a parallel 1M-context
+// column for the model rows. ↑/↓ stay in their column — from a 1M toggle they land
+// on the next row's 1M toggle (or fall back to the model column when the next row
+// has none); → / ← switch columns. The 1M toggles are skipped when walking the
+// model column.
+func (f form) stepFocus(from, dir int) int {
+	inCtx := isOneMKey(f.keyAt(from))
+	cur := from
+	if mk := modelKeyFor1m(f.keyAt(from)); mk != "" {
+		if idx, ok := f.indexOfKey(mk); ok {
+			cur = idx // navigate from the toggle's model row
+		}
+	}
+	next := -1
+	for i := cur + dir; i >= 0 && i < len(f.fields); i += dir {
+		if !isOneMKey(f.fields[i].key) {
+			next = i
+			break
+		}
+	}
+	if next < 0 {
+		if cur+dir >= len(f.fields) {
+			return len(f.fields) // the submit button
+		}
+		return 0
+	}
+	// Vertical nav keeps the 1M-context column when the next row also has one.
+	if inCtx {
+		if mk := oneMKeyFor(f.keyAt(next)); mk != "" {
+			if idx, ok := f.indexOfKey(mk); ok {
+				return idx
+			}
+		}
+	}
+	return next
+}
+
+// render1MTag draws a model slot's 1M-context toggle as a trailing tag, lit when
+// its toggle field holds focus.
+func (f form) render1MTag(key string) string {
+	on, focused := false, false
+	for i, fld := range f.fields {
+		if fld.key == key {
+			on, focused = fld.on, i == f.focus
+			break
+		}
+	}
+	state := "[ ]"
+	if on {
+		state = "[x]"
+	}
+	tag := "1M ctx " + state
+	if focused {
+		return selectedStyle.Render(tag)
+	}
+	return faintStyle.Render(tag)
+}
+
+// fieldNote is the focused field's contextual explanation, shown in the Note
+// section above the Config rows — what each slot is for, not just how to edit it.
+func fieldNote(key string) string {
+	switch key {
+	case "default_model":
+		return "default — the model teammates and subagents run on. enter picks from the provider's model list."
+	case "strong_model":
+		return "strong — for heavier reasoning and plan mode; blank follows default. enter picks from the list."
+	case "fast_model":
+		return "fast — background work (titles, context compaction) and light calls; blank follows default. enter picks from the list."
+	case "default_1m", "strong_1m", "fast_1m":
+		return "1M context — mark this model's window as 1M; the marker is stripped before the request reaches the provider."
+	case "effort":
+		return "reasoning effort — needs provider support, else requests may error. space / ←/→ cycles."
+	case "permission":
+		return "default permission mode for `cc-fleet run`. space / ←/→ cycles."
+	case "enabled":
+		return "enter / space toggles whether the provider is enabled."
+	case "manage_keys":
+		return "enter opens the per-provider key manager."
+	}
+	return ""
 }
 
 // focusedKey returns the key of the currently focused field, or "" when focus
@@ -276,6 +497,16 @@ func (f form) boolValue(key string) bool {
 	return false
 }
 
+// choiceValue returns the selected option of a choice field by key ("" if absent).
+func (f form) choiceValue(key string) string {
+	for _, fld := range f.fields {
+		if fld.key == key && fld.kind == fieldChoice && fld.choiceIdx >= 0 && fld.choiceIdx < len(fld.choices) {
+			return fld.choices[fld.choiceIdx]
+		}
+	}
+	return ""
+}
+
 // cardKey maps a field to the config card's short key column, so the edit card lines up
 // with the read-only preview (the same grammar, editable values).
 func cardKey(key string) string {
@@ -288,6 +519,14 @@ func cardKey(key string) string {
 		return "models"
 	case "default_model":
 		return "default"
+	case "strong_model":
+		return "strong"
+	case "fast_model":
+		return "fast"
+	case "effort":
+		return "effort"
+	case "permission":
+		return "run perm"
 	case "api_key":
 		return "key"
 	case "manage_keys":
@@ -326,21 +565,25 @@ func (f form) viewLines(width int) []string {
 			lines = append(lines, " "+okStyle.Render(w))
 		}
 	} else {
-		note := faintStyle.Render("—")
+		focusedKey := ""
 		if f.focus < len(f.fields) {
-			switch fld := f.fields[f.focus]; {
-			case fld.key == "default_model" && f.value("models_endpoint") != "":
-				note = contentStyle.Render("enter picks from the provider's model list")
-			case fld.kind == fieldToggle:
-				note = contentStyle.Render("enter / space toggles")
-			case fld.key == "manage_keys":
-				note = contentStyle.Render("enter opens the key manager")
-			}
+			focusedKey = f.fields[f.focus].key
 		}
-		lines = append(lines, " "+note)
+		if n := fieldNote(focusedKey); n != "" {
+			for _, w := range wrapTo(n, width-2) {
+				lines = append(lines, " "+noteStyle.Render(w))
+			}
+		} else {
+			lines = append(lines, " "+faintStyle.Render("—"))
+		}
 	}
 	lines = append(lines, "", faintStyle.Render("Config"))
 	for i, fld := range f.fields {
+		// A model slot's 1M toggle renders as a trailing column on the model row
+		// (below), not its own line — skip it in the per-field loop.
+		if fld.key == "default_1m" || fld.key == "strong_1m" || fld.key == "fast_1m" {
+			continue
+		}
 		focused := i == f.focus
 		key := fmt.Sprintf("%-8s", cardKey(fld.key))
 		keyCell := faintStyle.Render(key)
@@ -349,13 +592,27 @@ func (f form) viewLines(width int) []string {
 		}
 		switch fld.kind {
 		case fieldText:
-			lines = append(lines, " "+keyCell+"  "+fld.input.View())
+			line := " " + keyCell + "  " + fld.input.View()
+			// A model slot trails its 1M-context toggle on the same row — only when
+			// that toggle exists (the add form has no 1M toggles).
+			if mk := oneMKeyFor(fld.key); mk != "" {
+				if _, ok := f.indexOfKey(mk); ok {
+					line += "   " + f.render1MTag(mk)
+				}
+			}
+			lines = append(lines, line)
 		case fieldToggle:
 			state := "[ ] off"
 			if fld.on {
 				state = "[x] on"
 			}
 			lines = append(lines, " "+keyCell+"  "+contentStyle.Render(state))
+		case fieldChoice:
+			val := ""
+			if fld.choiceIdx >= 0 && fld.choiceIdx < len(fld.choices) {
+				val = fld.choices[fld.choiceIdx]
+			}
+			lines = append(lines, " "+keyCell+"  "+contentStyle.Render("‹ "+val+" ›"))
 		case fieldAction:
 			// Value-column action label; enter on it is handled by the parent
 			// model (e.g. open the key manager).

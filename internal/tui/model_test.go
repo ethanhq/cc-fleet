@@ -317,9 +317,146 @@ func TestEditEnabledToggle(t *testing.T) {
 	if f.boolValue("enabled") {
 		t.Fatal("space should toggle enabled true -> false")
 	}
-	f, _, _ = f.Update(keyMsg("left"))
+	f, _, _ = f.Update(keyMsg("space"))
 	if !f.boolValue("enabled") {
-		t.Fatal("left should toggle enabled false -> true")
+		t.Fatal("space should toggle enabled false -> true")
+	}
+}
+
+// TestEditForm_1mLateralNav: ↑/↓ walk rows and skip the inline 1M toggles, while
+// → reaches a model slot's 1M toggle and ← returns to the slot.
+func TestEditForm_1mLateralNav(t *testing.T) {
+	f := newEditForm(userops.VendorView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
+	for i := 0; i < len(f.fields) && f.focusedKey() != "default_model"; i++ {
+		f, _, _ = f.Update(keyMsg("down"))
+	}
+	if f.focusedKey() != "default_model" {
+		t.Fatalf("could not focus default_model, got %q", f.focusedKey())
+	}
+	// ↓ skips the inline 1M toggle and lands on the next row (strong_model).
+	if after, _, _ := f.Update(keyMsg("down")); after.focusedKey() != "strong_model" {
+		t.Fatalf("down from default_model should skip default_1m → strong_model, got %q", after.focusedKey())
+	}
+	// → reaches the slot's 1M toggle; space flips it; ← returns to the slot.
+	f, _, _ = f.Update(keyMsg("right"))
+	if f.focusedKey() != "default_1m" {
+		t.Fatalf("right should focus default_1m, got %q", f.focusedKey())
+	}
+	f, _, _ = f.Update(keyMsg("space"))
+	if !f.boolValue("default_1m") {
+		t.Fatal("space should toggle default_1m on")
+	}
+	f, _, _ = f.Update(keyMsg("left"))
+	if f.focusedKey() != "default_model" {
+		t.Fatalf("left from default_1m should return to default_model, got %q", f.focusedKey())
+	}
+}
+
+// TestAddForm_RightOnModelNoMisfocus: the add form has a default_model field but
+// no 1M toggle, so → there must NOT mis-focus (it falls through to the text cursor,
+// leaving focus on default_model).
+func TestAddForm_RightOnModelNoMisfocus(t *testing.T) {
+	f := newAddForm(Template{})
+	for i := 0; i < len(f.fields) && f.focusedKey() != "default_model"; i++ {
+		f, _, _ = f.Update(keyMsg("down"))
+	}
+	if f.focusedKey() != "default_model" {
+		t.Fatalf("could not focus default_model, got %q", f.focusedKey())
+	}
+	f, _, _ = f.Update(keyMsg("right"))
+	if f.focusedKey() != "default_model" {
+		t.Fatalf("right on the add-form default_model must keep focus (no 1M toggle to jump to), got %q", f.focusedKey())
+	}
+}
+
+// TestEditForm_1mColumnVerticalNav: ↓/↑ on a 1M toggle stay in the context column
+// (default_1m ↓ → strong_1m), and fall back to the model column when the next row
+// has no toggle (fast_1m ↓ → effort).
+func TestEditForm_1mColumnVerticalNav(t *testing.T) {
+	f := newEditForm(userops.VendorView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
+	focus := func(key string) {
+		for i := 0; i < len(f.fields)*2 && f.focusedKey() != key; i++ {
+			f, _, _ = f.Update(keyMsg("down"))
+		}
+		if f.focusedKey() != key {
+			t.Fatalf("could not focus %q, got %q", key, f.focusedKey())
+		}
+	}
+	focus("default_model")
+	f, _, _ = f.Update(keyMsg("right")) // → default_1m
+	if f.focusedKey() != "default_1m" {
+		t.Fatalf("right → default_1m, got %q", f.focusedKey())
+	}
+	if after, _, _ := f.Update(keyMsg("down")); after.focusedKey() != "strong_1m" {
+		t.Fatalf("down in the ctx column: default_1m → strong_1m, got %q", after.focusedKey())
+	}
+	// Walk to fast_1m and down → effort (no ctx on the next row → fall back).
+	f, _, _ = f.Update(keyMsg("down")) // strong_1m
+	f, _, _ = f.Update(keyMsg("down")) // fast_1m
+	if f.focusedKey() != "fast_1m" {
+		t.Fatalf("expected fast_1m, got %q", f.focusedKey())
+	}
+	if after, _, _ := f.Update(keyMsg("down")); after.focusedKey() != "effort" {
+		t.Fatalf("down from fast_1m should fall back to effort, got %q", after.focusedKey())
+	}
+}
+
+// TestEditForm_ModelSlotsPrefill: the edit form splits each model slot into a
+// bare-id text field + a 1M toggle, and prefills effort/permission choices.
+func TestEditForm_ModelSlotsPrefill(t *testing.T) {
+	f := newEditForm(userops.VendorView{
+		Name:          "deepseek",
+		DefaultModel:  "d[1m]",
+		StrongModel:   "s[1m]",
+		FastModel:     "fst",
+		Effort:        "high",
+		DefaultPerm:   "acceptEdits",
+		SecretBackend: "file",
+	})
+	if got := f.value("default_model"); got != "d" {
+		t.Errorf("default_model text = %q, want bare d", got)
+	}
+	if !f.boolValue("default_1m") {
+		t.Error("default_1m should be on for a [1m] default model")
+	}
+	if got := f.value("strong_model"); got != "s" || !f.boolValue("strong_1m") {
+		t.Errorf("strong slot prefill wrong: text=%q 1m=%v", got, f.boolValue("strong_1m"))
+	}
+	if got := f.value("fast_model"); got != "fst" || f.boolValue("fast_1m") {
+		t.Errorf("fast slot prefill wrong: text=%q 1m=%v", got, f.boolValue("fast_1m"))
+	}
+	if got := f.choiceValue("effort"); got != "high" {
+		t.Errorf("effort choice = %q, want high", got)
+	}
+	if got := f.choiceValue("permission"); got != "acceptEdits" {
+		t.Errorf("permission choice = %q, want acceptEdits", got)
+	}
+}
+
+// TestEditForm_UnsetChoicesShowOff: a provider with no effort / default_permission
+// prefills both dropdowns to "off".
+func TestEditForm_UnsetChoicesShowOff(t *testing.T) {
+	f := newEditForm(userops.VendorView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
+	if got := f.choiceValue("effort"); got != "off" {
+		t.Errorf("unset effort = %q, want off", got)
+	}
+	if got := f.choiceValue("permission"); got != "off" {
+		t.Errorf("unset permission = %q, want off", got)
+	}
+}
+
+func TestCombine1MAndOffToEmpty(t *testing.T) {
+	if got := combine1M("d", true); got != "d[1m]" {
+		t.Errorf("combine1M(d,true) = %q, want d[1m]", got)
+	}
+	if got := combine1M("d[1m]", false); got != "d" {
+		t.Errorf("combine1M strips when off: %q", got)
+	}
+	if got := combine1M("", true); got != "" {
+		t.Errorf("combine1M(\"\",true) = %q, want \"\" (blank slot follows default)", got)
+	}
+	if offToEmpty("off") != "" || offToEmpty("high") != "high" {
+		t.Errorf("offToEmpty mismatch: off=%q high=%q", offToEmpty("off"), offToEmpty("high"))
 	}
 }
 

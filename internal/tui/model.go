@@ -247,6 +247,9 @@ type Model struct {
 	modelCursor int
 	modelsErr   error
 	modelFilter string
+	// pickerTarget is the form field the model picker writes its choice back into
+	// (default_model / strong_model / fast_model). Empty falls back to default_model.
+	pickerTarget string
 
 	// Remove confirmation target.
 	removeName string
@@ -2969,9 +2972,10 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "esc" {
 		return m.toList()
 	}
-	// ← returns to the provider list from any non-text row (a text field keeps
-	// the arrow for its input cursor).
-	if msg.String() == "left" && !m.form.focusedText() {
+	// ← returns to the provider list from a row that doesn't consume it — a text
+	// field keeps the arrow for its input cursor, a choice field cycles options,
+	// and a 1M toggle uses ← to return to its model slot.
+	if msg.String() == "left" && !m.form.focusedText() && !m.form.focusedChoice() && !m.form.focusedOneM() {
 		return m.toList()
 	}
 	// Enter (or →, the descend key) on the "Manage API keys →" action row (edit
@@ -2989,8 +2993,9 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// codex has no probeable models endpoint (its /v1/models is the lazily-started
 	// loopback daemon), so it seeds the picker from the static codex model list
 	// instead of a fetch — for both add and edit.
-	if msg.String() == "enter" && m.form.focusedKey() == "default_model" &&
+	if msg.String() == "enter" && isModelSlotKey(m.form.focusedKey()) &&
 		m.addProtocol == config.ProtocolCodexOAuth {
+		m.pickerTarget = m.form.focusedKey()
 		m.screen = screenModelPick
 		m.loading = false
 		m.modelList = codexStaticModelList()
@@ -3001,8 +3006,9 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	// Other providers hit their models_endpoint; custom vendors without one fall
 	// through to manual text entry.
-	if msg.String() == "enter" && m.form.focusedKey() == "default_model" &&
+	if msg.String() == "enter" && isModelSlotKey(m.form.focusedKey()) &&
 		m.form.value("models_endpoint") != "" {
+		m.pickerTarget = m.form.focusedKey()
 		m.screen = screenModelPick
 		m.loading = true
 		m.modelList = nil
@@ -3038,7 +3044,11 @@ func (m Model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 	case "enter":
 		if len(filtered) > 0 {
-			m.form.setValue("default_model", filtered[m.modelCursor].ID)
+			target := m.pickerTarget
+			if target == "" {
+				target = "default_model"
+			}
+			m.form.setValue(target, filtered[m.modelCursor].ID)
 		}
 		m.screen = screenForm
 		return m, textinput.Blink
@@ -3439,9 +3449,24 @@ func (m Model) submitAddAnthropic() (tea.Model, tea.Cmd) {
 
 // submitEdit validates the edit form and dispatches userops.Edit.
 func (m Model) submitEdit() (tea.Model, tea.Cmd) {
-	defaultModel := m.form.value("default_model")
+	// Recombine each model slot's bare id with its 1M toggle; the choice fields
+	// map "off" → unset. The TUI is the full editor, so every field is sent
+	// (including a clear) — editLocked diffs against the stored value.
+	defaultModel := combine1M(m.form.value("default_model"), m.form.boolValue("default_1m"))
+	strongModel := combine1M(m.form.value("strong_model"), m.form.boolValue("strong_1m"))
+	fastModel := combine1M(m.form.value("fast_model"), m.form.boolValue("fast_1m"))
+	effort := offToEmpty(m.form.choiceValue("effort"))
+	defaultPerm := offToEmpty(m.form.choiceValue("permission"))
 	enabled := m.form.boolValue("enabled")
-	req := userops.EditRequest{Name: m.editName, DefaultModel: &defaultModel, Enabled: &enabled}
+	req := userops.EditRequest{
+		Name:         m.editName,
+		DefaultModel: &defaultModel,
+		StrongModel:  &strongModel,
+		FastModel:    &fastModel,
+		Effort:       &effort,
+		DefaultPerm:  &defaultPerm,
+		Enabled:      &enabled,
+	}
 
 	// The editable endpoint follows the form's class (newEditForm): openai-* edits
 	// upstream_url, codex edits neither (loopback/internal), others edit base_url.
@@ -3471,6 +3496,27 @@ func (m Model) submitEdit() (tea.Model, tea.Cmd) {
 	m.form.err = ""
 	m.loading = true
 	return m, editVendorCmd(req)
+}
+
+// combine1M folds a model slot's bare id and its 1M toggle into the stored id: a
+// blank slot stays blank (it follows the default), an "on" slot carries the [1m]
+// marker, an "off" slot is stripped of it.
+func combine1M(id string, on bool) string {
+	if id == "" {
+		return ""
+	}
+	if on {
+		return config.With1M(id)
+	}
+	return config.Strip1M(id)
+}
+
+// offToEmpty maps the "off" dropdown option back to an unset ("") config value.
+func offToEmpty(s string) string {
+	if s == "off" {
+		return ""
+	}
+	return s
 }
 
 // missingLabels returns the labels (in the given order) whose value is empty.

@@ -16,10 +16,14 @@ import (
 // profileFile is the on-disk shape of a Claude Code settings/profile file.
 //
 // A named struct (rather than a map) makes MarshalIndent emit a stable key
-// order — apiKeyHelper first, then env.
+// order — apiKeyHelper first, then env, then effortLevel (omitted when unset).
 type profileFile struct {
 	APIKeyHelper string            `json:"apiKeyHelper"`
 	Env          map[string]string `json:"env"`
+	// EffortLevel is the settings reasoning-effort field for a non-"max" provider
+	// effort (max rides the env instead — see GenerateForVendor). omitempty so a
+	// provider with no/effort=="max" emits no effortLevel key.
+	EffortLevel string `json:"effortLevel,omitempty"`
 }
 
 // GenerateForVendor renders the profile JSON for v.
@@ -61,11 +65,34 @@ func GenerateForVendor(v *config.Vendor, helperBinary string) ([]byte, error) {
 	// never enters this string (keyget resolves it at runtime), so quoting
 	// protects only the path + name. A metachar-free path is emitted verbatim so
 	// the profile stays byte-stable.
+	// Pin every Claude Code model slot to a provider model so a teammate/subagent
+	// never falls back to a built-in claude-* id the provider can't serve — the
+	// haiku slot drives background work (titles, context compaction, quick
+	// classification), so leaving it unset breaks long sessions against a vendor
+	// base_url. The main model is the --model flag; these cover the opus/sonnet/
+	// haiku aliases and the Task-subagent model. The [1m] context marker is
+	// stripped here: only the main model (via --model) carries it, where Claude
+	// Code's strip-before-request is the documented behavior.
+	env := map[string]string{
+		"ANTHROPIC_BASE_URL":             v.BaseURL,
+		"ANTHROPIC_DEFAULT_OPUS_MODEL":   config.Strip1M(v.StrongModelOrDefault()),
+		"ANTHROPIC_DEFAULT_SONNET_MODEL": config.Strip1M(v.DefaultModel),
+		"ANTHROPIC_DEFAULT_HAIKU_MODEL":  config.Strip1M(v.FastModelOrDefault()),
+		"CLAUDE_CODE_SUBAGENT_MODEL":     config.Strip1M(v.DefaultModel),
+	}
 	pf := profileFile{
 		APIKeyHelper: posixQuote(helperBinary) + " keyget " + posixQuote(v.Name),
-		Env: map[string]string{
-			"ANTHROPIC_BASE_URL": v.BaseURL,
-		},
+		Env:          env,
+	}
+	// Reasoning effort: "max" only via the env (the settings effortLevel field
+	// can't express it); the other levels via the lower-precedence effortLevel, so
+	// a session /effort can still override the default. Empty → neither.
+	switch v.Effort {
+	case "":
+	case "max":
+		env["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
+	default:
+		pf.EffortLevel = v.Effort
 	}
 
 	out, err := json.MarshalIndent(pf, "", "  ")

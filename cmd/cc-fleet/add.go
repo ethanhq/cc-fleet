@@ -67,6 +67,10 @@ func newAddCmd() *cobra.Command {
 		baseURL        string
 		modelsEndpoint string
 		defaultModel   string
+		strongModel    string
+		fastModel      string
+		effort         string
+		defaultPerm    string
 		secretBackend  string
 		secretRef      string
 		apiKey         string
@@ -150,6 +154,10 @@ when stdin is a tty; otherwise the command exits 1 with a usage error.`,
 				BaseURL:        baseURL,
 				ModelsEndpoint: modelsEndpoint,
 				DefaultModel:   defaultModel,
+				StrongModel:    strongModel,
+				FastModel:      fastModel,
+				Effort:         effort,
+				DefaultPerm:    defaultPerm,
 				SecretBackend:  secretBackend,
 				SecretRef:      secretRef,
 				APIKey:         apiKey,
@@ -186,6 +194,14 @@ when stdin is a tty; otherwise the command exits 1 with a usage error.`,
 		"Vendor /v1/models URL used for probe + cc-fleet refresh (required)")
 	cmd.Flags().StringVar(&defaultModel, "default-model", "",
 		"Model id passed to spawn when --model is omitted (required)")
+	cmd.Flags().StringVar(&strongModel, "strong-model", "",
+		"Optional model id for the 'strong' slot (blank → follows --default-model)")
+	cmd.Flags().StringVar(&fastModel, "fast-model", "",
+		"Optional model id for the 'fast'/background slot (blank → follows --default-model)")
+	cmd.Flags().StringVar(&effort, "effort", "",
+		"Optional reasoning-effort level (low|medium|high|xhigh|max); needs provider support")
+	cmd.Flags().StringVar(&defaultPerm, "default-permission", "",
+		"Optional default permission mode for `cc-fleet run` (default|acceptEdits|plan|auto|bypassPermissions)")
 	cmd.Flags().StringVar(&secretBackend, "secret-backend", "file",
 		"Where to fetch the API key (file|pass|1password|vault|keyring; default: file)")
 	cmd.Flags().StringVar(&secretRef, "secret-ref", "",

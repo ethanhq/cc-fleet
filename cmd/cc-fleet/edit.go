@@ -18,6 +18,10 @@ type editVendorView struct {
 	Name           string `json:"name"`
 	BaseURL        string `json:"base_url"`
 	DefaultModel   string `json:"default_model"`
+	StrongModel    string `json:"strong_model,omitempty"`
+	FastModel      string `json:"fast_model,omitempty"`
+	Effort         string `json:"effort,omitempty"`
+	DefaultPerm    string `json:"default_permission,omitempty"`
 	ModelsEndpoint string `json:"models_endpoint"`
 	SecretBackend  string `json:"secret_backend"`
 	SecretRef      string `json:"secret_ref"`
@@ -39,6 +43,10 @@ func newEditCmd() *cobra.Command {
 		baseURL        string
 		modelsEndpoint string
 		defaultModel   string
+		strongModel    string
+		fastModel      string
+		effort         string
+		defaultPerm    string
 		secretBackend  string
 		secretRef      string
 		apiKey         string
@@ -125,6 +133,18 @@ changing a URL or key to revalidate.`,
 			if cmdHasFlag(defaultModel) {
 				req.DefaultModel = &defaultModel
 			}
+			if cmdHasFlag(strongModel) {
+				req.StrongModel = &strongModel
+			}
+			if cmdHasFlag(fastModel) {
+				req.FastModel = &fastModel
+			}
+			if cmdHasFlag(effort) {
+				req.Effort = &effort
+			}
+			if cmdHasFlag(defaultPerm) {
+				req.DefaultPerm = &defaultPerm
+			}
 			if cmdHasFlag(secretBackend) {
 				req.SecretBackend = &secretBackend
 			}
@@ -157,6 +177,10 @@ changing a URL or key to revalidate.`,
 						Name:           res.Vendor.Name,
 						BaseURL:        res.Vendor.BaseURL,
 						DefaultModel:   res.Vendor.DefaultModel,
+						StrongModel:    res.Vendor.StrongModel,
+						FastModel:      res.Vendor.FastModel,
+						Effort:         res.Vendor.Effort,
+						DefaultPerm:    res.Vendor.DefaultPermission,
 						ModelsEndpoint: res.Vendor.ModelsEndpoint,
 						SecretBackend:  res.Vendor.SecretBackend,
 						SecretRef:      res.Vendor.SecretRef,
@@ -169,6 +193,18 @@ changing a URL or key to revalidate.`,
 			fmt.Printf("updated vendor %s\n", res.Vendor.Name)
 			fmt.Printf("  base_url         = %s\n", res.Vendor.BaseURL)
 			fmt.Printf("  default_model    = %s\n", res.Vendor.DefaultModel)
+			if res.Vendor.StrongModel != "" {
+				fmt.Printf("  strong_model     = %s\n", res.Vendor.StrongModel)
+			}
+			if res.Vendor.FastModel != "" {
+				fmt.Printf("  fast_model       = %s\n", res.Vendor.FastModel)
+			}
+			if res.Vendor.Effort != "" {
+				fmt.Printf("  effort           = %s\n", res.Vendor.Effort)
+			}
+			if res.Vendor.DefaultPermission != "" {
+				fmt.Printf("  default_perm     = %s\n", res.Vendor.DefaultPermission)
+			}
 			fmt.Printf("  models_endpoint  = %s\n", res.Vendor.ModelsEndpoint)
 			fmt.Printf("  secret_backend   = %s\n", res.Vendor.SecretBackend)
 			fmt.Printf("  secret_ref       = %s\n", res.Vendor.SecretRef)
@@ -186,6 +222,14 @@ changing a URL or key to revalidate.`,
 		"New /v1/models URL")
 	cmd.Flags().StringVar(&defaultModel, "default-model", "",
 		"New default model id")
+	cmd.Flags().StringVar(&strongModel, "strong-model", "",
+		"New 'strong' slot model id (empty arg = no change; clear it in the TUI)")
+	cmd.Flags().StringVar(&fastModel, "fast-model", "",
+		"New 'fast'/background slot model id (empty arg = no change; clear it in the TUI)")
+	cmd.Flags().StringVar(&effort, "effort", "",
+		"New reasoning-effort level (low|medium|high|xhigh|max; empty arg = no change)")
+	cmd.Flags().StringVar(&defaultPerm, "default-permission", "",
+		"New default permission mode for `cc-fleet run` (empty arg = no change)")
 	cmd.Flags().StringVar(&secretBackend, "secret-backend", "",
 		"New secret backend (file|pass|1password|vault|keyring)")
 	cmd.Flags().StringVar(&secretRef, "secret-ref", "",

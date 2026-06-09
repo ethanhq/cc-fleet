@@ -199,6 +199,10 @@ type AddRequest struct {
 	BaseURL        string
 	ModelsEndpoint string
 	DefaultModel   string
+	StrongModel    string // optional "strong" capability slot; blank → follows DefaultModel
+	FastModel      string // optional "fast" capability slot; blank → follows DefaultModel
+	Effort         string // optional reasoning-effort level (config.validEfforts); "" = unset
+	DefaultPerm    string // optional default permission mode for `cc-fleet run`; "" = unset
 	SecretBackend  string
 	SecretRef      string
 	Protocol       string // "" Anthropic-native | openai-chat | openai-responses | codex-oauth
@@ -270,16 +274,20 @@ func addLocked(req AddRequest) (*AddResult, error) {
 
 	// Build the candidate vendor and validate schema before any further work.
 	v := &config.Vendor{
-		Name:           req.Name,
-		BaseURL:        req.BaseURL,
-		ModelsEndpoint: req.ModelsEndpoint,
-		DefaultModel:   req.DefaultModel,
-		SecretBackend:  req.SecretBackend,
-		SecretRef:      req.SecretRef,
-		Protocol:       req.Protocol,
-		UpstreamURL:    req.UpstreamURL,
-		Enabled:        req.Enabled,
-		AddedAt:        time.Now().UTC(),
+		Name:              req.Name,
+		BaseURL:           req.BaseURL,
+		ModelsEndpoint:    req.ModelsEndpoint,
+		DefaultModel:      req.DefaultModel,
+		StrongModel:       req.StrongModel,
+		FastModel:         req.FastModel,
+		Effort:            req.Effort,
+		DefaultPermission: req.DefaultPerm,
+		SecretBackend:     req.SecretBackend,
+		SecretRef:         req.SecretRef,
+		Protocol:          req.Protocol,
+		UpstreamURL:       req.UpstreamURL,
+		Enabled:           req.Enabled,
+		AddedAt:           time.Now().UTC(),
 	}
 
 	// Merge the new vendor into the loaded config and validate before any
@@ -443,6 +451,10 @@ type EditRequest struct {
 	UpstreamURL    *string // openai-* real upstream base
 	ModelsEndpoint *string
 	DefaultModel   *string
+	StrongModel    *string // "strong" capability slot ("" clears → follows DefaultModel)
+	FastModel      *string // "fast" capability slot ("" clears → follows DefaultModel)
+	Effort         *string // reasoning-effort level ("" clears); config.Validate rejects bad values
+	DefaultPerm    *string // default permission mode for `cc-fleet run` ("" clears)
 	SecretBackend  *string
 	SecretRef      *string
 	Enabled        *bool
@@ -499,8 +511,25 @@ func editLocked(req EditRequest) (*EditResult, error) {
 	if req.ModelsEndpoint != nil {
 		v.ModelsEndpoint = *req.ModelsEndpoint
 	}
-	if req.DefaultModel != nil {
+	profileFieldChanged := false
+	if req.DefaultModel != nil && *req.DefaultModel != v.DefaultModel {
 		v.DefaultModel = *req.DefaultModel
+		profileFieldChanged = true
+	}
+	if req.StrongModel != nil && *req.StrongModel != v.StrongModel {
+		v.StrongModel = *req.StrongModel
+		profileFieldChanged = true
+	}
+	if req.FastModel != nil && *req.FastModel != v.FastModel {
+		v.FastModel = *req.FastModel
+		profileFieldChanged = true
+	}
+	if req.Effort != nil && *req.Effort != v.Effort {
+		v.Effort = *req.Effort // config.Validate rejects a bad value
+		profileFieldChanged = true
+	}
+	if req.DefaultPerm != nil {
+		v.DefaultPermission = *req.DefaultPerm // run-only; does not affect the profile
 	}
 	if req.SecretBackend != nil {
 		v.SecretBackend = *req.SecretBackend
@@ -563,9 +592,11 @@ func editLocked(req EditRequest) (*EditResult, error) {
 		return nil, opErr(CodeConfigSaveFailed, err)
 	}
 
-	// Re-render the profile only when base_url moved — the apiKeyHelper path is
-	// identical between vendors, so other field edits don't affect it.
-	if baseURLChanged {
+	// Re-render the profile when a field it embeds moved: base_url
+	// (ANTHROPIC_BASE_URL) or a model/effort field (the tier env + effortLevel).
+	// The apiKeyHelper path is vendor-independent, and default_permission is
+	// run-only, so neither touches the profile.
+	if baseURLChanged || profileFieldChanged {
 		if _, err := profile.WriteForVendor(v, ""); err != nil {
 			return nil, opErr(CodeProfileWriteFailed, err)
 		}
@@ -684,6 +715,10 @@ type VendorView struct {
 	Name           string `json:"name"`
 	BaseURL        string `json:"base_url"`
 	DefaultModel   string `json:"default_model"`
+	StrongModel    string `json:"strong_model,omitempty"` // blank → follows default_model
+	FastModel      string `json:"fast_model,omitempty"`   // blank → follows default_model
+	Effort         string `json:"effort,omitempty"`       // reasoning-effort level; blank → unset
+	DefaultPerm    string `json:"default_permission,omitempty"`
 	ModelsEndpoint string `json:"models_endpoint"`
 	SecretBackend  string `json:"secret_backend"`
 	SecretRef      string `json:"secret_ref"`
@@ -726,6 +761,10 @@ func List() (*ListResult, error) {
 			Name:           v.Name,
 			BaseURL:        v.BaseURL,
 			DefaultModel:   v.DefaultModel,
+			StrongModel:    v.StrongModel,
+			FastModel:      v.FastModel,
+			Effort:         v.Effort,
+			DefaultPerm:    v.DefaultPermission,
 			ModelsEndpoint: v.ModelsEndpoint,
 			SecretBackend:  v.SecretBackend,
 			SecretRef:      v.SecretRef,
