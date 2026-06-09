@@ -188,6 +188,36 @@ func TestSwapBinary_AlreadyEqualSkips(t *testing.T) {
 	}
 }
 
+// TestSwapBinary_BackupSymlinkSafe: if .previous is (adversarially) a symlink
+// back to the live binary, backing up must NOT follow it and truncate exe — the
+// atomic-write backup replaces the symlink with a real copy.
+func TestSwapBinary_BackupSymlinkSafe(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "cc-fleet")
+	if err := os.WriteFile(exe, []byte("OLD"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(exe, exe+".previous"); err != nil {
+		t.Skip("symlinks unsupported here")
+	}
+	staged := filepath.Join(dir, ".cc-fleet-update-staged")
+	if err := os.WriteFile(staged, []byte("NEW"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := swapBinary(exe, staged, "v0.1.0", "v9.9.9", &bytes.Buffer{}); err != nil {
+		t.Fatalf("swapBinary: %v", err)
+	}
+	if b, _ := os.ReadFile(exe); string(b) != "NEW" {
+		t.Fatalf("exe = %q, want NEW (must not be truncated via the symlink)", b)
+	}
+	if b, _ := os.ReadFile(exe + ".previous"); string(b) != "OLD" {
+		t.Fatalf(".previous = %q, want a real OLD copy", b)
+	}
+	if fi, _ := os.Lstat(exe + ".previous"); fi != nil && fi.Mode()&os.ModeSymlink != 0 {
+		t.Fatalf(".previous is still a symlink; backup did not replace it")
+	}
+}
+
 func TestRollback_NoBackup(t *testing.T) {
 	dir := t.TempDir()
 	exe := filepath.Join(dir, "cc-fleet")

@@ -15,6 +15,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/ethanhq/cc-fleet/internal/fileutil"
 	"github.com/ethanhq/cc-fleet/internal/version"
 )
 
@@ -135,8 +136,17 @@ func swapBinary(exe, staged, oldVer, newVer string, out io.Writer) error {
 		fmt.Fprintf(out, "  ✔ binary already at %s\n", newVer)
 		return nil
 	}
+	// Back the current binary up via the atomic-write primitive (temp + chmod +
+	// rename): it never follows a symlink/hardlink that may sit at the backup
+	// path, so it can't truncate the live binary, and exe stays in place until
+	// the single atomic rename below.
 	backup := exe + ".previous"
-	if err := copyFile(exe, backup, 0o755); err != nil {
+	cur, err := os.ReadFile(exe)
+	if err != nil {
+		_ = os.Remove(staged)
+		return fmt.Errorf("read current binary: %w", err)
+	}
+	if err := fileutil.AtomicWrite(backup, cur, 0o755); err != nil {
 		_ = os.Remove(staged)
 		return fmt.Errorf("back up current binary: %w", err)
 	}
@@ -147,24 +157,6 @@ func swapBinary(exe, staged, oldVer, newVer string, out io.Writer) error {
 	fmt.Fprintf(out, "  ✔ binary %s → %s  (%s; previous kept at %s)\n",
 		oldVer, newVer, exe, filepath.Base(backup))
 	return nil
-}
-
-// copyFile copies src to dst (truncating dst) with the given mode.
-func copyFile(src, dst string, mode os.FileMode) error {
-	in, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = in.Close() }()
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
-	if err != nil {
-		return err
-	}
-	if _, err := io.Copy(out, in); err != nil {
-		_ = out.Close()
-		return err
-	}
-	return out.Close()
 }
 
 // sameContent reports whether two files have identical sha256 digests.
