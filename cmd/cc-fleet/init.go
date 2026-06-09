@@ -91,15 +91,14 @@ func runInit(asJSON bool) error {
 	}
 	fmt.Println()
 
-	// Doctor block — same lines `cc-fleet doctor` prints, no fix attempts.
+	// Doctor block — same grouped output `cc-fleet doctor` prints, no fix attempts.
 	fmt.Println("Health checks:")
-	for _, r := range dres.Results {
-		fmt.Println(" ", doctor.FormatLine(totalChecks, r))
-	}
+	printDoctorGroup("Core", doctor.GroupCore, dres.Results)
+	printDoctorGroup("Optional — live teammates only", doctor.GroupOptional, dres.Results)
 	if dres.OK {
-		fmt.Println("\nall checks passed")
+		fmt.Println("core checks passed")
 	} else {
-		fmt.Println("\none or more checks failed; see hints above (run: cc-fleet doctor --fix)")
+		fmt.Println("one or more core checks failed; see hints above (run: cc-fleet doctor --fix)")
 	}
 	fmt.Println()
 

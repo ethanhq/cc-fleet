@@ -2939,14 +2939,14 @@ func renderSetupOptions(opts []string, cursor int) string {
 	return b.String()
 }
 
-// viewSetupTmux renders the first-run tmux setup nudge. tmux is needed to spawn
-// teammate panes but optional for one-shot subagent jobs, so this offers
-// install-vs-subagent-only rather than forcing it.
+// viewSetupTmux renders the first-run tmux setup nudge. tmux is needed only for
+// live teammate panes (subagent / workflow / run work without it), so this
+// offers install-vs-skip rather than forcing it.
 func (m Model) viewSetupTmux() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("cc-fleet · setup") + "\n\n")
-	b.WriteString("tmux isn't installed — it's needed to spawn teammate panes.\n")
-	b.WriteString(faintStyle.Render("(one-shot `cc-fleet subagent` jobs work without it.)") + "\n\n")
+	b.WriteString("tmux isn't installed — it's needed only for live teammate panes.\n")
+	b.WriteString(faintStyle.Render("(subagent / workflow / run all work without it.)") + "\n\n")
 	b.WriteString(renderSetupOptions(tmuxOptions, m.tmuxCursor))
 	b.WriteString("\n" + footer("↑/↓ move · enter select · esc skip"))
 	return b.String()
@@ -2967,7 +2967,7 @@ func (m Model) viewSetup() string {
 	}
 	b.WriteString("agent-teams isn't set in your env / shell rc / settings.json.\n")
 	b.WriteString("It powers vendor " + selectedStyle.Render("teammates") + ".\n")
-	b.WriteString(faintStyle.Render("(one-shot `cc-fleet subagent` jobs work without it.)") + "\n\n")
+	b.WriteString(faintStyle.Render("(subagent / workflow / run all work without it.)") + "\n\n")
 	b.WriteString(renderSetupOptions(setupOptions, m.setupCursor))
 	b.WriteString("\n" + footer("↑/↓ move · enter select · esc skip"))
 	return b.String()

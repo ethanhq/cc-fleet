@@ -26,8 +26,8 @@ cc-fleet edit <vendor> [flags]           Modify one or more vendor fields. Incl.
 cc-fleet remove <vendor>                 Delete vendor + derived files (incl. multi-
                                          key store + rotation counter).
 cc-fleet list                            Pretty table of configured vendors.
-cc-fleet doctor [--fix]                  Run nine health checks; --fix auto-repairs
-                                         the safe ones.
+cc-fleet doctor [--fix]                  Run the health checks (Core + live-teammate
+                                         Optional); --fix auto-repairs the safe ones.
 cc-fleet repair                          Rebuild derived files from vendors.toml.
 cc-fleet uninstall [--wipe-secrets]      Remove config/profiles/models cache. Secrets are
                                          PRESERVED by default; --wipe-secrets also removes

@@ -7,7 +7,7 @@ import (
 	"sort"
 )
 
-// RunAll runs all nine checks and assembles the DoctorResult.
+// RunAll runs every check and assembles the DoctorResult.
 //
 // If fix is true, doctor attempts a conservative auto-repair for the small
 // set of issues it knows how to fix safely:
@@ -37,6 +37,7 @@ func RunAll(fix bool) DoctorResult {
 		CheckSkillInstalled,
 		CheckFingerprint,
 		CheckOAuthCredentials,
+		CheckPluginVersionMatch,
 	}
 
 	results := make([]CheckResult, 0, len(checks))
@@ -57,20 +58,34 @@ func RunAll(fix bool) DoctorResult {
 				}
 			}
 		}
+		r.Group = groupForID(r.ID)
 		results = append(results, r)
 	}
 
 	// Preserve check-ID order even if someone reorders checks above.
 	sort.Slice(results, func(i, j int) bool { return results[i].ID < results[j].ID })
 
+	// OK = no Core check failed. Optional (live-teammate) checks never flip OK,
+	// so a tmux-less machine that only uses subagent/workflow/run is healthy.
 	ok := true
 	for _, r := range results {
-		if r.Status == StatusFail {
+		if r.Group != GroupOptional && r.Status == StatusFail {
 			ok = false
 			break
 		}
 	}
 	return DoctorResult{OK: ok, Results: results}
+}
+
+// groupForID classifies a check. Only tmux-related checks (3 installed, 5
+// attached) are Optional — everything else is Core.
+func groupForID(id int) Group {
+	switch id {
+	case 3, 5:
+		return GroupOptional
+	default:
+		return GroupCore
+	}
 }
 
 // tryFix runs the auto-fix action for a single check, returning true if it

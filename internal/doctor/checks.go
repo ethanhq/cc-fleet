@@ -17,6 +17,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 	"github.com/ethanhq/cc-fleet/internal/models"
 	"github.com/ethanhq/cc-fleet/internal/tmux"
+	"github.com/ethanhq/cc-fleet/internal/version"
 )
 
 // vendorProbeTimeout caps each vendor's /v1/models probe in check 6 at
@@ -148,15 +149,17 @@ func CheckProfilesDirWritable() CheckResult {
 	return r
 }
 
-// CheckTmuxInstalled is check 3: tmux is on PATH and `tmux -V` runs.
-// Returns Fail with a fix hint when tmux is missing (we don't auto-install).
+// CheckTmuxInstalled is check 3: tmux is on PATH and `tmux -V` runs. tmux is
+// needed only for live teammate panes; subagent / workflow / run all work
+// without it — so a missing tmux is a Warn (Optional group), not a Fail, and
+// never flips doctor's overall OK.
 func CheckTmuxInstalled() CheckResult {
-	r := CheckResult{ID: 3, Title: "tmux installed"}
+	r := CheckResult{ID: 3, Title: "tmux installed (live teammates only)"}
 	out, err := exec.Command("tmux", "-V").Output()
 	if err != nil {
-		r.Status = StatusFail
-		r.Detail = fmt.Sprintf("tmux -V failed: %s", err.Error())
-		r.FixHint = "install tmux (apt-get install tmux | brew install tmux)"
+		r.Status = StatusWarn
+		r.Detail = "not found — needed only for live teammate panes; subagent / workflow / run work without it"
+		r.FixHint = "for live teammates, install tmux (apt-get install tmux | brew install tmux)"
 		return r
 	}
 	r.Status = StatusOK
@@ -361,6 +364,77 @@ func pluginSkillPath(cdir string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+// CheckPluginVersionMatch is check 10: the running cc-fleet binary's version
+// matches the installed cc-fleet plugin's version. The skill (shipped by the
+// plugin) drives the binary, so a large skew can surface stale guidance — a
+// mismatch is a WARN with a `ccf update` hint. It is OK when the two match,
+// when no plugin is installed (nothing to compare), or when the binary is a
+// non-release/dev build (version.IsRelease false → not comparable).
+func CheckPluginVersionMatch() CheckResult {
+	r := CheckResult{ID: 10, Title: "binary and plugin versions match"}
+	cur := version.Resolve()
+	if !version.IsRelease(cur) {
+		r.Status = StatusOK
+		r.Detail = fmt.Sprintf("development build (%s) — not comparable", cur)
+		return r
+	}
+	cdir, err := claudeDir()
+	if err != nil {
+		// Can't locate ~/.claude — checks 1-2 already cover a broken home dir;
+		// this informational check never alarms on its own.
+		r.Status = StatusOK
+		r.Detail = fmt.Sprintf("could not locate ~/.claude (%s)", err.Error())
+		return r
+	}
+	pv, ok := pluginVersion(cdir)
+	if !ok {
+		r.Status = StatusOK
+		r.Detail = "no cc-fleet plugin installed (nothing to compare)"
+		return r
+	}
+	if version.Normalize(pv) == version.Normalize(cur) {
+		r.Status = StatusOK
+		r.Detail = fmt.Sprintf("binary %s == plugin %s", cur, pv)
+		return r
+	}
+	r.Status = StatusWarn
+	r.Detail = fmt.Sprintf("binary %s != plugin %s", cur, pv)
+	r.FixHint = "run `ccf update` to bring the binary and plugin to the same version"
+	return r
+}
+
+// pluginVersion returns the highest cc-fleet plugin version Claude Code has
+// cached, and ok=false if none. Claude Code unpacks marketplace plugins under
+// ~/.claude/plugins/cache/<marketplace>/cc-fleet/<version>/, so the <version>
+// path segment is the plugin's version; the cache can hold several, so the
+// newest comparable release wins (a stale leftover never WARNs against a
+// matching current one). A non-release segment is ignored.
+func pluginVersion(cdir string) (string, bool) {
+	pattern := filepath.Join(cdir, "plugins", "cache", "*", "cc-fleet", "*")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return "", false // only ErrBadPattern, impossible for this fixed pattern
+	}
+	best := ""
+	for _, m := range matches {
+		info, statErr := os.Stat(m)
+		if statErr != nil || !info.IsDir() {
+			continue
+		}
+		ver := filepath.Base(m)
+		if !version.IsRelease(ver) {
+			continue
+		}
+		if best == "" || version.Newer(ver, best) {
+			best = ver
+		}
+	}
+	if best == "" {
+		return "", false
+	}
+	return best, true
 }
 
 // CheckFingerprint is check 8: a fingerprint cache exists and its cached

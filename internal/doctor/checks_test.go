@@ -13,7 +13,29 @@ import (
 
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/fingerprint"
+	"github.com/ethanhq/cc-fleet/internal/version"
 )
+
+// writePluginCache drops a cc-fleet plugin cache dir named by version (the
+// layout Claude Code uses: plugins/cache/<marketplace>/cc-fleet/<version>/) so
+// the binary↔plugin skew check has something to compare against.
+func writePluginCache(t *testing.T, home, ver string) {
+	t.Helper()
+	dir := filepath.Join(home, ".claude", "plugins", "cache", "ethanhq", "cc-fleet", ver)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir plugin cache: %v", err)
+	}
+}
+
+// pinVersion overrides the binary's reported version for one test and restores
+// it after. version.Version is the link-time stamp; Resolve() returns it
+// verbatim when it differs from the dev default.
+func pinVersion(t *testing.T, v string) {
+	t.Helper()
+	orig := version.Version
+	t.Cleanup(func() { version.Version = orig })
+	version.Version = v
+}
 
 // setupHome installs a fresh $HOME + $XDG_CONFIG_HOME inside a t.TempDir() so
 // every check below sees a controlled, empty filesystem. Returns the home dir
@@ -181,11 +203,13 @@ func TestCheckTmuxInstalled_OK(t *testing.T) {
 }
 
 func TestCheckTmuxInstalled_Missing(t *testing.T) {
-	// Don't install the mock; PATH points only at empty tempdir.
+	// Don't install the mock; PATH points only at empty tempdir. tmux is needed
+	// only for live teammates, so a missing tmux is a WARN (not a FAIL) and must
+	// not flip doctor's overall OK.
 	t.Setenv("PATH", t.TempDir())
 	r := CheckTmuxInstalled()
-	if r.Status != StatusFail {
-		t.Fatalf("Status = %s, want fail", r.Status)
+	if r.Status != StatusWarn {
+		t.Fatalf("Status = %s, want warn (tmux is optional — live teammates only)", r.Status)
 	}
 	if r.FixHint == "" {
 		t.Fatalf("FixHint empty, want install hint")
@@ -600,3 +624,66 @@ func TestCheckOAuthCredentials_MissingIsOK(t *testing.T) {
 		t.Fatalf("Status = %s, want ok (absence is informational, never a warn)", r.Status)
 	}
 }
+
+// ---------- Check 10: binary ↔ plugin version skew ----------
+
+func TestCheckPluginVersionMatch_DevBuildOK(t *testing.T) {
+	// A dev/non-release binary is not comparable — OK, never a warn, even with a
+	// plugin cached at some version.
+	home := setupHome(t)
+	pinVersion(t, devVersionForTest())
+	writePluginCache(t, home, "0.1.6")
+	r := CheckPluginVersionMatch()
+	if r.Status != StatusOK {
+		t.Fatalf("Status = %s, want ok for a dev build (detail=%s)", r.Status, r.Detail)
+	}
+}
+
+func TestCheckPluginVersionMatch_NoPluginOK(t *testing.T) {
+	setupHome(t)
+	pinVersion(t, "v0.1.6")
+	r := CheckPluginVersionMatch()
+	if r.Status != StatusOK {
+		t.Fatalf("Status = %s, want ok when no plugin is installed (detail=%s)", r.Status, r.Detail)
+	}
+}
+
+func TestCheckPluginVersionMatch_MatchOK(t *testing.T) {
+	home := setupHome(t)
+	pinVersion(t, "v0.1.6")            // binary carries the git tag (leading v)
+	writePluginCache(t, home, "0.1.6") // plugin manifest carries the bare version
+	r := CheckPluginVersionMatch()
+	if r.Status != StatusOK {
+		t.Fatalf("Status = %s, want ok when binary == plugin (detail=%s)", r.Status, r.Detail)
+	}
+}
+
+func TestCheckPluginVersionMatch_SkewWarns(t *testing.T) {
+	home := setupHome(t)
+	pinVersion(t, "v0.1.8")
+	writePluginCache(t, home, "0.1.6")
+	r := CheckPluginVersionMatch()
+	if r.Status != StatusWarn {
+		t.Fatalf("Status = %s, want warn on binary≠plugin skew (detail=%s)", r.Status, r.Detail)
+	}
+	if r.FixHint == "" {
+		t.Fatalf("FixHint empty, want a `ccf update` hint")
+	}
+}
+
+// TestCheckPluginVersionMatch_NewestCachedWins: a stale older cache entry must
+// not WARN against a matching newer one.
+func TestCheckPluginVersionMatch_NewestCachedWins(t *testing.T) {
+	home := setupHome(t)
+	pinVersion(t, "v0.1.8")
+	writePluginCache(t, home, "0.1.6") // stale
+	writePluginCache(t, home, "0.1.8") // current
+	r := CheckPluginVersionMatch()
+	if r.Status != StatusOK {
+		t.Fatalf("Status = %s, want ok (newest cached 0.1.8 matches; detail=%s)", r.Status, r.Detail)
+	}
+}
+
+// devVersionForTest returns a value version.IsRelease treats as a non-release,
+// matching the package's dev default without importing the unexported constant.
+func devVersionForTest() string { return "0.1.0-dev" }
