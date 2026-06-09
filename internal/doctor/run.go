@@ -25,7 +25,8 @@ import (
 // would commit policy decisions doctor shouldn't make on the user's behalf.
 //
 // Results are returned in check-ID order so JSON consumers can index by
-// position. OK = AND of every result.Status != StatusFail.
+// position. OK is true unless a Core-group check failed; an Optional
+// (live-teammate) failure never flips it.
 func RunAll(fix bool) DoctorResult {
 	checks := []func() CheckResult{
 		CheckSettingsJSON,

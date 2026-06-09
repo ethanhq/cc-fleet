@@ -42,7 +42,7 @@ right away. Replying "y" drops you into the same prompts that ` + "`cc-fleet add
 would. Anything else (including bare Enter / EOF) skips the vendor step.
 
 In --json mode, init is non-interactive: it creates the tree and runs the
-nine doctor checks once, then prints a single JSON envelope.
+doctor health checks once, then prints a single JSON envelope.
 
 Init is idempotent — running on a HOME that's already initialized just
 reports each existing path under "already_had" and does not overwrite
