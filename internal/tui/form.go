@@ -26,7 +26,8 @@ func isModelSlotKey(key string) bool {
 	return key == "default_model" || key == "strong_model" || key == "fast_model"
 }
 
-// orOff maps an unset config value to the "off" dropdown option.
+// orOff maps an unset config value to the "off" label — the dropdown option in the
+// edit form and the displayed value in the read-only preview card.
 func orOff(s string) string {
 	if s == "" {
 		return "off"
@@ -105,19 +106,21 @@ func newTextInput(value, placeholder string, password bool) textinput.Model {
 
 // newAddForm builds the add wizard, prefilled from a vendor template. A zero
 // Template (the "Custom" choice) yields blank fields the user fills entirely.
-// Field order: name → base_url → models_endpoint → api_key → default_model.
+// Field order: name → base_url → models_endpoint → api_key → the model-config rows
+// (default/strong/fast + 1M toggles, effort, default permission).
 func newAddForm(t Template) form {
+	fields := []formField{
+		{key: "name", label: "Name", kind: fieldText, input: newTextInput(t.Name, "provider id, e.g. deepseek", false)},
+		{key: "base_url", label: "Base URL", kind: fieldText, input: newTextInput(t.BaseURL, "https://…/anthropic", false)},
+		{key: "models_endpoint", label: "Models endpoint", kind: fieldText, input: newTextInput(t.ModelsEndpoint, "https://…/v1/models", false)},
+		{key: "api_key", label: "API key", kind: fieldText, input: newTextInput("", "stored at <name>.key (mode 0600)", true)},
+	}
+	fields = append(fields, modelConfigFields(t.DefaultModel, "", "", "", "")...)
 	f := form{
 		title:  "Add provider",
-		intro:  "↑/↓ or tab move · enter advances · enter on [Add] submits · esc cancels",
+		intro:  "↑/↓ move rows · → 1M toggle · enter on [Add] submits · esc cancels",
 		submit: "Add",
-		fields: []formField{
-			{key: "name", label: "Name", kind: fieldText, input: newTextInput(t.Name, "provider id, e.g. deepseek", false)},
-			{key: "base_url", label: "Base URL", kind: fieldText, input: newTextInput(t.BaseURL, "https://…/anthropic", false)},
-			{key: "models_endpoint", label: "Models endpoint", kind: fieldText, input: newTextInput(t.ModelsEndpoint, "https://…/v1/models", false)},
-			{key: "api_key", label: "API key", kind: fieldText, input: newTextInput("", "stored at <name>.key (mode 0600)", true)},
-			{key: "default_model", label: "Default model", kind: fieldText, input: newTextInput(t.DefaultModel, "model id", false)},
-		},
+		fields: fields,
 	}
 	f.setFocus(0)
 	return f
@@ -131,17 +134,18 @@ func newOpenAIAddForm(t OAITemplate) form {
 	if t.UpstreamURL != "" {
 		models = strings.TrimRight(t.UpstreamURL, "/") + "/models"
 	}
+	fields := []formField{
+		{key: "name", label: "Name", kind: fieldText, input: newTextInput(t.Name, "provider id, e.g. openai", false)},
+		{key: "upstream_url", label: "Upstream URL", kind: fieldText, input: newTextInput(t.UpstreamURL, "https://api.openai.com/v1", false)},
+		{key: "models_endpoint", label: "Models endpoint", kind: fieldText, input: newTextInput(models, "https://…/v1/models", false)},
+		{key: "api_key", label: "API key", kind: fieldText, input: newTextInput("", "stored at <name>.key (mode 0600)", true)},
+	}
+	fields = append(fields, modelConfigFields(t.DefaultModel, "", "", "", "")...)
 	f := form{
 		title:  "Add OpenAI provider",
-		intro:  "↑/↓ or tab move · enter advances · enter on [Add] submits · esc cancels",
+		intro:  "↑/↓ move rows · → 1M toggle · enter on [Add] submits · esc cancels",
 		submit: "Add",
-		fields: []formField{
-			{key: "name", label: "Name", kind: fieldText, input: newTextInput(t.Name, "provider id, e.g. openai", false)},
-			{key: "upstream_url", label: "Upstream URL", kind: fieldText, input: newTextInput(t.UpstreamURL, "https://api.openai.com/v1", false)},
-			{key: "models_endpoint", label: "Models endpoint", kind: fieldText, input: newTextInput(models, "https://…/v1/models", false)},
-			{key: "api_key", label: "API key", kind: fieldText, input: newTextInput("", "stored at <name>.key (mode 0600)", true)},
-			{key: "default_model", label: "Default model", kind: fieldText, input: newTextInput(t.DefaultModel, "model id", false)},
-		},
+		fields: fields,
 	}
 	f.setFocus(0)
 	return f
@@ -150,19 +154,37 @@ func newOpenAIAddForm(t OAITemplate) form {
 // newCodexAddForm builds the minimal codex add wizard. The loopback base_url +
 // models_endpoint and the codex-oauth backend are assigned on submit; the
 // upstream is the fixed ChatGPT backend, so there is no key or URL to enter.
-func newCodexAddForm(defaultModel, statusNote string) form {
+func newCodexAddForm(name, defaultModel, statusNote string) form {
+	fields := []formField{
+		{key: "name", label: "Name", kind: fieldText, input: newTextInput(name, "provider id", false)},
+	}
+	fields = append(fields, modelConfigFields(defaultModel, "", "", "", "")...)
 	f := form{
 		title:      "Add codex provider",
-		intro:      "↑/↓ or tab move · enter on [Add] submits · esc cancels",
+		intro:      "↑/↓ move rows · → 1M toggle · enter on [Add] submits · esc cancels",
 		submit:     "Add",
 		statusNote: statusNote,
-		fields: []formField{
-			{key: "name", label: "Name", kind: fieldText, input: newTextInput("codex", "provider id", false)},
-			{key: "default_model", label: "Default model", kind: fieldText, input: newTextInput(defaultModel, "model id", false)},
-		},
+		fields:     fields,
 	}
 	f.setFocus(0)
 	return f
+}
+
+// modelConfigFields builds the shared model-roster rows used by the edit form and
+// the three add forms: default/strong/fast model slots (each a bare-id text field
+// with an inline [1m] toggle, recombined on submit) plus the effort + run-permission
+// choice dropdowns. One source so the add/edit dropdown vocab + nav can't drift.
+func modelConfigFields(defModel, strong, fast, effort, perm string) []formField {
+	return []formField{
+		{key: "default_model", label: "Default model", kind: fieldText, input: newTextInput(config.Strip1M(defModel), "model id", false)},
+		{key: "default_1m", label: "1M context", kind: fieldToggle, on: config.Has1M(defModel)},
+		{key: "strong_model", label: "Strong model", kind: fieldText, input: newTextInput(config.Strip1M(strong), "blank → follows default", false)},
+		{key: "strong_1m", label: "1M context", kind: fieldToggle, on: config.Has1M(strong)},
+		{key: "fast_model", label: "Fast model", kind: fieldText, input: newTextInput(config.Strip1M(fast), "blank → follows default", false)},
+		{key: "fast_1m", label: "1M context", kind: fieldToggle, on: config.Has1M(fast)},
+		newChoiceField("effort", "Effort", effortChoices, orOff(effort)),
+		newChoiceField("permission", "Run perm", permChoices, orOff(perm)),
+	}
 }
 
 // newEditForm builds the edit wizard, prefilled from the vendor's current row.
@@ -185,19 +207,8 @@ func newEditForm(v userops.VendorView) form {
 			formField{key: "base_url", label: "Base URL", kind: fieldText, input: newTextInput(v.BaseURL, "https://…/anthropic", false)},
 			formField{key: "models_endpoint", label: "Models endpoint", kind: fieldText, input: newTextInput(v.ModelsEndpoint, "https://…/v1/models", false)})
 	}
-	// Model slots: each holds the BARE id in its text field with the [1m]
-	// context marker carried by an adjacent toggle — recombined on submit (see
-	// submitEdit). strong/fast blank → that slot follows the default.
-	fields = append(fields,
-		formField{key: "default_model", label: "Default model", kind: fieldText, input: newTextInput(config.Strip1M(v.DefaultModel), "model id", false)},
-		formField{key: "default_1m", label: "1M context", kind: fieldToggle, on: config.Has1M(v.DefaultModel)},
-		formField{key: "strong_model", label: "Strong model", kind: fieldText, input: newTextInput(config.Strip1M(v.StrongModel), "blank → follows default", false)},
-		formField{key: "strong_1m", label: "1M context", kind: fieldToggle, on: config.Has1M(v.StrongModel)},
-		formField{key: "fast_model", label: "Fast model", kind: fieldText, input: newTextInput(config.Strip1M(v.FastModel), "blank → follows default", false)},
-		formField{key: "fast_1m", label: "1M context", kind: fieldToggle, on: config.Has1M(v.FastModel)},
-		newChoiceField("effort", "Effort", effortChoices, orOff(v.Effort)),
-		newChoiceField("permission", "Run perm", permChoices, orOff(v.DefaultPerm)),
-		formField{key: "enabled", label: "Enabled", kind: fieldToggle, on: v.Enabled})
+	fields = append(fields, modelConfigFields(v.DefaultModel, v.StrongModel, v.FastModel, v.Effort, v.DefaultPerm)...)
+	fields = append(fields, formField{key: "enabled", label: "Enabled", kind: fieldToggle, on: v.Enabled})
 	if v.SecretBackend != config.CodexOAuthBackend {
 		fields = append(fields, formField{key: "manage_keys", label: "Manage API keys →", kind: fieldAction})
 	}
@@ -255,9 +266,8 @@ func (f form) Update(msg tea.KeyMsg) (form, tea.Cmd, bool) {
 		f.setFocus(f.stepFocus(f.focus, +1))
 		return f, nil, false
 	case "right":
-		// → on a model slot reaches its inline 1M toggle — only when that toggle
-		// exists (the add form has model fields but no 1M toggles, so → there falls
-		// through to the text cursor; a choice cycles below).
+		// → on a model slot reaches its inline 1M toggle when that slot has one;
+		// otherwise it falls through to the text cursor (a choice cycles below).
 		if mk := oneMKeyFor(f.focusedKey()); mk != "" {
 			if idx, ok := f.indexOfKey(mk); ok {
 				f.setFocus(idx)
@@ -370,9 +380,9 @@ func (f form) keyAt(idx int) string {
 	return f.fields[idx].key
 }
 
-// indexOfKey returns the field index for key and whether it exists — a model slot
-// has a 1M toggle only in the edit form, so callers must guard on the bool rather
-// than mis-focusing a not-found key.
+// indexOfKey returns the field index for key and whether it exists — not every form
+// instance carries every field (a model slot may have no paired 1M toggle), so
+// callers must guard on the bool rather than mis-focusing a not-found key.
 func (f form) indexOfKey(key string) (int, bool) {
 	for i := range f.fields {
 		if f.fields[i].key == key {
@@ -463,6 +473,36 @@ func fieldNote(key string) string {
 		return "enter opens the per-provider key manager."
 	}
 	return ""
+}
+
+// fieldNoteKeys enumerates the keys fieldNote returns a non-empty note for, so the
+// per-width note reserve can find the tallest wrap (default_1m stands in for all
+// three 1M toggles — they share a note).
+var fieldNoteKeys = []string{
+	"default_model", "strong_model", "fast_model", "default_1m", "effort", "permission", "enabled", "manage_keys",
+}
+
+// fieldNoteReserve is the tallest a field note wraps to at this width (≥1). The edit
+// form and the read-only preview card both pad their Note body to it so the Config
+// block sits at the same row in both — entering edit doesn't shift Config down.
+func fieldNoteReserve(width int) int {
+	r := 1
+	for _, k := range fieldNoteKeys {
+		if n := len(wrapTo(fieldNote(k), width-2)); n > r {
+			r = n
+		}
+	}
+	return r
+}
+
+// noteReserve is the fixed line count the Note body occupies at this width: the
+// tallest wrap of the form's statusNote (codex source), or of any fieldNote, so the
+// Config block stays at a constant row as focus moves (no "jump"). At least 1.
+func (f form) noteReserve(width int) int {
+	if f.statusNote != "" {
+		return max(1, len(wrapTo(f.statusNote, width-2)))
+	}
+	return fieldNoteReserve(width)
 }
 
 // focusedKey returns the key of the currently focused field, or "" when focus
@@ -560,21 +600,29 @@ func (f form) viewLines(width int) []string {
 	// codex login a codex provider reuses) takes it and wraps to the pane width;
 	// otherwise it shows the focused field's contextual hint.
 	lines = append(lines, contentStyle.Render("Note"))
+	// Build the Note body + its style, then pad it to a fixed reserve = the tallest
+	// any note wraps to at this width (see noteReserve), so the Config block sits at
+	// a constant row as focus moves — no "jump" — and nothing is truncated.
+	var body []string
+	bodyStyle := faintStyle
 	if f.statusNote != "" {
-		for _, w := range wrapTo(f.statusNote, width-2) {
-			lines = append(lines, " "+okStyle.Render(w))
-		}
+		body, bodyStyle = wrapTo(f.statusNote, width-2), okStyle
 	} else {
 		focusedKey := ""
 		if f.focus < len(f.fields) {
 			focusedKey = f.fields[f.focus].key
 		}
 		if n := fieldNote(focusedKey); n != "" {
-			for _, w := range wrapTo(n, width-2) {
-				lines = append(lines, " "+noteStyle.Render(w))
-			}
+			body, bodyStyle = wrapTo(n, width-2), noteStyle
 		} else {
-			lines = append(lines, " "+faintStyle.Render("—"))
+			body = []string{"—"}
+		}
+	}
+	for i, reserve := 0, f.noteReserve(width); i < reserve; i++ {
+		if i < len(body) {
+			lines = append(lines, " "+bodyStyle.Render(body[i]))
+		} else {
+			lines = append(lines, "")
 		}
 	}
 	lines = append(lines, "", faintStyle.Render("Config"))
@@ -593,8 +641,8 @@ func (f form) viewLines(width int) []string {
 		switch fld.kind {
 		case fieldText:
 			line := " " + keyCell + "  " + fld.input.View()
-			// A model slot trails its 1M-context toggle on the same row — only when
-			// that toggle exists (the add form has no 1M toggles).
+			// A model slot trails its 1M-context toggle on the same row, when that
+			// slot has one.
 			if mk := oneMKeyFor(fld.key); mk != "" {
 				if _, ok := f.indexOfKey(mk); ok {
 					line += "   " + f.render1MTag(mk)

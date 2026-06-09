@@ -18,6 +18,7 @@ import (
 
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/config"
+	"github.com/ethanhq/cc-fleet/internal/ids"
 	"github.com/ethanhq/cc-fleet/internal/models"
 	"github.com/ethanhq/cc-fleet/internal/onboarding"
 	"github.com/ethanhq/cc-fleet/internal/panevis"
@@ -61,8 +62,9 @@ const (
 type codexAuthStage int
 
 const (
-	codexAuthConsent codexAuthStage = iota // risk notice; enter accepts
-	codexAuthDevice                        // device-code shown; polling for authorization
+	codexAuthConsent      codexAuthStage = iota // risk notice; enter accepts
+	codexAuthDevice                             // device-code shown; polling for authorization
+	codexAuthChooseSource                       // a subscription is detected: reuse it or log in separately
 )
 
 // formMode records whether the active form is an add or an edit so submit
@@ -109,12 +111,24 @@ type Model struct {
 	tmplCursor  int
 	addProtocol string
 
-	// screenCodexAuth: consent → device-code login session. codexAuthEpoch tags
-	// each login attempt so a prior visit's async msgs (esc then re-enter) drop.
-	codexAuthStage codexAuthStage
-	codexAuth      *codexproxy.LoginSession
-	codexAuthErr   string
-	codexAuthEpoch int
+	// screenCodexAuth: an optional source choice (reuse a detected subscription, or
+	// log in separately) then consent → device-code login. codexAuthEpoch tags each
+	// login attempt so a prior visit's async msgs (esc then re-enter) drop.
+	// codexPendingAdd holds the add request awaiting a source choice (cli-ride only).
+	// A login-needed codex commits its row FIRST (so a concurrent remove's
+	// referenced-check sees it), then logs in: codexCommittedName names that committed
+	// row (the rollback target if the login is abandoned) and codexAddRef its
+	// credential, so the login writes the file the provider's secret_ref names.
+	codexAuthStage     codexAuthStage
+	codexAuth          *codexproxy.LoginSession
+	codexAuthErr       string
+	codexAuthEpoch     int
+	codexAuthCtx       context.Context    // device-login session scope; cancelled on abandon/success
+	codexAuthCancel    context.CancelFunc // so an in-flight poll can't write a token after abandon
+	codexPendingAdd    *userops.AddRequest
+	codexAddRef        string
+	codexCommittedName string // committed-but-not-yet-logged-in codex row; rolled back on abandon
+	codexAuthAccount   string // detected cli-ride account, shown on the source-choice stage
 
 	// Agents Board (screenSpawn): live teammates, workflow runs, and async subagent
 	// jobs in one master-detail board. asMode re-roots the levels (projects → sessions →
@@ -1046,6 +1060,24 @@ func removeVendorCmd(name string) tea.Cmd {
 	}
 }
 
+// codexRollbackDoneMsg reports a finished abandon-rollback (a codex row removed after
+// its login was cancelled). Distinct from opDoneMsg so the cancel lands quietly on the
+// provider list rather than a "remove OK" result screen; epoch-tagged so a stale one
+// can't disturb a newer attempt.
+type codexRollbackDoneMsg struct{ epoch int }
+
+func (codexRollbackDoneMsg) owningScreen() screen { return screenCodexAuth }
+
+// codexRollbackCmd removes a codex row committed ahead of a login the user then
+// cancelled (best-effort: the row removal is what matters; its empty login is cleaned
+// by Remove's own LogoutIfUnreferenced).
+func codexRollbackCmd(name string, epoch int) tea.Cmd {
+	return func() tea.Msg {
+		_, _ = userops.Remove(userops.RemoveRequest{Name: name})
+		return codexRollbackDoneMsg{epoch: epoch}
+	}
+}
+
 // modelsMsg carries the result of fetching a vendor's model list for the picker.
 // It implements screenOwnedAsyncMsg so a result arriving after the user has
 // left the picker is dropped — otherwise a stale modelList would leak into the
@@ -1427,6 +1459,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case opDoneMsg:
 		m.loading = false
+		// A codex row committed ahead of its login (see submitAddCodex) now routes to the
+		// device-code login instead of a result screen; a failed add clears the marker.
+		if msg.verb == "add" && msg.err == nil && m.codexCommittedName != "" {
+			m.screen = screenCodexAuth
+			m.codexAuthStage = codexAuthConsent
+			m.codexAuthErr = ""
+			return m, nil
+		}
+		m.codexCommittedName = ""
 		m.screen = screenResult
 		if msg.err != nil {
 			m.resultErr = true
@@ -1449,10 +1490,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.codexAuth = msg.session
-		return m, pollCodexAuthCmd(m.codexAuthEpoch, msg.session)
+		return m, pollCodexAuthCmd(m.codexAuthCtx, m.codexAuthEpoch, msg.session)
 
 	case codexAuthPollMsg:
-		if msg.epoch != m.codexAuthEpoch {
+		// A stale-epoch result (the user abandoned and the epoch advanced) or one with no
+		// live session is dropped before it can show success for a torn-down attempt.
+		if msg.epoch != m.codexAuthEpoch || m.codexAuth == nil {
 			return m, nil
 		}
 		if msg.err != nil {
@@ -1461,14 +1504,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if msg.done {
+			// The provider row was already committed before the login (see
+			// submitAddCodex); the login just filled its credential, so report success.
+			if m.codexAuthCancel != nil {
+				m.codexAuthCancel()
+				m.codexAuthCancel, m.codexAuthCtx = nil, nil
+			}
 			m.codexAuth = nil
-			m.form = newCodexAddForm(codexproxy.ScanDefaultModel("gpt-5.5"), codexSourceNote(codexproxy.StatusReport()))
-			m.formMode = modeAdd
-			m.addProtocol = config.ProtocolCodexOAuth
-			m.screen = screenForm
-			return m, textinput.Blink
-		}
-		if m.codexAuth == nil {
+			name := m.codexCommittedName
+			m.codexCommittedName = ""
+			m.loading = false
+			m.screen = screenResult
+			m.resultErr = false
+			m.result = fmt.Sprintf("add %q: OK", name)
 			return m, nil
 		}
 		return m, codexAuthTickCmd(m.codexAuthEpoch, m.codexAuth.Interval())
@@ -1477,7 +1525,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.epoch != m.codexAuthEpoch || m.codexAuth == nil || m.screen != screenCodexAuth {
 			return m, nil
 		}
-		return m, pollCodexAuthCmd(m.codexAuthEpoch, m.codexAuth)
+		return m, pollCodexAuthCmd(m.codexAuthCtx, m.codexAuthEpoch, m.codexAuth)
+
+	case codexRollbackDoneMsg:
+		// Drop a rollback completion from an abandoned flow whose epoch has since moved
+		// on, so it can't yank a newer attempt back to the list.
+		if msg.epoch != m.codexAuthEpoch {
+			return m, nil
+		}
+		m.loading = false
+		return m.toList()
 
 	case keysetMsg:
 		if msg.err != nil {
@@ -2803,6 +2860,28 @@ func (m Model) updatePickTemplate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// uniqueName returns base, or the first free "<base>-N" when base is already a
+// configured provider — a prefill convenience for adding a second provider of one
+// type. The real uniqueness guard stays addLocked's VENDOR_EXISTS check; a blank
+// base (a Custom entry) is returned unchanged.
+func (m Model) uniqueName(base string) string {
+	if base == "" {
+		return ""
+	}
+	taken := make(map[string]bool, len(m.vendors))
+	for _, v := range m.vendors {
+		taken[v.Name] = true
+	}
+	if !taken[base] {
+		return base
+	}
+	for n := 2; ; n++ {
+		if cand := fmt.Sprintf("%s-%d", base, n); !taken[cand] {
+			return cand
+		}
+	}
+}
+
 // chooseAddItem opens the add form (or the codex auth flow) for a picked row.
 func (m Model) chooseAddItem(it addItem) (tea.Model, tea.Cmd) {
 	switch it.class {
@@ -2815,6 +2894,7 @@ func (m Model) chooseAddItem(it addItem) (tea.Model, tea.Cmd) {
 			t = OAITemplates[it.oIdx]
 			protocol = t.Protocol
 		}
+		t.Name = m.uniqueName(t.Name)
 		m.form = newOpenAIAddForm(t)
 		m.addProtocol = protocol
 	default: // addCatAnthropic
@@ -2822,6 +2902,7 @@ func (m Model) chooseAddItem(it addItem) (tea.Model, tea.Cmd) {
 		if it.tIdx >= 0 {
 			t = Templates[it.tIdx]
 		}
+		t.Name = m.uniqueName(t.Name)
 		m.form = newAddForm(t)
 		m.addProtocol = ""
 	}
@@ -2830,22 +2911,33 @@ func (m Model) chooseAddItem(it addItem) (tea.Model, tea.Cmd) {
 	return m, textinput.Blink
 }
 
-// enterCodexFlow opens the codex add form when a usable credential source already
-// exists (reusing the codex CLI login, or cc-fleet's own), naming the source so the
-// user sees no key is needed; with no source it routes to the consent + device-code
-// login screen.
+// enterCodexFlow opens the codex add form. The credential the provider will use —
+// the cli-ride-capable default for the first codex, a fresh per-provider login for
+// any later one — is decided here only to label the source note; the actual
+// login (when the credential has none) happens at submit, keyed on the final name.
 func (m Model) enterCodexFlow() (tea.Model, tea.Cmd) {
-	if st := codexproxy.StatusReport(); st.Active != "none" {
-		m.form = newCodexAddForm(codexproxy.ScanDefaultModel("gpt-5.5"), codexSourceNote(st))
-		m.formMode = modeAdd
-		m.addProtocol = config.ProtocolCodexOAuth
-		m.screen = screenForm
-		return m, textinput.Blink
+	var note string
+	if m.codexDefaultTaken() {
+		note = "a separate codex login is created for this provider when you submit"
+	} else {
+		note = codexSourceNote(codexproxy.StatusReport(codexproxy.SecretRef))
 	}
-	m.screen = screenCodexAuth
-	m.codexAuthStage = codexAuthConsent
-	m.codexAuthErr = ""
-	return m, nil
+	m.form = newCodexAddForm(m.uniqueName("codex"), codexproxy.ScanDefaultModel("gpt-5.5"), note)
+	m.formMode = modeAdd
+	m.addProtocol = config.ProtocolCodexOAuth
+	m.screen = screenForm
+	return m, textinput.Blink
+}
+
+// codexDefaultTaken reports whether an existing codex provider already claims the
+// default (cli-ride-capable) credential, so a new codex must get its own login.
+func (m Model) codexDefaultTaken() bool {
+	for _, v := range m.vendors {
+		if v.Protocol == config.ProtocolCodexOAuth && codexproxy.IsDefaultCredentialRef(v.SecretRef) {
+			return true
+		}
+	}
+	return false
 }
 
 // vendorClassRank and vendorClassHeader group the providers list by wire class:
@@ -2895,30 +2987,86 @@ func codexSourceNote(st codexproxy.CredStatus) string {
 	}
 }
 
-// updateCodexAuth drives the codex CLI-auth screen: a consent gate, then a
-// device-code login polled on its own interval until the user authorizes.
+// updateCodexAuth drives the codex CLI-auth screen: an optional source choice (reuse
+// a detected subscription — committing the add directly — or log in separately), a
+// consent gate, then a device-code login polled on its own interval until authorized.
 func (m Model) updateCodexAuth(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.codexAuthStage {
+	case codexAuthChooseSource:
+		switch msg.String() {
+		case "esc", "q", "left":
+			// Back to the filled-in codex form (still in m.form) to amend or abandon.
+			m.codexPendingAdd = nil
+			m.screen = screenForm
+			return m, textinput.Blink
+		case "r", "enter", "y":
+			// Reuse the detected subscription: commit the row as-is (the daemon rides
+			// ~/.codex; no separate login, so no token write and no rollback).
+			if m.codexPendingAdd == nil {
+				return m.toList()
+			}
+			req := *m.codexPendingAdd
+			m.codexPendingAdd = nil
+			m.loading = true
+			return m, addVendorCmd(req)
+		case "s", "l":
+			// Log in separately (cc-fleet's own login overrides the ride): commit the row
+			// first, then log in — same ordering as the no-source path.
+			if m.codexPendingAdd == nil {
+				return m.toList()
+			}
+			req := *m.codexPendingAdd
+			m.codexPendingAdd = nil
+			m.codexCommittedName = req.Name
+			m.loading = true
+			return m, addVendorCmd(req)
+		}
 	case codexAuthConsent:
 		switch msg.String() {
 		case "esc", "q", "left", "n":
-			m.screen = screenPickTemplate
-			return m, nil
+			// The row was committed before this login (see submitAddCodex) — abandoning
+			// the login rolls it back.
+			return m.codexAbandonLogin()
 		case "enter", "y":
+			if m.codexAuthCancel != nil {
+				m.codexAuthCancel() // tear down any prior session before starting a fresh one
+			}
 			m.codexAuthStage = codexAuthDevice
 			m.codexAuthErr = ""
 			m.loading = true
 			m.codexAuthEpoch++ // a fresh login attempt; a prior visit's in-flight msgs fail the gate
-			return m, beginCodexAuthCmd(m.codexAuthEpoch)
+			ctx, cancel := context.WithCancel(context.Background())
+			m.codexAuthCtx, m.codexAuthCancel = ctx, cancel
+			return m, beginCodexAuthCmd(ctx, m.codexAuthEpoch, m.codexAddRef)
 		}
 	case codexAuthDevice:
 		if s := msg.String(); s == "esc" || s == "q" {
-			m.codexAuth = nil
-			m.loading = false
-			return m.toList()
+			return m.codexAbandonLogin()
 		}
 	}
 	return m, nil
+}
+
+// codexAbandonLogin backs out of a codex login the user cancelled. It cancels the
+// session (so an in-flight poll cannot persist a token after this) and bumps the epoch
+// (so any in-flight begin/poll/tick result is dropped). A row committed ahead of the
+// login is rolled back so the cancelled add leaves nothing behind; with no committed
+// row it just returns to the list.
+func (m Model) codexAbandonLogin() (tea.Model, tea.Cmd) {
+	if m.codexAuthCancel != nil {
+		m.codexAuthCancel()
+		m.codexAuthCancel, m.codexAuthCtx = nil, nil
+	}
+	m.codexAuthEpoch++
+	m.codexAuth = nil
+	name := m.codexCommittedName
+	m.codexCommittedName = ""
+	if name == "" {
+		m.loading = false
+		return m.toList()
+	}
+	m.loading = true
+	return m, codexRollbackCmd(name, m.codexAuthEpoch)
 }
 
 // codexAuthBegunMsg carries a started device-code session (URL + code to show);
@@ -2946,20 +3094,23 @@ type codexAuthTickMsg struct{ epoch int }
 
 func (codexAuthTickMsg) owningScreen() screen { return screenCodexAuth }
 
-func beginCodexAuthCmd(epoch int) tea.Cmd {
+// beginCodexAuthCmd and pollCodexAuthCmd derive their per-call timeout from the
+// session context, so codexAbandonLogin's cancel aborts an in-flight begin/poll —
+// the poll then returns before persisting a token, leaving no orphan login.
+func beginCodexAuthCmd(ctx context.Context, epoch int, ref string) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		s, err := codexproxy.BeginDeviceLogin(ctx)
+		s, err := codexproxy.BeginDeviceLogin(cctx, ref)
 		return codexAuthBegunMsg{epoch: epoch, session: s, err: err}
 	}
 }
 
-func pollCodexAuthCmd(epoch int, s *codexproxy.LoginSession) tea.Cmd {
+func pollCodexAuthCmd(ctx context.Context, epoch int, s *codexproxy.LoginSession) tea.Cmd {
 	return func() tea.Msg {
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		done, err := s.Poll(ctx)
+		done, err := s.Poll(cctx)
 		return codexAuthPollMsg{epoch: epoch, done: done, err: err}
 	}
 }
@@ -3342,6 +3493,17 @@ func (m Model) submitAdd() (tea.Model, tea.Cmd) {
 	}
 }
 
+// modelConfigFromForm reads the shared model-roster rows back: each model slot's
+// bare id recombined with its 1M toggle, effort/permission mapped off→"". Used by
+// every add submitter and submitEdit so the read-back can't drift.
+func (m Model) modelConfigFromForm() (defModel, strong, fast, effort, perm string) {
+	return combine1M(m.form.value("default_model"), m.form.boolValue("default_1m")),
+		combine1M(m.form.value("strong_model"), m.form.boolValue("strong_1m")),
+		combine1M(m.form.value("fast_model"), m.form.boolValue("fast_1m")),
+		offToEmpty(m.form.choiceValue("effort")),
+		offToEmpty(m.form.choiceValue("permission"))
+}
+
 // submitAddOpenAI commits an OpenAI-protocol provider: the loopback base_url is
 // assigned from a free daemon port; the real upstream + key ride the form.
 func (m Model) submitAddOpenAI() (tea.Model, tea.Cmd) {
@@ -3349,7 +3511,7 @@ func (m Model) submitAddOpenAI() (tea.Model, tea.Cmd) {
 	upstream := m.form.value("upstream_url")
 	modelsEndpoint := m.form.value("models_endpoint")
 	apiKey := m.form.value("api_key")
-	defaultModel := m.form.value("default_model")
+	defaultModel, strong, fast, effort, perm := m.modelConfigFromForm()
 
 	if missing := missingLabels(map[string]string{
 		"Name":            name,
@@ -3373,6 +3535,10 @@ func (m Model) submitAddOpenAI() (tea.Model, tea.Cmd) {
 		BaseURL:        fmt.Sprintf("http://127.0.0.1:%d/", port),
 		ModelsEndpoint: modelsEndpoint,
 		DefaultModel:   defaultModel,
+		StrongModel:    strong,
+		FastModel:      fast,
+		Effort:         effort,
+		DefaultPerm:    perm,
 		SecretBackend:  "file",
 		SecretRef:      name + ".key",
 		Protocol:       m.addProtocol,
@@ -3386,7 +3552,7 @@ func (m Model) submitAddOpenAI() (tea.Model, tea.Cmd) {
 // backend; the upstream is the fixed ChatGPT backend, so there is no key.
 func (m Model) submitAddCodex() (tea.Model, tea.Cmd) {
 	name := m.form.value("name")
-	defaultModel := m.form.value("default_model")
+	defaultModel, strong, fast, effort, perm := m.modelConfigFromForm()
 	if missing := missingLabels(map[string]string{
 		"Name":          name,
 		"Default model": defaultModel,
@@ -3394,24 +3560,71 @@ func (m Model) submitAddCodex() (tea.Model, tea.Cmd) {
 		m.form.err = "required: " + strings.Join(missing, ", ")
 		return m, nil
 	}
+	// Validate the name up front: a codex add may start a device login before
+	// userops.Add runs, so reject a bad name here rather than authorize then fail.
+	if err := ids.ValidateVendorName(name); err != nil {
+		m.form.err = err.Error()
+		return m, nil
+	}
+	// The sentinel name would resolve to the default credential a first codex already
+	// holds; reject it here so a second codex never logs in then fails uniqueness.
+	if m.codexDefaultTaken() && codexproxy.IsDefaultCredentialRef(name) {
+		m.form.err = "name " + name + " is reserved for the default codex credential"
+		return m, nil
+	}
 	port, err := codexproxy.ChoosePort(0)
 	if err != nil {
 		m.form.err = err.Error()
 		return m, nil
 	}
+	// First codex → the default (cli-ride-capable) credential; later ones → their own,
+	// keyed on the provider name. secret_ref carries this so spawn/login resolve the
+	// same credential file.
+	ref := codexproxy.SecretRef
+	if m.codexDefaultTaken() {
+		ref = name
+	}
 	base := fmt.Sprintf("http://127.0.0.1:%d/", port)
-	m.form.err = ""
-	m.loading = true
-	return m, addVendorCmd(userops.AddRequest{
+	req := userops.AddRequest{
 		Name:           name,
 		BaseURL:        base,
 		ModelsEndpoint: base + "v1/models",
 		DefaultModel:   defaultModel,
+		StrongModel:    strong,
+		FastModel:      fast,
+		Effort:         effort,
+		DefaultPerm:    perm,
 		SecretBackend:  codexproxy.SecretBackend,
-		SecretRef:      codexproxy.SecretRef,
+		SecretRef:      ref,
 		Protocol:       config.ProtocolCodexOAuth,
 		Enabled:        true,
-	})
+	}
+	m.form.err = ""
+	m.codexAddRef = ref
+	m.codexAuthErr = ""
+	switch st := codexproxy.StatusReport(ref); st.Active {
+	case "own":
+		// cc-fleet already has its own login for this credential — reuse, no prompt.
+		m.loading = true
+		return m, addVendorCmd(req)
+	case "cli-ride":
+		// A codex subscription is signed in on the system; let the user reuse it or log
+		// in separately rather than silently riding ~/.codex. The choice is made before
+		// the row is committed; only the separate-login branch then writes a login.
+		m.codexPendingAdd = &req
+		m.codexAuthAccount = st.Account
+		m.screen = screenCodexAuth
+		m.codexAuthStage = codexAuthChooseSource
+		return m, nil
+	default: // "none" — no source; commit the row, then log in
+		// Commit the provider row (vendors lock) BEFORE the login writes its token (token
+		// lock), so a concurrent remove's referenced-check always sees the committed row
+		// and never unlinks the fresh login. opDoneMsg routes to the login once the row
+		// is in; abandoning the login rolls the row back.
+		m.codexCommittedName = req.Name
+		m.loading = true
+		return m, addVendorCmd(req)
+	}
 }
 
 // submitAddAnthropic validates the Anthropic-native add form and dispatches Add.
@@ -3420,7 +3633,7 @@ func (m Model) submitAddAnthropic() (tea.Model, tea.Cmd) {
 	baseURL := m.form.value("base_url")
 	modelsEndpoint := m.form.value("models_endpoint")
 	apiKey := m.form.value("api_key")
-	defaultModel := m.form.value("default_model")
+	defaultModel, strong, fast, effort, perm := m.modelConfigFromForm()
 
 	if missing := missingLabels(map[string]string{
 		"Name":            name,
@@ -3440,6 +3653,10 @@ func (m Model) submitAddAnthropic() (tea.Model, tea.Cmd) {
 		BaseURL:        baseURL,
 		ModelsEndpoint: modelsEndpoint,
 		DefaultModel:   defaultModel,
+		StrongModel:    strong,
+		FastModel:      fast,
+		Effort:         effort,
+		DefaultPerm:    perm,
 		SecretBackend:  "file",
 		SecretRef:      name + ".key",
 		APIKey:         apiKey,
@@ -3452,11 +3669,7 @@ func (m Model) submitEdit() (tea.Model, tea.Cmd) {
 	// Recombine each model slot's bare id with its 1M toggle; the choice fields
 	// map "off" → unset. The TUI is the full editor, so every field is sent
 	// (including a clear) — editLocked diffs against the stored value.
-	defaultModel := combine1M(m.form.value("default_model"), m.form.boolValue("default_1m"))
-	strongModel := combine1M(m.form.value("strong_model"), m.form.boolValue("strong_1m"))
-	fastModel := combine1M(m.form.value("fast_model"), m.form.boolValue("fast_1m"))
-	effort := offToEmpty(m.form.choiceValue("effort"))
-	defaultPerm := offToEmpty(m.form.choiceValue("permission"))
+	defaultModel, strongModel, fastModel, effort, defaultPerm := m.modelConfigFromForm()
 	enabled := m.form.boolValue("enabled")
 	req := userops.EditRequest{
 		Name:         m.editName,

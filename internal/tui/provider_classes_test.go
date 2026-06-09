@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -72,8 +73,9 @@ func TestAddPicker_OpenAISubmitValidatesThenDispatches(t *testing.T) {
 	}
 }
 
-// With no usable codex source, the codex row routes to the consent screen; accept
-// moves to the device-code stage; esc cancels back to the provider list.
+// The codex row opens the add form; submitting it with no usable source commits the
+// row, and once the add lands (opDoneMsg) it routes to consent → device login; esc
+// rolls the row back and returns to the list.
 func TestAddPicker_CodexRowNoSourceGoesToConsent(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())            // no ~/.codex
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no own login
@@ -85,16 +87,189 @@ func TestAddPicker_CodexRowNoSourceGoesToConsent(t *testing.T) {
 	m, _ = press(t, m, "enter")
 	m = pressN(t, m, "down", codexIdx()) // to the codex row
 	m, _ = press(t, m, "enter")
-	if m.screen != screenCodexAuth || m.codexAuthStage != codexAuthConsent {
-		t.Fatalf("no-source codex: screen=%d stage=%d", m.screen, m.codexAuthStage)
+	if m.screen != screenForm || m.addProtocol != config.ProtocolCodexOAuth {
+		t.Fatalf("codex row should open the add form: screen=%d proto=%q", m.screen, m.addProtocol)
 	}
-	m, cmd := press(t, m, "enter") // accept consent -> device stage
+	m = pressN(t, m, "down", len(m.form.fields)) // jump to submit
+	m, cmd := press(t, m, "enter")               // submit -> commit the row first
+	if cmd == nil || m.codexCommittedName == "" {
+		t.Fatalf("no-source codex submit must commit first: cmd=%v committed=%q", cmd, m.codexCommittedName)
+	}
+	m, _ = step(t, m, opDoneMsg{verb: "add", name: m.codexCommittedName}) // add landed -> consent
+	if m.screen != screenCodexAuth || m.codexAuthStage != codexAuthConsent {
+		t.Fatalf("after add, codex must route to consent: screen=%d stage=%d", m.screen, m.codexAuthStage)
+	}
+	m, cmd = press(t, m, "enter") // accept consent -> device stage
 	if m.codexAuthStage != codexAuthDevice || cmd == nil {
 		t.Fatalf("consent accept: stage=%d cmd=%v", m.codexAuthStage, cmd)
 	}
-	m, _ = press(t, m, "esc")
+	m, cmd = press(t, m, "esc") // abandon -> rollback the committed row
+	if cmd == nil || m.codexCommittedName != "" {
+		t.Fatalf("esc must roll back the committed row: cmd=%v committed=%q", cmd, m.codexCommittedName)
+	}
+	m, _ = step(t, m, codexRollbackDoneMsg{epoch: m.codexAuthEpoch})
 	if m.screen != screenList {
-		t.Fatalf("esc from device stage: screen=%d, want screenList", m.screen)
+		t.Fatalf("after rollback: screen=%d, want screenList", m.screen)
+	}
+}
+
+// The first codex (no existing codex holds the default credential) claims the
+// default, cli-ride-capable credential: it commits the row keyed on the legacy
+// sentinel secret_ref before routing to its login.
+func TestFirstCodexClaimsDefaultCredential(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())            // no ~/.codex
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no own login
+	m := withVendors(t)                      // no providers yet
+	if m.codexDefaultTaken() {
+		t.Fatal("with no codex, the default credential must be free")
+	}
+	mm, _ := m.enterCodexFlow()
+	m = mm.(Model)
+	m = pressN(t, m, "down", len(m.form.fields)) // jump to submit
+	m, cmd := press(t, m, "enter")               // no source -> commit the row first
+	if cmd == nil || m.codexCommittedName != "codex" {
+		t.Fatalf("first codex must commit the row, got committed=%q cmd=%v", m.codexCommittedName, cmd)
+	}
+	if m.codexAddRef != codexproxy.SecretRef {
+		t.Fatalf("codexAddRef = %q, want the sentinel", m.codexAddRef)
+	}
+}
+
+// An invalid codex provider name is rejected at submit BEFORE any device login —
+// no auth screen, no credential file written, just a form error.
+func TestCodexInvalidNameRejectedBeforeLogin(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	m := withVendors(t)
+	mm, _ := m.enterCodexFlow()
+	m = mm.(Model)
+	m.form.setValue("name", "../escape")
+	m = pressN(t, m, "down", len(m.form.fields)) // jump to submit
+	m, cmd := press(t, m, "enter")
+	if m.screen != screenForm || m.form.err == "" {
+		t.Fatalf("invalid name must fail on the form: screen=%d err=%q", m.screen, m.form.err)
+	}
+	if m.codexPendingAdd != nil || cmd != nil {
+		t.Fatal("invalid name must not stash a request or start a login")
+	}
+}
+
+// A second codex (one already holds the default credential) gets its own named
+// credential keyed on the unique provider name, and submitting routes to its own
+// device login.
+func TestSecondCodexGetsOwnCredential(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	existing := userops.VendorView{
+		Name: "codex", BaseURL: "http://127.0.0.1:17222/", ModelsEndpoint: "http://127.0.0.1:17222/v1/models",
+		DefaultModel: "gpt-5.5", SecretBackend: config.CodexOAuthBackend, SecretRef: config.CodexOAuthBackend,
+		Protocol: config.ProtocolCodexOAuth, Enabled: true,
+	}
+	m := withVendors(t, existing)
+	if !m.codexDefaultTaken() {
+		t.Fatal("an existing default-credential codex must mark the default taken")
+	}
+	mm, _ := m.enterCodexFlow()
+	m = mm.(Model)
+	if m.screen != screenForm {
+		t.Fatalf("enterCodexFlow should open the form: screen=%d", m.screen)
+	}
+	m = pressN(t, m, "down", len(m.form.fields)) // jump to submit
+	m, cmd := press(t, m, "enter")               // commits the row first
+	if cmd == nil || m.codexCommittedName != "codex-2" {
+		t.Fatalf("second codex must commit a named-credential row, got committed=%q cmd=%v", m.codexCommittedName, cmd)
+	}
+	if m.codexAddRef != "codex-2" {
+		t.Fatalf("codexAddRef = %q, want codex-2", m.codexAddRef)
+	}
+	m, _ = step(t, m, opDoneMsg{verb: "add", name: "codex-2"}) // add landed -> its own login
+	if m.screen != screenCodexAuth || m.codexAuthStage != codexAuthConsent {
+		t.Fatalf("second codex add must route to its own login: screen=%d stage=%d", m.screen, m.codexAuthStage)
+	}
+
+	// Naming the second codex with the sentinel would collapse onto the default
+	// credential: rejected on the form before any commit.
+	mm2, _ := withVendors(t, existing).enterCodexFlow()
+	m2 := mm2.(Model)
+	m2.form.setValue("name", codexproxy.SecretRef)
+	m2 = pressN(t, m2, "down", len(m2.form.fields))
+	m2, cmd2 := press(t, m2, "enter")
+	if m2.screen != screenForm || m2.form.err == "" || m2.codexCommittedName != "" || cmd2 != nil {
+		t.Fatalf("sentinel-named second codex must be rejected on the form: screen=%d err=%q", m2.screen, m2.form.err)
+	}
+}
+
+// Abandoning a codex device login cancels the session, bumps the epoch, and rolls the
+// committed row back — so a stale in-flight poll result can neither show success nor
+// persist a login behind the cancelled add.
+func TestCodexAbandonCancelsAndDropsStalePoll(t *testing.T) {
+	m := NewModel()
+	m.screen = screenCodexAuth
+	m.codexAuthStage = codexAuthDevice
+	m.codexAuthEpoch = 3
+	m.codexAuth = &codexproxy.LoginSession{}
+	m.codexCommittedName = "codex"
+	ctx, cancel := context.WithCancel(context.Background())
+	m.codexAuthCtx, m.codexAuthCancel = ctx, cancel
+
+	mm, cmd := m.codexAbandonLogin()
+	m = mm.(Model)
+	if cmd == nil || m.codexAuthEpoch != 4 || m.codexCommittedName != "" || m.codexAuth != nil {
+		t.Fatalf("abandon must bump epoch, clear state, and roll back: epoch=%d committed=%q auth=%v cmd=%v",
+			m.codexAuthEpoch, m.codexCommittedName, m.codexAuth, cmd)
+	}
+	if ctx.Err() == nil {
+		t.Fatal("abandon must cancel the session context so an in-flight poll cannot persist a token")
+	}
+	// The in-flight poll's stale-epoch result must be dropped — no success screen.
+	if m2, _ := step(t, m, codexAuthPollMsg{epoch: 3, done: true}); m2.screen == screenResult {
+		t.Fatal("a stale-epoch poll-done after abandon must be dropped, not shown as success")
+	}
+}
+
+// When a codex subscription is detected (cli-ride), the add routes to a source choice:
+// reuse commits as-is; separate login commits the row first (marking it for the login);
+// esc returns to the form.
+func TestCodexChooseSourceBranches(t *testing.T) {
+	base := func() Model {
+		m := NewModel()
+		m.screen = screenCodexAuth
+		m.codexAuthStage = codexAuthChooseSource
+		req := userops.AddRequest{Name: "codex", SecretRef: codexproxy.SecretRef, Protocol: config.ProtocolCodexOAuth}
+		m.codexPendingAdd = &req
+		m.codexAddRef = codexproxy.SecretRef
+		return m
+	}
+	if m, cmd := press(t, base(), "r"); cmd == nil || !m.loading || m.codexPendingAdd != nil || m.codexCommittedName != "" {
+		t.Fatalf("reuse must commit with no follow-up login: cmd=%v loading=%v pending=%v committed=%q", cmd, m.loading, m.codexPendingAdd, m.codexCommittedName)
+	}
+	if m, cmd := press(t, base(), "s"); cmd == nil || m.codexPendingAdd != nil || m.codexCommittedName != "codex" {
+		t.Fatalf("separate login must commit the row first and mark it: cmd=%v pending=%v committed=%q", cmd, m.codexPendingAdd, m.codexCommittedName)
+	}
+	if m, _ := press(t, base(), "esc"); m.screen != screenForm || m.codexPendingAdd != nil {
+		t.Fatalf("esc must return to the form and drop the pending add: screen=%d", m.screen)
+	}
+}
+
+// The read-only preview card and the edit form keep the same Note→Config gap, so
+// entering edit does not shift the Config block down.
+func TestPreviewMatchesEditNoteGap(t *testing.T) {
+	v := userops.VendorView{Name: "glm", DefaultModel: "glm-4.5-air", SecretBackend: "file"}
+	gap := func(lines []string) int {
+		note, cfg := -1, -1
+		for i, l := range lines {
+			if strings.Contains(l, "Note") && note < 0 {
+				note = i
+			}
+			if strings.Contains(l, "Config") {
+				cfg = i
+			}
+		}
+		return cfg - note
+	}
+	const w = 60
+	if p, e := gap(vendorDetailLines(v, w)), gap(newEditForm(v).viewLines(w)); p != e {
+		t.Fatalf("Note→Config gap differs (Config jumps entering edit): preview=%d edit=%d", p, e)
 	}
 }
 
@@ -117,7 +292,7 @@ func TestCodexAuth_StaleEpochBegunDropped(t *testing.T) {
 // The codex form's source note renders inside the Note section (after the "Note"
 // header, before "Config"), wrapped to the pane — never as a banner above it.
 func TestCodexFormNoteInNoteSection(t *testing.T) {
-	f := newCodexAddForm("gpt-5.5", "reuses the codex CLI login (account …abc) — no key needed")
+	f := newCodexAddForm("codex", "gpt-5.5", "reuses the codex CLI login (account …abc) — no key needed")
 	lines := f.viewLines(48)
 	noteHdr, cfgHdr, body := -1, -1, -1
 	for i, l := range lines {
@@ -142,7 +317,7 @@ func TestCodexFormNoteInNoteSection(t *testing.T) {
 // seeded with the static codex model list (no live endpoint to probe at add time).
 func TestCodexForm_DefaultOpensStaticModelPicker(t *testing.T) {
 	m := NewModel()
-	m.form = newCodexAddForm("gpt-5.5", "")
+	m.form = newCodexAddForm("codex", "gpt-5.5", "")
 	m.formMode = modeAdd
 	m.addProtocol = config.ProtocolCodexOAuth
 	m.screen = screenForm

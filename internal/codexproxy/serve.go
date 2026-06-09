@@ -19,11 +19,11 @@ import (
 // builds the protocol's upstream, records its state, serves the conversion
 // handler, and self-exits once no matching worker and no launch lease remain
 // (re-checked under the port's proxy lock; a scan error keeps it alive).
-func Serve(port int, protocol, upstreamURL string) error {
+func Serve(port int, protocol, upstreamURL, ref string) error {
 	if protocol == "" {
 		protocol = config.ProtocolCodexOAuth
 	}
-	up, err := buildUpstream(protocol, upstreamURL)
+	up, err := buildUpstream(protocol, upstreamURL, ref)
 	if err != nil {
 		return err
 	}
@@ -44,7 +44,7 @@ func Serve(port int, protocol, upstreamURL string) error {
 		return fmt.Errorf("bind 127.0.0.1:%d: %w", port, err)
 	}
 	start, _ := procintrospect.ProcStart(os.Getpid())
-	if err := writeState(proxyState{Port: port, PID: os.Getpid(), ProcStart: start, Protocol: protocol, UpstreamURL: upstreamURL}); err != nil {
+	if err := writeState(proxyState{Port: port, PID: os.Getpid(), ProcStart: start, Protocol: protocol, UpstreamURL: upstreamURL, Credential: ref}); err != nil {
 		ln.Close()
 		return err
 	}
@@ -131,6 +131,35 @@ func StopDaemon() error {
 	return nil
 }
 
+// stopDaemonsForCredential stops only the codex daemons bound to credential ref, so
+// a logout / re-login of one credential leaves other credentials' daemons running.
+// Each port is stopped under its own proxy lock, re-checking the credential there.
+func stopDaemonsForCredential(ref string) error {
+	for _, st := range listStates() {
+		if st.Protocol != config.ProtocolCodexOAuth || !sameCredential(st.Credential, ref) {
+			continue
+		}
+		port := st.Port
+		_ = withProxyLock(port, func() error {
+			cur, err := readState(port)
+			// Re-check protocol too: a recycled port may now hold an openai daemon
+			// (empty credential, which sameCredential treats as the default) — never
+			// stop it on a codex logout.
+			if err != nil || cur.Protocol != config.ProtocolCodexOAuth || !sameCredential(cur.Credential, ref) {
+				return nil
+			}
+			if cur.PID > 0 && pidAlive(cur.PID, cur.ProcStart) {
+				if proc, e := os.FindProcess(cur.PID); e == nil {
+					_ = proc.Signal(os.Interrupt)
+				}
+			}
+			clearState(port)
+			return nil
+		})
+	}
+	return nil
+}
+
 // DaemonInfo describes a running proxy daemon for `codex-proxy status`.
 type DaemonInfo struct {
 	Port     int
@@ -179,22 +208,23 @@ func Purge(keepToken bool) (removed, kept []string) {
 				rm(full)
 			case strings.HasPrefix(name, ".cc-fleet-codex-proxy-") && strings.HasSuffix(name, ".lock"):
 				rm(full)
-			case name == "codex-proxy-secret",
-				name == ".cc-fleet-codex-secret.lock",
-				name == ".cc-fleet-codex-token.lock":
+			// Per-credential token locks AND the legacy unsuffixed lock (the "-<ref>"
+			// glob alone would miss codex_oauth.json's `.cc-fleet-codex-token.lock`).
+			case name == ".cc-fleet-codex-token.lock",
+				strings.HasPrefix(name, ".cc-fleet-codex-token-") && strings.HasSuffix(name, ".lock"):
 				rm(full)
+			case name == "codex-proxy-secret", name == ".cc-fleet-codex-secret.lock":
+				rm(full)
+			// Per-credential token files (codex_oauth-<ref>.json) AND the legacy
+			// codex_oauth.json. Each is a login credential: kept under KeepSecrets.
+			case name == "codex_oauth.json",
+				strings.HasPrefix(name, "codex_oauth-") && strings.HasSuffix(name, ".json"):
+				if keepToken {
+					kept = append(kept, full)
+				} else {
+					rm(full)
+				}
 			}
-		}
-	}
-
-	tokenPath, terr := storePath()
-	if terr == nil {
-		if keepToken {
-			if _, err := os.Stat(tokenPath); err == nil {
-				kept = append(kept, tokenPath)
-			}
-		} else {
-			rm(tokenPath)
 		}
 	}
 	return removed, kept

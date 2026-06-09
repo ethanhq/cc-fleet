@@ -521,6 +521,56 @@ func TestRemove_FileBackendDeletesSecret(t *testing.T) {
 	}
 }
 
+// Removing a codex provider also deletes cc-fleet's own login for its credential
+// (so a re-add does not silently reuse a stale login); KeepSecret preserves it.
+func TestRemove_CodexDeletesOwnLogin(t *testing.T) {
+	for _, keep := range []bool{false, true} {
+		name := "remove"
+		if keep {
+			name = "keep"
+		}
+		t.Run(name, func(t *testing.T) {
+			setupHome(t)
+			if _, err := Init(); err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			cfg, err := config.Load()
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg.Vendors["codex"] = &config.Vendor{
+				Name: "codex", BaseURL: "http://127.0.0.1:17222/",
+				ModelsEndpoint: "http://127.0.0.1:17222/v1/models", DefaultModel: "gpt-5.5",
+				SecretBackend: config.CodexOAuthBackend, SecretRef: config.CodexOAuthBackend,
+				Protocol: config.ProtocolCodexOAuth, Enabled: true,
+				AddedAt: time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC),
+			}
+			if err := config.Save(cfg); err != nil {
+				t.Fatalf("save codex: %v", err)
+			}
+			dir, err := config.ConfigDir()
+			if err != nil {
+				t.Fatal(err)
+			}
+			tok := filepath.Join(dir, "codex_oauth.json")
+			if err := os.WriteFile(tok, []byte(`{"refresh_token":"rt","account_id":"acc"}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			if _, err := Remove(RemoveRequest{Name: "codex", KeepSecret: keep}); err != nil {
+				t.Fatalf("Remove: %v", err)
+			}
+			_, statErr := os.Stat(tok)
+			if keep && statErr != nil {
+				t.Fatalf("KeepSecret must preserve the codex login: %v", statErr)
+			}
+			if !keep && !os.IsNotExist(statErr) {
+				t.Fatalf("Remove must delete the codex login, stat err = %v", statErr)
+			}
+		})
+	}
+}
+
 func TestRemove_KeepSecretPreservesFile(t *testing.T) {
 	setupHome(t)
 	if _, err := Init(); err != nil {

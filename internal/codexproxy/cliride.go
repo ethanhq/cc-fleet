@@ -36,25 +36,31 @@ func codexCLIAuthPath() (string, error) {
 // latest token for free, without cc-fleet ever refreshing that chain itself.
 type cliRideStore struct {
 	own *ownStore
+	// rideAllowed gates the ~/.codex fallback: only the DEFAULT credential may ride
+	// the single CLI file. A named credential must have its own login, else two
+	// named providers would collapse onto the one CLI identity.
+	rideAllowed bool
 }
 
-func newCLIRideStore() (*cliRideStore, error) {
-	own, err := newOwnStore()
+func newCLIRideStore(ref string) (*cliRideStore, error) {
+	own, err := newOwnStore(ref)
 	if err != nil {
 		return nil, err
 	}
-	return &cliRideStore{own: own}, nil
+	return &cliRideStore{own: own, rideAllowed: isDefaultCredential(ref)}, nil
 }
 
 func (s *cliRideStore) token(ctx context.Context) (bearer, error) {
 	// cc-fleet's own login is authoritative: an explicit `cc-fleet codex login`
-	// wins. Ride the codex CLI's ~/.codex only when there is no own login; with
-	// neither, the own store returns ErrReauth.
+	// wins. Ride the codex CLI's ~/.codex only for the default credential and only
+	// when there is no own login; with neither, the own store returns ErrReauth.
 	if s.own.loggedIn() {
 		return s.own.token(ctx)
 	}
-	if b, ok := readCLIRideToken(); ok {
-		return b, nil
+	if s.rideAllowed {
+		if b, ok := readCLIRideToken(); ok {
+			return b, nil
+		}
 	}
 	return s.own.token(ctx)
 }
@@ -110,20 +116,23 @@ type CredStatus struct {
 	Account  string // masked account id of the active source, if any
 }
 
-// StatusReport summarizes both codex credential sources without any refresh or
-// network call (it only reads what is already on disk).
-func StatusReport() CredStatus {
+// StatusReport summarizes a credential's sources without any refresh or network
+// call (it only reads what is already on disk). The CLI-ride source is reported only
+// for the default credential, which is the only ref allowed to ride ~/.codex.
+func StatusReport(ref string) CredStatus {
 	var st CredStatus
-	if loggedIn, account := LoginStatus(); loggedIn {
+	if loggedIn, account := LoginStatus(ref); loggedIn {
 		st.OwnLogin = true
 		st.Active = "own"
 		st.Account = account
 	}
-	if b, ok := readCLIRideToken(); ok {
-		st.CLIRide = true
-		if st.Active == "" {
-			st.Active = "cli-ride"
-			st.Account = redactAccount(b.accountID)
+	if isDefaultCredential(ref) {
+		if b, ok := readCLIRideToken(); ok {
+			st.CLIRide = true
+			if st.Active == "" {
+				st.Active = "cli-ride"
+				st.Account = redactAccount(b.accountID)
+			}
 		}
 	}
 	if st.Active == "" {

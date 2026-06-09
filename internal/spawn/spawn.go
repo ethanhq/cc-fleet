@@ -218,7 +218,7 @@ func Spawn(req Request) Result {
 	//     daemon failure is fail-before-mutation (no profile, no pane).
 	if err := ensureVendorProxy(v); err != nil {
 		return fail(ErrCodeProxyUnavailable, err.Error(), req.Vendor,
-			"Run cc-fleet codex login (and check the codex base_url port is free), then retry")
+			"Conversion daemon failed to start — for codex run cc-fleet codex login (add --credential <name> for an extra one); otherwise free the base_url port, then retry")
 	}
 
 	// 6. Ensure the per-vendor profile exists (idempotent write).

@@ -30,8 +30,8 @@ const (
 
 // Daemon state is per-port: a state file, a start/exit lock, and a lease dir keyed
 // by port, so a codex daemon and an openai daemon (or two openai daemons) coexist
-// without overwriting each other. The handshake secret + its create-once lock and
-// the token lock stay GLOBAL (one per install), shared by all codex daemons.
+// without overwriting each other. The handshake secret + its create-once lock stay
+// GLOBAL (one per install); the token lock is per credential (see tokenstore.go).
 func statePath(port int) (string, error) {
 	return joinConfig(fmt.Sprintf("codex-proxy-%d.json", port))
 }
@@ -53,14 +53,17 @@ func joinConfig(name string) (string, error) {
 }
 
 // proxyState is the persisted daemon descriptor: pid + procStart guard against PID
-// reuse; the bound port; and the identity (protocol + upstream URL) a reuse check
-// matches against so a daemon left from a different vendor is never reused.
+// reuse; the bound port; and the identity (protocol + upstream URL + codex credential
+// ref) a reuse check matches against so a daemon left from a different vendor — or a
+// different codex account on a recycled port — is never reused. Credential is omitempty
+// so a state file written before multi-credential reads back as the default credential.
 type proxyState struct {
 	Port        int    `json:"port"`
 	PID         int    `json:"pid"`
 	ProcStart   string `json:"proc_start"`
 	Protocol    string `json:"protocol"`
 	UpstreamURL string `json:"upstream_url,omitempty"`
+	Credential  string `json:"credential,omitempty"`
 }
 
 // withProxyLock serializes a single port's daemon start / exit decisions. It is a
@@ -160,12 +163,16 @@ func EnsureForVendor(v *config.Vendor) error {
 	}
 	// codex also serves its models_endpoint from the daemon, and a probe sends the
 	// handshake secret there, so it too must stay loopback.
-	if v.EffectiveProtocol() == config.ProtocolCodexOAuth && v.ModelsEndpoint != "" {
-		if _, err := config.ParseLoopbackURL(v.ModelsEndpoint); err != nil {
-			return fmt.Errorf("codex models_endpoint %w", err)
+	ref := ""
+	if v.EffectiveProtocol() == config.ProtocolCodexOAuth {
+		ref = v.SecretRef // the per-provider credential id (a codex row always has one)
+		if v.ModelsEndpoint != "" {
+			if _, err := config.ParseLoopbackURL(v.ModelsEndpoint); err != nil {
+				return fmt.Errorf("codex models_endpoint %w", err)
+			}
 		}
 	}
-	return EnsureDaemon(port, v.EffectiveProtocol(), v.UpstreamURL)
+	return EnsureDaemon(port, v.EffectiveProtocol(), v.UpstreamURL, ref)
 }
 
 // EnsureDaemon makes the proxy daemon for (port, protocol, upstreamURL) reachable,
@@ -174,16 +181,16 @@ func EnsureForVendor(v *config.Vendor) error {
 // visible. A live daemon is reused only if its persisted identity matches; a
 // mismatch is torn down and restarted. Slot it after the fingerprint gate and
 // before the profile-write side effect.
-func EnsureDaemon(port int, protocol, upstreamURL string) error {
+func EnsureDaemon(port int, protocol, upstreamURL, ref string) error {
 	if protocol == config.ProtocolCodexOAuth {
 		if err := withSecretLock(func() error { _, e := loadOrCreateSecret(); return e }); err != nil {
 			return err
 		}
 	}
 	return withProxyLock(port, func() error {
-		if !healthy(port, protocol, upstreamURL) {
+		if !healthy(port, protocol, upstreamURL, ref) {
 			stopStaleDaemon(port)
-			if err := startDetached(port, protocol, upstreamURL); err != nil {
+			if err := startDetached(port, protocol, upstreamURL, ref); err != nil {
 				return err
 			}
 			if err := waitReady(port); err != nil {
@@ -199,12 +206,17 @@ func EnsureDaemon(port int, protocol, upstreamURL string) error {
 // unresponsive port all return false. Readiness is the upstream-independent
 // /healthz: an openai daemon's /v1/models returns an empty list (its models come
 // from the real upstream), so it is no readiness signal.
-func healthy(port int, protocol, upstreamURL string) bool {
+func healthy(port int, protocol, upstreamURL, ref string) bool {
 	st, err := readState(port)
 	if err != nil || st.Port != port || st.PID <= 0 || !pidAlive(st.PID, st.ProcStart) {
 		return false
 	}
 	if st.Protocol != protocol || st.UpstreamURL != upstreamURL {
+		return false
+	}
+	// A recycled port (remove+add landing on the same port) must never reuse a codex
+	// daemon bound to a different credential — that would serve the wrong account.
+	if protocol == config.ProtocolCodexOAuth && !sameCredential(st.Credential, ref) {
 		return false
 	}
 	return portResponds(port)
@@ -239,7 +251,7 @@ func portResponds(port int) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-func startDetached(port int, protocol, upstreamURL string) error {
+func startDetached(port int, protocol, upstreamURL, ref string) error {
 	if held := whoHoldsPort(port); held {
 		return fmt.Errorf("port %d is held by another process; free it or set a different base_url port", port)
 	}
@@ -250,6 +262,11 @@ func startDetached(port int, protocol, upstreamURL string) error {
 	args := []string{"codex-proxy", "serve", "--port", strconv.Itoa(port), "--protocol", protocol}
 	if upstreamURL != "" {
 		args = append(args, "--upstream-url", upstreamURL)
+	}
+	// The codex credential the daemon binds to (omitted for the default / non-codex,
+	// which keeps the launch argv byte-stable for existing single-codex installs).
+	if !isDefaultCredential(ref) {
+		args = append(args, "--credential", ref)
 	}
 	cmd := exec.Command(bin, args...)
 	cmd.Stdout, cmd.Stderr = nil, nil

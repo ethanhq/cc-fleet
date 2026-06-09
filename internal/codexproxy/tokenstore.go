@@ -11,10 +11,59 @@ import (
 
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/fileutil"
+	"github.com/ethanhq/cc-fleet/internal/ids"
 )
 
-// tokenStoreFile is cc-fleet's own credential store, independent of ~/.codex.
-const tokenStoreFile = "codex_oauth.json"
+// isDefaultCredential reports whether ref names the DEFAULT codex credential: an
+// empty ref or the legacy "codex-oauth" sentinel (SecretRef) — both map to the
+// unsuffixed legacy filenames so a shipped pre-multi login keeps working.
+func isDefaultCredential(ref string) bool { return ref == "" || ref == SecretRef }
+
+// IsDefaultCredentialRef is the exported classifier: whether a vendor's secret_ref
+// claims the default credential (the cli-ride-capable one). The TUI uses it to route
+// the first codex onto the default credential and additional ones onto their own.
+func IsDefaultCredentialRef(ref string) bool { return isDefaultCredential(ref) }
+
+// validateRef guards a non-default credential ref before it becomes a token-file /
+// flock name component, so a CLI `--credential ../x` or an unvalidated form name can
+// never escape the config dir. Config load applies the same grammar to secret_ref;
+// this is the defense at the codexproxy boundary for refs that arrive ahead of it.
+func validateRef(ref string) error {
+	if isDefaultCredential(ref) {
+		return nil
+	}
+	return ids.ValidateVendorName(ref)
+}
+
+// sameCredential reports whether two refs name the same credential, treating every
+// default form (empty, the sentinel, a legacy state file's missing field) as one —
+// so a daemon recorded before this change still matches the default credential.
+func sameCredential(a, b string) bool {
+	if isDefaultCredential(a) && isDefaultCredential(b) {
+		return true
+	}
+	return a == b
+}
+
+// tokenStoreFileFor / tokenLockFileFor derive the per-credential own-store file and
+// its flock from a ref. The default credential keeps the legacy unsuffixed names; a
+// named credential gets a "-<ref>" suffix. BOTH apply isDefaultCredential identically
+// so the token file and its lock can never name-diverge (a divergence would break the
+// reuse-detection double-check in refreshLocked). The ref is config-load-validated as
+// a path/flock-safe identifier (config.validateWire) before it reaches here.
+func tokenStoreFileFor(ref string) string {
+	if isDefaultCredential(ref) {
+		return "codex_oauth.json"
+	}
+	return "codex_oauth-" + ref + ".json"
+}
+
+func tokenLockFileFor(ref string) string {
+	if isDefaultCredential(ref) {
+		return ".cc-fleet-codex-token.lock"
+	}
+	return ".cc-fleet-codex-token-" + ref + ".lock"
+}
 
 // storeData is the on-disk shape (0600). The access token is NOT persisted — only
 // the durable refresh chain + account id.
@@ -46,6 +95,7 @@ type tokenSource interface {
 // login process and the daemon's refresher cannot clobber each other's rotation
 // (the in-process mutex alone cannot serialize two processes).
 type ownStore struct {
+	ref   string // credential ref this store is bound to (drives path + token lock)
 	path  string
 	oauth *oauthClient
 
@@ -57,32 +107,40 @@ type ownStore struct {
 	poisoned bool // a refresh succeeded but its rotated token failed to persist
 }
 
-func storePath() (string, error) {
+func storePath(ref string) (string, error) {
 	dir, err := config.ConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, tokenStoreFile), nil
+	return filepath.Join(dir, tokenStoreFileFor(ref)), nil
 }
 
-// withTokenLock serializes token-store read/refresh/persist across processes.
-// Standalone — held with none of the other flock scopes, so no ordering cycle.
-func withTokenLock(fn func() error) error {
-	p, err := joinConfig(".cc-fleet-codex-token.lock")
+// withTokenLock serializes one credential's token-store read/refresh/persist across
+// processes. Per-credential so a refresh of credential A doesn't serialize against B
+// and the reuse-detection double-check guards the CORRECT file. Standalone — held
+// with none of the other flock scopes, so no ordering cycle.
+func withTokenLock(ref string, fn func() error) error {
+	if err := validateRef(ref); err != nil {
+		return err
+	}
+	p, err := joinConfig(tokenLockFileFor(ref))
 	if err != nil {
 		return err
 	}
 	return config.WithFlock(p, fn)
 }
 
-func newOwnStore() (*ownStore, error) {
-	p, err := storePath()
+func newOwnStore(ref string) (*ownStore, error) {
+	if err := validateRef(ref); err != nil {
+		return nil, err
+	}
+	p, err := storePath(ref)
 	if err != nil {
 		return nil, err
 	}
 	// gen starts at 1 so an own-chain bearer is never generation 0, which the
 	// cliRideStore reserves for its read-only CLI-ride token.
-	s := &ownStore{path: p, oauth: newOAuthClient(), gen: 1}
+	s := &ownStore{ref: ref, path: p, oauth: newOAuthClient(), gen: 1}
 	if err := s.load(); err != nil {
 		return nil, err
 	}
@@ -111,10 +169,16 @@ func (s *ownStore) save() error {
 
 // setLogin records a fresh chain from a completed device login and persists it
 // under the token lock (a concurrently-refreshing daemon must not interleave).
-func (s *ownStore) setLogin(tk *tokens) error {
+func (s *ownStore) setLogin(ctx context.Context, tk *tokens) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := withTokenLock(func() error {
+	if err := withTokenLock(s.ref, func() error {
+		// Re-check cancellation under the lock: if the login was cancelled (e.g. a TUI
+		// add abandoned) while we waited for it, skip the write so the cancelled add
+		// leaves no orphan token — even when this races the delete-path unlink.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		s.data = storeData{RefreshToken: tk.RefreshToken, AccountID: tk.AccountID, IDToken: tk.IDToken}
 		return s.save()
 	}); err != nil {
@@ -138,7 +202,7 @@ func (s *ownStore) token(ctx context.Context) (bearer, error) {
 	if s.access != "" && time.Now().Before(s.expiry.Add(-refreshSkew)) {
 		return bearer{s.access, s.data.AccountID, s.gen}, nil
 	}
-	if err := withTokenLock(func() error { return s.refreshLocked(ctx) }); err != nil {
+	if err := withTokenLock(s.ref, func() error { return s.refreshLocked(ctx) }); err != nil {
 		return bearer{}, err
 	}
 	return bearer{s.access, s.data.AccountID, s.gen}, nil

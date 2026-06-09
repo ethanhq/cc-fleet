@@ -38,10 +38,11 @@ const (
 type codexUpstream struct {
 	http   *http.Client
 	source tokenSource
+	ref    string // credential this daemon serves; shapes the re-login hint
 }
 
-func newCodexUpstream(source tokenSource) *codexUpstream {
-	return &codexUpstream{http: &http.Client{Timeout: 0}, source: source}
+func newCodexUpstream(source tokenSource, ref string) *codexUpstream {
+	return &codexUpstream{http: &http.Client{Timeout: 0}, source: source, ref: ref}
 }
 
 func (u *codexUpstream) models() []string { return append([]string(nil), codexModels...) }
@@ -94,7 +95,7 @@ func (u *codexUpstream) do(ctx context.Context, body []byte) (*http.Response, ui
 	bear, err := u.source.token(ctx)
 	if err != nil {
 		if errors.Is(err, ErrReauth) {
-			return nil, 0, &upstreamError{upAuth, http.StatusUnauthorized, "codex login required (run: cc-fleet codex login)"}
+			return nil, 0, &upstreamError{upAuth, http.StatusUnauthorized, "codex login required (run: " + LoginHint(u.ref) + ")"}
 		}
 		return nil, 0, &upstreamError{upTransient, http.StatusBadGateway, "codex token: " + err.Error()}
 	}

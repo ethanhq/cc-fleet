@@ -99,6 +99,26 @@ func TestValidateWire(t *testing.T) {
 			t.Fatalf("codex must reject upstream_url, got %v", err)
 		}
 	})
+	// secret_ref is the per-credential id and becomes a token-file/flock name; a named
+	// ref must be a path-safe identifier, an unsafe one is rejected at load.
+	codexVendor := func(ref string) *Vendor {
+		v := validVendor("c")
+		v.SecretBackend = CodexOAuthBackend
+		v.SecretRef = ref
+		v.BaseURL = "http://127.0.0.1:17222/"
+		v.ModelsEndpoint = "http://127.0.0.1:17222/v1/models"
+		return v
+	}
+	t.Run("codex named secret_ref ok", func(t *testing.T) {
+		if err := codexVendor("codex-work").validate("c"); err != nil {
+			t.Fatalf("a path-safe named secret_ref must pass, got %v", err)
+		}
+	})
+	t.Run("codex path-unsafe secret_ref", func(t *testing.T) {
+		if err := codexVendor("../../etc/passwd").validate("c"); err == nil || !strings.Contains(err.Error(), "secret_ref") {
+			t.Fatalf("a path-unsafe secret_ref must be rejected, got %v", err)
+		}
+	})
 
 	// Anthropic-native must not carry upstream_url.
 	t.Run("anthropic with upstream_url", func(t *testing.T) {
@@ -108,6 +128,45 @@ func TestValidateWire(t *testing.T) {
 			t.Fatalf("anthropic-native must reject upstream_url, got %v", err)
 		}
 	})
+}
+
+// Two codex providers must not resolve to the same login credential: the default
+// (sentinel/empty) is single, and named credentials must be distinct.
+func TestValidate_CodexCredentialUniqueness(t *testing.T) {
+	codex := func(name, ref string) *Vendor {
+		v := validVendor(name)
+		v.Protocol = ProtocolCodexOAuth
+		v.SecretBackend = CodexOAuthBackend
+		v.SecretRef = ref
+		v.BaseURL = "http://127.0.0.1:17222/"
+		v.ModelsEndpoint = "http://127.0.0.1:17222/v1/models"
+		return v
+	}
+	cfg := func(vs ...*Vendor) *Config {
+		c := &Config{Version: SchemaVersion, Vendors: map[string]*Vendor{}}
+		for _, v := range vs {
+			c.Vendors[v.Name] = v
+		}
+		return c
+	}
+
+	// One default + one named is fine.
+	if err := cfg(codex("codex", CodexOAuthBackend), codex("codex-work", "codex-work")).Validate(); err != nil {
+		t.Fatalf("distinct codex credentials must pass, got %v", err)
+	}
+	// Two rows on the default (sentinel) credential → collision.
+	if err := cfg(codex("a", CodexOAuthBackend), codex("b", CodexOAuthBackend)).Validate(); err == nil || !strings.Contains(err.Error(), "share credential") {
+		t.Fatalf("two default-credential codex rows must be rejected, got %v", err)
+	}
+	// Two rows with the same named ref → collision.
+	if err := cfg(codex("a", "shared"), codex("b", "shared")).Validate(); err == nil || !strings.Contains(err.Error(), "share credential") {
+		t.Fatalf("two codex rows sharing a named credential must be rejected, got %v", err)
+	}
+	// A second codex whose secret_ref is literally the sentinel collapses onto the
+	// default credential — must be rejected, not silently share it.
+	if err := cfg(codex("first", CodexOAuthBackend), codex("codex-oauth", CodexOAuthBackend)).Validate(); err == nil || !strings.Contains(err.Error(), "share credential") {
+		t.Fatalf("a sentinel-named second codex must be rejected, got %v", err)
+	}
 }
 
 func TestValidateUpstreamURL(t *testing.T) {

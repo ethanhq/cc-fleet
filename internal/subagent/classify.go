@@ -251,7 +251,7 @@ func suggestionFor(code string) string {
 	case ErrCodeFingerprintMissing, ErrCodeFingerprintStale:
 		return "Run the FINGERPRINT self-heal flow (native probe → cc-fleet refresh-fingerprint), then retry"
 	case ErrCodeProxyUnavailable:
-		return "Run cc-fleet codex login (and check the codex base_url port is free), then retry"
+		return "Conversion daemon failed to start — for codex run cc-fleet codex login (add --credential <name> for an extra one); otherwise free the base_url port, then retry"
 	case ErrCodeKeyInvalid:
 		return "Rotate the vendor API key; do not retry until fixed"
 	case ErrCodeCloudflareBlocked:

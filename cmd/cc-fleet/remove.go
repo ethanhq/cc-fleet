@@ -28,12 +28,13 @@ func newRemoveCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "remove <vendor>",
 		Short: "Delete a vendor and its profile (and optionally its secret)",
-		Long: `Delete <vendor> from vendors.toml, remove its profile JSON, and (for
-file-backend vendors) delete its secret file unless --keep-secret is set.
+		Long: `Delete <vendor> from vendors.toml, remove its profile JSON, and (unless
+--keep-secret is set) the credential it owns: a file-backend secret file, or
+a codex provider's own cc-fleet login token plus its daemon.
 
-Non-file backends (pass, 1password, vault, keyring) keep their secrets
-untouched — remove the secret with the backend's own CLI if you no longer
-want it.
+Other external backends (pass, 1password, vault, keyring) and ~/.codex keep
+their secrets untouched — remove those with the backend's own CLI if you no
+longer want them.
 
 Remove is idempotent at the filesystem level: a missing profile or secret
 file is not an error. Removing a non-existent vendor IS an error
@@ -66,7 +67,7 @@ file is not an error. Removing a non-existent vendor IS an error
 	}
 
 	cmd.Flags().BoolVar(&keepSecret, "keep-secret", false,
-		"Don't delete the file-backend secret (no-op for non-file backends)")
+		"Preserve the credential cc-fleet would delete (a file-backend secret or a codex own-login)")
 	cmd.Flags().BoolVar(&asJSON, "json", false,
 		"Emit a machine-readable JSON envelope (for skill consumption)")
 

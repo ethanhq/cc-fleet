@@ -56,7 +56,7 @@ func TestOwnStore_RefreshReloadsRotatedChainFromDisk(t *testing.T) {
 	t.Cleanup(srv.Close)
 	target, _ := url.Parse(srv.URL)
 
-	p, err := storePath()
+	p, err := storePath("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestOwnStore_RefreshReloadsRotatedChainFromDisk(t *testing.T) {
 	}
 
 	mk := func() *ownStore {
-		s, err := newOwnStore()
+		s, err := newOwnStore("")
 		if err != nil {
 			t.Fatal(err)
 		}

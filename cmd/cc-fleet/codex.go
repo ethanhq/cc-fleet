@@ -11,8 +11,25 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
+	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/userops"
 )
+
+// codexCredentialRef picks the secret_ref for a new codex provider: the default
+// (cli-ride-capable) credential if no existing codex already holds it, otherwise the
+// provider's own name — mirroring the TUI so the first codex reuses ~/.codex in both.
+func codexCredentialRef(name string) (string, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return "", err
+	}
+	for _, v := range cfg.Vendors {
+		if v.EffectiveProtocol() == config.ProtocolCodexOAuth && codexproxy.IsDefaultCredentialRef(v.SecretRef) {
+			return name, nil
+		}
+	}
+	return codexproxy.SecretRef, nil
+}
 
 // newCodexCmd builds `cc-fleet codex {login,logout,status,add}` — cc-fleet's own
 // OAuth login for reusing a ChatGPT subscription, kept on an independent token
@@ -23,7 +40,12 @@ func newCodexCmd() *cobra.Command {
 		Short: "Reuse a ChatGPT subscription as a cc-fleet provider",
 	}
 
-	var acceptRisk bool
+	var (
+		acceptRisk bool
+		loginCred  string
+		logoutCred string
+		statusCred string
+	)
 	login := &cobra.Command{
 		Use:           "login",
 		Short:         "Authorize cc-fleet against your ChatGPT subscription (device code)",
@@ -35,31 +57,34 @@ func newCodexCmd() *cobra.Command {
 					return err
 				}
 			}
-			return codexproxy.Login(cmd.Context(), cmd.OutOrStdout())
+			return codexproxy.Login(cmd.Context(), cmd.OutOrStdout(), loginCred)
 		},
 	}
 	login.Flags().BoolVar(&acceptRisk, "accept-risk", false, "skip the account-risk confirmation prompt")
+	login.Flags().StringVar(&loginCred, "credential", "", "credential ref to log in (a codex provider's secret_ref; default: the legacy single credential)")
 	cmd.AddCommand(login)
 
-	cmd.AddCommand(&cobra.Command{
+	logout := &cobra.Command{
 		Use:           "logout",
-		Short:         "Remove cc-fleet's codex login and stop the daemon",
+		Short:         "Remove a codex login and stop its daemon",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if err := codexproxy.Logout(); err != nil {
+			if err := codexproxy.Logout(logoutCred); err != nil {
 				return err
 			}
 			fmt.Fprintln(cmd.OutOrStdout(), "logged out")
 			return nil
 		},
-	})
+	}
+	logout.Flags().StringVar(&logoutCred, "credential", "", "credential ref to log out (default: the legacy single credential)")
+	cmd.AddCommand(logout)
 
-	cmd.AddCommand(&cobra.Command{
+	status := &cobra.Command{
 		Use:   "status",
 		Short: "Show codex credential sources (the codex CLI login and cc-fleet's own)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			st := codexproxy.StatusReport()
+			st := codexproxy.StatusReport(statusCred)
 			out := cmd.OutOrStdout()
 			ride := "unavailable"
 			if st.CLIRide {
@@ -72,13 +97,15 @@ func newCodexCmd() *cobra.Command {
 			fmt.Fprintf(out, "cli-ride:  %s\n", ride)
 			fmt.Fprintf(out, "own-login: %s\n", own)
 			if st.Active == "none" {
-				fmt.Fprintln(out, "active:    none — log in with the codex CLI, or run: cc-fleet codex login")
+				fmt.Fprintf(out, "active:    none — log in with the codex CLI, or run: %s\n", codexproxy.LoginHint(statusCred))
 			} else {
 				fmt.Fprintf(out, "active:    %s (account %s)\n", st.Active, st.Account)
 			}
 			return nil
 		},
-	})
+	}
+	status.Flags().StringVar(&statusCred, "credential", "", "credential ref to inspect (default: the legacy single credential)")
+	cmd.AddCommand(status)
 
 	var (
 		name  string
@@ -99,21 +126,32 @@ func newCodexCmd() *cobra.Command {
 				model = codexproxy.ScanDefaultModel("gpt-5.5")
 			}
 			base := fmt.Sprintf("http://127.0.0.1:%d/", chosen)
+			// The first codex claims the default (cli-ride-capable) credential so it can
+			// reuse ~/.codex; a later one gets its own login keyed on its name. secret_ref
+			// carries that credential id.
+			ref, err := codexCredentialRef(name)
+			if err != nil {
+				return err
+			}
 			res, err := userops.Add(userops.AddRequest{
 				Name:           name,
 				BaseURL:        base,
 				ModelsEndpoint: base + "v1/models",
 				DefaultModel:   model,
 				SecretBackend:  codexproxy.SecretBackend,
-				SecretRef:      codexproxy.SecretRef,
+				SecretRef:      ref,
 				Enabled:        true,
 			})
 			if err != nil {
 				return err
 			}
 			fmt.Fprintf(cmd.OutOrStdout(), "added provider %s (port %d, model %s)\n", res.Vendor, chosen, model)
-			if loggedIn, _ := codexproxy.LoginStatus(); !loggedIn {
-				fmt.Fprintln(cmd.OutOrStdout(), "next: cc-fleet codex login")
+			if loggedIn, _ := codexproxy.LoginStatus(ref); !loggedIn {
+				if codexproxy.IsDefaultCredentialRef(ref) {
+					fmt.Fprintln(cmd.OutOrStdout(), "next: cc-fleet codex login")
+				} else {
+					fmt.Fprintf(cmd.OutOrStdout(), "next: cc-fleet codex login --credential %s\n", ref)
+				}
 			}
 			return nil
 		},

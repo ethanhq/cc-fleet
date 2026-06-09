@@ -372,6 +372,25 @@ func (c *Config) Validate() error {
 			return err
 		}
 	}
+	// Each codex provider owns a distinct login credential: the single cli-ride-capable
+	// default (empty / the "codex-oauth" sentinel) plus one named credential per
+	// secret_ref. Two codex rows resolving to the same credential would clobber one
+	// login, so reject that here (the per-vendor pass cannot see across rows).
+	seenCred := make(map[string]string, len(names))
+	for _, name := range names {
+		v := c.Vendors[name]
+		if v.EffectiveProtocol() != ProtocolCodexOAuth {
+			continue
+		}
+		cred := v.SecretRef
+		if cred == "" || cred == CodexOAuthBackend {
+			cred = CodexOAuthBackend // canonical default
+		}
+		if prev, dup := seenCred[cred]; dup {
+			return fmt.Errorf("config: codex providers %q and %q share credential %q; give each a distinct secret_ref", prev, name, v.SecretRef)
+		}
+		seenCred[cred] = name
+	}
 	return nil
 }
 
@@ -465,6 +484,12 @@ func (v *Vendor) validateWire(name string) error {
 	case ProtocolCodexOAuth:
 		if v.SecretBackend != CodexOAuthBackend {
 			return fmt.Errorf("config: vendor %q: codex-oauth protocol requires secret_backend %q", name, CodexOAuthBackend)
+		}
+		// secret_ref is the per-provider credential id; it becomes a token-file and
+		// flock name component, so it must be a path-safe identifier (the legacy
+		// "codex-oauth" sentinel and any provider-name-derived ref both qualify).
+		if err := ids.ValidateVendorName(v.SecretRef); err != nil {
+			return fmt.Errorf("config: vendor %q: codex secret_ref %w", name, err)
 		}
 		if v.UpstreamURL != "" {
 			return fmt.Errorf("config: vendor %q: codex-oauth must not set upstream_url", name)

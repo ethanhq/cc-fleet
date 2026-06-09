@@ -352,10 +352,50 @@ func TestEditForm_1mLateralNav(t *testing.T) {
 	}
 }
 
-// TestAddForm_RightOnModelNoMisfocus: the add form has a default_model field but
-// no 1M toggle, so → there must NOT mis-focus (it falls through to the text cursor,
-// leaving focus on default_model).
-func TestAddForm_RightOnModelNoMisfocus(t *testing.T) {
+// TestUniqueName: a taken template name prefills the first free "<name>-N"; a free
+// name and a blank (Custom) name pass through.
+func TestUniqueName(t *testing.T) {
+	m := Model{vendors: []userops.VendorView{{Name: "deepseek"}, {Name: "deepseek-2"}}}
+	if got := m.uniqueName("deepseek"); got != "deepseek-3" {
+		t.Errorf("uniqueName(deepseek) = %q, want deepseek-3", got)
+	}
+	if got := m.uniqueName("glm"); got != "glm" {
+		t.Errorf("uniqueName(glm) = %q, want glm", got)
+	}
+	if got := m.uniqueName(""); got != "" {
+		t.Errorf("uniqueName(\"\") = %q, want \"\"", got)
+	}
+}
+
+// TestNoteBlockConstantHeight: the Note block reserves the same number of lines
+// regardless of which field is focused, so the Config header doesn't move.
+func TestNoteBlockConstantHeight(t *testing.T) {
+	f := newEditForm(userops.VendorView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
+	noteToConfig := func(ff form) int {
+		lines := ff.viewLines(46)
+		note, cfg := -1, -1
+		for i, l := range lines {
+			if strings.Contains(l, "Note") && note < 0 {
+				note = i
+			}
+			if strings.Contains(l, "Config") {
+				cfg = i
+			}
+		}
+		return cfg - note
+	}
+	base := noteToConfig(f)
+	for i := 0; i < len(f.fields); i++ {
+		f.setFocus(i)
+		if h := noteToConfig(f); h != base {
+			t.Fatalf("Note→Config gap shifted at focus %d (key %q): %d != %d", i, f.focusedKey(), h, base)
+		}
+	}
+}
+
+// TestAddForm_HasModelConfigNav: the add form now carries the shared model-config
+// rows, so → on its default_model reaches the inline 1M toggle (like the edit form).
+func TestAddForm_HasModelConfigNav(t *testing.T) {
 	f := newAddForm(Template{})
 	for i := 0; i < len(f.fields) && f.focusedKey() != "default_model"; i++ {
 		f, _, _ = f.Update(keyMsg("down"))
@@ -364,8 +404,8 @@ func TestAddForm_RightOnModelNoMisfocus(t *testing.T) {
 		t.Fatalf("could not focus default_model, got %q", f.focusedKey())
 	}
 	f, _, _ = f.Update(keyMsg("right"))
-	if f.focusedKey() != "default_model" {
-		t.Fatalf("right on the add-form default_model must keep focus (no 1M toggle to jump to), got %q", f.focusedKey())
+	if f.focusedKey() != "default_1m" {
+		t.Fatalf("right on the add-form default_model should reach default_1m, got %q", f.focusedKey())
 	}
 }
 
@@ -657,8 +697,10 @@ func TestModelPickerSkippedWhenNoEndpoint(t *testing.T) {
 	if m.screen != screenForm {
 		t.Fatalf("enter with no endpoint opened a picker: screen = %d, want screenForm", m.screen)
 	}
-	if m.form.focusedKey() != "" {
-		t.Fatalf("enter should have advanced to the submit button, focusedKey = %q", m.form.focusedKey())
+	// No picker — enter just advances a row (skipping the inline 1M toggle) to the
+	// next model slot.
+	if m.form.focusedKey() != "strong_model" {
+		t.Fatalf("enter with no endpoint should advance to strong_model, focusedKey = %q", m.form.focusedKey())
 	}
 }
 

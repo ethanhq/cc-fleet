@@ -49,12 +49,12 @@ func writeCLIAuth(t *testing.T, home, access string) []byte {
 
 func rideStore(t *testing.T, rec *recordRT) *cliRideStore {
 	t.Helper()
-	own, err := newOwnStore()
+	own, err := newOwnStore("")
 	if err != nil {
 		t.Fatal(err)
 	}
 	own.oauth = &oauthClient{http: &http.Client{Transport: rec}}
-	return &cliRideStore{own: own}
+	return &cliRideStore{own: own, rideAllowed: true}
 }
 
 func authBytes(t *testing.T, home string) []byte {
@@ -141,7 +141,7 @@ func TestCLIRide_OwnLoginTakesPriority(t *testing.T) {
 	t.Cleanup(srv.Close)
 	target, _ := url.Parse(srv.URL)
 
-	p, err := storePath()
+	p, err := storePath("")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -152,12 +152,12 @@ func TestCLIRide_OwnLoginTakesPriority(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	own, err := newOwnStore()
+	own, err := newOwnStore("")
 	if err != nil {
 		t.Fatal(err)
 	}
 	own.oauth = &oauthClient{http: &http.Client{Transport: rewriteRT{target}}}
-	s := &cliRideStore{own: own}
+	s := &cliRideStore{own: own, rideAllowed: true}
 
 	b, err := s.token(context.Background())
 	if err != nil {
@@ -173,13 +173,13 @@ func TestCLIRide_OwnLoginTakesPriority(t *testing.T) {
 func TestCLIRide_InvalidateGenDomain(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	own, err := newOwnStore()
+	own, err := newOwnStore("")
 	if err != nil {
 		t.Fatal(err)
 	}
 	own.gen = 5
 	own.expiry = time.Now().Add(time.Hour)
-	s := &cliRideStore{own: own}
+	s := &cliRideStore{own: own, rideAllowed: true}
 
 	s.invalidate(0)
 	if own.expiry.IsZero() {
@@ -197,7 +197,7 @@ func TestStatusReport(t *testing.T) {
 	}
 	writeOwn := func(t *testing.T) {
 		t.Helper()
-		p, err := storePath()
+		p, err := storePath("")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -212,7 +212,7 @@ func TestStatusReport(t *testing.T) {
 	t.Run("none", func(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-		st := StatusReport()
+		st := StatusReport("")
 		if st.CLIRide || st.OwnLogin || st.Active != "none" {
 			t.Fatalf("none: %+v", st)
 		}
@@ -222,7 +222,7 @@ func TestStatusReport(t *testing.T) {
 		t.Setenv("HOME", home)
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 		writeCLIAuth(t, home, unexpired())
-		st := StatusReport()
+		st := StatusReport("")
 		if !st.CLIRide || st.OwnLogin || st.Active != "cli-ride" || st.Account == "" {
 			t.Fatalf("ride only: %+v", st)
 		}
@@ -231,7 +231,7 @@ func TestStatusReport(t *testing.T) {
 		t.Setenv("HOME", t.TempDir())
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 		writeOwn(t)
-		st := StatusReport()
+		st := StatusReport("")
 		if st.CLIRide || !st.OwnLogin || st.Active != "own" {
 			t.Fatalf("own only: %+v", st)
 		}
@@ -242,7 +242,7 @@ func TestStatusReport(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 		writeCLIAuth(t, home, unexpired())
 		writeOwn(t)
-		st := StatusReport()
+		st := StatusReport("")
 		if !st.CLIRide || !st.OwnLogin || st.Active != "own" {
 			t.Fatalf("both: %+v", st)
 		}

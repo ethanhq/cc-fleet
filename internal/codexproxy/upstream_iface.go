@@ -24,16 +24,17 @@ type upstream interface {
 }
 
 // buildUpstream selects the upstream implementation for a daemon's protocol.
-// codex builds its own OAuth token source; openai-* carries the real key per
-// request (apiKey passed to call), so it only needs the upstream base URL.
-func buildUpstream(protocol, upstreamURL string) (upstream, error) {
+// codex builds its own OAuth token source bound to the daemon's credential ref;
+// openai-* carries the real key per request (apiKey passed to call), so it only
+// needs the upstream base URL and ignores ref.
+func buildUpstream(protocol, upstreamURL, ref string) (upstream, error) {
 	switch protocol {
 	case config.ProtocolCodexOAuth:
-		source, err := newCLIRideStore()
+		source, err := newCLIRideStore(ref)
 		if err != nil {
 			return nil, err
 		}
-		return newCodexUpstream(source), nil
+		return newCodexUpstream(source, ref), nil
 	case config.ProtocolOpenAIChat:
 		return newOpenAIChatUpstream(upstreamURL), nil
 	case config.ProtocolOpenAIResponses:

@@ -612,7 +612,7 @@ func editLocked(req EditRequest) (*EditResult, error) {
 // RemoveRequest is the typed input for Remove.
 type RemoveRequest struct {
 	Name       string
-	KeepSecret bool // when true, file-backend secrets are preserved
+	KeepSecret bool // when true, a file-backend secret or a codex own-login is preserved
 }
 
 // RemoveResult is the structured result of Remove.
@@ -622,31 +622,56 @@ type RemoveResult struct {
 	ProfileRemoved bool   `json:"profile_removed"`
 }
 
-// Remove deletes the vendor row from vendors.toml, the per-vendor profile
-// JSON, and (for file-backend vendors without --keep-secret) the on-disk
-// secret. Non-file backends are never auto-purged — the user removes those
-// through the backend's own CLI.
+// Remove deletes the vendor row from vendors.toml, the per-vendor profile JSON,
+// and (without --keep-secret) the credential it owns: a file-backend on-disk secret,
+// or — for a codex provider — cc-fleet's own login token + its daemon. ~/.codex and
+// other external backends are never auto-purged; the user clears those themselves.
 //
 // Runs under the global vendors-config flock.
 func Remove(req RemoveRequest) (*RemoveResult, error) {
-	return withVendorsLock(func() (*RemoveResult, error) { return removeLocked(req) })
+	var codexRef string
+	res, err := withVendorsLock(func() (*RemoveResult, error) {
+		r, ref, e := removeLocked(req)
+		codexRef = ref
+		return r, e
+	})
+	if err != nil {
+		return res, err
+	}
+	// Drop a removed codex provider's cc-fleet login (token file) + its daemon here,
+	// OUTSIDE the vendors lock: codexproxy's token/proxy locks are standalone scopes
+	// that must never nest under it. LogoutIfUnreferenced no-ops if a concurrent re-add
+	// reclaimed the credential, and surfaces a removal failure (a surviving login would
+	// be silently reused on the next add). ~/.codex (the codex CLI login) is untouched.
+	if codexRef != "" && !req.KeepSecret {
+		if err := codexproxy.LogoutIfUnreferenced(codexRef); err != nil {
+			return res, opErr(CodeSecretRemoveFailed, fmt.Errorf("remove codex login: %w", err))
+		}
+	}
+	return res, nil
 }
 
-func removeLocked(req RemoveRequest) (*RemoveResult, error) {
+func removeLocked(req RemoveRequest) (*RemoveResult, string, error) {
 	if err := ValidateVendorName(req.Name); err != nil {
-		return nil, opErr(CodeVendorNameInvalid, err)
+		return nil, "", opErr(CodeVendorNameInvalid, err)
 	}
 	cfg, err := config.Load()
 	if err != nil {
-		return nil, opErr(CodeConfigLoadFailed, err)
+		return nil, "", opErr(CodeConfigLoadFailed, err)
 	}
 	v, ok := cfg.Vendors[req.Name]
 	if !ok {
-		return nil, opErr(CodeVendorUnknown,
+		return nil, "", opErr(CodeVendorUnknown,
 			fmt.Errorf("vendor %q not in vendors.toml", req.Name))
 	}
 
 	res := &RemoveResult{Vendor: req.Name}
+	// A codex provider's login is removed after the lock (see Remove); capture its
+	// credential ref before the row is gone.
+	codexRef := ""
+	if v.EffectiveProtocol() == config.ProtocolCodexOAuth {
+		codexRef = v.SecretRef
+	}
 
 	// Commit the config row deletion FIRST, before any destructive profile/secret
 	// cleanup: if Save fails, vendors.toml is unchanged and the profile + secret
@@ -657,12 +682,12 @@ func removeLocked(req RemoveRequest) (*RemoveResult, error) {
 	// at the removed Vendor struct — the map entry is gone but the value is held.)
 	delete(cfg.Vendors, req.Name)
 	if err := config.Save(cfg); err != nil {
-		return nil, opErr(CodeConfigSaveFailed, err)
+		return nil, "", opErr(CodeConfigSaveFailed, err)
 	}
 
 	// Profile removal is idempotent (RemoveForVendor swallows ENOENT).
 	if err := profile.RemoveForVendor(req.Name); err != nil {
-		return nil, opErr(CodeProfileWriteFailed, err)
+		return nil, "", opErr(CodeProfileWriteFailed, err)
 	}
 	res.ProfileRemoved = true
 
@@ -671,7 +696,7 @@ func removeLocked(req RemoveRequest) (*RemoveResult, error) {
 	if v.SecretBackend == "file" && !req.KeepSecret {
 		if v.SecretRef != "" {
 			if err := removeFileSecret(v.SecretRef); err != nil {
-				return nil, opErr(CodeSecretRemoveFailed, err)
+				return nil, "", opErr(CodeSecretRemoveFailed, err)
 			}
 			res.SecretRemoved = true
 		}
@@ -679,11 +704,11 @@ func removeLocked(req RemoveRequest) (*RemoveResult, error) {
 		// missing file is not an error). Independent of secret_ref because a
 		// multi-key vendor's keys live in <vendor>.keys.json, not secret_ref.
 		if err := secrets.RemoveKeySet(req.Name); err != nil {
-			return nil, opErr(CodeSecretRemoveFailed, err)
+			return nil, "", opErr(CodeSecretRemoveFailed, err)
 		}
 	}
 
-	return res, nil
+	return res, codexRef, nil
 }
 
 // removeFileSecret deletes <SecretsDir>/<ref>. A missing file is fine —

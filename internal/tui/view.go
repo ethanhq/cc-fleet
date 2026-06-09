@@ -223,20 +223,12 @@ func vendorCacheFig(v userops.VendorView) string {
 
 // resolvedSlot renders a capability slot for the read-only preview: a blank
 // strong/fast slot shows the default model it follows (the concrete model that
-// will run), not the word "blank". orOffLabel renders an unset effort/permission
-// as off.
+// will run), not the word "blank". orOff renders an unset effort/permission as off.
 func resolvedSlot(slot, def string) string {
 	if slot == "" {
 		return def
 	}
 	return slot
-}
-
-func orOffLabel(s string) string {
-	if s == "" {
-		return "off"
-	}
-	return s
 }
 
 // vendorDetailLines is the Model Providers hub's read-only config card: the enabled state + default
@@ -250,8 +242,19 @@ func vendorDetailLines(v userops.VendorView, rightW int) []string {
 	if v.DefaultModel != "" {
 		status += liveStyle.Render(" · " + trunc(v.DefaultModel, 28))
 	}
-	lines := []string{status, "", contentStyle.Render("Note"),
-		" " + contentStyle.Render("→/⏎ edit · d delete"), "", faintStyle.Render("Config")}
+	// Pad the Note body to the same reserve the edit form uses (fieldNoteReserve), so
+	// the Config block sits at the same row here and in edit — entering edit doesn't
+	// shift it down.
+	lines := []string{status, "", contentStyle.Render("Note")}
+	note := []string{contentStyle.Render("→/⏎ edit · d delete")}
+	for i, reserve := 0, fieldNoteReserve(rightW); i < reserve; i++ {
+		if i < len(note) {
+			lines = append(lines, " "+note[i])
+		} else {
+			lines = append(lines, "")
+		}
+	}
+	lines = append(lines, "", faintStyle.Render("Config"))
 	detailField(&lines, "base url", v.BaseURL, rightW)
 	detailField(&lines, "models", v.ModelsEndpoint, rightW)
 	// Surface the full capability roster + effort + run permission so the preview
@@ -261,8 +264,8 @@ func vendorDetailLines(v userops.VendorView, rightW int) []string {
 	detailField(&lines, "default", v.DefaultModel, rightW)
 	detailField(&lines, "strong", resolvedSlot(v.StrongModel, v.DefaultModel), rightW)
 	detailField(&lines, "fast", resolvedSlot(v.FastModel, v.DefaultModel), rightW)
-	detailField(&lines, "effort", orOffLabel(v.Effort), rightW)
-	detailField(&lines, "run perm", orOffLabel(v.DefaultPerm), rightW)
+	detailField(&lines, "effort", orOff(v.Effort), rightW)
+	detailField(&lines, "run perm", orOff(v.DefaultPerm), rightW)
 	detailField(&lines, "cache", vendorCacheFig(v), rightW)
 	key := v.SecretBackend
 	if v.SecretRef != "" {
@@ -2806,10 +2809,10 @@ func (m Model) addItemDetail() []string {
 	}
 	switch it := items[m.tmplCursor]; it.class {
 	case addCatCLI:
-		if st := codexproxy.StatusReport(); st.Active != "none" {
+		if st := codexproxy.StatusReport(codexproxy.SecretRef); st.Active != "none" {
 			return []string{faintStyle.Render("  reuses the codex login (" + st.Active + ", account " + st.Account + ") — no key needed")}
 		}
-		return []string{faintStyle.Render("  not logged in — you'll authorize next (or run: cc-fleet codex login)")}
+		return []string{faintStyle.Render("  not logged in — the first codex reuses ~/.codex; extra ones get their own login")}
 	case addCatOpenAI:
 		if it.oIdx < 0 {
 			return []string{faintStyle.Render("  protocol  openai-chat · fill upstream_url + key")}
@@ -2841,6 +2844,20 @@ func (m Model) addItemDetail() []string {
 }
 
 func (m Model) viewCodexAuth() string {
+	if m.codexAuthStage == codexAuthChooseSource {
+		return m.vendorFlowView("Add codex provider · source", "", "+", "codex login",
+			"r reuse · s separate login · esc cancel", func(rightW int) []string {
+				detected := "A codex subscription is signed in on this system"
+				if m.codexAuthAccount != "" {
+					detected += " (account " + m.codexAuthAccount + ")"
+				}
+				return []string{
+					contentStyle.Render(detected + "."), "",
+					contentStyle.Render("  r  reuse it — no separate login needed"),
+					contentStyle.Render("  s  log in separately — cc-fleet keeps its own login"),
+				}
+			})
+	}
 	if m.codexAuthStage == codexAuthDevice {
 		return m.vendorFlowView("Add codex provider · authorize", "", "+", "device login",
 			"esc cancel", func(rightW int) []string {

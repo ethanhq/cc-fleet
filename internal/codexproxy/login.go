@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"time"
+
+	"github.com/ethanhq/cc-fleet/internal/config"
 )
 
 // RiskNotice is the consent text shown before a device-code login (CLI and TUI):
@@ -20,8 +22,8 @@ the codex CLI's token), but that does not remove the account-level risk.`
 // Login runs an interactive OAuth device-code login and persists an independent
 // token chain to cc-fleet's own store (never touching ~/.codex). It prints the
 // verification URL + user code to out and polls until the user authorizes.
-func Login(ctx context.Context, out io.Writer) error {
-	store, err := newOwnStore()
+func Login(ctx context.Context, out io.Writer, ref string) error {
+	store, err := newOwnStore(ref)
 	if err != nil {
 		return err
 	}
@@ -46,7 +48,7 @@ func Login(ctx context.Context, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		if err := store.setLogin(tk); err != nil {
+		if err := store.setLogin(ctx, tk); err != nil {
 			return err
 		}
 		fmt.Fprintf(out, "Logged in (account %s).\n", redactAccount(tk.AccountID))
@@ -70,8 +72,8 @@ type LoginSession struct {
 
 // BeginDeviceLogin starts a device-code flow and returns the session to display +
 // poll. The caller must have already obtained consent (subscription reuse risk).
-func BeginDeviceLogin(ctx context.Context) (*LoginSession, error) {
-	store, err := newOwnStore()
+func BeginDeviceLogin(ctx context.Context, ref string) (*LoginSession, error) {
+	store, err := newOwnStore(ref)
 	if err != nil {
 		return nil, err
 	}
@@ -97,7 +99,7 @@ func (s *LoginSession) Poll(ctx context.Context) (done bool, err error) {
 	if err != nil {
 		return false, err
 	}
-	if err := s.store.setLogin(tk); err != nil {
+	if err := s.store.setLogin(ctx, tk); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -106,20 +108,21 @@ func (s *LoginSession) Poll(ctx context.Context) (done bool, err error) {
 // Interval is the minimum delay between Poll calls.
 func (s *LoginSession) Interval() time.Duration { return s.dc.interval }
 
-// LoginStatus reports whether cc-fleet has an independent codex login.
-func LoginStatus() (loggedIn bool, account string) {
-	store, err := newOwnStore()
+// LoginStatus reports whether cc-fleet has an independent codex login for ref.
+func LoginStatus(ref string) (loggedIn bool, account string) {
+	store, err := newOwnStore(ref)
 	if err != nil {
 		return false, ""
 	}
 	return store.loggedIn(), redactAccount(store.data.AccountID)
 }
 
-// Logout removes cc-fleet's own token chain and stops the daemon (whose
-// in-memory access token dies with it). ~/.codex is untouched.
-func Logout() error {
-	if err := withTokenLock(func() error {
-		p, err := storePath()
+// Logout removes a credential's own token chain and stops only the daemons bound to
+// that credential (whose in-memory access token dies with them) — other credentials'
+// daemons keep running. ~/.codex is untouched.
+func Logout(ref string) error {
+	if err := withTokenLock(ref, func() error {
+		p, err := storePath(ref)
 		if err != nil {
 			return err
 		}
@@ -130,7 +133,65 @@ func Logout() error {
 	}); err != nil {
 		return err
 	}
-	return StopDaemon()
+	return stopDaemonsForCredential(ref)
+}
+
+// LogoutIfUnreferenced is the delete-path logout: it drops the credential's login +
+// daemon ONLY when no codex provider in the current config still claims it (the
+// referenced-check + unlink run together under the token lock). The TUI add-login flow
+// commits its provider row before persisting the login token, so a token it wrote
+// implies a committed row this check observes and keeps; a delete racing such an add may
+// remove the row and token together (the delete wins) but never leaves a provider whose
+// just-written login was unlinked. A still-referenced credential is left intact (its
+// daemon too).
+func LogoutIfUnreferenced(ref string) error {
+	skip := false
+	if err := withTokenLock(ref, func() error {
+		if codexCredentialReferenced(ref) {
+			skip = true
+			return nil
+		}
+		p, err := storePath(ref)
+		if err != nil {
+			return err
+		}
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if skip {
+		return nil
+	}
+	return stopDaemonsForCredential(ref)
+}
+
+// codexCredentialReferenced reports whether any codex provider in the config still
+// uses credential ref. On a load error it returns true (fail safe: keep the login
+// rather than delete one that may still be in use).
+func codexCredentialReferenced(ref string) bool {
+	cfg, err := config.Load()
+	if err != nil {
+		return true
+	}
+	for _, v := range cfg.Vendors {
+		if v.EffectiveProtocol() == config.ProtocolCodexOAuth && sameCredential(v.SecretRef, ref) {
+			return true
+		}
+	}
+	return false
+}
+
+// LoginHint is the `cc-fleet codex login` command that authorizes credential ref —
+// bare for the default credential, with `--credential <ref>` for a named one (which
+// cannot ride ~/.codex). Shown in re-login prompts and the status output.
+func LoginHint(ref string) string {
+	if isDefaultCredential(ref) {
+		return "cc-fleet codex login"
+	}
+	return "cc-fleet codex login --credential " + ref
 }
 
 // redactAccount masks an account id for display (it is an identifier, not a secret,
