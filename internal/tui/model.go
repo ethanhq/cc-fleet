@@ -226,7 +226,7 @@ type Model struct {
 	// no-op until the first completes (and a restart shows a transient "restarting …" status meanwhile).
 	wfRestarting map[string]bool
 	// Save-workflow name prompt: `s` on a run row opens wfSaveInput (prefilled with the run name);
-	// while wfSaving, keys route to the input (enter saves to ~/.config/cc-fleet/workflows/<name>.star,
+	// while wfSaving, keys route to the input (enter saves to ~/.config/cc-fleet/workflows/<name>.js,
 	// esc cancels). wfSaveRun pins the TARGET run at open time — the board keeps refreshing under the
 	// prompt and a reanchor could move the cursor, so enter must not re-resolve it from the row.
 	wfSaveInput textinput.Model

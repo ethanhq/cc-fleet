@@ -14,7 +14,7 @@ import (
 type defaultJSONEnvelope struct {
 	OK         bool     `json:"ok"`
 	Provider   string   `json:"provider"`
-	Source     string   `json:"source"`     // configured | auto | unset
+	Source     string   `json:"source"`     // configured | auto | disabled | unknown | unset
 	Configured string   `json:"configured"` // the pinned value ("" = not pinned)
 	Candidates []string `json:"candidates"`
 }
