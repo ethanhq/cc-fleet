@@ -681,7 +681,7 @@ func TestNoProgressDetection(t *testing.T) {
 
 // TestDeterminismLockdown: the nondeterministic surface throws (or is absent) BEFORE
 // any user statement could observe it — Date / Math.random / eval / Function / the
-// prototype-constructor escape / timers / console / require.
+// prototype-constructor escape / timers / require.
 func TestDeterminismLockdown(t *testing.T) {
 	rec := &recorder{}
 	v, err := runScript(t, "rdl", 1, echoLeaf(rec), `
@@ -695,7 +695,6 @@ return {
     ctorSealed: threw(() => (function () {}).constructor("return 1")()),
     asyncCtorSealed: threw(() => (async function () {}).constructor("return 1")),
     noSetTimeout: typeof setTimeout === "undefined",
-    noConsole: typeof console === "undefined",
     noRequire: typeof require === "undefined",
 };
 `)
@@ -703,9 +702,58 @@ return {
 		t.Fatalf("run: %v", err)
 	}
 	m := wantMap(t, v)
-	for _, k := range []string{"dateThrows", "newDateThrows", "randomThrows", "noEval", "noFunction", "ctorSealed", "asyncCtorSealed", "noSetTimeout", "noConsole", "noRequire"} {
+	for _, k := range []string{"dateThrows", "newDateThrows", "randomThrows", "noEval", "noFunction", "ctorSealed", "asyncCtorSealed", "noSetTimeout", "noRequire"} {
 		if m[k] != true {
 			t.Errorf("%s = %v, want true", k, m[k])
+		}
+	}
+}
+
+// TestConsoleAliasesLog: every console level routes to the log() narrator surface
+// (vendor-model muscle memory writes console.log) — strings pass through, Errors
+// render by message, everything else as JSON.
+func TestConsoleAliasesLog(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	eng := newTestEngine(context.Background(), "rcl", 1)
+	ep := filepath.Join(t.TempDir(), "rcl.events")
+	eng.events = newEventWriter(ep)
+	if _, err := eng.run("test.js", []byte(`
+console.log("found", 3, {a: 1});
+console.error(new Error("boom"));
+console.warn("w"); console.info("i"); console.debug("d");
+const o = Object.create(null);
+o.self = o;
+console.log(o);
+JSON.stringify = () => Symbol("shadowed");
+console.log({a: 2});
+const E = Error;
+globalThis.Error = function () {};
+console.log(new E("shadow"));
+return null;
+`), Options{}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	data, err := os.ReadFile(ep)
+	if err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	var msgs []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var rec EventRecord
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("bad event line %q: %v", line, err)
+		}
+		if rec.Kind == "log" {
+			msgs = append(msgs, rec.Msg)
+		}
+	}
+	want := []string{`found 3 {"a":1}`, "Error: boom", "w", "i", "d", "[unprintable]", `{"a":2}`, "Error: shadow"}
+	if len(msgs) != len(want) {
+		t.Fatalf("log events = %q, want %q", msgs, want)
+	}
+	for i := range want {
+		if msgs[i] != want[i] {
+			t.Errorf("log[%d] = %q, want %q", i, msgs[i], want[i])
 		}
 	}
 }

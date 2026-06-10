@@ -88,14 +88,15 @@ takes a required `vendor` option.
   `tokens_*` surface.)
 - `phase(title, detail?)` — name the current phase (tags subsequent agents lacking an
   explicit `phase`; the detail shows on the board row). `log(msg)` — a narrator line
-  (board live log + stderr).
+  (board live log + stderr); `console.log/info/warn/error/debug` alias onto it
+  (non-strings render as JSON, Errors by message).
 - `args` — the parsed `--args-json '<json>'` value (or the `workflow(child, args)` value);
   `undefined` when none was given.
 
 ## What a workflow script can NOT use (determinism — the journal depends on it)
 - `Date` / `Math.random()` **throw**; `eval` / `Function` / dynamic code are removed;
-  there is **no** `setTimeout` / `console` / `require` / `fs` / ESM `import` — use
-  `log()`, not `console.log`, and pass timestamps or randomness in via `args`.
+  there is **no** `setTimeout` / `require` / `fs` / ESM `import` — pass timestamps or
+  randomness in via `args`.
 - Plain script statements only (the body runs inside an async wrapper, so top-level
   `await` and `return` work); async generators (`async function*`) are not supported.
 
@@ -188,8 +189,7 @@ loop-until-dry — all sequenced by the script in a cc-fleet process, off your c
 
 ## Anti-patterns
 - A script for a single flat independent batch → use lane-2 `cc-fleet subagent`.
-- `console.log` / `Date.now()` / `setTimeout` — unavailable (determinism); use `log()`
-  and pass timestamps via `args`.
+- `Date.now()` / `setTimeout` — unavailable (determinism); pass timestamps via `args`.
 - Trusting `schema` as deep validation, or treating a plain `agent()` result as JSON
   without `schema`.
 - Unbounded ambition: the runtime hard-caps 1000 `agent()` calls/run, pools concurrency

@@ -114,8 +114,9 @@ func (e *engine) effProfileFor(requested string) (string, string) {
 // Function-constructor escape on the three function prototypes is sealed — deleting the
 // Function global alone leaves `(function(){}).constructor("…")` compiling code) and
 // defines parallel/pipeline in JS over the host bracket hooks — Promise composition is
-// the natural expression of their barrier / no-barrier contracts. The host object is
-// deleted right after; user scripts can't reach it.
+// the natural expression of their barrier / no-barrier contracts — and aliases console
+// onto the log() narrator (vendor-model muscle memory writes console.log). The host
+// object is deleted right after; user scripts can't reach it.
 const bootstrapJS = `(function (host) {
 	"use strict";
 	const unavailable = (name) => () => {
@@ -140,6 +141,27 @@ const bootstrapJS = `(function (host) {
 	seal(Object.getPrototypeOf(function () {}));
 	seal(Object.getPrototypeOf(async function () {}));
 	seal(Object.getPrototypeOf(function* () {}));
+	// console maps onto log(): strings pass through, Errors render by message,
+	// everything else as JSON via the stringify captured here (immune to script
+	// shadowing). show() always returns a string — a value that defeats both JSON
+	// and string coercion (e.g. a circular null-prototype object) must not turn
+	// an observability call into a run failure.
+	const hostLog = globalThis.log;
+	const jsonShow = JSON.stringify;
+	const NativeError = Error;
+	const show = (v) => {
+		try {
+			if (typeof v === "string") return v;
+			if (v instanceof NativeError) return String(v);
+			const s = jsonShow(v);
+			if (typeof s === "string") return s;
+			return String(v);
+		} catch (e) {
+			try { return String(v); } catch (e2) { return "[unprintable]"; }
+		}
+	};
+	const clog = (...a) => { hostLog(a.map(show).join(" ")); };
+	globalThis.console = { log: clog, info: clog, warn: clog, error: clog, debug: clog };
 	globalThis.parallel = (thunks) => {
 		if (!Array.isArray(thunks)) throw new TypeError("parallel: expected an array of functions (thunks)");
 		if (thunks.length > host.maxFanout) throw new RangeError("parallel: more than " + host.maxFanout + " elements - split the work into smaller batches");
