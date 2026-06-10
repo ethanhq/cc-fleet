@@ -264,3 +264,14 @@ func TestChatFixture_ErrorRedacted(t *testing.T) {
 		t.Fatal("open text block must be closed before the error event")
 	}
 }
+
+// A finish_reason of tool_calls with NO streamed tool_call deltas (a malformed /
+// empty upstream turn) must not stop tool_use — a tool_use stop with zero
+// tool_use blocks would hand the client an unkeepable promise.
+func TestChatFixture_ToolCallsFinishWithoutToolBlocks(t *testing.T) {
+	sink := replayChat(t, "chat_tool_calls_empty")
+	assertGrammar(t, sink)
+	if sr := stopReason(t, sink); sr != "end_turn" {
+		t.Fatalf("stop_reason = %q, want end_turn (no tool block ever opened)", sr)
+	}
+}

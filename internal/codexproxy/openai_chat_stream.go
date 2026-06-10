@@ -226,13 +226,17 @@ func (c *chatStreamConverter) toolDelta(tc chatToolCallDelta) error {
 
 // applyFinish maps a Chat finish_reason to an Anthropic stop_reason. stop /
 // content_filter / absent leave the current reason (end_turn, or tool_use if a
-// tool block opened); length and tool_calls override explicitly.
+// tool block opened); length overrides explicitly. tool_calls maps to tool_use
+// only when a tool block actually opened — a finish_reason carrying zero
+// streamed tool_call deltas must not stop tool_use with no tool_use block.
 func (c *chatStreamConverter) applyFinish(reason string) {
 	switch reason {
 	case "length":
 		c.stopReason = "max_tokens"
 	case "tool_calls":
-		c.stopReason = "tool_use"
+		if len(c.tools) > 0 {
+			c.stopReason = "tool_use"
+		}
 	}
 }
 
