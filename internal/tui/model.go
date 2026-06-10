@@ -16,6 +16,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/config"
@@ -4110,6 +4111,10 @@ func missingLabels(values map[string]string, order []string) []string {
 // Run starts the bubbletea program against stdin/stdout. The caller is
 // responsible for ensuring those are a terminal (see cmd/cc-fleet/tui.go).
 func Run() error {
+	// Resolve the terminal background (light vs dark) before bubbletea owns
+	// stdin: the adaptive palette's first render would otherwise race the
+	// terminal's color-query reply against the program's input reader.
+	lipgloss.HasDarkBackground()
 	final, err := tea.NewProgram(NewModel()).Run()
 	if err != nil {
 		return err

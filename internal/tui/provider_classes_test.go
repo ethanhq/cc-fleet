@@ -14,14 +14,14 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/userops"
 )
 
-// The run-permission value colors mirror Claude Code's own permission-mode indicator;
-// default/off stay in the plain body color.
+// The run-permission value colors mirror Claude Code's own permission-mode indicator
+// on both backgrounds; default/off stay in the plain body color.
 func TestPermModeStyleMapping(t *testing.T) {
-	want := map[string]lipgloss.Color{
-		permmode.Plan:              "66",
-		permmode.AcceptEdits:       "141",
-		permmode.Auto:              "214",
-		permmode.BypassPermissions: "203",
+	want := map[string]lipgloss.AdaptiveColor{
+		permmode.Plan:              {Light: "23", Dark: "66"},
+		permmode.AcceptEdits:       {Light: "93", Dark: "141"},
+		permmode.Auto:              {Light: "94", Dark: "214"},
+		permmode.BypassPermissions: {Light: "160", Dark: "203"},
 	}
 	for mode, c := range want {
 		if got := permModeStyle(mode).GetForeground(); got != c {

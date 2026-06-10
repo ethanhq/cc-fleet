@@ -70,7 +70,7 @@ const (
 
 // confirmAmber is the modal's confirm-phase accent: the border AND the Cancel/Confirm buttons share
 // it. A finished result re-tints the border green (ok) / red (err); the buttons are gone by then.
-const confirmAmber lipgloss.Color = "220"
+var confirmAmber = lipgloss.AdaptiveColor{Light: "136", Dark: "220"}
 
 // openConfirm opens a centered confirm modal (cursor defaulting to Cancel) for a destructive action.
 func (m Model) openConfirm(kind, id, prompt string) (tea.Model, tea.Cmd) {
@@ -251,16 +251,16 @@ func (m Model) withInfo(msg string, isErr bool) Model {
 	return m
 }
 
-// confirmBorder frames the modal: amber (220) while asking or running, green (78) on a successful
-// result, red (203) on a failed one — and red while asking/running a danger action (a heavy delete).
-func (m Model) confirmBorder() lipgloss.Color {
+// confirmBorder frames the modal: amber while asking or running, green on a successful
+// result, red on a failed one — and red while asking/running a danger action (a heavy delete).
+func (m Model) confirmBorder() lipgloss.AdaptiveColor {
 	switch {
 	case m.confirm.phase == modalResult && m.confirm.resultErr:
-		return lipgloss.Color("203")
+		return errColor
 	case m.confirm.phase == modalResult:
-		return lipgloss.Color("78")
+		return okColor
 	case m.confirm.danger:
-		return lipgloss.Color("203")
+		return errColor
 	default:
 		return confirmAmber
 	}
@@ -307,7 +307,7 @@ func (m Model) renderConfirmBox() string {
 // confirmButtons renders the Cancel / Confirm pair in the given accent — matching the modal frame
 // (amber normally, red for a danger ask) — the cursor's choice highlighted (bold, in ‹ ›), the other
 // plain.
-func confirmButtons(cursor int, accent lipgloss.Color) string {
+func confirmButtons(cursor int, accent lipgloss.AdaptiveColor) string {
 	style := lipgloss.NewStyle().Foreground(accent)
 	btn := func(label string, selected bool) string {
 		if selected {

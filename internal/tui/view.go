@@ -20,23 +20,31 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/userops"
 )
 
-// Shared lipgloss styles. Colors are ANSI 256 indices so they degrade
-// gracefully on limited terminals.
+// errColor and okColor are shared beyond their styles: the confirm-modal and
+// codex-auth borders re-tint on the outcome.
 var (
-	titleStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
-	cursorStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("212"))
-	selectedStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("212"))
-	faintStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
-	contentStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("245")) // board body text — softer than the bright default, above faint
-	liveStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("252")) // active (done/running) labels + the answer body — bright, below the frame
-	modalBodyStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("255")) // centered-modal body text — full contrast; a modal floats over the board and must outshine it
-	borderStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("255")) // master-detail box frame — the strongest line (near-white, like native)
-	sessionHdrStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
+	errColor = lipgloss.AdaptiveColor{Light: "160", Dark: "203"}
+	okColor  = lipgloss.AdaptiveColor{Light: "28", Dark: "78"}
+)
+
+// Shared lipgloss styles. Colors are AdaptiveColor pairs of ANSI 256 indices —
+// Dark is the dark-background palette, Light a darker counterpart that stays
+// legible on white terminals — so they degrade gracefully on limited terminals.
+var (
+	titleStyle      = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "32", Dark: "39"})
+	cursorStyle     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "198", Dark: "212"})
+	selectedStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "198", Dark: "212"})
+	faintStyle      = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "247", Dark: "241"})
+	contentStyle    = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "242", Dark: "245"}) // board body text — softer than the full-contrast tone, above faint
+	liveStyle       = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "237", Dark: "252"}) // active (done/running) labels + the answer body — strong, below the frame
+	modalBodyStyle  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "233", Dark: "255"}) // centered-modal body text — full contrast; a modal floats over the board and must outshine it
+	borderStyle     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "233", Dark: "255"}) // master-detail box frame — the strongest line (full contrast, like native)
+	sessionHdrStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "32", Dark: "39"})
 	teamHdrStyle    = lipgloss.NewStyle().Bold(true) // team section header (flush-left bold title)
-	errStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
-	okStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("78"))
-	noteStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("214")) // contextual Note hints — a warm tone above the gray body
-	pinStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("220")) // the kept/pinned ★ — yellow, trailing the row
+	errStyle        = lipgloss.NewStyle().Foreground(errColor)
+	okStyle         = lipgloss.NewStyle().Foreground(okColor)
+	noteStyle       = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "94", Dark: "214"})  // contextual Note hints — a warm tone above the gray body
+	pinStyle        = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "136", Dark: "220"}) // the kept/pinned ★ — gold, trailing the row
 )
 
 // footer renders a dim key-hint line.
@@ -48,11 +56,11 @@ func footer(s string) string { return faintStyle.Render(s) }
 func permModeStyle(mode string) lipgloss.Style {
 	switch mode {
 	case permmode.Plan:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("66"))
+		return lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "23", Dark: "66"})
 	case permmode.AcceptEdits:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("141"))
+		return lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "93", Dark: "141"})
 	case permmode.Auto:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+		return lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "94", Dark: "214"})
 	case permmode.BypassPermissions:
 		return errStyle
 	}
@@ -3012,7 +3020,7 @@ func (m Model) renderCodexAuthBox() string {
 	}
 	border := confirmAmber
 	if m.codexAuthErr != "" {
-		border = lipgloss.Color("203")
+		border = errColor
 	}
 	return lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).

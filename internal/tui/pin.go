@@ -8,7 +8,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
-// pinSuffix is the fixed-width trailing pin indicator a row appends at its right edge: a yellow ★
+// pinSuffix is the fixed-width trailing pin indicator a row appends at its right edge: a gold ★
 // when (kind,id) is pinned, else two spaces. The slot is ALWAYS reserved so toggling a pin never
 // shifts the row's left content — it only fills or clears the rightmost cell.
 func (m Model) pinSuffix(kind pinned.Kind, id string) string {
