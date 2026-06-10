@@ -15,6 +15,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/fileutil"
 	"github.com/ethanhq/cc-fleet/internal/ids"
+	"github.com/ethanhq/cc-fleet/internal/pinned"
 )
 
 // runsDirName holds run manifests under the jobs dir: ConfigDir/subagent-jobs/runs.
@@ -489,10 +490,12 @@ func PurgeRun(runID string) error {
 			jobID := strings.TrimSuffix(name, ".json")
 			if meta, merr := readMeta(dir, jobID); merr == nil && meta.RunID == runID {
 				removeJob(dir, jobID)
+				_ = pinned.Unpin(pinned.Job, jobID) // explicit delete clears any leaf pin marker
 			}
 		}
 	}
 	removeRun(filepath.Join(dir, runsDirName), runID)
+	_ = pinned.Unpin(pinned.Run, runID) // explicit delete is the sanctioned removal of a pinned run
 	return nil
 }
 
@@ -506,9 +509,24 @@ func PruneRuns() (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	pins, perr := pinned.Snapshot()
+	if perr != nil {
+		return 0, perr
+	}
+	// A run with any pinned member is spared too: PurgeRun removes ALL its member jobs, so
+	// pruning it would delete the pinned leaf. Mirrors the run↔job coupling in GC / ClearFinished.
+	// Fail closed if the job scan fails — pruning pin-blind could delete a pinned leaf.
+	jobs, jerr := ListJobs()
+	if jerr != nil {
+		return 0, jerr
+	}
+	pinnedMemberRun := pinnedRunMembers(jobs, pins)
 	removed := 0
 	for _, r := range runs {
 		id := r.RunID
+		if pins.Has(pinned.Run, id) || pinnedMemberRun[id] {
+			continue // user-pinned (or has a pinned member): only an explicit delete removes it
+		}
 		_ = WithRunLock(id, func() error {
 			fresh, rerr := ReadRun(id)
 			if rerr != nil || isLiveOrUnverifiable(fresh) {

@@ -23,6 +23,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/fileutil"
 	"github.com/ethanhq/cc-fleet/internal/ids"
+	"github.com/ethanhq/cc-fleet/internal/pinned"
 	"github.com/ethanhq/cc-fleet/internal/teardown"
 )
 
@@ -318,7 +319,48 @@ func Delete(team string) error {
 	if err := os.Remove(jsonPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return nil
+	// The record is gone — drop any keep-marker so a same-name respawn starts unpinned.
+	return pinned.Unpin(pinned.Team, team)
+}
+
+// ClearEnded deletes the ended-team records owned by sessionID — every record whose members
+// ALL carry LeadSessionID == sessionID — skipping any pinned team. It is the teamhist half of
+// the board "clear-finished" action (session-scoped). A record with a member from another
+// session is left intact: Delete removes a whole-team record, so clearing one session must not
+// take another session's members with it (the user removes such a mixed record explicitly).
+// Pins are honored from the caller's snapshot. Returns the number of records deleted.
+func ClearEnded(sessionID string, pins pinned.Set) (int, error) {
+	if sessionID == "" {
+		return 0, fmt.Errorf("teamhist: ClearEnded requires a session id")
+	}
+	recs, err := List()
+	if err != nil {
+		return 0, err
+	}
+	deleted := 0
+	for _, rec := range recs {
+		if pins.Has(pinned.Team, rec.Team) || !whollyInSession(rec, sessionID) {
+			continue
+		}
+		if derr := Delete(rec.Team); derr == nil {
+			deleted++
+		}
+	}
+	return deleted, nil
+}
+
+// whollyInSession reports whether rec has at least one member and every member's LeadSessionID
+// is sessionID — i.e. the team is owned solely by that session.
+func whollyInSession(rec Record, sessionID string) bool {
+	if len(rec.Members) == 0 {
+		return false
+	}
+	for _, m := range rec.Members {
+		if m.LeadSessionID != sessionID {
+			return false
+		}
+	}
+	return true
 }
 
 // Purge removes the whole teams-history directory (cc-fleet uninstall). Returns

@@ -201,13 +201,19 @@ func TestWfFooters(t *testing.T) {
 	jobs, runs := oneRun()
 	m := drillRun(t, runsModel(t, jobs, runs, nil))
 	phases := m.View()
-	for _, want := range []string{"x stop", "s save", "d delete", "R refresh", "r restart"} {
+	for _, want := range []string{"x stop", "R refresh", "r restart"} {
 		if !strings.Contains(phases, want) {
 			t.Fatalf("phases footer missing %q:\n%s", want, phases)
 		}
 	}
 	if strings.Contains(phases, "pause") {
 		t.Fatalf("pause is a non-goal — the footer must not offer it:\n%s", phases)
+	}
+	// The run drill offers neither delete nor save — both are whole-workflow ops at the outermost row.
+	for _, absent := range []string{"d delete", "s save"} {
+		if strings.Contains(phases, absent) {
+			t.Fatalf("the run drill must not offer %q — only the outermost run row does:\n%s", absent, phases)
+		}
 	}
 	m, _ = press(t, m, "right") // → agent detail
 	agent := m.View()
@@ -221,63 +227,137 @@ func TestWfFooters(t *testing.T) {
 	}
 }
 
-// TestWfControlsTargetRun: x/r/s act on the FOCUSED run even when the cursor's phase has no agents;
-// at the Phases level lowercase r restarts the run (it does NOT trip the board reload — the
-// key-precedence regression guard: a run-level r must never set m.loading).
+// TestWfControlsTargetRun: x/r act on the FOCUSED run even when the cursor's phase has no agents;
+// both open a confirm, and at the Phases level confirming r dispatches a restart that does NOT trip
+// the board reload (the key-precedence regression guard: a run-level r must never set m.loading).
 func TestWfControlsTargetRun(t *testing.T) {
 	runs := []subagent.WorkflowRun{{RunID: "run-1", Name: "r", SessionID: "sX",
 		StartedAt: "2026-06-01T00:00:00Z", Phases: []subagent.RunPhase{{Title: "map"}}}}
 	m := drillRun(t, runsModel(t, nil, runs, nil)) // empty phase, no agents
-	if mx, cmd := press(t, m, "x"); cmd == nil {
-		_ = mx
-		t.Fatal("x should stop the focused run even with no agents in the phase")
+	// x opens a stop confirm for the focused run even with no agents in the phase.
+	mx, _ := press(t, m, "x")
+	if mx.confirm == nil || mx.confirm.kind != confirmStop || mx.confirm.id != "run-1" {
+		t.Fatalf("x should open a stop confirm for the focused run: %+v", mx.confirm)
 	}
-	// lowercase r at the Phases level is the workflow restart, NOT the board reload: it must
-	// dispatch a restart and leave m.loading false. A fresh board: the x press above marked
-	// the run busy in the in-flight map, which is shared across model copies.
-	m = drillRun(t, runsModel(t, nil, runs, nil))
-	mr, cmd := press(t, m, "r")
+	// lowercase r at the Phases level opens a restart confirm (NOT the board reload); confirming it
+	// dispatches a restart, holds the modal in its running phase, and must leave m.loading false.
+	mr, _ := press(t, m, "r")
+	if mr.confirm == nil || mr.confirm.kind != confirmRestart {
+		t.Fatalf("r should open a restart confirm for the focused run: %+v", mr.confirm)
+	}
+	mr, _ = press(t, mr, "right")
+	mr, cmd := press(t, mr, "enter")
 	if cmd == nil {
-		t.Fatal("r should restart the focused run even with no agents")
+		t.Fatal("confirming the restart should dispatch it")
 	}
 	if mr.loading {
-		t.Fatal("lowercase r at the Phases level must restart the run, not trigger a board reload (loading set)")
+		t.Fatal("a run-level restart must not trigger a board reload (loading set)")
 	}
-	m2, _ := press(t, m, "s")
-	if !m2.wfSaving || !strings.Contains(m2.View(), "save as:") {
-		t.Fatalf("s should open the save-workflow name prompt:\n%s", m2.View())
-	}
-	// enter on a non-empty name dispatches the save; esc cancels.
-	if _, cmd := press(t, m2, "enter"); cmd == nil {
-		t.Fatal("enter on the prefilled save name should dispatch a save")
-	}
-	m3, _ := press(t, m2, "esc")
-	if m3.wfSaving {
-		t.Fatal("esc should cancel the save prompt")
+	if mr.confirm == nil || mr.confirm.phase != modalRunning {
+		t.Fatalf("a dispatched restart should hold the modal in its running phase: %+v", mr.confirm)
 	}
 }
 
-// TestWfInFlightGuard: a restart marks the run in-flight with a transient "restarting" status; a second
-// r (or x) while it is in flight is a no-op; the completing workflowCtlMsg clears the guard so r works again.
+// TestWfSaveAtRunRow: save (s) is offered only at the outermost run row (boxes level), not inside the
+// drill — s there opens the centered name prompt, enter dispatches the save, esc cancels.
+func TestWfSaveAtRunRow(t *testing.T) {
+	runs := []subagent.WorkflowRun{{RunID: "r1", Name: "alpha", SessionID: "s", StartedAt: "2026-06-01T00:00:20Z"}}
+	m := runsModel(t, nil, runs, nil)
+	if m.asMode != asModeBoxes {
+		t.Fatalf("a runs session should land at boxes, got %d", m.asMode)
+	}
+	m2, _ := press(t, m, "s")
+	if !m2.wfSaving || !strings.Contains(m2.View(), "Save workflow as:") {
+		t.Fatalf("s on the run row should open the save prompt:\n%s", m2.View())
+	}
+	if _, cmd := press(t, m2, "enter"); cmd == nil {
+		t.Fatal("enter on the prefilled save name should dispatch a save")
+	}
+	if m3, _ := press(t, m2, "esc"); m3.wfSaving {
+		t.Fatal("esc should cancel the save prompt")
+	}
+	// s inside the drill no longer opens the save prompt.
+	if md, _ := press(t, drillRun(t, runsModel(t, nil, runs, nil)), "s"); md.wfSaving {
+		t.Fatal("s inside the run drill must not open the save prompt")
+	}
+}
+
+// TestWfInFlightGuard: confirming a restart dispatches it and holds the modal in "restarting…"; while
+// it runs the modal traps focus so r/x are swallowed; the completing workflowCtlMsg resolves the modal
+// to a result and clears the guard, so a fresh r opens a new confirm.
 func TestWfInFlightGuard(t *testing.T) {
 	jobs, runs := oneRun()
 	m := drillRun(t, runsModel(t, jobs, runs, nil))
-	m1, cmd := press(t, m, "r")
+	m1, _ := press(t, m, "r")
+	if m1.confirm == nil || m1.confirm.kind != confirmRestart {
+		t.Fatalf("first r should open a restart confirm: %+v", m1.confirm)
+	}
+	m1, _ = press(t, m1, "right")
+	m1, cmd := press(t, m1, "enter")
 	if cmd == nil {
-		t.Fatal("first r should dispatch a restart")
+		t.Fatal("confirming the restart should dispatch it")
 	}
-	if !strings.Contains(m1.View(), "restarting") {
-		t.Fatalf("first r should show a transient 'restarting' status:\n%s", m1.View())
+	if m1.confirm == nil || m1.confirm.phase != modalRunning || !strings.Contains(m1.View(), "restarting") {
+		t.Fatalf("a dispatched restart should show 'restarting…' in the running modal:\n%s", m1.View())
 	}
-	if _, c2 := press(t, m1, "r"); c2 != nil {
-		t.Fatal("a second r while a restart is in flight must be a no-op")
+	if mr, c2 := press(t, m1, "r"); c2 != nil || mr.confirm.phase != modalRunning {
+		t.Fatal("a key while a restart is in flight must be swallowed by the running modal")
 	}
 	if _, cx := press(t, m1, "x"); cx != nil {
-		t.Fatal("x on a run with a restart in flight must be a no-op")
+		t.Fatal("x while a restart is in flight must be a no-op")
 	}
 	m2, _ := step(t, m1, workflowCtlMsg{verb: "restart", runID: "run-1", epoch: m1.boardEpoch})
-	if _, c3 := press(t, m2, "r"); c3 == nil {
-		t.Fatal("after the restart completes (guard cleared), r should dispatch again")
+	if m2.confirm == nil || m2.confirm.phase != modalResult {
+		t.Fatalf("the completing restart should resolve the modal to a result: %+v", m2.confirm)
+	}
+	m2, _ = press(t, m2, "enter") // dismiss the result
+	if m3, _ := press(t, m2, "r"); m3.confirm == nil || m3.confirm.kind != confirmRestart {
+		t.Fatal("after the restart completes (guard cleared), r should open a fresh confirm")
+	}
+}
+
+// TestWfSaveOutcomeDoesntResolveRestart: a save outcome sharing the workflowCtlMsg channel must not
+// resolve a restart modal of the same run (the verbs differ) nor clear its in-flight guard.
+func TestWfSaveOutcomeDoesntResolveRestart(t *testing.T) {
+	jobs, runs := oneRun()
+	m := drillRun(t, runsModel(t, jobs, runs, nil))
+	m, _ = press(t, m, "r")
+	m, _ = press(t, m, "right")
+	m, _ = press(t, m, "enter") // restart dispatched; modal running; run-1 marked busy
+	if m.confirm == nil || m.confirm.phase != modalRunning || !m.wfBusy("run-1") {
+		t.Fatalf("precondition: a confirmed restart should leave a running modal + busy guard: %+v busy=%v", m.confirm, m.wfBusy("run-1"))
+	}
+	// A save result for the same run lands first — it must NOT resolve the restart modal or free the guard.
+	m, _ = step(t, m, workflowCtlMsg{verb: "save", runID: "run-1", epoch: m.boardEpoch})
+	if m.confirm == nil || m.confirm.phase != modalRunning {
+		t.Fatalf("a save outcome must not resolve a running restart modal: %+v", m.confirm)
+	}
+	if !m.wfBusy("run-1") {
+		t.Fatal("a save outcome must not clear the restart's in-flight guard")
+	}
+	// The restart's own outcome resolves it and frees the guard.
+	m, _ = step(t, m, workflowCtlMsg{verb: "restart", runID: "run-1", epoch: m.boardEpoch})
+	if m.confirm == nil || m.confirm.phase != modalResult {
+		t.Fatalf("the restart outcome should resolve the modal: %+v", m.confirm)
+	}
+}
+
+// TestWithInfoSuppressedDuringSave: an async board outcome that would pop an info modal is suppressed
+// while the save-name prompt owns the screen, so it can't steal the input's keys.
+func TestWithInfoSuppressedDuringSave(t *testing.T) {
+	jobs, runs := oneRun()
+	m := runsModel(t, jobs, runs, nil) // boxes level, cursor on the run row
+	m, _ = press(t, m, "s")            // open the save-name prompt from the run row
+	if !m.wfSaving {
+		t.Fatal("precondition: s on the run row should open the save prompt")
+	}
+	// A delete outcome for another run arrives via withInfo while saving — it must NOT open a modal.
+	m, _ = step(t, m, workflowCtlMsg{verb: "delete", runID: "other", epoch: m.boardEpoch})
+	if m.confirm != nil {
+		t.Fatalf("an info outcome must be suppressed while the save prompt is open: %+v", m.confirm)
+	}
+	if !m.wfSaving {
+		t.Fatal("the save prompt must remain open")
 	}
 }
 
@@ -522,66 +602,128 @@ func TestWfScroll_ClampsAndResets(t *testing.T) {
 	}
 }
 
-// TestWfRestartLeaf_DispatchesAtAgentLevel: r at the agent level dispatches a single-leaf restart
-// (even a leaf with an empty key falls back to a whole-run restart — never a silent no-op).
+// TestWfRestartLeaf_DispatchesAtAgentLevel: r at the agent level opens a single-leaf restart confirm
+// (carrying the leaf's journal key); confirming it dispatches the restart.
 func TestWfRestartLeaf_DispatchesAtAgentLevel(t *testing.T) {
 	jobs, runs := oneRun()
 	jobs[0].JournalKey = "deadbeefkey" // the engine persists the leaf's key
 	m := drillRun(t, runsModel(t, jobs, runs, nil))
 	m, _ = press(t, m, "right") // → agent, focused on the map phase's leaf
-	if _, cmd := press(t, m, "r"); cmd == nil {
-		t.Fatal("r at the agent level should dispatch a single-leaf restart")
+	mr, _ := press(t, m, "r")
+	if mr.confirm == nil || mr.confirm.kind != confirmRestartAgent || mr.confirm.arg != "deadbeefkey" {
+		t.Fatalf("r at the agent level should open a single-leaf restart confirm: %+v", mr.confirm)
+	}
+	mr, _ = press(t, mr, "right")
+	if _, cmd := press(t, mr, "enter"); cmd == nil {
+		t.Fatal("confirming should dispatch the single-leaf restart")
 	}
 }
 
-// TestWfDelete_TwoPressConfirm: d on a run ROW at the boxes level arms a two-press delete; d at the
-// Phases level does too. The first d ARMS (a confirm prompt, no dispatch); a second d confirms and
-// dispatches; any other key disarms.
-func TestWfDelete_TwoPressConfirm(t *testing.T) {
+// TestWfRestartLeaf_PromptHonestAboutScope: at the agent level, r's confirm prompt tells the truth
+// about scope — "whole run" while the run is still running, "just this agent" only once it's terminal.
+func TestWfRestartLeaf_PromptHonestAboutScope(t *testing.T) {
+	check := func(status, want string) {
+		t.Helper()
+		jobs, runs := oneRun()
+		runs[0].Status = status
+		m := drillRun(t, runsModel(t, jobs, runs, nil))
+		m, _ = press(t, m, "right") // → agent level
+		mr, _ := press(t, m, "r")
+		if mr.confirm == nil || mr.confirm.kind != confirmRestartAgent {
+			t.Fatalf("status=%s: r should open a restart-agent confirm: %+v", status, mr.confirm)
+		}
+		if !strings.Contains(mr.confirm.prompt, want) {
+			t.Fatalf("status=%s: prompt should mention %q, got %q", status, want, mr.confirm.prompt)
+		}
+	}
+	check("running", "whole run")    // live run: restart re-runs siblings — say so
+	check("done", "just this agent") // terminal run: a keyed restart really is leaf-scoped
+}
+
+// TestSessionDelete_DangerConfirm: d at the session list opens a RED danger confirm to wipe the whole
+// session; confirming dispatches the async delete and holds the modal until its outcome resolves it.
+func TestSessionDelete_DangerConfirm(t *testing.T) {
+	m := boardModel(t,
+		[]teardown.Teammate{{Name: "alice", Team: "t1", PaneID: "%1", LeadSessionID: "sess-bbbbbbbb", SpawnTime: 2_000_000}},
+		[]subagent.Result{{JobID: "job-a0000000", Status: "done", StartedAt: "1970-01-01T00:00:01Z", LeadSessionID: "sess-aaaaaaaa"}},
+	)
+	if m.asMode != asModeSessions {
+		t.Fatalf("multi session should park on the session list, mode=%d", m.asMode)
+	}
+	m, cmd := press(t, m, "d")
+	if cmd != nil {
+		t.Fatal("d should open the modal, not dispatch")
+	}
+	if m.confirm == nil || m.confirm.kind != confirmSession || !m.confirm.danger || m.confirm.id == "" {
+		t.Fatalf("d should open a red danger session-delete confirm: %+v", m.confirm)
+	}
+	if mc, _ := press(t, m, "enter"); mc.confirm != nil {
+		t.Fatal("enter on the default Cancel should cancel the session delete")
+	}
+	m, _ = press(t, m, "right")
+	m, cmd = press(t, m, "enter")
+	if cmd == nil {
+		t.Fatal("Confirm should dispatch the session delete")
+	}
+	if m.confirm == nil || m.confirm.phase != modalRunning {
+		t.Fatalf("a dispatched session delete should hold the modal running: %+v", m.confirm)
+	}
+	m, _ = step(t, m, sessionDelMsg{removed: 3, teams: 1, epoch: m.boardEpoch})
+	if m.confirm == nil || m.confirm.phase != modalResult || !strings.Contains(m.confirm.result, "deleted 3") {
+		t.Fatalf("the outcome should resolve the modal to a result: %+v", m.confirm)
+	}
+}
+
+// TestWfDelete_ConfirmModal: d on a run ROW at the boxes level opens a confirm modal; enter
+// dispatches the delete, esc cancels. d INSIDE the run drill (phases/agents) does NOT delete — a
+// run is only deletable at its outermost (boxes) row.
+func TestWfDelete_ConfirmModal(t *testing.T) {
 	runs := []subagent.WorkflowRun{
 		{RunID: "r1", Name: "a", SessionID: "s", StartedAt: "2026-06-01T00:00:20Z"},
 		{RunID: "r2", Name: "b", SessionID: "s", StartedAt: "2026-06-01T00:00:10Z"},
 	}
-	// At the boxes level, d on a run row arms + confirms.
+	// At the boxes level, d on a run row opens the modal; enter dispatches.
 	m := runsModel(t, nil, runs, nil)
 	if m.asMode != asModeBoxes {
 		t.Fatalf("a runs session should land at boxes, got %d", m.asMode)
 	}
 	m, cmd := press(t, m, "d")
 	if cmd != nil {
-		t.Fatal("the first d on a run row should ARM the delete, not dispatch it")
+		t.Fatal("d on a run row should open the modal, not dispatch")
 	}
-	if !strings.Contains(m.View(), "press d again") {
-		t.Fatalf("arming should surface a confirm prompt:\n%s", m.View())
+	if m.confirm == nil || m.confirm.kind != confirmRun || m.confirm.id != "r1" {
+		t.Fatalf("d did not open a run-delete confirm: %+v", m.confirm)
 	}
-	m, cmd = press(t, m, "d")
+	if !strings.Contains(m.View(), "Confirm") {
+		t.Fatalf("the confirm modal should render the Confirm button:\n%s", m.View())
+	}
+	// → selects Confirm, then enter dispatches.
+	mC, _ := press(t, m, "right")
+	m2, cmd := press(t, mC, "enter")
 	if cmd == nil {
-		t.Fatal("the second d should confirm + dispatch the delete")
+		t.Fatal("Confirm + enter should dispatch the delete")
 	}
-	if m.wfDeleteArm != "" || strings.Contains(m.View(), "press d again") {
-		t.Fatalf("confirming should clear the arm + its prompt")
+	if m2.confirm != nil {
+		t.Fatal("confirming should close the modal")
 	}
-	// A non-d key after arming disarms (no accidental delete on a later stray d).
-	m, _ = press(t, m, "d")
-	if m.wfDeleteArm == "" {
-		t.Fatal("d should re-arm after a prior delete")
-	}
-	m, _ = press(t, m, "down")
-	if m.wfDeleteArm != "" || strings.Contains(m.View(), "press d again") {
-		t.Fatal("a non-d key should disarm the pending delete")
+	// enter on the default Cancel cancels without dispatching.
+	m3, cmd := press(t, m, "enter")
+	if cmd != nil || m3.confirm != nil {
+		t.Fatal("enter on Cancel should cancel the confirm")
 	}
 
-	// At the Phases level, d also arms (the run-level control).
+	// Inside the run drill, d must NOT open a delete confirm — the run is only deletable at its
+	// outermost (boxes) row, so drilling into phases or agents can't nuke the whole workflow.
 	mp := drillRun(t, runsModel(t, nil, runs, nil))
-	mp, cmd = press(t, mp, "d")
-	if cmd != nil {
-		t.Fatal("the first d at the Phases level should ARM the delete, not dispatch it")
+	if mp2, cmd := press(t, mp, "d"); cmd != nil || mp2.confirm != nil {
+		t.Fatalf("d at the Phases level must not delete the run: confirm=%+v cmd=%v", mp2.confirm, cmd)
 	}
-	if !strings.Contains(mp.View(), "press d again") {
-		t.Fatalf("arming at the Phases level should surface a confirm prompt:\n%s", mp.View())
-	}
-	if _, cmd := press(t, mp, "d"); cmd == nil {
-		t.Fatal("the second d at the Phases level should confirm + dispatch")
+	// ...and not at the agent level either (the exact surprise: deleting a leaf nuked the whole run).
+	jobs, runs2 := oneRun()
+	ma := drillRun(t, runsModel(t, jobs, runs2, nil))
+	ma, _ = press(t, ma, "right") // → agent level
+	if ma2, cmd := press(t, ma, "d"); cmd != nil || ma2.confirm != nil {
+		t.Fatalf("d at the agent level must not delete the run: confirm=%+v cmd=%v", ma2.confirm, cmd)
 	}
 }
 

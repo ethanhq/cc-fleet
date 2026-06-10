@@ -81,7 +81,10 @@ cc-fleet subagent <vendor> --model <m> --prompt "<task>" [--lead-session-id <id>
 
 cc-fleet subagent-status <job_id> --json Poll a --background subagent job
                                          (running | done | failed).
-cc-fleet subagent-gc --json              Remove finished background job files.
+cc-fleet subagent-gc --json              Remove finished background job files (default:
+                                         older than 24h). --session <id> clears only that
+                                         lead session's finished jobs/runs now (excludes
+                                         pinned); prefer it over a blanket clear-all.
 
 cc-fleet teardown <team-or-pane> --json  Clean up. Arg starting with "%" is a pane id;
                                          otherwise a team.

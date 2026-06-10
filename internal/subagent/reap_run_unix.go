@@ -32,6 +32,10 @@ func reapEngineTree(pid int) {
 	for _, p := range pids {
 		if pidAlive(p) {
 			_ = syscall.Kill(p, syscall.SIGKILL)
+		}
+		// Probe the GROUP separately: a leader can die in the grace while an unenumerated group
+		// member (re-parented, or missed by a degraded Children) survives — it still answers on -p.
+		if err := syscall.Kill(-p, 0); err == nil {
 			_ = syscall.Kill(-p, syscall.SIGKILL)
 		}
 	}

@@ -22,6 +22,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/models"
 	"github.com/ethanhq/cc-fleet/internal/onboarding"
 	"github.com/ethanhq/cc-fleet/internal/panevis"
+	"github.com/ethanhq/cc-fleet/internal/pinned"
 	"github.com/ethanhq/cc-fleet/internal/secrets"
 	"github.com/ethanhq/cc-fleet/internal/sessiontitle"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
@@ -145,11 +146,13 @@ type Model struct {
 	// endedSeen maps an ended team (gone from live discovery, rendered from its
 	// history record) to its record LastSeen, for the card's "last seen" line.
 	endedSeen map[string]time.Time
-	// teamHistDeleteArm holds the ended team armed for record deletion: the first
-	// `d` arms it (status prompt), a second `d` on the same team confirms (mirrors
-	// wfDeleteArm). Any other key disarms.
-	teamHistDeleteArm string
-	boardEpoch        int
+	// confirm, when non-nil, is the centered confirm modal overlaying the board: every destructive
+	// action (delete a run / ended team / job, clear a session's finished) opens one (see confirm.go).
+	// pins is the pin-registry snapshot loaded each refresh — the board reads it to mark ★ rows and
+	// to exclude pinned records from clear-finished.
+	confirm    *confirmModal
+	pins       pinned.Set
+	boardEpoch int
 	// boardSeen marks that a boardMsg has ever been accepted; a revisit then skips the
 	// "discovering…" loading frame and keeps the previous frame until the fresh load
 	// lands. boardEntryRoute defers the entry reset (cursors + focus park) to that
@@ -192,14 +195,9 @@ type Model struct {
 	asTeamKey   string
 	asTeamCtx   int
 	asTeamOut   int
-	// boardStatus is a one-line outcome of the last inline hide/show (so a failed
-	// h/s surfaces its reason instead of relying on the next silent refresh);
-	// boardStatusErr styles it as an error vs an ok confirmation. boardJobsErr is the
-	// last refresh's jobs-scan failure, rendered on its OWN line — it never overwrites
-	// boardStatus, which keeps its survive-the-refresh semantics.
-	boardStatus    string
-	boardStatusErr bool
-	boardJobsErr   error
+	// boardJobsErr is the last refresh's jobs-scan failure, rendered on its OWN dim line under the
+	// board — a persistent data-availability warning, not a one-shot outcome (those pop as modals).
+	boardJobsErr error
 	// wfLiveOn marks the 500ms workflow-only refresh chain as scheduled, so refreshes that
 	// keep seeing running leaves don't stack a second chain.
 	wfLiveOn bool
@@ -209,27 +207,23 @@ type Model struct {
 	// wfAgentCursor index the focused run's phases and the focused phase's agents. wfActivity
 	// holds each leaf's activity snapshot (read off the refresh goroutine, keyed by job id): a
 	// running leaf's tokens climb live, and every leaf's tool count persists.
-	// workflowStatus surfaces a stop/restart/save outcome (like boardStatus).
-	workflowJobs      []subagent.Result
-	workflowRuns      []subagent.WorkflowRun
-	focusedRunID      string
-	wfPhaseCursor     int
-	wfAgentCursor     int
-	wfActivity        map[string]activitySnapshot
-	workflowStatus    string
-	workflowStatusErr bool
-	// wfDeleteArm holds the run id armed for deletion: the first `d` arms it (status prompt), a second
-	// `d` on the same run confirms; any other key disarms (guards against an accidental single keypress).
-	wfDeleteArm string
+	workflowJobs  []subagent.Result
+	workflowRuns  []subagent.WorkflowRun
+	focusedRunID  string
+	wfPhaseCursor int
+	wfAgentCursor int
+	wfActivity    map[string]activitySnapshot
 	// wfRestarting is the per-run in-flight guard: a run id is added when a stop/restart/delete is
 	// dispatched and removed when its workflowCtlMsg lands, so a second x/r/d on the same run is a
 	// no-op until the first completes (and a restart shows a transient "restarting …" status meanwhile).
 	wfRestarting map[string]bool
-	// Save-workflow name prompt: `s` on a focused run opens wfSaveInput (prefilled with the run name);
+	// Save-workflow name prompt: `s` on a run row opens wfSaveInput (prefilled with the run name);
 	// while wfSaving, keys route to the input (enter saves to ~/.config/cc-fleet/workflows/<name>.star,
-	// esc cancels).
+	// esc cancels). wfSaveRun pins the TARGET run at open time — the board keeps refreshing under the
+	// prompt and a reanchor could move the cursor, so enter must not re-resolve it from the row.
 	wfSaveInput textinput.Model
 	wfSaving    bool
+	wfSaveRun   runGroup
 
 	// Focused-agent inline detail (asModeRunAgent right pane): the focused leaf's prompt/answer
 	// read from its io files (PersistIO-gated), rendered scrollable in the right pane.
@@ -364,6 +358,7 @@ type boardMsg struct {
 	// render "ended · last seen <ts>" without threading a time into the synthetic
 	// Teammate. Empty when no team has ended.
 	endedSeen map[string]time.Time
+	pins      pinned.Set
 	epoch     int
 }
 
@@ -428,6 +423,7 @@ func loadBoard(epoch int) tea.Cmd {
 		}
 		ended, endedSeen := synthesizeEnded(items, meta)
 		items = append(items, ended...)
+		pins, _ := pinned.Snapshot() // best-effort: a read glitch just renders no ★ this tick
 		return boardMsg{
 			teammates:   items,
 			teamErr:     err,
@@ -437,6 +433,7 @@ func loadBoard(epoch int) tea.Cmd {
 			activity:    activity,
 			sessionMeta: meta,
 			endedSeen:   endedSeen,
+			pins:        pins,
 			epoch:       epoch,
 		}
 	}
@@ -808,10 +805,9 @@ func boardTick(epoch int) tea.Cmd {
 	})
 }
 
-// stopRunCmd reaps + stops the focused run and reports the outcome on the
-// board status line. It is the board's only run-state mutation besides restart. The
-// epoch stamps the originating board visit so a result landing after the user
-// left + re-entered (epoch++) is dropped (mirror boardMsg's gate).
+// stopRunCmd reaps + stops the focused run and reports the outcome via its workflowCtlMsg. It is the
+// board's only run-state mutation besides restart. The epoch stamps the originating board visit so a
+// result landing after the user left + re-entered (epoch++) is dropped (mirror boardMsg's gate).
 func stopRunCmd(runID string, epoch int) tea.Cmd {
 	return func() tea.Msg {
 		err := subagent.WithRunLock(runID, func() error {
@@ -844,9 +840,9 @@ func deleteRunCmd(runID string, epoch int) tea.Cmd {
 	}
 }
 
-// workflowCtlMsg carries the outcome of an x/r/d/s control on a run drill. Its
-// handler records the status line and reloads (mirror paneVisMsg). Owned by
-// screenSpawn; epoch is the originating board visit so a stale result is dropped.
+// workflowCtlMsg carries the outcome of a run control (stop/restart from the drill, delete/save from
+// the run row). Its handler resolves the running modal (stop/restart) or pops an info modal
+// (delete/save), then reloads. Owned by screenSpawn; epoch gates a stale prior-visit result.
 type workflowCtlMsg struct {
 	verb  string // "stop" | "restart" | "delete" | "save"
 	runID string
@@ -855,6 +851,27 @@ type workflowCtlMsg struct {
 }
 
 func (workflowCtlMsg) owningScreen() screen { return screenSpawn }
+
+// ctlOutcome formats a run-control result line and whether it failed — shared by the modal-resolve
+// path (a stop/restart confirmed in the modal) and the info-popup path (a delete/save outcome).
+func ctlOutcome(verb, runID string, err error) (string, bool) {
+	if err != nil {
+		return fmt.Sprintf("%s %s failed: %s", verb, runID, sessiontitle.CleanTitle(err.Error())), true
+	}
+	return fmt.Sprintf("%s %s: ok", verb, runID), false
+}
+
+// runningVerb is the workflowCtlMsg verb a running modal of the given kind awaits, so a shared-channel
+// outcome for a different op on the same run (e.g. a save) can't resolve it.
+func runningVerb(kind string) string {
+	switch kind {
+	case confirmStop:
+		return "stop"
+	case confirmRestart, confirmRestartAgent:
+		return "restart"
+	}
+	return ""
+}
 
 // wfDetailMsg carries the focused leaf's io read for the inline agent-detail pane: the prompt +
 // answer (already read off the Update goroutine) and whether either io file was present. Owned by
@@ -896,8 +913,8 @@ func (m Model) anyLeafRunning() bool {
 
 // paneVisMsg carries the outcome of an inline hide/show so the board can surface
 // a failure (its code/reason/suggestion) instead of silently relying on the next
-// refresh to show an unchanged HIDDEN column. Its handler records the status
-// line and then reloads the board to reflect the new state.
+// refresh to show an unchanged HIDDEN column. Its handler pops an info modal and
+// then reloads the board to reflect the new state.
 type paneVisMsg struct{ res panevis.Result }
 
 // hideTeammateCmd hides the selected teammate row's pane and reports the
@@ -1270,6 +1287,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.wfActivity = msg.activity
 		m.sessionMeta = msg.sessionMeta
 		m.endedSeen = msg.endedSeen
+		m.pins = msg.pins
 		// Preserve the drill state: re-route if the focus chain broke, re-find the L2 row
 		// by identity, index-clamp the entity cursor, re-clamp the card scroll.
 		m.rerootSpawn()
@@ -1311,19 +1329,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(detail, m.startWfLive())
 
 	case paneVisMsg:
-		// Surface the hide/show outcome on the board's status line, then reload
-		// so the HIDDEN column reflects the new state. boardMsg does NOT touch
-		// boardStatus, so the message survives the immediate refresh.
+		// Pop the hide/show outcome as an info modal, then reload so the HIDDEN column reflects the
+		// new state. m.confirm survives the immediate refresh (boardMsg never touches it).
 		r := msg.res
 		if r.OK {
-			m.boardStatusErr = false
-			m.boardStatus = fmt.Sprintf("%s %s: ok", r.Action, r.Name)
+			m = m.withInfo(fmt.Sprintf("%s %s: ok", r.Action, r.Name), false)
 		} else {
-			m.boardStatusErr = true
-			m.boardStatus = fmt.Sprintf("%s %s failed: %s %s", r.Action, r.Name, r.ErrorCode, r.ErrorMsg)
+			line := fmt.Sprintf("%s %s failed: %s %s", r.Action, r.Name, r.ErrorCode, r.ErrorMsg)
 			if r.Suggestion != "" {
-				m.boardStatus += " — " + r.Suggestion
+				line += " — " + r.Suggestion
 			}
+			m = m.withInfo(line, true)
 		}
 		return m, loadBoard(m.boardEpoch)
 
@@ -1367,25 +1383,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.epoch != m.boardEpoch {
 			return m, nil
 		}
-		delete(m.wfRestarting, msg.runID) // the op completed — clear the in-flight guard
-		// Surface the control outcome on the board status line, then reload so the run's status
-		// reflects the new state (mirror paneVisMsg). A board refresh does NOT touch workflowStatus, so
-		// the message survives the refresh. A successful restart clears the line instead — the leaf
-		// flips to a Running dot on the reload, the natural in-place feedback. The run id + error are
-		// opaque/operator-supplied text, so scrub them like the rest of the board before display.
+		if msg.verb != "save" {
+			delete(m.wfRestarting, msg.runID) // stop/restart/delete completed — clear the in-flight guard (save never set it)
+		}
+		// The run id + error are opaque/operator-supplied text, so scrub them before display.
 		runID := shortRunID(sessiontitle.CleanTitle(msg.runID))
-		if msg.err != nil {
-			m.workflowStatusErr = true
-			m.workflowStatus = fmt.Sprintf("%s %s failed: %s", msg.verb, runID,
-				sessiontitle.CleanTitle(msg.err.Error()))
-		} else if msg.verb == "restart" {
-			// A successful restart needs no standalone confirmation — the leaf flips to a ● Running
-			// dot on the reload below, which is the natural in-place feedback; clear any stale line.
-			m.workflowStatusErr = false
-			m.workflowStatus = ""
+		line, isErr := ctlOutcome(msg.verb, runID, msg.err)
+		// A stop/restart confirmed via the modal waits in modalRunning for exactly this id AND verb —
+		// resolve it in place. Otherwise (a delete/save dispatched on close, or a same-id result for a
+		// different verb) pop a fresh info modal; withInfo no-ops if a modal is up so it can't clobber.
+		if m.confirm != nil && m.confirm.phase == modalRunning && m.confirm.id == msg.runID && msg.verb == runningVerb(m.confirm.kind) {
+			c := *m.confirm
+			c.phase, c.result, c.resultErr = modalResult, line, isErr
+			m.confirm = &c
 		} else {
-			m.workflowStatusErr = false
-			m.workflowStatus = fmt.Sprintf("%s %s: ok", msg.verb, runID)
+			m = m.withInfo(line, isErr)
 		}
 		return m, loadWfLight(m.boardEpoch)
 
@@ -1394,16 +1406,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.epoch != m.boardEpoch {
 			return m, nil
 		}
-		// Surface the delete outcome on the board status line (it survives the reload),
-		// then reload so the now-gone team drops off. The team name is config-sourced,
-		// so scrub it like every other board surface before display.
+		// Pop the delete outcome as an info modal, then reload so the now-gone team drops off. The
+		// team name is config-sourced, so scrub it like every other board surface before display.
 		team := sessiontitle.CleanTitle(displayTeam(msg.team))
 		if msg.err != nil {
-			m.boardStatusErr = true
-			m.boardStatus = fmt.Sprintf("delete %s failed: %s", team, sessiontitle.CleanTitle(msg.err.Error()))
+			m = m.withInfo(fmt.Sprintf("delete %s failed: %s", team, sessiontitle.CleanTitle(msg.err.Error())), true)
 		} else {
-			m.boardStatusErr = false
-			m.boardStatus = fmt.Sprintf("delete %s: ok", team)
+			m = m.withInfo(fmt.Sprintf("delete %s: ok", team), false)
+		}
+		return m, loadBoard(m.boardEpoch)
+
+	case jobCtlMsg:
+		if msg.epoch != m.boardEpoch {
+			return m, nil
+		}
+		if msg.err != nil {
+			m = m.withInfo("delete job failed: "+sessiontitle.CleanTitle(msg.err.Error()), true)
+		} else {
+			m = m.withInfo("delete job: ok", false)
+		}
+		return m, loadBoard(m.boardEpoch)
+
+	case sessionDelMsg:
+		if msg.epoch != m.boardEpoch {
+			return m, nil
+		}
+		line, isErr := fmt.Sprintf("deleted %d record(s) · %d ended team(s)", msg.removed, msg.teams), false
+		if msg.err != nil {
+			line, isErr = "delete session failed: "+sessiontitle.CleanTitle(msg.err.Error()), true
+		}
+		// Resolve the running danger modal in place; otherwise (none open) pop an info modal.
+		if m.confirm != nil && m.confirm.phase == modalRunning && m.confirm.kind == confirmSession {
+			c := *m.confirm
+			c.phase, c.result, c.resultErr = modalResult, line, isErr
+			m.confirm = &c
+		} else {
+			m = m.withInfo(line, isErr)
 		}
 		return m, loadBoard(m.boardEpoch)
 
@@ -1628,15 +1666,14 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab":
 		m.screen = screenSpawn
 		m.loading = !m.boardSeen // a revisit keeps the previous frame until the fresh load lands
-		m.boardStatus = ""       // clear any stale hide/show line from a prior visit
 		m.boardJobsErr = nil
 		m.asDetailJobID, m.asDetailPrompt, m.asDetailAnswer, m.asDetailIO = "", "", "", false
 		m.asDetailSnap, m.asPromptExpanded = activitySnapshot{}, false
 		m.asMateKey, m.asMateSnap, m.asMateFound = "", teammateSnapshot{}, false
 		m.wfLiveOn = false
 		// Per-visit run/record control state: a ctl result dropped while off-screen
-		// must not leave a stale busy flag or status on the next visit.
-		m.workflowStatus, m.wfDeleteArm, m.teamHistDeleteArm = "", "", ""
+		// must not leave a stale busy flag or an open modal on the next visit.
+		m.confirm = nil
 		m.wfRestarting = map[string]bool{}
 		m.wfSaving = false
 		// The entry reset (cursor zeroing + the unfocused park that makes the FIRST
@@ -1690,17 +1727,8 @@ func (m Model) updateSpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.wfSaving {
 		return m.updateWfSaveInput(msg)
 	}
-	if msg.String() != "d" && m.wfDeleteArm != "" {
-		m.wfDeleteArm = "" // any non-d key disarms a pending run delete
-		if m.workflowStatus == deleteArmPrompt {
-			m.workflowStatus = ""
-		}
-	}
-	if msg.String() != "d" && m.teamHistDeleteArm != "" {
-		m.teamHistDeleteArm = "" // any non-d key disarms a pending ended-team delete
-		if m.boardStatus == teamHistDeleteArmPrompt {
-			m.boardStatus = ""
-		}
+	if m.confirm != nil {
+		return m.updateConfirm(msg) // a confirm modal traps focus: ←/→ select, enter runs the choice (no esc)
 	}
 	atRunLevel := m.asMode == asModeRunPhases || m.asMode == asModeRunAgent
 	switch msg.String() {
@@ -1769,6 +1797,14 @@ func (m Model) updateAsSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "right", "enter":
 		return m.asDescend()
+	case "d":
+		// Delete EVERY record in the cursored session (a live run is stopped first) — a heavy,
+		// pin-aware wipe behind a red danger confirm. The "(no session)" bucket has no id to target.
+		if ok && m.asSessionCursor >= 0 && m.asSessionCursor < len(p.sessions) {
+			if id := p.sessions[m.asSessionCursor].sessionID; id != "" {
+				return m.openConfirmDanger(confirmSession, id, "Delete EVERY record in this session? Running ones are stopped.")
+			}
+		}
 	case "esc":
 		return m.asAscend(true)
 	case "left":
@@ -1781,8 +1817,8 @@ func (m Model) updateAsSessions(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // (the Dynamic Workflows box rail), then its team rows (the Agent Teams box rail), then its
 // job rows (the Subagents box). A job row shows its card INLINE in the Subagents box, so it
 // gets the card keys right here (j/k scroll, ⏎ fold) and never needs a descend; →/⏎ descend a
-// RUN row into its phases or a TEAM row into its member view; d arms a run or ended-team
-// delete. ←/esc ascend.
+// RUN row into its phases or a TEAM row into its member view; d opens a delete confirm for a
+// run / ended-team / job row. ←/esc ascend.
 func (m Model) updateAsBoxes(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	s, ok := m.focusedSession()
 	n := 0
@@ -1801,13 +1837,34 @@ func (m Model) updateAsBoxes(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		mm, job := m.focusBoxJobIO()
 		return mm, tea.Batch(team, job)
 	case "d":
-		// A run row arms the run delete; an ENDED team row arms its record delete;
-		// a live team row and job rows ignore d.
+		// A run row confirms a run delete; an ENDED team row its record delete; a job row its
+		// delete; a LIVE team row ignores d (it has no removable record). Each opens a modal.
 		if g, onRun := m.boxRun(); onRun {
-			return m.armOrDelete(g.runID)
+			return m.openConfirm(confirmRun, g.runID, "Delete this run and its agents?")
 		}
 		if name, onTeam := m.boxTeam(); onTeam && m.isEndedTeam(name) {
-			return m.armOrDeleteTeamHist(name)
+			return m.openConfirm(confirmTeam, name, "Delete this ended team's history?")
+		}
+		if j, onJob := m.boxJob(); onJob {
+			return m.openConfirm(confirmJob, j.JobID, "Delete this job?")
+		}
+	case "p":
+		// Toggle the keep/pin on the cursored row (run / team / job — any state). A pinned
+		// record survives GC and the clear-finished bulk action until it is unpinned or deleted.
+		if kind, id, ok := m.boxPinTarget(); ok {
+			return m.togglePin(kind, id)
+		}
+	case "c":
+		// Clear this session's finished (done/failed/stopped) jobs+runs and ended teams,
+		// excluding pinned. Needs a real (non-"(no session)") session.
+		if s, ok := m.focusedSession(); ok && s.sessionID != "" {
+			return m.openConfirm(confirmClear, s.sessionID, "Clear this session's finished tasks?")
+		}
+	case "s":
+		// Save the cursored run as a named, reusable workflow — offered only here at its outermost
+		// row (a whole-workflow op belongs to the workflow's row, never inside the run drill).
+		if g, onRun := m.boxRun(); onRun {
+			return m.startSaveWorkflow(g)
 		}
 	case "right", "enter":
 		if _, onJob := m.boxJob(); onJob {
@@ -1902,6 +1959,24 @@ func (m Model) updateAsEntity(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if t, ok := m.selectedTeammate(); ok && t.Status != endedStatus {
 			return m, showTeammateCmd(t)
 		}
+	case "p":
+		// Pin the focused detail row: a job by id, or a teammate's team (team-level pin).
+		if j, ok := m.selectedJob(); ok {
+			return m.togglePin(pinned.Job, j.JobID)
+		}
+		if t, ok := m.selectedTeammate(); ok && t.Team != "" {
+			return m.togglePin(pinned.Team, t.Team)
+		}
+	case "d":
+		if j, ok := m.selectedJob(); ok {
+			return m.openConfirm(confirmJob, j.JobID, "Delete this job?")
+		}
+	case "c":
+		// Clear this session's finished records — also reachable here because a single-kind
+		// session auto-skips the boxes level and lands straight on this entity view.
+		if s, ok := m.focusedSession(); ok && s.sessionID != "" {
+			return m.openConfirm(confirmClear, s.sessionID, "Clear this session's finished tasks?")
+		}
 	case "esc":
 		return m.asAscend(true)
 	case "left":
@@ -1921,7 +1996,7 @@ func singleKindSrc(s asSession) (asRailRef, bool) {
 		return asRailRef{jobs: true}, true
 	}
 	if len(s.jobs) == 0 && len(s.teams) == 1 && !teamEnded(s.teams[0]) {
-		// An ended team keeps the boxes level — its d×2 record delete lives there.
+		// An ended team keeps the boxes level — its d delete-confirm lives there.
 		return asRailRef{team: s.teams[0].name}, true
 	}
 	return asRailRef{}, false
@@ -2452,7 +2527,7 @@ func (m Model) selectedLeaf() (subagent.Result, bool) {
 	return p.jobs[m.wfAgentCursor], true
 }
 
-// selectedRunID returns the focused run id (x/r/s act on the whole run, even when the focused phase
+// selectedRunID returns the focused run id (x/r act on the whole run, even when the focused phase
 // has no agents).
 func (m Model) selectedRunID() (string, bool) {
 	if _, ok := m.focusedGroup(); ok {
@@ -2495,51 +2570,6 @@ func clampIndex(i, n int) int {
 	}
 }
 
-// deleteArmPrompt is the status shown after the first `d` while a delete is armed.
-const deleteArmPrompt = "press d again to delete this run · any other key cancels"
-
-// armOrDelete is the two-press delete guard: the first `d` on a run arms it (sets the prompt); a second
-// `d` on the SAME run confirms and dispatches the delete. (updateSpawn disarms on any other key.)
-func (m Model) armOrDelete(runID string) (tea.Model, tea.Cmd) {
-	if m.wfDeleteArm == runID {
-		m.wfDeleteArm = ""
-		if m.workflowStatus == deleteArmPrompt {
-			m.workflowStatus = "" // clear the prompt; the delete's own outcome replaces it
-		}
-		if m.wfBusy(runID) {
-			return m, nil // a stop/restart/delete is already in flight — don't dispatch a second
-		}
-		m = m.markBusy(runID)
-		return m, deleteRunCmd(runID, m.boardEpoch)
-	}
-	m.wfDeleteArm = runID
-	m.workflowStatusErr = false
-	m.workflowStatus = deleteArmPrompt
-	return m, nil
-}
-
-// teamHistDeleteArmPrompt is the status shown after the first `d` on an ended team row.
-const teamHistDeleteArmPrompt = "press d again to delete this ended team · any other key cancels"
-
-// armOrDeleteTeamHist is the two-press guard for deleting an ended team's history
-// record: the first `d` arms it (status prompt on the board line), a second `d` on
-// the SAME team confirms and dispatches the delete (mirror armOrDelete). The
-// outcome rides boardStatus, whose survive-the-refresh semantics let the follow-up
-// reload re-render without the now-gone team.
-func (m Model) armOrDeleteTeamHist(team string) (tea.Model, tea.Cmd) {
-	if m.teamHistDeleteArm == team {
-		m.teamHistDeleteArm = ""
-		if m.boardStatus == teamHistDeleteArmPrompt {
-			m.boardStatus = ""
-		}
-		return m, deleteTeamHistCmd(team, m.boardEpoch)
-	}
-	m.teamHistDeleteArm = team
-	m.boardStatusErr = false
-	m.boardStatus = teamHistDeleteArmPrompt
-	return m, nil
-}
-
 // teamHistCtlMsg carries the outcome of an ended-team record delete. Owned by
 // screenSpawn; epoch is the originating board visit so a stale result is dropped.
 type teamHistCtlMsg struct {
@@ -2551,7 +2581,7 @@ type teamHistCtlMsg struct {
 func (teamHistCtlMsg) owningScreen() screen { return screenSpawn }
 
 // deleteTeamHistCmd removes an ended team's history record off the Update goroutine,
-// reporting the outcome on the board status line (mirror deleteRunCmd).
+// reporting the outcome via its teamHistCtlMsg (mirror deleteRunCmd).
 func deleteTeamHistCmd(team string, epoch int) tea.Cmd {
 	return func() tea.Msg {
 		return teamHistCtlMsg{team: team, err: teamhist.Delete(team), epoch: epoch}
@@ -2559,7 +2589,7 @@ func deleteTeamHistCmd(team string, epoch int) tea.Cmd {
 }
 
 // updateWfPhases (run drill): ↑/↓ walk phases, → descend into a non-empty phase's agents, ←/esc
-// ascend to the session's boxes; x/r/s control the focused run.
+// ascend to the session's boxes; x/r control the focused run.
 func (m Model) updateWfPhases(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	g, ok := m.focusedGroup()
 	switch msg.String() {
@@ -2584,7 +2614,7 @@ func (m Model) updateWfPhases(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // updateWfAgent (run drill): ↑/↓ walk agents (reloading the inline detail), j/k scroll that detail,
-// ←/esc ascend to Phases; r restarts ONLY the focused agent; x/s control the focused run.
+// ←/esc ascend to Phases; r restarts ONLY the focused agent; x stops the focused run.
 func (m Model) updateWfAgent(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	p, ok := m.focusedPhase()
 	switch msg.String() {
@@ -2693,35 +2723,33 @@ func (m Model) markBusy(runID string) Model {
 	return m
 }
 
-// armRestarting marks runID in-flight AND shows a transient "restarting <masked>…" status; the
-// workflowCtlMsg handler clears the guard, and on success the status, when the restart completes.
-func (m Model) armRestarting(runID string) Model {
-	m = m.markBusy(runID)
-	m.workflowStatusErr = false
-	m.workflowStatus = "restarting " + shortRunID(sessiontitle.CleanTitle(runID)) + "…"
-	return m
-}
-
+// restartFocusedLeaf opens a confirm for restarting just the focused agent (its journal key scopes
+// the restart to that leaf); runConfirmed dispatches it and holds the modal until the outcome lands.
 func (m Model) restartFocusedLeaf() (tea.Model, tea.Cmd) {
 	job, ok := m.selectedLeaf()
 	if !ok {
 		return m, nil
 	}
-	runID, rok := m.selectedRunID()
-	if !rok {
+	g, gok := m.focusedGroup()
+	if !gok {
 		return m, nil
 	}
-	if m.wfBusy(runID) {
+	if m.wfBusy(g.runID) {
 		return m, nil
 	}
-	m = m.armRestarting(runID)
-	return m, restartCmd(runID, job.JournalKey, m.boardEpoch)
+	// A keyed restart is scoped to just this leaf only once the run is TERMINAL; on a live run
+	// workflow.Restart stops the whole engine first, so every in-flight sibling re-runs too — be honest.
+	prompt := "Restart the whole run from this agent (re-runs in-flight siblings)?"
+	if g.status == "done" || g.status == "failed" || g.status == "stopped" {
+		prompt = "Restart just this agent?"
+	}
+	m.confirm = &confirmModal{kind: confirmRestartAgent, id: g.runID, arg: job.JournalKey, prompt: prompt}
+	return m, nil
 }
 
-// wfControl runs the run-level controls (x stop / r restart / s save) shared by the Phases pane and
-// the Agent pane's non-r keys — all targeting the FOCUSED run, so they work even when the focused
-// phase has no agents. s opens a name prompt and saves the focused run as a named, reusable workflow
-// (<ConfigDir>/workflows/<name>.star + .json).
+// wfControl runs the run-level controls (x stop / r restart) shared by the Phases pane and the Agent
+// pane's non-r keys — both target the FOCUSED run, so they work even when the focused phase has no
+// agents. (Save lives at the outermost run row, not in the drill — see updateAsBoxes.)
 func (m Model) wfControl(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	runID, ok := m.selectedRunID()
 	if !ok {
@@ -2732,37 +2760,33 @@ func (m Model) wfControl(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.wfBusy(runID) {
 			return m, nil
 		}
-		m = m.markBusy(runID) // stop surfaces its own "stop: ok" outcome
-		return m, stopRunCmd(runID, m.boardEpoch)
+		// There is no per-agent stop — x always stops the WHOLE run; say so plainly (the agent
+		// pane makes it look agent-scoped).
+		return m.openConfirm(confirmStop, runID, "Stop the whole run (all agents)?")
 	case "r":
 		if m.wfBusy(runID) {
 			return m, nil
 		}
-		m = m.armRestarting(runID)
-		return m, restartCmd(runID, "", m.boardEpoch) // whole run (no single leaf focused)
-	case "d":
-		return m.armOrDelete(runID)
-	case "s":
-		return m.startSaveWorkflow()
+		return m.openConfirm(confirmRestart, runID, "Restart this run and re-run its agents?")
 	}
 	return m, nil
 }
 
-// startSaveWorkflow opens the name input to save the focused run as a named, reusable workflow
-// (prefilled with the run's name). updateWfSaveInput then handles enter (save) / esc (cancel).
-func (m Model) startSaveWorkflow() (tea.Model, tea.Cmd) {
-	g, ok := m.focusedGroup()
-	if !ok {
-		return m, nil
-	}
+// startSaveWorkflow opens the centered name prompt to save runGroup g as a named, reusable workflow
+// (prefilled with the run's name) and pins g as the save target. updateWfSaveInput then handles
+// enter (save) / esc (cancel).
+func (m Model) startSaveWorkflow(g runGroup) (tea.Model, tea.Cmd) {
 	m.wfSaving = true
+	m.wfSaveRun = g
 	m.wfSaveInput = newTextInput(g.name, "workflow name", false)
 	m.wfSaveInput.Focus()
 	return m, textinput.Blink
 }
 
-// updateWfSaveInput drives the save-workflow name prompt: enter saves the focused run under the typed
-// name (a blank name or no focused run just cancels), esc cancels, any other key edits the input.
+// updateWfSaveInput drives the save-workflow name prompt: enter saves the run pinned at open time
+// (wfSaveRun — a refresh-reanchored cursor must not retarget the save; a since-vanished run just
+// fails the save itself) under the typed name, a blank name cancels, esc cancels, any other key
+// edits the input.
 func (m Model) updateWfSaveInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -2770,13 +2794,12 @@ func (m Model) updateWfSaveInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		name := strings.TrimSpace(m.wfSaveInput.Value())
-		runID, ok := m.selectedRunID()
+		g := m.wfSaveRun
 		m.wfSaving = false
-		if !ok || name == "" {
+		if name == "" {
 			return m, nil
 		}
-		g, _ := m.focusedGroup()
-		return m, saveWorkflowCmd(runID, name, g.sessionID, g.description, m.boardEpoch)
+		return m, saveWorkflowCmd(g.runID, name, g.sessionID, g.description, m.boardEpoch)
 	}
 	var cmd tea.Cmd
 	m.wfSaveInput, cmd = m.wfSaveInput.Update(msg)
@@ -2789,6 +2812,36 @@ func saveWorkflowCmd(runID, name, sessionID, description string, epoch int) tea.
 	return func() tea.Msg {
 		err := subagent.SaveWorkflow(runID, name, sessionID, description)
 		return workflowCtlMsg{verb: "save", runID: runID, err: err, epoch: epoch}
+	}
+}
+
+// sessionDelMsg carries the outcome of a whole-session wipe. Owned by screenSpawn; epoch gates a
+// stale result from a prior board visit.
+type sessionDelMsg struct {
+	removed int
+	teams   int
+	err     error
+	epoch   int
+}
+
+func (sessionDelMsg) owningScreen() screen { return screenSpawn }
+
+// deleteSessionCmd wipes every record in a session off the Update goroutine (PurgeRun can block on an
+// engine stop). It snapshots pins and fails closed — a pin read error aborts rather than deleting
+// pin-blind — then removes the session's runs/jobs and ended-team history.
+func deleteSessionCmd(sessionID string, epoch int) tea.Cmd {
+	return func() tea.Msg {
+		pins, perr := pinned.Snapshot()
+		if perr != nil {
+			return sessionDelMsg{err: perr, epoch: epoch}
+		}
+		removed, derr := subagent.DeleteSession(sessionID, pins)
+		teams, eerr := teamhist.ClearEnded(sessionID, pins)
+		err := derr
+		if err == nil {
+			err = eerr
+		}
+		return sessionDelMsg{removed: removed, teams: teams, err: err, epoch: epoch}
 	}
 }
 

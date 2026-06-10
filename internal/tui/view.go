@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
+	"github.com/ethanhq/cc-fleet/internal/pinned"
 	"github.com/ethanhq/cc-fleet/internal/secrets"
 	"github.com/ethanhq/cc-fleet/internal/sessiontitle"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
@@ -33,6 +34,7 @@ var (
 	errStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("203"))
 	okStyle         = lipgloss.NewStyle().Foreground(lipgloss.Color("78"))
 	noteStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("214")) // contextual Note hints — a warm tone above the gray body
+	pinStyle        = lipgloss.NewStyle().Foreground(lipgloss.Color("220")) // the kept/pinned ★ — yellow, trailing the row
 )
 
 // footer renders a dim key-hint line.
@@ -47,7 +49,14 @@ func (m Model) View() string {
 	case screenList:
 		return m.viewList()
 	case screenSpawn:
-		return m.viewSpawn()
+		s := m.viewSpawn()
+		switch {
+		case m.confirm != nil:
+			s = overlayCenter(s, m.renderConfirmBox(), m.width)
+		case m.wfSaving:
+			s = overlayCenter(s, m.renderSaveBox(), m.width)
+		}
+		return s
 	case screenPickTemplate:
 		return m.viewPickTemplate()
 	case screenForm:
@@ -402,33 +411,14 @@ func (m Model) viewSpawn() string {
 			b.WriteString(m.viewAsBoxes())
 		}
 	}
-	pad := strings.Repeat(" ", boardMargin) // status + footer lines align with the box border
-	// The jobs-scan failure renders on its OWN line so it never overwrites a surfaced
-	// hide/show outcome (boardStatus keeps its survive-the-refresh semantics).
+	pad := strings.Repeat(" ", boardMargin) // the jobs warning + footer align with the box border
+	// The jobs-scan failure renders on its OWN dim line — a persistent data-availability warning,
+	// not a one-shot outcome (those pop as centered modals). Every transient prompt/outcome (control
+	// results, hide/show, the save-name input) is a modal now; only this warning and the key-legend
+	// footer live at the board's foot.
 	if m.boardJobsErr != nil {
 		b.WriteString("\n" + pad + faintStyle.Render("jobs unavailable: "+
 			sessiontitle.CleanTitle(m.boardJobsErr.Error())))
-	}
-	// Inline hide/show outcome: a failed h/s shows its reason here rather than
-	// silently relying on the next refresh.
-	if m.boardStatus != "" {
-		style := okStyle
-		if m.boardStatusErr {
-			style = errStyle
-		}
-		b.WriteString("\n" + pad + style.Render(m.boardStatus))
-	}
-	// Run-control outcomes + the save-workflow name prompt (the run drill's controls).
-	switch {
-	case m.wfSaving:
-		b.WriteString("\n" + pad + faintStyle.Render("save as: ") + m.wfSaveInput.View() +
-			faintStyle.Render("  · enter save · esc cancel"))
-	case m.workflowStatus != "":
-		style := okStyle
-		if m.workflowStatusErr {
-			style = errStyle
-		}
-		b.WriteString("\n" + pad + style.Render(sessiontitle.CleanTitle(m.workflowStatus)))
 	}
 	b.WriteString("\n" + pad + m.renderAsFooter())
 	return b.String()
@@ -448,18 +438,30 @@ func (m Model) renderAsFooter() string {
 	case asModeProjects:
 		hint = "↑/↓ project · →/⏎ open · esc/tab providers · r refresh · q quit"
 	case asModeSessions:
-		hint = "↑/↓ session · →/⏎ open · ← back · r refresh · esc/tab providers · q quit"
+		hint = "↑/↓ session · →/⏎ open · d delete · ← back · r refresh · esc/tab providers · q quit"
 	case asModeEntity:
-		hint = "↑/↓ row · j/k scroll · ⏎ expand · h hide · s show · ←/esc back · r refresh · q quit"
-	case asModeRunPhases:
-		hint = "↑/↓ phase · → agents · r restart · x stop · d delete · s save · ←/esc back · R refresh · q quit"
-	case asModeRunAgent:
-		hint = "↑/↓ agent · j/k scroll · ⏎ prompt · r restart agent · x stop · s save · ←/esc back · R refresh · q quit"
-	default:
-		if _, onJob := m.boxJob(); onJob {
-			hint = "↑/↓ row · j/k scroll · ⏎ expand · ←/esc back · r refresh · q quit"
+		// A job IS a record, so it is deletable here; a team's members are not — the team is only
+		// deletable at its outermost (boxes) row. h/s act on live teammate panes, never on jobs.
+		if m.asEntitySrc.jobs {
+			hint = "↑/↓ row · j/k scroll · ⏎ expand · p pin · d delete · c clear · ←/esc back · r refresh · q quit"
 		} else {
-			hint = "↑/↓ row · →/⏎ detail · d delete run · ← back · r refresh · esc/tab providers · q quit"
+			hint = "↑/↓ row · j/k scroll · ⏎ expand · h hide · s show · p pin · c clear · ←/esc back · r refresh · q quit"
+		}
+	case asModeRunPhases:
+		hint = "↑/↓ phase · → agents · r restart · x stop · ←/esc back · R refresh · q quit"
+	case asModeRunAgent:
+		hint = "↑/↓ agent · j/k scroll · ⏎ prompt · r restart agent · x stop · ←/esc back · R refresh · q quit"
+	default:
+		// save (s) is offered ONLY on a run row — a whole-workflow op belongs to its outermost row.
+		_, onJob := m.boxJob()
+		_, onRun := m.boxRun()
+		switch {
+		case onJob:
+			hint = "↑/↓ row · j/k scroll · ⏎ expand · p pin · d delete · c clear · ←/esc back · r refresh · q quit"
+		case onRun:
+			hint = "↑/↓ row · →/⏎ detail · p pin · s save · d delete · c clear · ← back · r refresh · esc/tab providers · q quit"
+		default: // a team row
+			hint = "↑/↓ row · →/⏎ detail · p pin · d delete · c clear · ← back · r refresh · esc/tab providers · q quit"
 		}
 	}
 	return footer(hint)
@@ -794,7 +796,7 @@ func (m Model) renderRunRow(g runGroup, width int, selected bool) string {
 	if t, err := time.Parse(time.RFC3339, g.startedAt); err == nil {
 		metrics += " · " + t.Format("01-02 15:04")
 	}
-	return joinRowEnds(left, faintStyle.Render(metrics), width)
+	return joinRowEnds(left, faintStyle.Render(metrics)+m.pinSuffix(pinned.Run, g.runID), width)
 }
 
 // viewWfPhases is the run drill's Phases level: the run header above one box — "Phases | the selected
@@ -1840,8 +1842,8 @@ func (m Model) renderTeamsBox(s asSession, bodyH int) string {
 		if m.isEndedTeam(t.name) {
 			count = fmt.Sprintf("%s · %d members", endedStatus, len(t.members))
 		}
-		leftLines = append(leftLines, fmt.Sprintf("%s%s %s  %s", marker, teamAggregateDot(t.members), title,
-			faintStyle.Render(count)))
+		leftLines = append(leftLines, fmt.Sprintf("%s%s %s  %s%s", marker, teamAggregateDot(t.members),
+			title, faintStyle.Render(count), m.pinSuffix(pinned.Team, t.name)))
 	}
 	leftW, rightW := m.paneWidths(leftWidth("Agent Teams", leftLines, m.boardInner()))
 	rightTitle := "teammates"
@@ -1885,8 +1887,8 @@ func (m Model) renderRunsBox(s asSession, bodyH int) string {
 			name = labelStyle(g.status).Render(name)
 		}
 		done, total := runAgentCounts(g)
-		leftLines = append(leftLines, fmt.Sprintf("%s%s %s  %s", marker, statusDot(g.status), name,
-			faintStyle.Render(fmt.Sprintf("%d/%d", done, total))))
+		leftLines = append(leftLines, fmt.Sprintf("%s%s %s  %s%s", marker, statusDot(g.status), name,
+			faintStyle.Render(fmt.Sprintf("%d/%d", done, total)), m.pinSuffix(pinned.Run, g.runID)))
 	}
 	leftW, rightW := m.paneWidths(leftWidth(listTitle, leftLines, m.boardInner()))
 	rightTitle := "phases"
@@ -1921,7 +1923,7 @@ func (m Model) jobsBoxLeftLines(s asSession) []string {
 		} else {
 			label = labelStyle(j.Status).Render(label)
 		}
-		lines = append(lines, marker+statusDot(j.Status)+" "+label)
+		lines = append(lines, marker+statusDot(j.Status)+" "+label+m.pinSuffix(pinned.Job, j.JobID))
 	}
 	return lines
 }
@@ -2168,12 +2170,15 @@ func (m Model) asEntityLeftLines() (title string, lines []string) {
 			} else {
 				label = labelStyle(j.Status).Render(label)
 			}
-			lines = append(lines, marker+statusDot(j.Status)+" "+label)
+			lines = append(lines, marker+statusDot(j.Status)+" "+label+m.pinSuffix(pinned.Job, j.JobID))
 		}
 		return title, lines
 	}
-	title = fmt.Sprintf("%s · %d teammates",
-		trunc(sessiontitle.CleanTitle(displayTeam(m.asEntitySrc.team)), 20), len(members))
+	teamName := trunc(sessiontitle.CleanTitle(displayTeam(m.asEntitySrc.team)), 20)
+	if m.pins.Has(pinned.Team, m.asEntitySrc.team) {
+		teamName += " " + pinStyle.Render("★") // a single-team session pins at the title (no row to mark)
+	}
+	title = fmt.Sprintf("%s · %d teammates", teamName, len(members))
 	for i, t := range members {
 		marker := "  "
 		label := sessiontitle.CleanTitle(t.Name)

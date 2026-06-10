@@ -1653,13 +1653,13 @@ func TestAgentBoardNewSurfacesKeySafe(t *testing.T) {
 	}
 }
 
-// TestBoardSurfacesHideShowResult: an inline hide/show is surfaced on a status
-// line (error for a failure, ok for success) rather than failing silently,
-// survives the follow-up refresh, and clears on a fresh board entry.
+// TestBoardSurfacesHideShowResult: an inline hide/show outcome pops a centered info modal (red for a
+// failure, green for success) rather than failing silently, survives the follow-up refresh, and a
+// fresh board entry clears it.
 func TestBoardSurfacesHideShowResult(t *testing.T) {
 	m := boardModel(t, []teardown.Teammate{{Name: "alice", Team: "t1", PaneID: "%1"}}, nil)
 
-	// A failed hide surfaces code + reason + suggestion and triggers a reload.
+	// A failed hide pops a red info modal with code + reason + suggestion, and triggers a reload.
 	m, cmd := step(t, m, paneVisMsg{res: panevis.Result{
 		Action: "hide", Name: "alice", ErrorCode: panevis.ErrTmuxFailed,
 		ErrorMsg: "break-pane failed", Suggestion: "check tmux",
@@ -1667,30 +1667,34 @@ func TestBoardSurfacesHideShowResult(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("a hide outcome should still reload the board")
 	}
-	if !m.boardStatusErr {
-		t.Fatalf("a failed hide should set an error status, got err=%v msg=%q", m.boardStatusErr, m.boardStatus)
+	if m.confirm == nil || !m.confirm.resultErr {
+		t.Fatalf("a failed hide should pop a red info modal, got %+v", m.confirm)
 	}
 	out := m.View()
 	for _, want := range []string{"hide", "alice", panevis.ErrTmuxFailed, "break-pane failed", "check tmux"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("board view should surface the failure %q:\n%s", want, out)
+			t.Errorf("the info modal should surface the failure %q:\n%s", want, out)
 		}
 	}
-	// A board refresh must NOT wipe the surfaced status (it survives the reload).
+	// A board refresh must NOT close the open outcome modal (it survives the reload).
 	m, _ = step(t, m, boardMsg{teammates: []teardown.Teammate{{Name: "alice", Team: "t1", PaneID: "%1"}}, epoch: m.boardEpoch})
-	if m.boardStatus == "" {
-		t.Fatal("a board refresh must not clear the hide/show status line")
+	if m.confirm == nil {
+		t.Fatal("a board refresh must not close the hide/show outcome modal")
 	}
-	// A subsequent OK show overwrites with an ok-styled confirmation.
+	// Any key dismisses it; a later OK show then pops a green confirmation.
+	m, _ = press(t, m, "enter")
+	if m.confirm != nil {
+		t.Fatal("a key should dismiss the outcome modal")
+	}
 	m, _ = step(t, m, paneVisMsg{res: panevis.Result{OK: true, Action: "show", Name: "alice"}})
-	if m.boardStatusErr || !strings.Contains(m.boardStatus, "show alice") {
-		t.Fatalf("ok show should set an ok status line: %q (err=%v)", m.boardStatus, m.boardStatusErr)
+	if m.confirm == nil || m.confirm.resultErr || !strings.Contains(m.confirm.result, "show alice") {
+		t.Fatalf("an ok show should pop a green 'show alice: ok' modal, got %+v", m.confirm)
 	}
-	// Re-entering the board (esc to list, tab back) clears the stale status.
+	// Re-entering the board (esc to list, tab back) clears the stale modal.
 	mlist, _ := press(t, m, "esc")
 	mboard, _ := press(t, mlist, "tab")
-	if mboard.boardStatus != "" {
-		t.Fatalf("re-entering the board should clear stale status, got %q", mboard.boardStatus)
+	if mboard.confirm != nil {
+		t.Fatalf("re-entering the board should clear the stale modal, got %+v", mboard.confirm)
 	}
 }
 
@@ -2570,7 +2574,7 @@ func TestBoardEndedTeamRenders(t *testing.T) {
 func TestBoardEndedTeamHideShowNoOp(t *testing.T) {
 	m := endedBoard(t, map[string]time.Time{"gone": time.Now()},
 		[]teardown.Teammate{endedMate("gone", "bob", "s")})
-	// An ended team never skips the boxes level (its d×2 record delete lives there);
+	// An ended team never skips the boxes level (its d delete-confirm lives there);
 	// ⏎ on the team row opens the member view.
 	if m.asMode != asModeBoxes {
 		t.Fatalf("single ended team should keep the boxes level, mode=%d", m.asMode)
@@ -2591,8 +2595,8 @@ func TestBoardEndedTeamHideShowNoOp(t *testing.T) {
 	}
 }
 
-// TestBoardEndedTeamDelete: d on an ended team row arms the prompt; a second d dispatches
-// the record delete (and a live team row ignores d).
+// TestBoardEndedTeamDelete: d on an ended team row opens a confirm modal; enter dispatches the
+// record delete, esc cancels (and a live team row ignores d).
 func TestBoardEndedTeamDelete(t *testing.T) {
 	m := endedBoard(t, map[string]time.Time{"gone": time.Now()}, []teardown.Teammate{
 		{Team: "live", Name: "alice", PaneID: "%1", Status: "ok", LeadSessionID: "s"},
@@ -2601,32 +2605,34 @@ func TestBoardEndedTeamDelete(t *testing.T) {
 	if m.asMode != asModeBoxes {
 		t.Fatalf("setup: mode=%d, want boxes", m.asMode)
 	}
-	// Cursor on the LIVE team row (row 0): d must NOT arm.
+	// Cursor on the LIVE team row (row 0): d must NOT open a confirm.
 	m.asBoxCursor = 0
 	m1, cmd := press(t, m, "d")
-	if cmd != nil || m1.teamHistDeleteArm != "" || m1.boardStatus == teamHistDeleteArmPrompt {
-		t.Fatalf("d on a live team row armed a delete: arm=%q status=%q cmd=%v", m1.teamHistDeleteArm, m1.boardStatus, cmd)
+	if cmd != nil || m1.confirm != nil {
+		t.Fatalf("d on a live team row opened a confirm: confirm=%v cmd=%v", m1.confirm, cmd)
 	}
-	// Cursor on the ENDED team row (row 1): first d arms, second d dispatches.
+	// Cursor on the ENDED team row (row 1): d opens the modal; enter dispatches the delete.
 	m.asBoxCursor = 1
 	m2, cmd := press(t, m, "d")
 	if cmd != nil {
-		t.Fatal("first d should only arm, not dispatch")
+		t.Fatal("d should open the modal, not dispatch")
 	}
-	if m2.teamHistDeleteArm != "gone" || m2.boardStatus != teamHistDeleteArmPrompt {
-		t.Fatalf("first d did not arm: arm=%q status=%q", m2.teamHistDeleteArm, m2.boardStatus)
+	if m2.confirm == nil || m2.confirm.kind != confirmTeam || m2.confirm.id != "gone" {
+		t.Fatalf("d did not open a team-delete confirm: %+v", m2.confirm)
 	}
-	m3, cmd := press(t, m2, "d")
+	// → selects Confirm, then enter dispatches the delete.
+	m2c, _ := press(t, m2, "right")
+	m3, cmd := press(t, m2c, "enter")
 	if cmd == nil {
-		t.Fatal("second d should dispatch the delete (non-nil cmd)")
+		t.Fatal("Confirm + enter should dispatch the delete (non-nil cmd)")
 	}
-	if m3.teamHistDeleteArm != "" {
-		t.Errorf("arm not cleared after dispatch: %q", m3.teamHistDeleteArm)
+	if m3.confirm != nil {
+		t.Errorf("confirm not cleared after dispatch")
 	}
-	// A non-d key disarms a pending delete.
-	m4, _ := press(t, m2, "j")
-	if m4.teamHistDeleteArm != "" || m4.boardStatus == teamHistDeleteArmPrompt {
-		t.Errorf("a non-d key did not disarm: arm=%q status=%q", m4.teamHistDeleteArm, m4.boardStatus)
+	// enter on the default Cancel cancels without dispatching.
+	m4, cmd := press(t, m2, "enter")
+	if cmd != nil || m4.confirm != nil {
+		t.Errorf("enter on Cancel should cancel the confirm: confirm=%v cmd=%v", m4.confirm, cmd)
 	}
 }
 

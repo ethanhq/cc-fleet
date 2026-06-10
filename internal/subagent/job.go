@@ -19,6 +19,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/childenv"
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/ids"
+	"github.com/ethanhq/cc-fleet/internal/pinned"
 	"github.com/ethanhq/cc-fleet/internal/procintrospect"
 )
 
@@ -332,10 +333,19 @@ func materializePromptReader(r io.Reader, dst string) (f *os.File, err error) {
 // this process, before the successful-launch Release.
 var killProcessGroup = killProcessTree
 
-// ReapJob terminates a background job's process tree and finalizes it as a timeout
-// failure. The workflow runtime uses it to enforce a background leaf's timeout at wait()
-// time (launchBackground itself is deadline-less so a detached job survives the launcher).
-// Path-safe (validates the id) and best-effort: an unknown/gone job is a no-op.
+// reapJobTree is ReapJob's kill: an ANCESTRY reap rooted at the job's recorded PID. The tree
+// walk matters because a SYNC job's recorded PID is its launcher process while the claude child
+// is its own group leader (Setpgid) — a bare group kill would miss it; for a background job
+// (the detached child IS the leader) the walk degrades to the same group kill. A package var
+// only to allow test injection.
+var reapJobTree = reapEngineTree
+
+// ReapJob terminates a job's process tree and finalizes it as a timeout failure. The workflow
+// runtime uses it to enforce a background leaf's timeout at wait() time (launchBackground itself
+// is deadline-less so a detached job survives the launcher); DeleteSession uses it to stop a
+// still-live standalone job whose files it removes right after (so the timeout-flavored finalize
+// never surfaces there). Path-safe (validates the id) and best-effort: an unknown/gone job is a
+// no-op.
 func ReapJob(jobID string) error {
 	if err := ids.ValidateJobID(jobID); err != nil {
 		return err
@@ -349,7 +359,7 @@ func ReapJob(jobID string) error {
 		return nil // unknown / already gone — nothing to reap
 	}
 	if meta.PID > 0 {
-		killProcessGroup(meta.PID)
+		reapJobTree(meta.PID)
 	}
 	finalizeSyncJob(jobID, fail(ErrCodeTimeout, "background leaf exceeded its timeout", meta.Vendor, ""))
 	return nil
@@ -566,6 +576,13 @@ func GC(olderThan time.Duration) Result {
 	if err != nil {
 		return fail(ErrCodeFailed, fmt.Sprintf("resolve jobs dir: %v", err), "", "")
 	}
+	// Snapshot the pin registry once: a pinned job (or a pinned run's leaf) is kept
+	// regardless of age. A read glitch must NOT cause pinned records to be deleted, so a
+	// snapshot error fails the GC rather than proceeding pin-blind.
+	pins, perr := pinned.Snapshot()
+	if perr != nil {
+		return fail(ErrCodeFailed, fmt.Sprintf("read pin registry: %v", perr), "", "")
+	}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -586,6 +603,11 @@ func GC(olderThan time.Duration) Result {
 		if merr != nil {
 			continue
 		}
+		// A user-pinned job — or a leaf of a pinned run — is kept regardless of age, so a
+		// pinned run never loses its leaves to the job scan (run↔job coupling).
+		if pins.Has(pinned.Job, jobID) || (meta.RunID != "" && pins.Has(pinned.Run, meta.RunID)) {
+			continue
+		}
 		// A cached <id>.result.json is the authoritative terminal signal.
 		// processAlive can lie under PID reuse (sync jobs record the cc-fleet
 		// PID with empty SettingsPath, so a recycled PID looks alive forever).
@@ -604,7 +626,7 @@ func GC(olderThan time.Duration) Result {
 		removeJob(dir, jobID)
 		removed++
 	}
-	gcRunManifests(dir, cutoff)
+	gcRunManifests(dir, cutoff, pins)
 	return Result{OK: true, Removed: removed}
 }
 
@@ -620,7 +642,7 @@ func GC(olderThan time.Duration) Result {
 // so it is treated as an aged orphan and removed (symmetric with purgeRunManifests
 // and with the job side, where an unreadable meta is also reaped). Manifest pruning
 // is kept OUT of the Removed counter, which counts job groups, not runs.
-func gcRunManifests(jobsDir string, cutoff time.Time) {
+func gcRunManifests(jobsDir string, cutoff time.Time, pins pinned.Set) {
 	dir := filepath.Join(jobsDir, runsDirName)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -633,6 +655,9 @@ func gcRunManifests(jobsDir string, cutoff time.Time) {
 			continue
 		}
 		runID := strings.TrimSuffix(name, ".json")
+		if pins.Has(pinned.Run, runID) {
+			continue // user-pinned: kept even when memberless (its leaves were kept too)
+		}
 		if live[runID] {
 			continue // a surviving member protects the manifest
 		}
@@ -649,7 +674,7 @@ func gcRunManifests(jobsDir string, cutoff time.Time) {
 		}
 		removeRun(dir, runID)
 	}
-	sweepOrphanRunSidecars(dir, cutoff, false)
+	sweepOrphanRunSidecars(dir, cutoff, false, pins)
 }
 
 // sweepOrphanRunSidecars removes any per-run sidecar (runs/<id>.journal, …) whose
@@ -663,7 +688,7 @@ func gcRunManifests(jobsDir string, cutoff time.Time) {
 // manifest write hasn't landed, and reaping it would lose an active run's cache. This is
 // symmetric with the manifest recency rule (runIsRecent). force=true (uninstall purge)
 // removes every orphan unconditionally — no run is active during uninstall.
-func sweepOrphanRunSidecars(runsDir string, cutoff time.Time, force bool) {
+func sweepOrphanRunSidecars(runsDir string, cutoff time.Time, force bool, pins pinned.Set) {
 	entries, err := os.ReadDir(runsDir)
 	if err != nil {
 		return
@@ -678,6 +703,9 @@ func sweepOrphanRunSidecars(runsDir string, cutoff time.Time, force bool) {
 				continue
 			}
 			base := strings.TrimSuffix(name, ext)
+			if pins.Has(pinned.Run, base) {
+				continue // user-pinned run: keep its sidecars (periodic GC; uninstall passes an empty set)
+			}
 			if _, serr := os.Stat(filepath.Join(runsDir, base+".json")); !errors.Is(serr, os.ErrNotExist) {
 				continue // manifest present (or unstat-able) → not a removable orphan
 			}
@@ -808,8 +836,8 @@ func purgeRunManifests(jobsDir string, runningRuns map[string]bool) {
 		}
 		removeRun(dir, runID)
 	}
-	sweepOrphanRunSidecars(dir, time.Time{}, true) // uninstall: drop every orphan sidecar so the dir can empty
-	_ = os.Remove(dir)                             // succeeds only when empty (all manifests + sidecars gone)
+	sweepOrphanRunSidecars(dir, time.Time{}, true, pinned.Set{}) // uninstall: empty pin set → drop every orphan sidecar so the dir can empty
+	_ = os.Remove(dir)                                           // succeeds only when empty (all manifests + sidecars gone)
 }
 
 // procRoot is the procfs mount point. A package var so tests can point the

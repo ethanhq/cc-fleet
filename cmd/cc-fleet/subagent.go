@@ -10,6 +10,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ethanhq/cc-fleet/internal/ids"
+	"github.com/ethanhq/cc-fleet/internal/pinned"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
@@ -306,6 +307,7 @@ func newSubagentGCCmd() *cobra.Command {
 	var (
 		asJSON    bool
 		olderThan time.Duration
+		session   string
 	)
 	cmd := &cobra.Command{
 		Use:           "subagent-gc",
@@ -314,12 +316,32 @@ func newSubagentGCCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// --session is the granular path: immediately clear that lead session's finished
+			// (done/failed/stopped) jobs+runs, skipping pinned. It is status-driven, so an age
+			// window doesn't apply; reject --older-than rather than silently ignore it.
+			if session != "" {
+				if cmd.Flags().Changed("older-than") {
+					return reportSubagent(subagent.Result{OK: false, ErrorCode: subagent.ErrCodeFailed,
+						ErrorMsg: "--session clears finished records immediately; --older-than is not applicable"}, asJSON)
+				}
+				pins, perr := pinned.Snapshot()
+				if perr != nil {
+					return reportSubagent(subagent.Result{OK: false, ErrorCode: subagent.ErrCodeFailed, ErrorMsg: perr.Error()}, asJSON)
+				}
+				n, cerr := subagent.ClearFinished(session, pins)
+				if cerr != nil {
+					return reportSubagent(subagent.Result{OK: false, ErrorCode: subagent.ErrCodeFailed, ErrorMsg: cerr.Error()}, asJSON)
+				}
+				return reportSubagent(subagent.Result{OK: true, Removed: n}, asJSON)
+			}
 			return reportSubagent(subagent.GC(olderThan), asJSON)
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit a machine-readable JSON envelope")
 	cmd.Flags().DurationVar(&olderThan, "older-than", 24*time.Hour,
 		"Only GC finished jobs older than this (0s = remove all finished jobs)")
+	cmd.Flags().StringVar(&session, "session", "",
+		"Clear only this lead session's finished jobs/runs immediately (excludes pinned; --older-than not applicable)")
 	return cmd
 }
 

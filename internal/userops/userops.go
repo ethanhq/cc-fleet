@@ -15,6 +15,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/fileutil"
 	"github.com/ethanhq/cc-fleet/internal/models"
 	"github.com/ethanhq/cc-fleet/internal/neterr"
+	"github.com/ethanhq/cc-fleet/internal/pinned"
 	"github.com/ethanhq/cc-fleet/internal/profile"
 	"github.com/ethanhq/cc-fleet/internal/secrets"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
@@ -964,6 +965,15 @@ func Uninstall(req UninstallRequest) (*UninstallResult, error) {
 		res.Kept = append(res.Kept, fmt.Sprintf("%s (purge failed: %v)", histPath, herr))
 	} else {
 		res.Removed = append(res.Removed, histPath)
+	}
+
+	// 2c-bis. Pin registry (ConfigDir/pinned). User "keep" markers for board records;
+	// a full uninstall drops them too. Routed through pinned.Purge so the dir name stays
+	// owned by that package.
+	if pinPath, perr := pinned.Purge(); perr != nil {
+		res.Kept = append(res.Kept, fmt.Sprintf("%s (purge failed: %v)", pinPath, perr))
+	} else {
+		res.Removed = append(res.Removed, pinPath)
 	}
 
 	// 2d. Codex proxy daemon + its state files. Routed through codexproxy.Purge
