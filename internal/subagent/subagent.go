@@ -255,7 +255,23 @@ func Run(parent context.Context, req Request) Result {
 	// would otherwise write an orphan .result.json with no backing meta — and a
 	// slim sidecar already written by buildSlimArgv is reaped after the child
 	// exits, since GC keys on the (absent) meta and would never find it.
-	registered := registerSyncJob(jobID, req, model, effective, downgrade)
+	//
+	// registerHeld means the engine's kill-and-HOLD pre-marked this job and
+	// cancelled this very attempt before it registered: the held meta survives
+	// untouched, no cache is written, and the attempt exits as the stop the
+	// cancel asked for.
+	reg := registerSyncJob(jobID, req, model, effective, downgrade)
+	if reg == registerHeld {
+		if slim.promptFile != "" {
+			_ = os.Remove(slim.promptFile)
+		}
+		res := fail(ErrCodeStopped, "leaf held while the attempt was starting", req.Provider, "")
+		res.LeadSessionID = req.LeadSessionID
+		res.RunID, res.Phase, res.Label = req.RunID, req.Phase, req.Label
+		res.PromptProfile, res.SlimDowngrade = effective, downgrade
+		return res
+	}
+	registered := reg == registerOK
 	var res Result
 	if registered {
 		defer func() { finalizeSyncJob(jobID, res) }()

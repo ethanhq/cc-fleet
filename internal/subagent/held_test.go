@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/ethanhq/cc-fleet/internal/pinned"
@@ -141,5 +142,77 @@ func TestRequeueLeaf(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(dir, jobID+".answer")); err == nil {
 		t.Error("stale answer sidecar should be dropped on requeue")
+	}
+}
+
+// TestRegisterAfterHold_PreservesHold: a registration racing in AFTER the engine's
+// kill-and-HOLD pre-mark must not clobber the held meta back to running — it returns
+// registerHeld so the attempt exits without ever finalizing.
+func TestRegisterAfterHold_PreservesHold(t *testing.T) {
+	jobID := mintHeldFixture(t)
+	if got := registerSyncJob(jobID, Request{Provider: "v", RunID: "run-h"}, "m", "", ""); got != registerHeld {
+		t.Fatalf("registerSyncJob on a held meta = %v, want registerHeld", got)
+	}
+	if res := StatusFor(jobID); res.Status != "held" {
+		t.Fatalf("status = %q, want held (register must not clobber the pre-mark)", res.Status)
+	}
+	dir, _ := jobsDir()
+	if _, err := os.Stat(filepath.Join(dir, jobID+".result.json")); err == nil {
+		t.Fatal("no terminal cache may exist for a held leaf")
+	}
+}
+
+// TestHoldAfterSettle_NoOps: a directive landing after the attempt already cached a
+// terminal result must not flip the settled job to held (success-beats-kill stays
+// authoritative; no terminal cache may sit under a held meta).
+func TestHoldAfterSettle_NoOps(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	jobID := MintQueuedLeaf(Request{Provider: "v", RunID: "run-s"}, "m")
+	if jobID == "" {
+		t.Fatal("mint failed")
+	}
+	if got := registerSyncJob(jobID, Request{Provider: "v", RunID: "run-s"}, "m", "", ""); got != registerOK {
+		t.Fatalf("registerSyncJob = %v, want registerOK", got)
+	}
+	finalizeSyncJob(jobID, Result{OK: true, NumTurns: 1})
+	HoldLeaf(jobID)
+	if res := StatusFor(jobID); res.Status != "done" {
+		t.Fatalf("status = %q, want done (a settled job must not be re-held)", res.Status)
+	}
+}
+
+// TestHoldVsFinalize_NeverTerminalCacheUnderHold races the engine's pre-mark against
+// the leaf's finalize: whichever order the mutex serializes, a held meta and a terminal
+// cache must never coexist.
+func TestHoldVsFinalize_NeverTerminalCacheUnderHold(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir, err := jobsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 50; i++ {
+		jobID := MintQueuedLeaf(Request{Provider: "v", RunID: "run-r"}, "m")
+		if jobID == "" {
+			t.Fatal("mint failed")
+		}
+		if got := registerSyncJob(jobID, Request{Provider: "v", RunID: "run-r"}, "m", "", ""); got != registerOK {
+			t.Fatalf("registerSyncJob = %v, want registerOK", got)
+		}
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); HoldLeaf(jobID) }()
+		go func() {
+			defer wg.Done()
+			finalizeSyncJob(jobID, Result{ErrorCode: ErrCodeStopped, ErrorMsg: "kill"})
+		}()
+		wg.Wait()
+		meta, merr := readMeta(dir, jobID)
+		if merr != nil {
+			t.Fatal(merr)
+		}
+		_, cerr := os.Stat(filepath.Join(dir, jobID+".result.json"))
+		if meta.Status == "held" && cerr == nil {
+			t.Fatal("terminal cache exists under a held meta")
+		}
 	}
 }

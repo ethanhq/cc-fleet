@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -1045,6 +1046,30 @@ func mintSyncJobID() string {
 	return uuid.NewString()
 }
 
+// jobMetaMu serializes the hold-protocol meta read-modify-writes: the engine
+// loop's kill-and-HOLD pre-mark (HoldLeaf) and the leaf goroutine's
+// register/finalize would otherwise interleave — a register landing after the
+// pre-mark clobbers `held` back to `running`, and a hold landing between
+// finalize's meta read and its cache write strands a terminal cache under a
+// hold; either hands GC an authoritative "finished" for a live frame. Every
+// hold-protocol writer runs in the engine process while the engine lives
+// (cross-process writers like StopRun's release walk run only against a dead
+// engine), so an in-process mutex closes both windows.
+var jobMetaMu sync.Mutex
+
+// registerOutcome is registerSyncJob's tri-state result: the running meta was
+// written (registerOK); a kill-and-HOLD pre-mark owns the job, so the caller
+// must stop immediately and leave the held meta untouched (registerHeld); or
+// board bookkeeping is unavailable and the run proceeds unrecorded
+// (registerFailed).
+type registerOutcome int
+
+const (
+	registerFailed registerOutcome = iota
+	registerHeld
+	registerOK
+)
+
 // registerSyncJob records a SYNCHRONOUS Run on the Agents Board so it is
 // visible WHILE it executes. It writes only a running jobMeta — NO prompt /
 // answer text (key-safety, same discipline as background). PID is the
@@ -1056,16 +1081,25 @@ func mintSyncJobID() string {
 // any error proceeds unrecorded — board bookkeeping must never fail the run or
 // change its returned Result.
 //
-// It returns whether the meta was written: a FAILED registration must skip
-// finalizeSyncJob (which would otherwise write an orphan .result.json with no
-// backing meta) and let Run reap the slim sidecar instead.
-func registerSyncJob(jobID string, req Request, model string, effective, downgrade string) bool {
+// registerFailed must skip finalizeSyncJob (which would otherwise write an
+// orphan .result.json with no backing meta) and let Run reap the slim sidecar
+// instead.
+func registerSyncJob(jobID string, req Request, model string, effective, downgrade string) registerOutcome {
 	if jobID == "" {
-		return false
+		return registerFailed
 	}
 	dir, err := jobsDir()
 	if err != nil {
-		return false
+		return registerFailed
+	}
+	jobMetaMu.Lock()
+	defer jobMetaMu.Unlock()
+	// A held meta means the engine's kill-and-HOLD pre-marked this job and
+	// cancelled the very attempt now registering: writing `running` here would
+	// clobber the hold and let the attempt's finalize cache a terminal result
+	// for a live held frame. The caller stops instead.
+	if prev, perr := readMeta(dir, jobID); perr == nil && prev.Status == "held" {
+		return registerHeld
 	}
 	meta := jobMeta{
 		JobID:         jobID,
@@ -1096,7 +1130,7 @@ func registerSyncJob(jobID string, req Request, model string, effective, downgra
 		_ = os.Remove(filepath.Join(dir, jobID+ext))
 	}
 	if err := writeMetaFn(dir, meta); err != nil {
-		return false
+		return registerFailed
 	}
 	// Opt-in board drill-in: persist the prompt to a 0600 side file. Content-privacy,
 	// not key-safety (the provider key never enters the prompt). Best-effort — a write
@@ -1104,7 +1138,7 @@ func registerSyncJob(jobID string, req Request, model string, effective, downgra
 	if req.PersistIO && req.IOPrompt != "" {
 		_ = os.WriteFile(filepath.Join(dir, jobID+".prompt"), []byte(req.IOPrompt), 0o600)
 	}
-	return true
+	return registerOK
 }
 
 // MintQueuedLeaf records a leaf the workflow engine has admitted but not yet given a pool slot:
@@ -1166,14 +1200,21 @@ func FinalizeQueuedLeafFailed(jobID string, res Result) {
 // Status="held" with PID/PGID cleared, so StatusFor's held branch — not the PID
 // fallthrough — classifies it. The engine flips the meta BEFORE cancelling the attempt;
 // finalizeSyncJob then SUPPRESSES the killed attempt's terminal cache, so no terminal
-// cache ever exists during a hold and GC keeps treating the job as live. No-op for an
-// empty id or an unreadable meta.
+// cache ever exists during a hold and GC keeps treating the job as live. A job whose
+// terminal cache already exists settled before the directive (success-beats-kill):
+// the hold is a no-op, keeping the no-cache-under-hold invariant from the other
+// direction. No-op for an empty id or an unreadable meta.
 func HoldLeaf(jobID string) {
 	if jobID == "" {
 		return
 	}
 	dir, err := jobsDir()
 	if err != nil {
+		return
+	}
+	jobMetaMu.Lock()
+	defer jobMetaMu.Unlock()
+	if _, serr := os.Stat(filepath.Join(dir, jobID+".result.json")); serr == nil {
 		return
 	}
 	meta, err := readMeta(dir, jobID)
@@ -1186,8 +1227,10 @@ func HoldLeaf(jobID string) {
 }
 
 // ReleaseHeldLeafStopped terminal-stops a HELD leaf (the run is aborting and nothing
-// will ever wake it): the meta leaves `held` FIRST — otherwise finalizeSyncJob's hold
-// suppression would swallow the stopped cache this release exists to write.
+// will ever wake it): the meta leaves `held` FIRST — otherwise the finalize's hold
+// suppression would swallow the stopped cache this release exists to write. The
+// transition and the finalize run under ONE jobMetaMu acquisition (the Locked body —
+// the public wrapper would deadlock).
 func ReleaseHeldLeafStopped(jobID, msg string) {
 	if jobID == "" {
 		return
@@ -1196,13 +1239,15 @@ func ReleaseHeldLeafStopped(jobID, msg string) {
 	if err != nil {
 		return
 	}
+	jobMetaMu.Lock()
+	defer jobMetaMu.Unlock()
 	meta, err := readMeta(dir, jobID)
 	if err != nil {
 		return
 	}
 	meta.Status = "stopped"
 	_ = writeMetaFn(dir, meta)
-	finalizeSyncJob(jobID, fail(ErrCodeStopped, msg, meta.Provider, ""))
+	finalizeSyncJobLocked(jobID, fail(ErrCodeStopped, msg, meta.Provider, ""))
 }
 
 // NormalizeHeldLeaf clears a held pre-mark that lost its race: the directive landed
@@ -1217,6 +1262,8 @@ func NormalizeHeldLeaf(jobID string) {
 	if err != nil {
 		return
 	}
+	jobMetaMu.Lock()
+	defer jobMetaMu.Unlock()
 	meta, err := readMeta(dir, jobID)
 	if err != nil || meta.Status != "held" {
 		return
@@ -1245,6 +1292,8 @@ func RequeueLeaf(jobID string, attempt int) {
 	if err != nil {
 		return
 	}
+	jobMetaMu.Lock()
+	defer jobMetaMu.Unlock()
 	meta, err := readMeta(dir, jobID)
 	if err != nil {
 		return
@@ -1280,22 +1329,31 @@ func NormalizeStaleHolds(runID string) {
 			continue
 		}
 		jobID := strings.TrimSuffix(name, ".json")
-		meta, merr := readMeta(dir, jobID)
-		if merr != nil || meta.RunID != runID || meta.Status != "held" {
-			continue
-		}
-		if data, cerr := os.ReadFile(filepath.Join(dir, jobID+".result.json")); cerr == nil {
-			var r Result
-			if json.Unmarshal(data, &r) == nil && r.Status != "" {
-				meta.Status = r.Status
-				_ = writeMetaFn(dir, meta)
-				continue
-			}
-		}
-		meta.Status = "stopped" // ahead of the finalize so the suppression branch can't fire
-		_ = writeMetaFn(dir, meta)
-		finalizeSyncJob(jobID, fail(ErrCodeStopped, "run restarted while the leaf was held", meta.Provider, ""))
+		normalizeStaleHold(dir, runID, jobID)
 	}
+}
+
+// normalizeStaleHold is one job's sweep step, holding jobMetaMu across the whole
+// read→transition→finalize so nothing interleaves (the finalize goes through the
+// Locked body — the public wrapper would deadlock).
+func normalizeStaleHold(dir, runID, jobID string) {
+	jobMetaMu.Lock()
+	defer jobMetaMu.Unlock()
+	meta, merr := readMeta(dir, jobID)
+	if merr != nil || meta.RunID != runID || meta.Status != "held" {
+		return
+	}
+	if data, cerr := os.ReadFile(filepath.Join(dir, jobID+".result.json")); cerr == nil {
+		var r Result
+		if json.Unmarshal(data, &r) == nil && r.Status != "" {
+			meta.Status = r.Status
+			_ = writeMetaFn(dir, meta)
+			return
+		}
+	}
+	meta.Status = "stopped" // ahead of the finalize so the suppression branch can't fire
+	_ = writeMetaFn(dir, meta)
+	finalizeSyncJobLocked(jobID, fail(ErrCodeStopped, "run restarted while the leaf was held", meta.Provider, ""))
 }
 
 // finalizeSyncJob flips a sync job from running → done/failed by writing a
@@ -1306,8 +1364,17 @@ func NormalizeStaleHolds(runID string) {
 // STRIPPED so no provider reply is ever persisted to disk for a sync run (the caller
 // already got it on stdout). A subsequent StatusFor/ListJobs serves this cache.
 // jobID=="" (register failed) is a no-op; it is called from a defer so it runs on
-// the normal return path that produced res.
+// the normal return path that produced res. The read→suppress-or-write section runs
+// under jobMetaMu (a HoldLeaf landing between the meta read and the cache write
+// would otherwise strand a terminal cache under a hold); lifecycle paths already
+// holding the mutex call finalizeSyncJobLocked directly.
 func finalizeSyncJob(jobID string, res Result) {
+	jobMetaMu.Lock()
+	defer jobMetaMu.Unlock()
+	finalizeSyncJobLocked(jobID, res)
+}
+
+func finalizeSyncJobLocked(jobID string, res Result) {
 	if jobID == "" {
 		return
 	}

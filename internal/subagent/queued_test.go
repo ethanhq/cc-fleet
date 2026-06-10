@@ -24,7 +24,7 @@ func TestMintQueuedLeafThenStatusForQueued(t *testing.T) {
 		t.Errorf("queued placeholder lost its run grouping: %+v", st)
 	}
 	// Flip queued→running (subagent.Run reuses the id via registerSyncJob).
-	if !registerSyncJob(jobID, req, "m", "", "") {
+	if registerSyncJob(jobID, req, "m", "", "") != registerOK {
 		t.Fatal("registerSyncJob(reuse) failed")
 	}
 	if st := StatusFor(jobID); st.Status != "running" {
@@ -52,7 +52,7 @@ func TestRegisterSyncJobClearsStaleCacheOnReuse(t *testing.T) {
 	// Re-registering the SAME id must clear the stale done cache.
 	req2 := req
 	req2.Attempt = 2
-	if !registerSyncJob(jobID, req2, "m", "", "") {
+	if registerSyncJob(jobID, req2, "m", "", "") != registerOK {
 		t.Fatal("re-register failed")
 	}
 	st := StatusFor(jobID)
