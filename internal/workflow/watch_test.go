@@ -275,27 +275,29 @@ func TestWatchSinceSeq(t *testing.T) {
 	}
 }
 
-// TestTailEvents exercises the value-threaded façade the board uses: a zero EventTail reads the
-// whole file (reset=false), the returned tail reads only newly-appended events, and an absent
-// file degrades to no events.
-func TestTailEvents(t *testing.T) {
+// TestEventTailIncrementalRead exercises (*EventTail).read directly: a zero EventTail reads
+// the whole file (reset=false), a subsequent read returns only newly-appended events, and an
+// absent file degrades to no events.
+func TestEventTailIncrementalRead(t *testing.T) {
 	dir := t.TempDir()
 	path := dir + "/x.events"
 	if err := os.WriteFile(path, []byte(eventsJSONL(t, EventRecord{Seq: 1, Kind: "leaf", Label: "a"})), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	evs, tail, reset := TailEvents(path, EventTail{})
+	var tail EventTail
+	evs, reset := tail.read(path)
 	if len(evs) != 1 || reset {
 		t.Fatalf("first read: %d evs, reset=%v; want 1, false", len(evs), reset)
 	}
 	f, _ := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
 	f.WriteString(eventsJSONL(t, EventRecord{Seq: 2, Kind: "leaf", Label: "b"}))
 	f.Close()
-	evs, _, reset = TailEvents(path, tail)
+	evs, reset = tail.read(path)
 	if len(evs) != 1 || evs[0].Seq != 2 || reset {
 		t.Fatalf("incremental: %d evs (seq %v), reset=%v; want 1 (seq 2), false", len(evs), seqsOf(evs), reset)
 	}
-	if evs, _, reset := TailEvents(dir+"/absent.events", EventTail{}); len(evs) != 0 || reset {
+	var absent EventTail
+	if evs, reset := absent.read(dir + "/absent.events"); len(evs) != 0 || reset {
 		t.Fatalf("absent file: %d evs, reset=%v; want 0, false", len(evs), reset)
 	}
 }

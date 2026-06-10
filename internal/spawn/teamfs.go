@@ -51,12 +51,6 @@ func TeamConfigPath(team string) (string, error) {
 	return filepath.Join(dir, "config.json"), nil
 }
 
-// TeamsDir returns $HOME/.claude/teams — the root every team directory lives
-// under. Exported for callers (panevis) that need to glob across teams.
-func TeamsDir() (string, error) {
-	return teamsRoot()
-}
-
 // FindMemberByPane scans every team's config.json for a member whose
 // tmuxPaneId == paneID and returns its (team, name). found=false (with nil
 // error) means no team claims the pane — including the case where the teams

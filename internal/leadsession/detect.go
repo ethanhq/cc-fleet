@@ -38,17 +38,11 @@ func DetectFromPID(pid int) string {
 	return id
 }
 
-// DetectPID walks upward from the current parent PID and returns the first
-// ancestor PID whose Claude session registry entry validates (same fail-closed
-// PID-reuse check Detect() uses). Returns 0 when no validated ancestor exists.
-// Used by spawn-time permission inheritance to read the lead's cmdline.
-func DetectPID() int {
-	pid, _ := DetectPIDWithStart()
-	return pid
-}
-
-// DetectPIDWithStart is DetectPID plus the lead PID's validated /proc start
-// time. Returns (0, "") when no validated ancestor exists.
+// DetectPIDWithStart walks upward from the current parent PID and returns the
+// first ancestor PID whose Claude session registry entry validates (same
+// fail-closed PID-reuse check Detect() uses), plus that PID's validated /proc
+// start time. Returns (0, "") when no validated ancestor exists. Used by
+// spawn-time permission inheritance to read the lead's cmdline.
 //
 // The caller reads the lead's cmdline by bare PID AFTER this detect; the PID can
 // be recycled in between (TOCTOU). Returning the detect-time procStart lets the
@@ -79,7 +73,7 @@ func RevalidateProcStart(pid int, want string) bool {
 	return ok && st == want
 }
 
-// walk is the shared ancestor walk used by Detect/DetectFromPID and DetectPID.
+// walk is the shared ancestor walk used by Detect/DetectFromPID and DetectPIDWithStart.
 // It returns the (sessionID, pid) of the first ancestor whose session file
 // validates. When nothing validates it returns ("", 0). The walk stops at
 // init, on cycles, or after maxAncestorDepth steps.

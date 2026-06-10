@@ -2145,30 +2145,6 @@ func teamAggregateDot(members []teardown.Teammate) string {
 	return faintStyle.Render("◌")
 }
 
-// jobsAggregateDot rolls the session's jobs up to the rail — a failure is never masked:
-// any failed → ● (err), else any running → ● (accent), else all done → ● (green), else ◌.
-func jobsAggregateDot(jobs []subagent.Result) string {
-	running, done := false, 0
-	for _, j := range jobs {
-		switch j.Status {
-		case "failed":
-			return errStyle.Render("●")
-		case "running":
-			running = true
-		case "done":
-			done++
-		}
-	}
-	switch {
-	case running:
-		return cursorStyle.Render("●")
-	case len(jobs) > 0 && done == len(jobs):
-		return okStyle.Render("●")
-	default:
-		return faintStyle.Render("◌")
-	}
-}
-
 // renderTeammateRowFull is one teammate row (right pane): "<dot> <name>  <model>" left,
 // "<status>[ · hidden] · up <uptime>" right-aligned. The status word stays canonical even on
 // a hidden row (every row carries its `ps --check` health); hidden adds the suffix and the

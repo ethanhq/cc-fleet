@@ -168,26 +168,14 @@ func RenderEventLine(ev EventRecord) string {
 // EventTail is the incremental-tail state for a run's events file: the byte offset already
 // consumed, a torn trailing partial line carried across reads, the identity of the generation
 // being tailed, the seq of the last consumed event (contiguity check + reattach hint), and a
-// one-time skip threshold (SinceSeq, for a clean reattach).
-//
-// Watch holds a long-lived *EventTail and calls read directly; the TUI board, which threads
-// per-run tail state by value through its refresh loop, drives the same logic via TailEvents.
+// one-time skip threshold (SinceSeq, for a clean reattach). Watch holds a long-lived
+// *EventTail across its loop and calls read on it.
 type EventTail struct {
 	offset    int64
 	partial   string
 	info      os.FileInfo // generation identity (os.SameFile); nil before the first read
 	cursorSeq int64       // seq of the last consumed event; the reattach hint
 	since     int64       // skip-PRINTING events with Seq <= since (cleared on a generation reset)
-}
-
-// TailEvents is the value-threaded façade over (*EventTail).read for a caller that keeps per-run
-// tail state in a map passed through its own refresh loop (the TUI board): it advances a COPY of
-// prev and returns the new events, the advanced tail to store back, and whether a generation
-// reset was detected. The caller passes the zero EventTail on the first read. (Watch instead
-// holds a *EventTail across its loop and calls read directly.)
-func TailEvents(path string, prev EventTail) (evs []EventRecord, next EventTail, reset bool) {
-	evs, reset = (&prev).read(path)
-	return evs, prev, reset
 }
 
 // read returns the events appended since the last read that are PRINTABLE (Seq > since), plus

@@ -114,8 +114,8 @@ func TestInheritPermissionFlags_LeadDefault_NoFlag(t *testing.T) {
 }
 
 func TestInheritPermissionFlags_FrozenTemplate_NoLead(t *testing.T) {
-	// DetectPID() == 0 → frozen-template (covers macOS / out-of-tmux / external
-	// shell where the ancestor walk finds no validated Claude session).
+	// DetectPIDWithStart() == 0 → frozen-template (covers macOS / out-of-tmux /
+	// external shell where the ancestor walk finds no validated Claude session).
 	setLead(t, 0, nil)
 
 	flags, src := inheritPermissionFlags("")
@@ -125,8 +125,8 @@ func TestInheritPermissionFlags_FrozenTemplate_NoLead(t *testing.T) {
 }
 
 func TestInheritPermissionFlags_FrozenTemplate_CmdlineUnreadable(t *testing.T) {
-	// DetectPID() succeeds but readLeadCmdline fails → frozen-template (pure β,
-	// no γ split: we do NOT downgrade to default-safe on a read failure).
+	// DetectPIDWithStart() succeeds but readLeadCmdline fails → frozen-template
+	// (pure β, no γ split: we do NOT downgrade to default-safe on a read failure).
 	setLead(t, 4249, nil)
 
 	flags, src := inheritPermissionFlags("")
