@@ -812,6 +812,20 @@ func stopRunCmd(runID string, epoch int) tea.Cmd {
 	}
 }
 
+// leafCtlCmd sends a LIVE leaf directive (stop-leaf / restart-leaf) over the run's
+// control plane and reports via workflowCtlMsg — the engine's poller applies it and the
+// effect surfaces through the board poll (held ‖ / a fresh attempt).
+func leafCtlCmd(verb, runID, leafID string, epoch int) tea.Cmd {
+	op := "stop"
+	if verb == "restart-leaf" {
+		op = "restart"
+	}
+	return func() tea.Msg {
+		err := workflow.SendLeafCommand(runID, op, leafID)
+		return workflowCtlMsg{verb: verb, runID: runID, err: err, epoch: epoch}
+	}
+}
+
 // restartCmd restarts a run via workflow.Restart: an empty journalKey resumes the WHOLE run
 // (re-running only un-journaled / failed leaves); a leaf's journalKey additionally drops that leaf's
 // cache so the resume re-runs it (+ any downstream leaf whose input shifted). On a still-running run
@@ -852,6 +866,12 @@ func ctlOutcome(verb, runID string, err error) (string, bool) {
 	if err != nil {
 		return fmt.Sprintf("%s %s failed: %s", verb, runID, sessiontitle.CleanTitle(err.Error())), true
 	}
+	switch verb {
+	case "stop-leaf":
+		return "agent stop sent — it holds (‖) until you restart it", false
+	case "restart-leaf":
+		return "agent restart sent — it re-runs in place", false
+	}
 	return fmt.Sprintf("%s %s: ok", verb, runID), false
 }
 
@@ -863,6 +883,10 @@ func runningVerb(kind string) string {
 		return "stop"
 	case confirmRestart, confirmRestartAgent:
 		return "restart"
+	case confirmStopLeaf:
+		return "stop-leaf"
+	case confirmRestartLeaf:
+		return "restart-leaf"
 	}
 	return ""
 }
@@ -895,10 +919,17 @@ func loadLeafIOCmd(job subagent.Result, nonce, epoch int) tea.Cmd {
 	}
 }
 
-// anyLeafRunning reports whether any workflow leaf is still running (drives the live tick cadence).
+// anyLeafRunning reports whether any workflow activity is live (drives the live tick
+// cadence). A run whose every leaf is held has no running LEAF but is still live —
+// its manifest says running — so the run status is consulted too.
 func (m Model) anyLeafRunning() bool {
 	for _, j := range m.workflowJobs {
 		if j.Status == "running" {
+			return true
+		}
+	}
+	for _, r := range m.workflowRuns {
+		if r.Status == "running" {
 			return true
 		}
 	}
@@ -2662,6 +2693,8 @@ func (m Model) updateWfAgent(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "r":
 		return m.restartFocusedLeaf()
+	case "x":
+		return m.stopFocusedLeaf()
 	default:
 		return m.wfControl(msg)
 	}
@@ -2755,14 +2788,59 @@ func (m Model) restartFocusedLeaf() (tea.Model, tea.Cmd) {
 	if m.wfBusy(g.runID) {
 		return m, nil
 	}
-	// A keyed restart is scoped to just this leaf only once the run is TERMINAL; on a live run
-	// workflow.Restart stops the whole engine first, so every in-flight sibling re-runs too — be honest.
-	prompt := "Restart the whole run from this agent (re-runs in-flight siblings)?"
-	if g.status == "done" || g.status == "failed" || g.status == "stopped" {
-		prompt = "Restart just this agent?"
+	// On a LIVE run a nonterminal leaf restarts IN PLACE over the control plane (held
+	// wakes; running/queued kills the attempt and re-runs); a CONSUMED leaf
+	// (done/failed/cached) can only ride the honest whole-run composite — its value
+	// already flowed into the script.
+	if g.status == "running" {
+		switch job.Status {
+		case "held":
+			m.confirm = &confirmModal{kind: confirmRestartLeaf, id: g.runID, arg: job.JobID,
+				prompt: "Restart this held agent (re-runs it in place)?"}
+			return m, nil
+		case "running", "queued", "":
+			m.confirm = &confirmModal{kind: confirmRestartLeaf, id: g.runID, arg: job.JobID,
+				prompt: "Restart just this agent (kills its current attempt and re-runs it in place)?"}
+			return m, nil
+		default:
+			m.confirm = &confirmModal{kind: confirmRestartAgent, id: g.runID, arg: job.JournalKey,
+				prompt: "Restart the whole run from this agent (re-runs in-flight siblings)?"}
+			return m, nil
+		}
 	}
-	m.confirm = &confirmModal{kind: confirmRestartAgent, id: g.runID, arg: job.JournalKey, prompt: prompt}
+	m.confirm = &confirmModal{kind: confirmRestartAgent, id: g.runID, arg: job.JournalKey,
+		prompt: "Restart just this agent?"}
 	return m, nil
+}
+
+// stopFocusedLeaf is the agent pane's x — scoped to exactly the focused leaf. A live
+// (running/queued) leaf gets the kill-and-HOLD confirm; held is already stopped; a
+// terminal leaf has nothing left to stop (its value is consumed).
+func (m Model) stopFocusedLeaf() (tea.Model, tea.Cmd) {
+	job, ok := m.selectedLeaf()
+	if !ok {
+		return m, nil
+	}
+	g, gok := m.focusedGroup()
+	if !gok {
+		return m, nil
+	}
+	if m.wfBusy(g.runID) {
+		return m, nil
+	}
+	if g.status != "running" {
+		return m.withInfo("the run is not live — nothing to stop", false), nil
+	}
+	switch job.Status {
+	case "held":
+		return m.withInfo("agent is already held — r restarts it", false), nil
+	case "running", "queued", "":
+		m.confirm = &confirmModal{kind: confirmStopLeaf, id: g.runID, arg: job.JobID,
+			prompt: "Stop just this agent? Its part of the script waits until you restart it; everything else keeps running."}
+		return m, nil
+	default:
+		return m.withInfo("agent already finished — r offers the whole-run restart", false), nil
+	}
 }
 
 // wfControl runs the run-level controls (x stop / r restart) shared by the Phases pane and the Agent

@@ -2700,10 +2700,20 @@ func TestWfLiveChain_StartsReschedulesStops(t *testing.T) {
 	if _, c := step(t, m, wfLiveTickMsg{epoch: m.boardEpoch - 1}); c != nil {
 		t.Fatal("a stale-epoch live tick must not reschedule")
 	}
-	// Once nothing runs, the tick clears the flag and stops the chain.
+	// An all-held shape — no running LEAF but the run manifest still live — keeps the
+	// chain alive (the run is controllable and its rows still move).
+	heldLeaf := []subagent.Result{{RunID: "run-z", Phase: "p", Label: "a", JobID: "j1", Status: "held",
+		StartedAt: "2026-05-01T00:00:00Z"}}
+	mh, _ := step(t, m, wfRefreshMsg{jobs: heldLeaf, runs: runs, epoch: m.boardEpoch})
+	mh, ch := step(t, mh, wfLiveTickMsg{epoch: mh.boardEpoch})
+	if !mh.wfLiveOn || ch == nil {
+		t.Fatal("an all-held run under a running manifest must keep the live chain")
+	}
+	// Once nothing runs — leaf AND manifest terminal — the tick clears the flag and stops the chain.
 	doneLeaf := []subagent.Result{{RunID: "run-z", Phase: "p", Label: "a", JobID: "j1", Status: "done",
 		StartedAt: "2026-05-01T00:00:00Z", NumTurns: 1}}
-	m2, _ := step(t, m, wfRefreshMsg{jobs: doneLeaf, runs: runs, epoch: m.boardEpoch})
+	doneRuns := []subagent.WorkflowRun{{RunID: "run-z", Name: "z", Status: "done", StartedAt: "2026-05-01T00:00:00Z"}}
+	m2, _ := step(t, m, wfRefreshMsg{jobs: doneLeaf, runs: doneRuns, epoch: m.boardEpoch})
 	m2, c := step(t, m2, wfLiveTickMsg{epoch: m2.boardEpoch})
 	if m2.wfLiveOn || c != nil {
 		t.Fatalf("with nothing running the chain should stop: wfLiveOn=%v cmd=%v", m2.wfLiveOn, c)

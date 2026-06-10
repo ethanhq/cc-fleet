@@ -640,6 +640,49 @@ func TestWfRestartLeaf_PromptHonestAboutScope(t *testing.T) {
 	check("done", "just this agent") // terminal run: a keyed restart really is leaf-scoped
 }
 
+// TestWfLeafControls_LiveMatrix: on a LIVE run, the agent pane's x/r are scoped to the
+// focused leaf — a running leaf stops into a hold / restarts in place over the control
+// plane; a held leaf restarts (wakes) and refuses a second stop; a finished leaf keeps
+// the honest whole-run restart and an inert x.
+func TestWfLeafControls_LiveMatrix(t *testing.T) {
+	withLeaf := func(status string) Model {
+		t.Helper()
+		jobs, runs := oneRun()
+		runs[0].Status = "running"
+		jobs[0].Status = status
+		m := drillRun(t, runsModel(t, jobs, runs, nil))
+		m, _ = press(t, m, "right") // → agent level
+		return m
+	}
+	// running leaf: x → leaf-scoped stop confirm; r → in-place restart confirm.
+	m, _ := press(t, withLeaf("running"), "x")
+	if m.confirm == nil || m.confirm.kind != confirmStopLeaf || !strings.Contains(m.confirm.prompt, "just this agent") {
+		t.Fatalf("running leaf x: %+v", m.confirm)
+	}
+	m, _ = press(t, withLeaf("running"), "r")
+	if m.confirm == nil || m.confirm.kind != confirmRestartLeaf || !strings.Contains(m.confirm.prompt, "kills its current attempt") {
+		t.Fatalf("running leaf r: %+v", m.confirm)
+	}
+	// held leaf: r wakes it; x is an inert info (already held).
+	m, _ = press(t, withLeaf("held"), "r")
+	if m.confirm == nil || m.confirm.kind != confirmRestartLeaf || !strings.Contains(m.confirm.prompt, "held agent") {
+		t.Fatalf("held leaf r: %+v", m.confirm)
+	}
+	m, _ = press(t, withLeaf("held"), "x")
+	if m.confirm == nil || m.confirm.phase != modalResult || !strings.Contains(m.confirm.result, "already held") {
+		t.Fatalf("held leaf x should pop an info, got %+v", m.confirm)
+	}
+	// finished leaf on a live run: r keeps the honest whole-run composite; x is inert.
+	m, _ = press(t, withLeaf("done"), "r")
+	if m.confirm == nil || m.confirm.kind != confirmRestartAgent || !strings.Contains(m.confirm.prompt, "whole run") {
+		t.Fatalf("done leaf r: %+v", m.confirm)
+	}
+	m, _ = press(t, withLeaf("done"), "x")
+	if m.confirm == nil || m.confirm.phase != modalResult || !strings.Contains(m.confirm.result, "already finished") {
+		t.Fatalf("done leaf x should pop an info, got %+v", m.confirm)
+	}
+}
+
 // TestSessionDelete_DangerConfirm: d at the session list opens a RED danger confirm to wipe the whole
 // session; confirming dispatches the async delete and holds the modal until its outcome resolves it.
 func TestSessionDelete_DangerConfirm(t *testing.T) {

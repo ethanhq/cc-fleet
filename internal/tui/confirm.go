@@ -37,7 +37,7 @@ type confirmModal struct {
 	prompt    string
 	kind      string // one of the confirm* kind constants below
 	id        string // the action's target: a run / team / job / session id, a vendor name, or a key index
-	arg       string // extra action input — the leaf journal key (restart-agent) or the targeted key's current value (delete-key / replace-key; identity only, never rendered)
+	arg       string // extra action input — the leaf journal key (restart-agent), the job id (stop-leaf / restart-leaf), or the targeted key's current value (delete-key / replace-key; identity only, never rendered)
 	cursor    int    // 0 = Cancel (default), 1 = Confirm
 	danger    bool   // a heavy/irreversible ask — the ask frame + prompt warn in red, not amber
 	phase     modalPhase
@@ -52,6 +52,8 @@ const (
 	confirmJob          = "job"
 	confirmClear        = "clear"
 	confirmStop         = "stop"
+	confirmStopLeaf     = "stop-leaf"
+	confirmRestartLeaf  = "restart-leaf"
 	confirmRestart      = "restart"
 	confirmRestartAgent = "restart-agent"
 	confirmSession      = "session"
@@ -149,6 +151,10 @@ func (m Model) runConfirmed() (tea.Model, tea.Cmd) {
 		return m.runAsync(c, "restarting…", restartCmd(c.id, "", m.boardEpoch))
 	case confirmRestartAgent:
 		return m.runAsync(c, "restarting…", restartCmd(c.id, c.arg, m.boardEpoch))
+	case confirmStopLeaf:
+		return m.runAsync(c, "stopping agent…", leafCtlCmd("stop-leaf", c.id, c.arg, m.boardEpoch))
+	case confirmRestartLeaf:
+		return m.runAsync(c, "restarting agent…", leafCtlCmd("restart-leaf", c.id, c.arg, m.boardEpoch))
 	case confirmRun:
 		m.confirm = nil
 		if m.wfBusy(c.id) {
