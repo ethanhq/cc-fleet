@@ -121,6 +121,24 @@ func waitCalled(t *testing.T, rec *recorder, prompt string) {
 	t.Fatalf("leaf %q never started executing", prompt)
 }
 
+// waitCalledEither polls until ONE of the two fake leaves has started and returns its
+// prompt. A pool-of-1 harness must not assume which parallel arm wins the slot — the
+// attempt goroutines race for the semaphore, so dispatch order is not guaranteed.
+func waitCalledEither(t *testing.T, rec *recorder, p1, p2 string) string {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, p := range rec.prompts() {
+			if p == p1 || p == p2 {
+				return p
+			}
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	t.Fatalf("neither leaf %q nor %q ever started executing", p1, p2)
+	return ""
+}
+
 // directive posts a control command onto the loop the way the poller does.
 func directive(eng *engine, op, leafID string) {
 	eng.post(leafCB{state: func() { eng.applyDirective(ctlCommand{Op: op, Leaf: leafID}) }})
@@ -241,23 +259,30 @@ return await parallel([
 ]);`)
 
 	a := jobByLabel(t, "leaf-a", "queued")
-	waitCalled(t, rec, "a")
-	b := jobByLabel(t, "leaf-b", "queued") // pool of 1: b waits behind a
-	directive(eng, "restart", b.JobID)     // queued → cancel-and-retry (never a dropped intent)
-	directive(eng, "stop", a.JobID)
-	directive(eng, "stop", a.JobID) // idempotent
+	b := jobByLabel(t, "leaf-b", "queued")
+	// Pool of 1: exactly one arm holds the slot while the other queues behind it,
+	// but WHICH arm won the slot race is not guaranteed — derive the roles from
+	// whichever leaf actually started.
+	runningPrompt, queuedPrompt := waitCalledEither(t, rec, "a", "b"), "b"
+	running, queued := a, b
+	if runningPrompt == "b" {
+		running, queued, queuedPrompt = b, a, "a"
+	}
+	directive(eng, "restart", queued.JobID) // queued → cancel-and-retry (never a dropped intent)
+	directive(eng, "stop", running.JobID)
+	directive(eng, "stop", running.JobID) // idempotent
 	directive(eng, "stop", "no-such-leaf")
-	jobByLabel(t, "leaf-a", "held")
-	g.release("b")
-	g.release("a")
-	directive(eng, "restart", a.JobID)
+	jobByLabel(t, running.Label, "held")
+	g.release(queuedPrompt) // queued arm first; the held arm's gate opens last
+	g.release(runningPrompt)
+	directive(eng, "restart", running.JobID)
 	v := <-vals
 	if err := <-errs; err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	got := v.Export().([]interface{})
 	if got[0] != "ok:a#2" || got[1] != "ok:b#2" {
-		t.Fatalf("results = %v (a restarted once; b requeued by its restart directive)", got)
+		t.Fatalf("results = %v (the running arm restarted once; the queued arm requeued by its restart directive)", got)
 	}
 }
 
