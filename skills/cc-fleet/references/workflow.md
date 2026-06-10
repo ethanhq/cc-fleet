@@ -111,7 +111,7 @@ cc-fleet workflow restart "$RUN" --leaf <job>  # re-run a held/running agent in 
                                              # on a FINISHED run: keyed re-run (whole run, --leaf, or --phase)
 # or watch the board's Dynamic Workflows view: live log, token/cost columns, prompt/answer drill-in.
 # x/r there are level-scoped: run row = the run, Phases pane = the phase, agent pane = the leaf
-# (a held agent shows ‖ until you restart it). --foreground runs inline (debug).
+# (a held agent shows ▶ until you restart it). --foreground runs inline (debug).
 # --max-concurrency N overrides the default pool (min(16, cores-2));
 # --budget-usd N caps total spend; --no-persist-io disables the prompt/answer drill-in.
 ```

@@ -814,7 +814,7 @@ func stopRunCmd(runID string, epoch int) tea.Cmd {
 
 // leafCtlCmd sends a LIVE leaf directive (stop-leaf / restart-leaf) over the run's
 // control plane and reports via workflowCtlMsg — the engine's poller applies it and the
-// effect surfaces through the board poll (held ‖ / a fresh attempt).
+// effect surfaces through the board poll (held ▶ / a fresh attempt).
 func leafCtlCmd(verb, runID, leafID string, epoch int) tea.Cmd {
 	op := "stop"
 	if verb == "restart-leaf" {
@@ -889,11 +889,11 @@ func ctlOutcome(verb, runID string, err error) (string, bool) {
 	}
 	switch verb {
 	case "stop-leaf":
-		return "agent stop sent — it holds (‖) until you restart it", false
+		return "agent stop sent — it holds (▶) until you restart it", false
 	case "restart-leaf":
 		return "agent restart sent — it re-runs in place", false
 	case "stop-phase":
-		return "phase stop sent — its agents hold (‖) until you restart the phase", false
+		return "phase stop sent — its agents hold (▶) until you restart the phase", false
 	case "restart-phase":
 		return "phase restart sent", false
 	}

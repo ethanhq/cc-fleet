@@ -497,7 +497,7 @@ func (m Model) renderAsFooter() string {
 }
 
 // statusDot maps a leaf/run/phase status to a colored glyph: done ✔ (green), running ● (accent),
-// failed ● (err), held ‖ (amber — parked by a leaf stop, waiting for its restart), stopped ■
+// failed ● (err), held ▶ (amber — parked by a leaf stop, waiting for its restart), stopped ■
 // (faint — a stop is neutral, not a failure), cached ○ (faint), queued/unknown ◌ (faint hollow).
 func statusDot(status string) string {
 	switch status {
@@ -508,7 +508,7 @@ func statusDot(status string) string {
 	case "failed":
 		return errStyle.Render("●")
 	case "held":
-		return noteStyle.Render("‖")
+		return noteStyle.Render("▶")
 	case "stopped":
 		return faintStyle.Render("■")
 	case "cached":
