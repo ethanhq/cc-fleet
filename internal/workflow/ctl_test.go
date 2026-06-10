@@ -219,8 +219,8 @@ func TestLeafStopSuccessWins(t *testing.T) {
 }
 
 // TestLeafDirectiveEdges: double-stop is idempotent, an unknown target narrates without
-// effect, and a restart aimed at a still-queued attempt is a no-op (it completes
-// normally on attempt 1 once a slot frees).
+// effect, and a restart aimed at a still-queued attempt cancels and re-queues it (a
+// user intent is never dropped on the queued/running race).
 func TestLeafDirectiveEdges(t *testing.T) {
 	rec := &recorder{}
 	g := newGateLeaf(rec)
@@ -233,7 +233,7 @@ return await parallel([
 	a := jobByLabel(t, "leaf-a", "queued")
 	waitCalled(t, rec, "a")
 	b := jobByLabel(t, "leaf-b", "queued") // pool of 1: b waits behind a
-	directive(eng, "restart", b.JobID)     // queued → no-op
+	directive(eng, "restart", b.JobID)     // queued → cancel-and-retry (never a dropped intent)
 	directive(eng, "stop", a.JobID)
 	directive(eng, "stop", a.JobID) // idempotent
 	directive(eng, "stop", "no-such-leaf")
@@ -246,8 +246,8 @@ return await parallel([
 		t.Fatalf("run: %v", err)
 	}
 	got := v.Export().([]interface{})
-	if got[0] != "ok:a#2" || got[1] != "ok:b#1" {
-		t.Fatalf("results = %v (b must stay attempt 1)", got)
+	if got[0] != "ok:a#2" || got[1] != "ok:b#2" {
+		t.Fatalf("results = %v (a restarted once; b requeued by its restart directive)", got)
 	}
 }
 

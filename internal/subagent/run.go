@@ -400,6 +400,13 @@ func finalizeRunLeaves(runID string) {
 		if merr != nil || meta.RunID != runID {
 			continue
 		}
+		// A held leaf must leave `held` first — finalizeSyncJob suppresses a stopped
+		// cache under a held meta (the live-engine hold window), and an external stop
+		// is exactly the moment a hold becomes terminal.
+		if meta.Status == "held" {
+			ReleaseHeldLeafStopped(jobID, "run stopped while the leaf was held")
+			continue
+		}
 		finalizeSyncJob(jobID, fail(ErrCodeStopped, "run stopped before the leaf finished", meta.Vendor, ""))
 	}
 }

@@ -183,6 +183,9 @@ func newWorkflowRestartCmd() *cobra.Command {
 			key := ""
 			if leaf != "" {
 				res := subagent.StatusFor(leaf)
+				if res.RunID != runID {
+					return reportWorkflowErr(fmt.Errorf("workflow: agent %s does not belong to run %s", leaf, runID), asJSON)
+				}
 				if res.JournalKey == "" {
 					return reportWorkflowErr(fmt.Errorf("workflow: agent %s has no journal key; cannot scope the restart", leaf), asJSON)
 				}

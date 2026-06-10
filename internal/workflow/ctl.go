@@ -140,19 +140,18 @@ func (e *engine) startCtlPoller(path string) {
 	}()
 }
 
-// leafCtl is one leaf's loop-owned control state: the directive machine the V2.3 plan
-// linearizes as loop-state transitions (commands and completions serialize on the loop,
-// so there are no gap windows).
+// leafCtl is one leaf's loop-owned control state: the directive machine, linearized as
+// loop-state transitions (commands and completions serialize on the loop, so there are
+// no gap windows).
 type leafCtl struct {
-	spec        leafSpec
-	settle      promiseSettle
-	gen         int    // attempt ordinal (== Request.Attempt)
-	pending     string // "" | "stop" | "restart" — armed, consumed by the attempt's completion
-	held        bool
-	spawned     bool // at least one attempt goroutine ran (false = parked by a held phase)
-	execStarted bool // the current attempt acquired its slot (a pre-exec restart is a no-op)
-	released    bool // the frame's budget reservation was released (exactly once)
-	cancel      func()
+	spec     leafSpec
+	settle   promiseSettle
+	gen      int    // attempt ordinal (== Request.Attempt)
+	pending  string // "" | "stop" | "restart" — armed, consumed by the attempt's completion
+	held     bool
+	spawned  bool // at least one attempt goroutine ran (false = parked by a held phase)
+	released bool // the frame's budget reservation was released (exactly once)
+	cancel   func()
 }
 
 // applyDirective is the poller's loop callback: the command side of the directive
@@ -178,9 +177,10 @@ func (e *engine) applyDirective(cmd ctlCommand) {
 			h.pending = "restart" // upgrade: never strand a hold the user already retried
 		case h.pending == "restart":
 			e.logf("control: leaf %s already restarting; duplicate dropped", cmd.Leaf)
-		case !h.execStarted:
-			e.logf("control: leaf %s is still queued; restart is a no-op", cmd.Leaf)
 		default:
+			// Queued or running alike: cancel the attempt and retry. Whether the slot
+			// was already acquired is unknowable race-free from here, and dropping a
+			// user's restart is worse than re-queuing a not-yet-started attempt.
 			e.restartLeafAtom(cmd.Leaf, h)
 		}
 	}
@@ -213,7 +213,7 @@ func (e *engine) applyPhaseDirective(cmd ctlCommand) {
 				e.wakeLeaf(jobID, h)
 			case h.pending == "stop":
 				h.pending = "restart"
-			case h.execStarted && h.pending == "":
+			case h.pending == "":
 				e.restartLeafAtom(jobID, h)
 			}
 		}

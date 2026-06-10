@@ -105,8 +105,12 @@ RUN=$(cc-fleet workflow run audit.js)        # detached; prints ONLY the bare ru
 cc-fleet workflow status "$RUN" --json       # manifest + every tagged leaf (run→phase→agent)
 cc-fleet workflow list --json                # all runs, newest first
 cc-fleet workflow stop "$RUN"                # reap a running run (engine + in-flight leaves)
-# or watch the board's Dynamic Workflows view: live log, token/cost columns, prompt/answer drill-in,
-# x = stop, r = restart (= run --resume). --foreground runs inline (debug).
+cc-fleet workflow stop "$RUN" --leaf <job>   # hold ONE agent in place (run keeps going); --phase <title> holds a phase
+cc-fleet workflow restart "$RUN" --leaf <job>  # re-run a held/running agent in place; --phase <title> a phase;
+                                             # on a FINISHED run: keyed re-run (whole run, --leaf, or --phase)
+# or watch the board's Dynamic Workflows view: live log, token/cost columns, prompt/answer drill-in.
+# x/r there are level-scoped: run row = the run, Phases pane = the phase, agent pane = the leaf
+# (a held agent shows ‖ until you restart it). --foreground runs inline (debug).
 # --max-concurrency N overrides the default pool (min(16, cores-2));
 # --budget-usd N caps total spend; --no-persist-io disables the prompt/answer drill-in.
 ```

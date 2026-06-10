@@ -658,7 +658,7 @@ func TestWfLeafControls_LiveMatrix(t *testing.T) {
 		t.Fatalf("running leaf x: %+v", m.confirm)
 	}
 	m, _ = press(t, withLeaf("running"), "r")
-	if m.confirm == nil || m.confirm.kind != confirmRestartLeaf || !strings.Contains(m.confirm.prompt, "kills its current attempt") {
+	if m.confirm == nil || m.confirm.kind != confirmRestartLeaf || !strings.Contains(m.confirm.prompt, "cancels its current attempt") {
 		t.Fatalf("running leaf r: %+v", m.confirm)
 	}
 	// held leaf: r wakes it; x is an inert info (already held).

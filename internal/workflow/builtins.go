@@ -460,7 +460,6 @@ func (e *engine) spawnAttempt(jobID string, h *leafCtl) {
 	ctx, cancel := context.WithCancel(e.leafCtx)
 	h.cancel = cancel
 	h.spawned = true
-	h.execStarted = false
 	gen := h.gen
 	go func() {
 		res, preErr := e.execLeaf(ctx, jobID, h, h.spec)
@@ -504,7 +503,6 @@ func (e *engine) execLeaf(ctx context.Context, jobID string, h *leafCtl, spec le
 		workDir = dir
 	}
 	e.post(leafCB{state: func() {
-		h.execStarted = true // a pre-exec restart directive is a no-op; from here it kills
 		e.emitLeaf("launch", spec.phase, spec.label, spec.vendor, spec.model)
 	}})
 	res = runLeaf(ctx, subagent.Request{

@@ -2696,7 +2696,7 @@ func (m Model) updateWfPhases(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // updateWfAgent (run drill): ↑/↓ walk agents (reloading the inline detail), j/k scroll that detail,
-// ←/esc ascend to Phases; r restarts ONLY the focused agent; x stops the focused run.
+// ←/esc ascend to Phases; r restarts ONLY the focused agent; x stops/holds ONLY the focused live agent.
 func (m Model) updateWfAgent(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	p, ok := m.focusedPhase()
 	switch msg.String() {
@@ -2789,11 +2789,6 @@ func (m Model) clampCardScroll(v int) int {
 	}
 }
 
-// restartFocusedLeaf restarts the focused agent — workflow.Restart drops its journal entry and resumes,
-// re-running it (+ any downstream leaf whose input shifted). On a still-running run the engine is stopped
-// first, so every un-journaled in-flight sibling re-runs as well; the single-leaf scope is exact only once
-// the run is terminal. A leaf with no persisted JournalKey falls back to a whole-run restart so r is never
-// a silent no-op.
 // wfBusy reports whether a stop/restart/delete is already in flight for runID — the in-flight guard
 // that makes a second x/r/d on the same run a no-op until its workflowCtlMsg lands.
 func (m Model) wfBusy(runID string) bool { return m.wfRestarting[runID] }
@@ -2833,7 +2828,7 @@ func (m Model) restartFocusedLeaf() (tea.Model, tea.Cmd) {
 			return m, nil
 		case "running", "queued", "":
 			m.confirm = &confirmModal{kind: confirmRestartLeaf, id: g.runID, arg: job.JobID,
-				prompt: "Restart just this agent (kills its current attempt and re-runs it in place)?"}
+				prompt: "Restart just this agent (cancels its current attempt and re-runs it in place)?"}
 			return m, nil
 		default:
 			m.confirm = &confirmModal{kind: confirmRestartAgent, id: g.runID, arg: job.JournalKey,

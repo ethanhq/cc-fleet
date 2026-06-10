@@ -113,6 +113,16 @@ func TestNormalizeHeldLeaf(t *testing.T) {
 	}
 }
 
+// TestFinalizeRunLeavesReleasesHold: the external whole-run stop terminal-stops a held
+// member — the hold suppression must not survive the run's death.
+func TestFinalizeRunLeavesReleasesHold(t *testing.T) {
+	jobID := mintHeldFixture(t)
+	finalizeRunLeaves("run-h")
+	if res := StatusFor(jobID); res.Status != "stopped" {
+		t.Errorf("held leaf after finalizeRunLeaves = %q, want stopped", res.Status)
+	}
+}
+
 // TestRequeueLeaf: restart flips a held leaf back to a queued placeholder at the next
 // attempt, with the terminal sidecars dropped.
 func TestRequeueLeaf(t *testing.T) {
