@@ -7,6 +7,8 @@
 // Keep the JSON tags stable — they are part of the spawn contract.
 package spawn
 
+import "github.com/ethanhq/cc-fleet/internal/diag"
+
 // Request is the input to Spawn. Zero values for optional fields fall back to
 // the documented defaults.
 type Request struct {
@@ -64,6 +66,10 @@ type Request struct {
 	// the value and rejects --permission-mode + --dangerously-skip-permissions
 	// together before this reaches Spawn.
 	PermissionModeOverride string
+
+	// Diag is the --verbose step-trace sink. nil (the default) is a no-op;
+	// a logger changes nothing but the diagnostic writes.
+	Diag *diag.Logger
 }
 
 // Result is the structured outcome of Spawn. On success ok=true and the

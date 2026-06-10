@@ -178,6 +178,7 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 				NoSkills:       noSkills,
 				MCP:            mcp,
 				PersistIO:      !noPersistIO,
+				Diag:           diagLogger(cmd),
 			}
 			if req.PersistIO {
 				// The .prompt sidecar needs the text in hand; a --prompt-file /

@@ -122,6 +122,7 @@ func (m Model) updateConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // workflowCtlMsg resolves the result. A delete dispatches and closes; its outcome pops via withInfo.
 func (m Model) runConfirmed() (tea.Model, tea.Cmd) {
 	c := *m.confirm // work on a copy; the new phase/result is published back via m.confirm = &c
+	m.diag.Logf("tui: confirmed %s %q", c.kind, c.id)
 	switch c.kind {
 	case confirmClear:
 		c.phase = modalResult

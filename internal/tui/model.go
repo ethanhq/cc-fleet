@@ -9,6 +9,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,6 +21,7 @@ import (
 
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/config"
+	"github.com/ethanhq/cc-fleet/internal/diag"
 	"github.com/ethanhq/cc-fleet/internal/ids"
 	"github.com/ethanhq/cc-fleet/internal/models"
 	"github.com/ethanhq/cc-fleet/internal/onboarding"
@@ -293,6 +295,10 @@ type Model struct {
 
 	loading  bool
 	quitting bool
+
+	// diag is the --verbose step-trace sink (nil when verbose is off); Update
+	// writes the dispatched-op trace to it.
+	diag *diag.Logger
 }
 
 // NewModel returns the initial model. It normally parks on the Model Providers list
@@ -1595,6 +1601,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case opDoneMsg:
+		m.diag.Logf("tui: op %s %q done (err=%v)", msg.verb, msg.name, msg.err != nil)
 		// While a marked codex login flow owns the screen (committing, consent, or
 		// device), a stale result from an earlier, unrelated op is dropped outright:
 		// yanking the user to an outcome modal would free them to start another codex
@@ -3346,6 +3353,7 @@ func (m Model) updateCodexAuth(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.codexSourceCursor == 1 {
 				m.codexCommittedName = req.Name
 			}
+			m.diag.Logf("tui: codex auth → committing (source choice %d)", m.codexSourceCursor)
 			m.codexAuthStage = codexAuthCommitting
 			m.loading = true
 			return m, addVendorCmd(req)
@@ -3360,6 +3368,7 @@ func (m Model) updateCodexAuth(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.codexAuthCancel != nil {
 				m.codexAuthCancel() // tear down any prior session before starting a fresh one
 			}
+			m.diag.Logf("tui: codex auth → device login")
 			m.codexAuthStage = codexAuthDevice
 			m.codexAuthErr = ""
 			m.loading = true
@@ -3974,6 +3983,7 @@ func (m Model) submitAddCodex() (tea.Model, tea.Cmd) {
 		m.codexPendingAdd = &req
 		m.codexAuthAccount = st.Account
 		m.screen = screenCodexAuth
+		m.diag.Logf("tui: codex auth → choose source")
 		m.codexAuthStage = codexAuthChooseSource
 		m.codexSourceCursor = 0
 		return m, nil
@@ -3986,6 +3996,7 @@ func (m Model) submitAddCodex() (tea.Model, tea.Cmd) {
 		// login modal's underlay stays the form that was submitted.
 		m.codexCommittedName = req.Name
 		m.screen = screenCodexAuth
+		m.diag.Logf("tui: codex auth → committing (no source)")
 		m.codexAuthStage = codexAuthCommitting
 		m.loading = true
 		return m, addVendorCmd(req)
@@ -4110,13 +4121,38 @@ func missingLabels(values map[string]string, order []string) []string {
 
 // Run starts the bubbletea program against stdin/stdout. The caller is
 // responsible for ensuring those are a terminal (see cmd/cc-fleet/tui.go).
-func Run() error {
+// verbose routes the session's step trace to a per-pid 0600 log file.
+func Run(verbose bool) error {
 	// Resolve the terminal background (light vs dark) before bubbletea owns
 	// stdin: the adaptive palette's first render would otherwise race the
 	// terminal's color-query reply against the program's input reader.
 	lipgloss.HasDarkBackground()
-	final, err := tea.NewProgram(NewModel()).Run()
+	model := NewModel()
+	// The --verbose sink: stderr would corrupt the alternate screen, so the TUI
+	// step trace goes to a per-pid 0600 log file. Open failure degrades to a
+	// silent session (the note below tells the user), never a blocked TUI.
+	var logFile *os.File
+	var logPath string
+	if verbose {
+		f, path, err := openVerboseLog()
+		if err != nil {
+			logPath = "unavailable: " + err.Error()
+		} else {
+			logFile, logPath = f, path
+			model.diag = diag.New(f)
+			model.diag.Logf("tui: session start")
+		}
+	}
+	final, err := tea.NewProgram(model).Run()
+	if logFile != nil {
+		_ = logFile.Close()
+	}
 	if err != nil {
+		// Surface the trace path on failure too — it is most useful exactly when
+		// the TUI crashed.
+		if verbose {
+			fmt.Println("verbose log:", logPath)
+		}
 		return err
 	}
 	// The tmux setup screen's "install it" choice leaves a note to print AFTER
@@ -4124,6 +4160,9 @@ func Run() error {
 	// final model; read the note off it.
 	if m, ok := final.(Model); ok && m.postQuitNote != "" {
 		fmt.Println(m.postQuitNote)
+	}
+	if verbose {
+		fmt.Println("verbose log:", logPath)
 	}
 	return nil
 }

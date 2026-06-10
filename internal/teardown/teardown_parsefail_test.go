@@ -29,7 +29,7 @@ func TestTeardownTeam_ParseFailureStillKillsSwarmServer(t *testing.T) {
 		t.Fatalf("corrupt config: %v", err)
 	}
 
-	res := TeardownTeam("brokt")
+	res := TeardownTeam("brokt", nil)
 	if !res.OK {
 		t.Fatalf("teardown ok=false: code=%s msg=%s", res.ErrorCode, res.ErrorMsg)
 	}
@@ -84,7 +84,7 @@ func TestTeardownTeam_ParseFailureReapsGhostProcess(t *testing.T) {
 		t.Fatalf("corrupt config: %v", err)
 	}
 
-	res := TeardownTeam("brokt")
+	res := TeardownTeam("brokt", nil)
 	if !res.OK {
 		t.Fatalf("teardown ok=false: code=%s msg=%s", res.ErrorCode, res.ErrorMsg)
 	}

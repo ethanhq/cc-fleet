@@ -7,8 +7,22 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ethanhq/cc-fleet/internal/diag"
 	"github.com/ethanhq/cc-fleet/internal/version"
 )
+
+// verboseFlag backs the root --verbose persistent flag. Commands read it at
+// RunE time through diagLogger; it is never consulted before Execute parses.
+var verboseFlag bool
+
+// diagLogger returns the command's --verbose diagnostic sink: stderr when the
+// flag is set, else nil (a nil *diag.Logger is a no-op everywhere downstream).
+func diagLogger(cmd *cobra.Command) *diag.Logger {
+	if !verboseFlag {
+		return nil
+	}
+	return diag.New(cmd.ErrOrStderr())
+}
 
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
@@ -27,7 +41,7 @@ teammate Claude Code sessions inside tmux windows.`,
 		// falls through to help so scripts and agents never block. Subcommands
 		// bypass this entirely — cobra only calls root Run when none matched.
 		Run: func(cmd *cobra.Command, args []string) {
-			handled, err := runTUIIfInteractive(args)
+			handled, err := runTUIIfInteractive(args, verboseFlag)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "cc-fleet:", err)
 				os.Exit(1)
@@ -38,6 +52,8 @@ teammate Claude Code sessions inside tmux windows.`,
 			_ = cmd.Help()
 		},
 	}
+	root.PersistentFlags().BoolVar(&verboseFlag, "verbose", false,
+		"step-trace diagnostics: stderr for commands, a 0600 log file for the TUI")
 	root.AddCommand(newKeygetCmd())
 	root.AddCommand(newRefreshFingerprintCmd())
 	root.AddCommand(newSpawnCmd())

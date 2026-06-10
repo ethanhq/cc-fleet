@@ -44,7 +44,7 @@ skill flows don't fail on retries.`,
 			target := args[0]
 			var res teardown.Result
 			if strings.HasPrefix(target, "%") {
-				res = teardown.TeardownPane(target)
+				res = teardown.TeardownPane(target, diagLogger(cmd))
 			} else {
 				// Team names flow into filesystem paths; reject path traversal /
 				// separators / absolute paths via the typed constructor before
@@ -57,7 +57,7 @@ skill flows don't fail on retries.`,
 						ErrorMsg:  err.Error(),
 					}
 				} else {
-					res = teardown.TeardownTeam(target)
+					res = teardown.TeardownTeam(target, diagLogger(cmd))
 				}
 			}
 			return reportTeardown(res, asJSON)

@@ -57,7 +57,7 @@ func TestTeardownTeam_RejectsPathTraversal(t *testing.T) {
 	for _, name := range traversalCases {
 		name := name
 		t.Run("name="+name, func(t *testing.T) {
-			res := TeardownTeam(name)
+			res := TeardownTeam(name, nil)
 			if res.OK {
 				t.Fatalf("TeardownTeam(%q): want OK=false, got OK=true (path traversal not blocked!)", name)
 			}
@@ -90,7 +90,7 @@ func TestTeardownTeam_AcceptsLegitName(t *testing.T) {
 	if err := os.WriteFile(cfgPath, []byte(`{"members":[]}`), 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	res := TeardownTeam("real-team")
+	res := TeardownTeam("real-team", nil)
 	if !res.OK {
 		t.Fatalf("TeardownTeam(real-team): code=%s msg=%s — should accept normal name",
 			res.ErrorCode, res.ErrorMsg)
@@ -120,7 +120,7 @@ func TestSpawnPaths_RejectInvalidNames(t *testing.T) {
 	// surface for the path-traversal guard. InboxPath / TeamDir name validation
 	// is covered by internal/spawn unit tests.
 	for _, bad := range []string{"..", "../x", "/abs"} {
-		res := TeardownTeam(bad)
+		res := TeardownTeam(bad, nil)
 		if res.OK {
 			t.Fatalf("TeardownTeam(%q): OK=true; validator missing for low-level path build", bad)
 		}

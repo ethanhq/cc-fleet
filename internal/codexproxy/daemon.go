@@ -16,6 +16,7 @@ import (
 
 	"github.com/ethanhq/cc-fleet/internal/childenv"
 	"github.com/ethanhq/cc-fleet/internal/config"
+	"github.com/ethanhq/cc-fleet/internal/diag"
 	"github.com/ethanhq/cc-fleet/internal/fileutil"
 	"github.com/ethanhq/cc-fleet/internal/procintrospect"
 )
@@ -146,14 +147,15 @@ func EnsureForVendorName(name string) error {
 	if err != nil {
 		return err
 	}
-	return EnsureForVendor(cfg.Vendors[name])
+	return EnsureForVendor(cfg.Vendors[name], nil)
 }
 
 // EnsureForVendor ensures the proxy daemon is up for a daemon-backed provider (a
 // no-op for an Anthropic-native vendor). Call it after the fingerprint gate and
 // before the profile write. Keys on the normalized protocol so a codex row
 // predating the protocol field (codex-oauth backend, no protocol) is recognized.
-func EnsureForVendor(v *config.Vendor) error {
+// dg is the --verbose step-trace sink (nil = silent).
+func EnsureForVendor(v *config.Vendor, dg *diag.Logger) error {
 	if v == nil || !v.DaemonBacked() {
 		return nil
 	}
@@ -172,7 +174,7 @@ func EnsureForVendor(v *config.Vendor) error {
 			}
 		}
 	}
-	return EnsureDaemon(port, v.EffectiveProtocol(), v.UpstreamURL, ref)
+	return EnsureDaemon(port, v.EffectiveProtocol(), v.UpstreamURL, ref, dg)
 }
 
 // EnsureDaemon makes the proxy daemon for (port, protocol, upstreamURL) reachable,
@@ -181,7 +183,7 @@ func EnsureForVendor(v *config.Vendor) error {
 // visible. A live daemon is reused only if its persisted identity matches; a
 // mismatch is torn down and restarted. Slot it after the fingerprint gate and
 // before the profile-write side effect.
-func EnsureDaemon(port int, protocol, upstreamURL, ref string) error {
+func EnsureDaemon(port int, protocol, upstreamURL, ref string, dg *diag.Logger) error {
 	if protocol == config.ProtocolCodexOAuth {
 		if err := withSecretLock(func() error { _, e := loadOrCreateSecret(); return e }); err != nil {
 			return err
@@ -189,13 +191,18 @@ func EnsureDaemon(port int, protocol, upstreamURL, ref string) error {
 	}
 	return withProxyLock(port, func() error {
 		if !healthy(port, protocol, upstreamURL, ref) {
+			dg.Logf("daemon: port %d not serving this identity — (re)starting", port)
 			stopStaleDaemon(port)
 			if err := startDetached(port, protocol, upstreamURL, ref); err != nil {
 				return err
 			}
+			dg.Logf("daemon: started detached on port %d", port)
 			if err := waitReady(port); err != nil {
 				return err
 			}
+			dg.Logf("daemon: ready on port %d", port)
+		} else {
+			dg.Logf("daemon: reusing live daemon on port %d", port)
 		}
 		return registerLease(port)
 	})

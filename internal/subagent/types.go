@@ -21,6 +21,8 @@ import (
 	"encoding/json"
 	"io"
 	"time"
+
+	"github.com/ethanhq/cc-fleet/internal/diag"
 )
 
 // Request is the input to Run. Zero values fall back to the documented
@@ -110,6 +112,10 @@ type Request struct {
 	// an older claude fails the leaf with the ordinary classified usage error.
 	// Workflow-engine-only: the bare CLI exposes no schema flag.
 	JSONSchema string
+
+	// Diag is the --verbose step-trace sink. nil (the default) is a no-op;
+	// a logger changes nothing but the diagnostic writes.
+	Diag *diag.Logger
 }
 
 // Usage mirrors the token-usage subset of claude's inner envelope we surface.

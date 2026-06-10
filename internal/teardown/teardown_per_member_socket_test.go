@@ -44,7 +44,7 @@ func TestTeardownTeam_MixedMode_PerMemberSocket(t *testing.T) {
 		t.Fatalf("WriteTeamConfig: %v", err)
 	}
 
-	res := TeardownTeam("mix")
+	res := TeardownTeam("mix", nil)
 	if !res.OK {
 		t.Fatalf("teardown failed: code=%s msg=%s", res.ErrorCode, res.ErrorMsg)
 	}
@@ -87,7 +87,7 @@ func TestTeardownTeam_LegacyTeamSocketFallback(t *testing.T) {
 		{Name: "w2", AgentID: "w2@legacy", TmuxPaneID: "%301", AgentType: "general-purpose"},
 	})
 
-	res := TeardownTeam("legacy")
+	res := TeardownTeam("legacy", nil)
 	if !res.OK {
 		t.Fatalf("teardown failed: code=%s msg=%s", res.ErrorCode, res.ErrorMsg)
 	}

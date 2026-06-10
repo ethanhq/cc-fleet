@@ -11,6 +11,7 @@ import (
 
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/config"
+	"github.com/ethanhq/cc-fleet/internal/diag"
 )
 
 // codexStanza returns a vendors.toml stanza for a codex provider whose
@@ -44,7 +45,7 @@ func TestSpawn_CodexSkipsProbe_EnsuresDaemon(t *testing.T) {
 	f.writeFingerprint()
 
 	var ensured atomic.Int32
-	ensureVendorProxy = func(v *config.Vendor) error {
+	ensureVendorProxy = func(v *config.Vendor, _ *diag.Logger) error {
 		if v == nil || v.SecretBackend != codexproxy.SecretBackend {
 			t.Errorf("ensureVendorProxy got a non-codex vendor: %+v", v)
 		}
@@ -72,7 +73,7 @@ func TestSpawn_CodexDaemonFailure_FailsBeforeMutation(t *testing.T) {
 	f.writeVendorsTOML(codexStanza("http://127.0.0.1:17222"))
 	f.writeFingerprint()
 
-	ensureVendorProxy = func(*config.Vendor) error {
+	ensureVendorProxy = func(*config.Vendor, *diag.Logger) error {
 		return fmt.Errorf("codex proxy did not become ready on port 17222")
 	}
 	t.Cleanup(func() { ensureVendorProxy = codexproxy.EnsureForVendor })

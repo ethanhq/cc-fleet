@@ -107,7 +107,7 @@ func Run(req Request) error {
 	// For a codex provider, ensure the conversion daemon is up before the profile
 	// write (and before the exec that replaces this process — there is no
 	// after-exec hook), fail-before-mutation.
-	if err := codexproxy.EnsureForVendor(v); err != nil {
+	if err := codexproxy.EnsureForVendor(v, nil); err != nil {
 		return fmt.Errorf("codex proxy unavailable: %w", err)
 	}
 

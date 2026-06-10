@@ -107,7 +107,7 @@ func TestTeardownTeam_KillsHiddenPane(t *testing.T) {
 		{Name: "alice", AgentID: "alice@alpha", TmuxPaneID: "%55", AgentType: "general-purpose", Hidden: true, OriginWindow: "main:0"},
 	})
 
-	res := TeardownTeam("alpha")
+	res := TeardownTeam("alpha", nil)
 	if !res.OK {
 		t.Fatalf("teardown: code=%s msg=%s", res.ErrorCode, res.ErrorMsg)
 	}

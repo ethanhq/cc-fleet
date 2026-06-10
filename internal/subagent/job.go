@@ -215,6 +215,9 @@ func launchBackground(req Request, binaryPath, profilePath, model, effective, do
 		return fail(ErrCodeFailed, fmt.Sprintf("start background subagent: %v", err), req.Vendor, "")
 	}
 	pid := cmd.Process.Pid
+	// Launch metadata only: the parent Releases the child below and never
+	// observes its reap/finalize/classify.
+	req.Diag.Logf("subagent: background job %s started (pid %d, captures %s)", jobID, pid, outPath)
 
 	meta := jobMeta{
 		JobID:     jobID,
@@ -261,6 +264,7 @@ func launchBackground(req Request, binaryPath, profilePath, model, effective, do
 
 	// Detach: stop tracking the child so the parent can exit cleanly.
 	_ = cmd.Process.Release()
+	req.Diag.Logf("subagent: background job %s detached", jobID)
 
 	return Result{
 		OK:            true,

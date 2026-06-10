@@ -27,6 +27,7 @@ import (
 	"strings"
 
 	"github.com/ethanhq/cc-fleet/internal/config"
+	"github.com/ethanhq/cc-fleet/internal/diag"
 	"github.com/ethanhq/cc-fleet/internal/spawn"
 	"github.com/ethanhq/cc-fleet/internal/tmux"
 )
@@ -90,7 +91,7 @@ func configFreeReap(team string) (agentIDs []string, warnings []string) {
 // derivable from the team name alone, so recovery runs config-free — and under
 // WithTeamLock, so it serializes with a concurrent spawn into the same team
 // (the lock recreates the absent dir; RemoveAll cleans it back up).
-func TeardownTeam(team string) Result {
+func TeardownTeam(team string, dg *diag.Logger) Result {
 	if team == "" {
 		return Result{
 			OK:        false,
@@ -124,6 +125,7 @@ func TeardownTeam(team string) Result {
 	// sleep.
 	var reapIDs []string
 	lockErr := config.WithTeamLock(team, func() error {
+		dg.Logf("teardown: team lock acquired %s", team)
 		// Load member list — failure here is non-fatal because we can still
 		// rm -rf the team dir, which is the primary cleanup goal. We just
 		// won't know which pane ids to kill or member names to report.
@@ -153,6 +155,7 @@ func TeardownTeam(team string) Result {
 						res.Warnings = append(res.Warnings,
 							fmt.Sprintf("kill pane %s: %v", m.TmuxPaneID, err))
 					} else {
+						dg.Logf("teardown: killed pane %s (socket %q)", m.TmuxPaneID, sock)
 						res.Panes = append(res.Panes, m.TmuxPaneID)
 					}
 				}
@@ -175,6 +178,8 @@ func TeardownTeam(team string) Result {
 				if err := tmux.NewServer(sock).KillServer(); err != nil {
 					res.Warnings = append(res.Warnings,
 						fmt.Sprintf("kill swarm server %s: %v", sock, err))
+				} else {
+					dg.Logf("teardown: killed swarm server %s", sock)
 				}
 			}
 		case loadErr != nil && !errors.Is(loadErr, spawn.ErrTeamNotFound):
@@ -204,6 +209,7 @@ func TeardownTeam(team string) Result {
 		if err := os.RemoveAll(dir); err != nil {
 			return fmt.Errorf("remove team dir: %w", err)
 		}
+		dg.Logf("teardown: team dir removed (existed=%v)", dirExisted)
 		if dirExisted {
 			res.TeamRemoved = true
 		}
@@ -214,6 +220,9 @@ func TeardownTeam(team string) Result {
 	// Outside the lock and best-effort: warnings only, never flips OK.
 	for _, id := range reapIDs {
 		killed, warns := reapTeammateProcess(id)
+		if len(killed) > 0 {
+			dg.Logf("teardown: reaped %s (pids %v)", id, killed)
+		}
 		res.KilledPIDs = append(res.KilledPIDs, killed...)
 		res.Warnings = append(res.Warnings, warns...)
 	}
@@ -237,7 +246,7 @@ func TeardownTeam(team string) Result {
 // paneID must be a tmux pane id like "%42" — the leading "%" is the only
 // shape we recognize; callers that mix in team names should use
 // TeardownTeam instead.
-func TeardownPane(paneID string) Result {
+func TeardownPane(paneID string, dg *diag.Logger) Result {
 	if paneID == "" {
 		return Result{
 			OK:        false,

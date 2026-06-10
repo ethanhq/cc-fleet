@@ -32,7 +32,7 @@ func shouldEnterTUI(args []string, stdinTTY, stdoutTTY bool) bool {
 // tui.NewModel opens on a setup screen when needed. Because the TUI is gated here
 // to the bare-interactive both-TTY path, spawn/subagent/piped/agent callers never
 // see the setup screens.
-func runTUIIfInteractive(args []string) (handled bool, err error) {
+func runTUIIfInteractive(args []string, verbose bool) (handled bool, err error) {
 	stdinTTY := term.IsTerminal(os.Stdin.Fd())
 	stdoutTTY := term.IsTerminal(os.Stdout.Fd())
 	if !shouldEnterTUI(args, stdinTTY, stdoutTTY) {
@@ -42,5 +42,5 @@ func runTUIIfInteractive(args []string) (handled bool, err error) {
 	// newer release is cached. Gated to exactly this bare-interactive path, so
 	// keyget / subagent / spawn / --json / non-TTY callers never reach it.
 	maybePromptUpdate()
-	return true, tui.Run()
+	return true, tui.Run(verbose)
 }

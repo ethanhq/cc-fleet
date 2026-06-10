@@ -35,7 +35,7 @@ func TestTeardownTeam_DirGoneRecoversSwarmServer(t *testing.T) {
 	h.pids[ghostID] = []int{ghostPID}
 
 	// Deliberately do NOT seed the team — the dir is absent.
-	res := TeardownTeam("gonet")
+	res := TeardownTeam("gonet", nil)
 	if !res.OK {
 		t.Fatalf("teardown ok=false: code=%s msg=%s", res.ErrorCode, res.ErrorMsg)
 	}
@@ -92,7 +92,7 @@ func TestTeardownTeam_DirGoneIdempotentNoop(t *testing.T) {
 	t.Cleanup(func() { discoverTeamAgentIDsFn = orig })
 	discoverTeamAgentIDsFn = func(string) []string { return nil }
 
-	res := TeardownTeam("nobody")
+	res := TeardownTeam("nobody", nil)
 	if !res.OK {
 		t.Fatalf("teardown ok=false: code=%s msg=%s", res.ErrorCode, res.ErrorMsg)
 	}

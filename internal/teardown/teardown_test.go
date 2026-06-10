@@ -217,7 +217,7 @@ func TestTeardownTeam_RemovesEverything(t *testing.T) {
 		{Name: "a2", AgentID: "a2@alpha", TmuxPaneID: "%11", AgentType: "general-purpose"},
 	})
 
-	res := TeardownTeam("alpha")
+	res := TeardownTeam("alpha", nil)
 	if !res.OK {
 		t.Fatalf("TeardownTeam: ok=false code=%s msg=%s", res.ErrorCode, res.ErrorMsg)
 	}
@@ -254,7 +254,7 @@ func TestTeardownTeam_SwarmSocketKillAndKillServer(t *testing.T) {
 		{Name: "w2", AgentID: "w2@swarmt", TmuxPaneID: "%1", AgentType: "general-purpose"},
 	})
 
-	res := TeardownTeam("swarmt")
+	res := TeardownTeam("swarmt", nil)
 	if !res.OK {
 		t.Fatalf("teardown ok=false: code=%s msg=%s", res.ErrorCode, res.ErrorMsg)
 	}
@@ -280,7 +280,7 @@ func TestTeardownTeam_InTmuxNoKillServer(t *testing.T) {
 	seedTeam(t, "alpha", []spawn.Member{
 		{Name: "a1", AgentID: "a1@alpha", TmuxPaneID: "%10", AgentType: "general-purpose"},
 	})
-	res := TeardownTeam("alpha")
+	res := TeardownTeam("alpha", nil)
 	if !res.OK {
 		t.Fatalf("teardown ok=false: %s", res.ErrorMsg)
 	}
@@ -297,7 +297,7 @@ func TestTeardownTeam_MissingIsIdempotent(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	installFakeTmux(t)
 
-	res := TeardownTeam("never-existed")
+	res := TeardownTeam("never-existed", nil)
 	if !res.OK {
 		t.Fatalf("idempotent teardown should return OK: code=%s msg=%s",
 			res.ErrorCode, res.ErrorMsg)
@@ -311,7 +311,7 @@ func TestTeardownTeam_MissingIsIdempotent(t *testing.T) {
 }
 
 func TestTeardownTeam_EmptyName(t *testing.T) {
-	res := TeardownTeam("")
+	res := TeardownTeam("", nil)
 	if res.OK {
 		t.Fatal("empty team name should fail")
 	}
@@ -337,7 +337,7 @@ func TestTeardownTeam_TmuxKillFailureIsWarning(t *testing.T) {
 		{Name: "b1", AgentID: "b1@beta", TmuxPaneID: "%20", AgentType: "general-purpose"},
 	})
 
-	res := TeardownTeam("beta")
+	res := TeardownTeam("beta", nil)
 	if !res.OK {
 		t.Fatalf("tmux kill warning should not fail teardown: code=%s msg=%s",
 			res.ErrorCode, res.ErrorMsg)
@@ -360,7 +360,7 @@ func TestTeardownPane_HappyPath(t *testing.T) {
 		{Name: "g2", AgentID: "g2@gamma", TmuxPaneID: "%31", AgentType: "general-purpose"},
 	})
 
-	res := TeardownPane("%30")
+	res := TeardownPane("%30", nil)
 	if !res.OK {
 		t.Fatalf("TeardownPane: code=%s msg=%s", res.ErrorCode, res.ErrorMsg)
 	}
@@ -399,7 +399,7 @@ func TestTeardownPane_PaneNotFoundIsIdempotent(t *testing.T) {
 	_ = os.WriteFile(errOut, []byte("can't find pane: %99\n"), 0o644)
 	t.Setenv("MOCK_OUTPUT_FILE", errOut)
 
-	res := TeardownPane("%99")
+	res := TeardownPane("%99", nil)
 	if !res.OK {
 		t.Fatalf("nonexistent pane should be OK (idempotent): code=%s msg=%s",
 			res.ErrorCode, res.ErrorMsg)
@@ -411,7 +411,7 @@ func TestTeardownPane_NoOwningTeamStillKillsPane(t *testing.T) {
 	installFakeTmux(t)
 	// No teams seeded; just call TeardownPane.
 
-	res := TeardownPane("%50")
+	res := TeardownPane("%50", nil)
 	if !res.OK {
 		t.Fatalf("orphan pane teardown should be OK: code=%s msg=%s",
 			res.ErrorCode, res.ErrorMsg)
@@ -422,7 +422,7 @@ func TestTeardownPane_NoOwningTeamStillKillsPane(t *testing.T) {
 }
 
 func TestTeardownPane_EmptyPaneID(t *testing.T) {
-	res := TeardownPane("")
+	res := TeardownPane("", nil)
 	if res.OK {
 		t.Fatal("empty pane id should fail")
 	}
@@ -431,7 +431,7 @@ func TestTeardownPane_EmptyPaneID(t *testing.T) {
 func TestTeardownPane_RejectsBareName(t *testing.T) {
 	// Bare names (no leading %) must be rejected — they would otherwise
 	// silently look up no team and "succeed" misleadingly.
-	res := TeardownPane("alpha")
+	res := TeardownPane("alpha", nil)
 	if res.OK {
 		t.Fatal("non-% pane id should fail")
 	}
@@ -581,7 +581,7 @@ func TestTeardownTeam_ReapsMemberProcesses(t *testing.T) {
 		{Name: "a2", AgentID: "a2@alpha", TmuxPaneID: "%11", AgentType: "general-purpose"},
 	})
 
-	res := TeardownTeam("alpha")
+	res := TeardownTeam("alpha", nil)
 	if !res.OK {
 		t.Fatalf("ok=false code=%s msg=%s", res.ErrorCode, res.ErrorMsg)
 	}
@@ -606,7 +606,7 @@ func TestTeardownPane_ReapsOnlyItsMember(t *testing.T) {
 		{Name: "g2", AgentID: "g2@gamma", TmuxPaneID: "%31", AgentType: "general-purpose"},
 	})
 
-	res := TeardownPane("%30")
+	res := TeardownPane("%30", nil)
 	if !res.OK {
 		t.Fatalf("ok=false code=%s msg=%s", res.ErrorCode, res.ErrorMsg)
 	}

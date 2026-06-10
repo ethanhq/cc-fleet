@@ -91,6 +91,7 @@ profile that lazily fetches the vendor key.`,
 				LeadSessionID:          leadSessionID,
 				PermissionModeOverride: permOverride,
 				Verify:                 verify,
+				Diag:                   diagLogger(cmd),
 			}
 			res := spawn.Spawn(req)
 			return reportSpawn(res, asJSON)

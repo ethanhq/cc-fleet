@@ -119,13 +119,13 @@ func TestEnsureForVendor_RejectsNonLoopback(t *testing.T) {
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			v := &config.Vendor{SecretBackend: SecretBackend, BaseURL: c.base, ModelsEndpoint: c.models}
-			if err := EnsureForVendor(v); (err != nil) != c.wantErr {
+			if err := EnsureForVendor(v, nil); (err != nil) != c.wantErr {
 				t.Fatalf("EnsureForVendor err=%v, wantErr=%v", err, c.wantErr)
 			}
 		})
 	}
 	// A non-codex vendor is always a no-op, even with a remote base_url.
-	if err := EnsureForVendor(&config.Vendor{SecretBackend: "file", BaseURL: "https://api.example.com/"}); err != nil {
+	if err := EnsureForVendor(&config.Vendor{SecretBackend: "file", BaseURL: "https://api.example.com/"}, nil); err != nil {
 		t.Fatalf("non-codex vendor must be a no-op, got %v", err)
 	}
 }

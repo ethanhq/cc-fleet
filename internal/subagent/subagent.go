@@ -106,6 +106,7 @@ func Run(parent context.Context, req Request) Result {
 	if errRes := validateSlimArgs(req); errRes != nil {
 		return *errRes
 	}
+	dg := req.Diag
 
 	// 1. Load vendor config.
 	cfg, err := config.Load()
@@ -153,11 +154,12 @@ func Run(parent context.Context, req Request) Result {
 			err.Error(),
 			req.Vendor, suggestionFor(ErrCodeFingerprintStale))
 	}
+	dg.Logf("subagent: fingerprint gate ok (binary %s)", binPath)
 
 	// 3b. For a codex provider, ensure the conversion daemon is up — after the
 	//     fingerprint gate, before the profile write, so a daemon failure is
 	//     fail-before-mutation and leaves no profile behind.
-	if err := ensureVendorProxy(v); err != nil {
+	if err := ensureVendorProxy(v, dg); err != nil {
 		return fail(ErrCodeProxyUnavailable, err.Error(), req.Vendor, suggestionFor(ErrCodeProxyUnavailable))
 	}
 
@@ -173,6 +175,7 @@ func Run(parent context.Context, req Request) Result {
 		return fail(ErrCodeFailed, fmt.Sprintf("write profile for %s: %v", req.Vendor, err),
 			req.Vendor, "")
 	}
+	dg.Logf("subagent: profile written %s", profilePath)
 
 	// 5. Optional reachability probe (default OFF). Shares spawn's classifier;
 	//    on Block we abort, on Warn we note and proceed.
@@ -231,7 +234,12 @@ func Run(parent context.Context, req Request) Result {
 		return res
 	}
 	argv := buildArgv(fp.BinaryPath, profilePath, model, req, slim)
-	env := childenv.Clean(os.Environ())
+	hostEnv := os.Environ()
+	env := childenv.Clean(hostEnv)
+	// Counts only — argv carries the prompt/schema and env carries arbitrary
+	// user values, so neither is ever logged.
+	dg.Logf("subagent: job %s argv %d args; env %d→%d after cred/marker scrub",
+		jobID, len(argv), len(hostEnv), len(env))
 	if effective == ProfileSlimRO {
 		env = append(env, "CLAUDE_CODE_DISABLE_CLAUDE_MDS=1")
 	}
@@ -273,6 +281,7 @@ func Run(parent context.Context, req Request) Result {
 	defer cancel()
 	stdout, stderr, exitCode, runErr := runClaude(ctx, fp.BinaryPath, argv, env, req.PromptReader, req.WorkingDir, act)
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
+	dg.Logf("subagent: claude exited code %d (timeout=%v)", exitCode, timedOut)
 
 	// A cancelled parent (the workflow engine aborting its run) is a STOP, not a
 	// failure or a timeout — classify it ahead of everything else so the job

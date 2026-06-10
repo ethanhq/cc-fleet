@@ -9,6 +9,7 @@ import (
 
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/config"
+	"github.com/ethanhq/cc-fleet/internal/diag"
 	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 )
 
@@ -52,7 +53,7 @@ added_at        = 2026-06-08T05:00:00Z
 		t.Fatal(err)
 	}
 
-	ensureVendorProxy = func(*config.Vendor) error {
+	ensureVendorProxy = func(*config.Vendor, *diag.Logger) error {
 		return errors.New("codex proxy did not become ready on port 17222")
 	}
 	t.Cleanup(func() { ensureVendorProxy = codexproxy.EnsureForVendor })

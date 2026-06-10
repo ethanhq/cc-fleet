@@ -165,11 +165,13 @@ func Spawn(req Request) Result {
 	//    lazily-started conversion daemon, so probing here (before 5c starts it)
 	//    would always fail — daemon readiness at 5c is the real health signal. An
 	//    openai-* provider still probes (its models_endpoint is the real upstream).
+	dg := req.Diag
 	if req.Probe && v.EffectiveProtocol() != config.ProtocolCodexOAuth {
 		if res := probeVendor(v); res != nil {
 			res.Vendor = req.Vendor
 			return *res
 		}
+		dg.Logf("spawn: probe %s ok", req.Vendor)
 	}
 
 	// 5. Resolve the spawn recipe: the user's probed fingerprint if present,
@@ -206,6 +208,7 @@ func Spawn(req Request) Result {
 			req.Vendor,
 			"Skill's self-heal probe re-captures the recipe")
 	}
+	dg.Logf("spawn: fingerprint gate ok (binary %s)", binPath)
 	// The post-spawn settle check runs only when the caller opted in (req.Verify)
 	// AND the live CC is newer than the recipe (then a flag/env may have drifted).
 	// Short-circuit on req.Verify first so a --no-verify spawn never pays for
@@ -216,7 +219,7 @@ func Spawn(req Request) Result {
 	// 5c. For a codex provider, ensure the conversion daemon is up — after the
 	//     fingerprint gate, before the profile write and the tmux split, so a
 	//     daemon failure is fail-before-mutation (no profile, no pane).
-	if err := ensureVendorProxy(v); err != nil {
+	if err := ensureVendorProxy(v, dg); err != nil {
 		return fail(ErrCodeProxyUnavailable, err.Error(), req.Vendor,
 			"Conversion daemon failed to start — for codex run cc-fleet codex login (add --credential <name> for an extra one); otherwise free the base_url port, then retry")
 	}
@@ -228,6 +231,7 @@ func Spawn(req Request) Result {
 			fmt.Sprintf("write profile for %s: %v", req.Vendor, err),
 			req.Vendor, "")
 	}
+	dg.Logf("spawn: profile written %s", profilePath)
 
 	// 7. Resolve the tmux split target. Priority:
 	//      1. req.Target (--target) — explicit caller override, highest.
@@ -294,7 +298,9 @@ func Spawn(req Request) Result {
 	// permSource escapes the lock so the success Result can report where the
 	// teammate's permission flags came from.
 	var permSource string
+	dg.Logf("spawn: target %q (swarm=%v)", tmuxSession, swarm)
 	lockErr := config.WithTeamLock(req.Team, func() error {
+		dg.Logf("spawn: team lock acquired %s", req.Team)
 		// 8a. Ensure team dir + config.json. ErrTeamNotFound is fine if
 		//     AutoTeam is true — we create the team config below.
 		tc, loadErr := LoadTeamConfig(req.Team)
@@ -398,6 +404,7 @@ func Spawn(req Request) Result {
 		}); splitErr != nil {
 			return fmt.Errorf("split-window: %w", splitErr)
 		}
+		dg.Logf("spawn: pane %s split (socket %q)", paneID, swarmSocket)
 
 		// Persist the swarm socket name into the team config (under Raw) so a
 		// later teardown / ps can find the private server and reap it — without
@@ -451,13 +458,16 @@ func Spawn(req Request) Result {
 		// KillServer for swarm, and reap any reparented claude process by agent id.
 		// The lock is still held so no concurrent spawn can grab the same pane id.
 		if err := writeTeamConfigFn(req.Team, tc); err != nil {
+			dg.Logf("spawn: team config write failed — rolling back pane %s", paneID)
 			rollbackPane(paneID, swarm, swarmSocket, agentID, swarmCreatedServer)
 			return fmt.Errorf("write team config: %w", err)
 		}
+		dg.Logf("spawn: member %s recorded", agentID)
 
 		// 8g. Pre-create the inbox file so the new teammate's first
 		//     SendMessage doesn't race against an empty path.
 		if err := ensureInboxFn(req.Team, req.AgentName); err != nil {
+			dg.Logf("spawn: inbox ensure failed — rolling back pane %s", paneID)
 			rollbackPane(paneID, swarm, swarmSocket, agentID, swarmCreatedServer)
 			// WriteTeamConfig already persisted the new member + (swarm)
 			// tmuxSocket to disk. rollbackPane only undoes live pane / process
@@ -516,6 +526,7 @@ func Spawn(req Request) Result {
 		settleSocket = swarmSocket
 	}
 	if runSettle && !settleOK(settleSocket, paneID) {
+		dg.Logf("spawn: settle failed — rolling back %s", agentID)
 		rollbackSpawnedMember(req.Team, req.AgentName, paneID, swarm, swarmSocket, agentID, swarmCreatedServer)
 		return fail(ErrCodeSpawnDidNotSettle,
 			fmt.Sprintf("teammate %s exited during startup — likely a spawn-recipe mismatch on a Claude Code newer than the bundled recipe (%s)",
@@ -524,6 +535,7 @@ func Spawn(req Request) Result {
 			"Run the skill's self-heal probe to capture the current recipe, then retry the spawn")
 	}
 
+	dg.Logf("spawn: ok %s pane %s", agentID, paneID)
 	res := Result{
 		OK:                    true,
 		AgentID:               agentID,
