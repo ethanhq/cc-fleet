@@ -46,7 +46,7 @@ const rewriteInterval = 60 * time.Second
 // and working directories. PID is excluded — it is runtime-only.
 type MemberRec struct {
 	Name          string `json:"name"`
-	Vendor        string `json:"vendor,omitempty"`
+	Provider      string `json:"provider,omitempty"`
 	Model         string `json:"model,omitempty"`
 	SpawnTime     int64  `json:"spawn_time,omitempty"` // Member.JoinedAt, unix millis
 	LeadSessionID string `json:"lead_session_id,omitempty"`
@@ -144,7 +144,7 @@ func Upsert(live []teardown.Teammate, cwdOf func(sessionID string) string) error
 			}
 			rec.Members = append(rec.Members, MemberRec{
 				Name:          t.Name,
-				Vendor:        t.Vendor,
+				Provider:      t.Provider,
 				Model:         t.Model,
 				SpawnTime:     t.SpawnTime,
 				LeadSessionID: t.LeadSessionID,

@@ -1,10 +1,10 @@
-// Package secrets dispatches vendor API-key lookups across pluggable backends.
+// Package secrets dispatches provider API-key lookups across pluggable backends.
 //
 // Keyget is invoked from Claude Code's apiKeyHelper, so it must keep the key
 // bytes off of disk, environment, and logs: the caller (cc-fleet keyget
 // command) writes the result to stdout exactly once and exits. Nothing in this
 // package may log the key bytes themselves. (Round-robin rotation persists a
-// small monotonic counter to <vendor>.rotation — that integer is NOT a key, so
+// small monotonic counter to <provider>.rotation — that integer is NOT a key, so
 // keeping it on disk does not weaken this contract.)
 package secrets
 
@@ -20,52 +20,52 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/config"
 )
 
-// ErrNoEnabledKey is returned by the file backend when a vendor has no enabled
+// ErrNoEnabledKey is returned by the file backend when a provider has no enabled
 // API key to hand out (empty key set, or every entry disabled). keyget surfaces
 // it without writing any key bytes.
 var ErrNoEnabledKey = errors.New("no enabled API key")
 
-// Keyget resolves the API key for vendor by looking up its vendors.toml entry
+// Keyget resolves the API key for provider by looking up its providers.toml entry
 // and delegating to the configured secret backend.
 //
 // The returned bytes have trailing CR/LF stripped so the caller can write them
 // to stdout verbatim. The key is never logged.
-func Keyget(vendor string) ([]byte, error) {
+func Keyget(provider string) ([]byte, error) {
 	cfg, err := config.Load()
 	if err != nil {
-		return nil, fmt.Errorf("keyget %s: load config: %w", vendor, err)
+		return nil, fmt.Errorf("keyget %s: load config: %w", provider, err)
 	}
 
-	v, ok := cfg.Vendors[vendor]
+	v, ok := cfg.Providers[provider]
 	if !ok {
-		return nil, fmt.Errorf("keyget %s: unknown vendor (not in vendors.toml)", vendor)
+		return nil, fmt.Errorf("keyget %s: unknown provider (not in providers.toml)", provider)
 	}
 
 	switch v.SecretBackend {
 	case "file":
-		return keygetFile(vendor, v)
+		return keygetFile(provider, v)
 	case "pass":
-		return runBackend(vendor, "pass", "pass", "show", v.SecretRef)
+		return runBackend(provider, "pass", "pass", "show", v.SecretRef)
 	case "1password":
 		// secret_ref is an op secret reference URI (op://vault/item/field),
 		// passed verbatim — `op read` does its own parsing.
-		return runBackend(vendor, "1password", "op", "read", v.SecretRef)
+		return runBackend(provider, "1password", "op", "read", v.SecretRef)
 	case "vault":
-		return keygetVault(vendor, v)
+		return keygetVault(provider, v)
 	case "keyring":
-		return keygetKeyring(vendor, v)
+		return keygetKeyring(provider, v)
 	case "codex-oauth":
 		// The upstream OAuth bearer lives in the codex proxy daemon, never here:
 		// keyget hands the launched claude only the low-value loopback handshake
 		// secret that gates the daemon's /v1/messages.
 		secret, err := codexproxy.SecretForKeyget()
 		if err != nil {
-			return nil, fmt.Errorf("keyget %s: codex proxy secret: %w", vendor, err)
+			return nil, fmt.Errorf("keyget %s: codex proxy secret: %w", provider, err)
 		}
 		return []byte(secret), nil
 	default:
 		return nil, fmt.Errorf("keyget %s: unknown backend %q (want file|pass|1password|vault|keyring|codex-oauth)",
-			vendor, v.SecretBackend)
+			provider, v.SecretBackend)
 	}
 }
 
@@ -75,12 +75,12 @@ func Keyget(vendor string) ([]byte, error) {
 // `vault kv get -field=<field> <path>` and return its stdout. A malformed ref
 // is a clean classified error (never a panic) and — because parsing happens
 // before any exec — can carry no key bytes.
-func keygetVault(vendor string, v *config.Vendor) ([]byte, error) {
+func keygetVault(provider string, v *config.Provider) ([]byte, error) {
 	path, field, err := parseVaultRef(v.SecretRef)
 	if err != nil {
-		return nil, fmt.Errorf("keyget %s (vault): %w", vendor, err)
+		return nil, fmt.Errorf("keyget %s (vault): %w", provider, err)
 	}
-	return runBackend(vendor, "vault", "vault", "kv", "get", "-field="+field, path)
+	return runBackend(provider, "vault", "vault", "kv", "get", "-field="+field, path)
 }
 
 // parseVaultRef splits "<path>#<field>" on the last '#'. Both sides must be
@@ -103,12 +103,12 @@ func parseVaultRef(ref string) (path, field string, err error) {
 // tokens; we then run `secret-tool lookup <attr> <value> ...`. A malformed ref
 // (empty or odd token count) is a clean classified error, never a panic, and
 // carries no key.
-func keygetKeyring(vendor string, v *config.Vendor) ([]byte, error) {
+func keygetKeyring(provider string, v *config.Provider) ([]byte, error) {
 	attrs, err := parseKeyringRef(v.SecretRef)
 	if err != nil {
-		return nil, fmt.Errorf("keyget %s (keyring): %w", vendor, err)
+		return nil, fmt.Errorf("keyget %s (keyring): %w", provider, err)
 	}
-	return runBackend(vendor, "keyring", "secret-tool", append([]string{"lookup"}, attrs...)...)
+	return runBackend(provider, "keyring", "secret-tool", append([]string{"lookup"}, attrs...)...)
 }
 
 // parseKeyringRef tokenizes the ref on whitespace into attribute/value pairs.
@@ -126,13 +126,13 @@ func parseKeyringRef(ref string) ([]string, error) {
 }
 
 // keygetFile resolves the file backend's key: load the (possibly multi-)key
-// set, keep only the enabled entries, and pick one per the vendor's rotation
+// set, keep only the enabled entries, and pick one per the provider's rotation
 // strategy. Disabled keys are filtered out BEFORE selection so they can never
 // be handed out.
-func keygetFile(vendor string, v *config.Vendor) ([]byte, error) {
-	ks, err := LoadKeySet(vendor)
+func keygetFile(provider string, v *config.Provider) ([]byte, error) {
+	ks, err := LoadKeySet(provider)
 	if err != nil {
-		return nil, fmt.Errorf("keyget %s (file): %w", vendor, err)
+		return nil, fmt.Errorf("keyget %s (file): %w", provider, err)
 	}
 	enabled := make([]KeyEntry, 0, len(ks))
 	for _, e := range ks {
@@ -140,7 +140,7 @@ func keygetFile(vendor string, v *config.Vendor) ([]byte, error) {
 			enabled = append(enabled, e)
 		}
 	}
-	return selectKey(vendor, v.KeyRotation, enabled)
+	return selectKey(provider, v.KeyRotation, enabled)
 }
 
 // selectKey chooses one key from the already-filtered enabled set per rotation:
@@ -157,25 +157,25 @@ func keygetFile(vendor string, v *config.Vendor) ([]byte, error) {
 // Rotation is dispatched via config.ParseKeyRotation (typed enum) so an
 // unrecognized value surfaces explicitly rather than silently falling through to
 // a default — defense-in-depth, since config.Load already validated a
-// well-formed vendors.toml.
-func selectKey(vendor, rotation string, enabled []KeyEntry) ([]byte, error) {
+// well-formed providers.toml.
+func selectKey(provider, rotation string, enabled []KeyEntry) ([]byte, error) {
 	if len(enabled) == 0 {
-		return nil, fmt.Errorf("keyget %s: %w", vendor, ErrNoEnabledKey)
+		return nil, fmt.Errorf("keyget %s: %w", provider, ErrNoEnabledKey)
 	}
 	if len(enabled) == 1 {
 		return keyBytes(enabled[0]), nil
 	}
 	strategy, err := config.ParseKeyRotation(rotation)
 	if err != nil {
-		return nil, fmt.Errorf("keyget %s: %w", vendor, err)
+		return nil, fmt.Errorf("keyget %s: %w", provider, err)
 	}
 	switch strategy {
 	case config.RotationOff:
 		return keyBytes(enabled[0]), nil
 	case config.RotationRoundRobin:
-		idx, err := nextRoundRobinIndex(vendor, len(enabled))
+		idx, err := nextRoundRobinIndex(provider, len(enabled))
 		if err != nil {
-			return nil, fmt.Errorf("keyget %s: %w", vendor, err)
+			return nil, fmt.Errorf("keyget %s: %w", provider, err)
 		}
 		return keyBytes(enabled[idx]), nil
 	case config.RotationRandom:
@@ -185,7 +185,7 @@ func selectKey(vendor, rotation string, enabled []KeyEntry) ([]byte, error) {
 	// success. Returning an explicit error keeps the linter happy AND
 	// guarantees that adding a new KeyRotation constant without updating
 	// this switch produces a hard error instead of a silent off fallback.
-	return nil, fmt.Errorf("keyget %s: unhandled key_rotation %q", vendor, strategy)
+	return nil, fmt.Errorf("keyget %s: unhandled key_rotation %q", provider, strategy)
 }
 
 // keyBytes returns an entry's key with trailing CR/LF stripped.
@@ -196,10 +196,10 @@ func keyBytes(e KeyEntry) []byte {
 // runBackend executes a CLI secret tool (pass / op / vault / secret-tool) and
 // returns its trimmed stdout. backendLabel is the short tag used in error
 // messages (e.g. "pass").
-func runBackend(vendor, backendLabel, command string, args ...string) ([]byte, error) {
+func runBackend(provider, backendLabel, command string, args ...string) ([]byte, error) {
 	out, err := exec.Command(command, args...).Output()
 	if err != nil {
-		return nil, fmt.Errorf("keyget %s (%s): %w", vendor, backendLabel, err)
+		return nil, fmt.Errorf("keyget %s (%s): %w", provider, backendLabel, err)
 	}
 	return bytes.TrimRight(out, "\r\n"), nil
 }

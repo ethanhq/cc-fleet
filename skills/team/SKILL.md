@@ -1,6 +1,6 @@
 ---
 name: team
-description: Spawn long-lived vendor LLM teammates in tmux panes that you message via the native agent-team tools — multi-turn, collaborative, watchable. Use for sustained parallel build/work ("spawn workers", N teammates on N files), or when you need a collaborator you message across turns. NOT a fire-and-forget one-shot or a flat batch of independent prompts — that is /cc-fleet:subagent. NOT a scripted multi-phase run — that is /cc-fleet:workflow.
+description: Spawn long-lived provider LLM teammates in tmux panes that you message via the native agent-team tools — multi-turn, collaborative, watchable. Use for sustained parallel build/work ("spawn workers", N teammates on N files), or when you need a collaborator you message across turns. NOT a fire-and-forget one-shot or a flat batch of independent prompts — that is /cc-fleet:subagent. NOT a scripted multi-phase run — that is /cc-fleet:workflow.
 ---
 
 # team — long-lived provider teammates

@@ -13,7 +13,7 @@ func TestMaskKeyLike_RemovesSentinel(t *testing.T) {
 		name string
 		in   string
 	}{
-		{"sk-prefix", "vendor error: Invalid key sk-SENTINEL01234567890, please rotate"},
+		{"sk-prefix", "provider error: Invalid key sk-SENTINEL01234567890, please rotate"},
 		{"sk-uppercase", "Invalid SK-SENTINEL01234567890"},
 		{"bearer", "Authorization: Bearer sk-SENTINEL01234567890 was rejected"},
 		{"bearer-lower", "header bearer sk-SENTINEL01234567890 leaked"},
@@ -40,7 +40,7 @@ func TestMaskKeyLike_RemovesSentinel(t *testing.T) {
 // plain English word must survive.
 func TestMaskKeyLike_LeavesUnrelatedTextAlone(t *testing.T) {
 	keep := []string{
-		"vendor returned HTTP 500",
+		"provider returned HTTP 500",
 		"sk-",                                 // bare prefix, no secret-shaped chars after
 		"endpoint http://x.example/v1/models", // just URL
 		"models_endpoint is missing",
@@ -71,7 +71,7 @@ func TestMaskKeyLike_EmptyAndNilSafe(t *testing.T) {
 // (truncation can't save you). Verify masking still kicks in.
 func TestMaskKeyLike_ByteZero(t *testing.T) {
 	const sentinel = "sk-SENTINEL01234567890"
-	body := []byte(sentinel + "...vendor body...")
+	body := []byte(sentinel + "...provider body...")
 	out := MaskKeyLike(body)
 	if strings.Contains(string(out), "SENTINEL01234567890") {
 		t.Fatalf("byte-0 sentinel survived: %q", string(out))

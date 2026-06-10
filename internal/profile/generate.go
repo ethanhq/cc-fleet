@@ -21,36 +21,36 @@ type profileFile struct {
 	APIKeyHelper string            `json:"apiKeyHelper"`
 	Env          map[string]string `json:"env"`
 	// EffortLevel is the settings reasoning-effort field for a non-"max" provider
-	// effort (max rides the env instead — see GenerateForVendor). omitempty so a
+	// effort (max rides the env instead — see GenerateForProvider). omitempty so a
 	// provider with no/effort=="max" emits no effortLevel key.
 	EffortLevel string `json:"effortLevel,omitempty"`
 }
 
-// GenerateForVendor renders the profile JSON for v.
+// GenerateForProvider renders the profile JSON for v.
 //
 // helperBinary is the absolute path that will be written into the
 // apiKeyHelper field; callers normally pass os.Executable() so the helper
 // invocation stays bound to the same cc-fleet binary that wrote the profile.
-// An empty helperBinary is an error here — WriteForVendor resolves
+// An empty helperBinary is an error here — WriteForProvider resolves
 // os.Executable() before delegating.
 //
 // The output is 2-space indented and has no trailing newline.
-func GenerateForVendor(v *config.Vendor, helperBinary string) ([]byte, error) {
+func GenerateForProvider(v *config.Provider, helperBinary string) ([]byte, error) {
 	if v == nil {
-		return nil, errors.New("profile: nil vendor")
+		return nil, errors.New("profile: nil provider")
 	}
 	if v.Name == "" {
-		return nil, errors.New("profile: vendor name is empty")
+		return nil, errors.New("profile: provider name is empty")
 	}
 	// Defense-in-depth: v.Name is concatenated into the apiKeyHelper command
 	// ("<bin> keyget <name>") Claude Code hands to a shell. Re-validate the
 	// grammar here so a malformed name can't be injected even if it bypassed
 	// the config Load gate.
-	if err := ids.ValidateVendorName(v.Name); err != nil {
+	if err := ids.ValidateProviderName(v.Name); err != nil {
 		return nil, fmt.Errorf("profile: %w", err)
 	}
 	if v.BaseURL == "" {
-		return nil, fmt.Errorf("profile: vendor %q: base_url is empty", v.Name)
+		return nil, fmt.Errorf("profile: provider %q: base_url is empty", v.Name)
 	}
 	if helperBinary == "" {
 		return nil, errors.New("profile: helperBinary is empty")
@@ -60,15 +60,15 @@ func GenerateForVendor(v *config.Vendor, helperBinary string) ([]byte, error) {
 	}
 
 	// Claude Code hands the apiKeyHelper string to a shell, so the install path
-	// and vendor arg must be POSIX-shell-quoted — a path with a space or
-	// metacharacter would otherwise be word-split or interpreted. The vendor KEY
+	// and provider arg must be POSIX-shell-quoted — a path with a space or
+	// metacharacter would otherwise be word-split or interpreted. The provider KEY
 	// never enters this string (keyget resolves it at runtime), so quoting
 	// protects only the path + name. A metachar-free path is emitted verbatim so
 	// the profile stays byte-stable.
 	// Pin every Claude Code model slot to a provider model so a teammate/subagent
 	// never falls back to a built-in claude-* id the provider can't serve — the
 	// haiku slot drives background work (titles, context compaction, quick
-	// classification), so leaving it unset breaks long sessions against a vendor
+	// classification), so leaving it unset breaks long sessions against a provider
 	// base_url. The main model is the --model flag; these cover the opus/sonnet/
 	// haiku aliases and the Task-subagent model. The [1m] context marker is
 	// stripped here: only the main model (via --model) carries it, where Claude
@@ -97,7 +97,7 @@ func GenerateForVendor(v *config.Vendor, helperBinary string) ([]byte, error) {
 
 	out, err := json.MarshalIndent(pf, "", "  ")
 	if err != nil {
-		return nil, fmt.Errorf("profile: marshal vendor %q: %w", v.Name, err)
+		return nil, fmt.Errorf("profile: marshal provider %q: %w", v.Name, err)
 	}
 	return out, nil
 }
@@ -140,16 +140,16 @@ func isShellSafe(s string) bool {
 	return true
 }
 
-// WriteForVendor writes the profile for v to ProfilePath(v.Name) atomically
+// WriteForProvider writes the profile for v to ProfilePath(v.Name) atomically
 // with mode 0600. The parent directory is created on demand at mode 0700.
 //
 // If helperBinary is empty, os.Executable() is used so the apiKeyHelper field
 // always carries an absolute path to the running binary.
 //
 // Returns the resolved profile path on success.
-func WriteForVendor(v *config.Vendor, helperBinary string) (string, error) {
+func WriteForProvider(v *config.Provider, helperBinary string) (string, error) {
 	if v == nil {
-		return "", errors.New("profile: nil vendor")
+		return "", errors.New("profile: nil provider")
 	}
 	if helperBinary == "" {
 		exe, err := os.Executable()
@@ -159,7 +159,7 @@ func WriteForVendor(v *config.Vendor, helperBinary string) (string, error) {
 		helperBinary = exe
 	}
 
-	data, err := GenerateForVendor(v, helperBinary)
+	data, err := GenerateForProvider(v, helperBinary)
 	if err != nil {
 		return "", err
 	}
@@ -179,12 +179,12 @@ func WriteForVendor(v *config.Vendor, helperBinary string) (string, error) {
 	return path, nil
 }
 
-// RemoveForVendor deletes the profile file for vendor.
+// RemoveForProvider deletes the profile file for provider.
 //
 // A missing file is NOT an error — this is intended for idempotent cleanup
 // from teardown / uninstall paths.
-func RemoveForVendor(vendor string) error {
-	path, err := ProfilePath(vendor)
+func RemoveForProvider(provider string) error {
+	path, err := ProfilePath(provider)
 	if err != nil {
 		return err
 	}

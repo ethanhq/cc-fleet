@@ -13,7 +13,7 @@ import (
 )
 
 // upstreamError carries a classified upstream failure so the server can map it to an
-// Anthropic-shaped error body + HTTP status that vendorclass understands.
+// Anthropic-shaped error body + HTTP status that providerclass understands.
 type upstreamError struct {
 	kind    upstreamKind
 	status  int

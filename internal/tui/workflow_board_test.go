@@ -41,9 +41,9 @@ func oneRun() ([]subagent.Result, []subagent.WorkflowRun) {
 		Phases: []subagent.RunPhase{{Title: "map"}, {Title: "build"}},
 	}}
 	jobs := []subagent.Result{
-		{RunID: "run-1", Phase: "map", Label: "m1", Vendor: "glm", Model: "glm-4.6", Status: "done",
+		{RunID: "run-1", Phase: "map", Label: "m1", Provider: "glm", Model: "glm-4.6", Status: "done",
 			JobID: "job-m1", NumTurns: 3, CostUSD: 0.01, Usage: &subagent.Usage{InputTokens: 50700, OutputTokens: 1200}},
-		{RunID: "run-1", Phase: "build", Label: "b1", Vendor: "kimi", Model: "k2", Status: "running",
+		{RunID: "run-1", Phase: "build", Label: "b1", Provider: "kimi", Model: "k2", Status: "running",
 			JobID: "job-b1", StartedAt: "2026-06-01T00:00:10Z"},
 	}
 	return jobs, runs
@@ -421,7 +421,7 @@ func TestWfNav_ArrowsDrillInAndOut(t *testing.T) {
 
 // TestWfNav_LeftClampsAtTop: ← at the board's TOP level (a single-session boxes level) ascends per the
 // AS board rules — a single session/project has nowhere to climb, so ← is a no-op and stays on the
-// board; esc at the boxes top leaves for Vendors.
+// board; esc at the boxes top leaves for Providers.
 func TestWfNav_LeftClampsAtTop(t *testing.T) {
 	jobs, runs := oneRun()
 	m := runsModel(t, jobs, runs, nil) // single session → boxes is the top level
@@ -429,7 +429,7 @@ func TestWfNav_LeftClampsAtTop(t *testing.T) {
 		t.Fatalf("← at the single-session boxes top must stay on the board, got screen=%d mode=%d", m2.screen, m2.asMode)
 	}
 	if m3, _ := press(t, m, "esc"); m3.screen != screenList {
-		t.Fatalf("esc at the boxes top must exit to Vendors, got screen=%d", m3.screen)
+		t.Fatalf("esc at the boxes top must exit to Providers, got screen=%d", m3.screen)
 	}
 }
 

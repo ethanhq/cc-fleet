@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethanhq/cc-fleet/internal/providerclass"
 	"github.com/ethanhq/cc-fleet/internal/redact"
-	"github.com/ethanhq/cc-fleet/internal/vendorclass"
 )
 
 // stderrPreviewMax bounds the claude-stderr snippet attached to a
@@ -56,7 +56,7 @@ type innerUsage struct {
 // "success" even on a 429 is_error:true.
 func classify(req Request, model string, stdout, stderr []byte, exitCode int, timedOut, innerJSON bool) Result {
 	if timedOut {
-		return fail(ErrCodeTimeout, canonicalTimeoutMsg(req.Timeout), req.Vendor, suggestionFor(ErrCodeTimeout))
+		return fail(ErrCodeTimeout, canonicalTimeoutMsg(req.Timeout), req.Provider, suggestionFor(ErrCodeTimeout))
 	}
 
 	if !innerJSON {
@@ -73,7 +73,7 @@ func classify(req Request, model string, stdout, stderr []byte, exitCode int, ti
 			return failWithPreview(req, stderr, exitCode)
 		}
 		if exitCode == 0 {
-			return Result{OK: true, Vendor: req.Vendor, Model: model, Result: string(stdout)}
+			return Result{OK: true, Provider: req.Provider, Model: model, Result: string(stdout)}
 		}
 		return failWithPreview(req, stderr, exitCode)
 	}
@@ -81,14 +81,14 @@ func classify(req Request, model string, stdout, stderr []byte, exitCode int, ti
 	inner, ok := parseInner(stdout)
 	if !ok {
 		// No parseable envelope (claude crashed / printed nothing). Key-safe:
-		// the preview is claude's OWN stderr, not vendor response text.
+		// the preview is claude's OWN stderr, not provider response text.
 		return failWithPreview(req, stderr, exitCode)
 	}
 
 	if !inner.IsError {
 		res := Result{
 			OK:               true,
-			Vendor:           req.Vendor,
+			Provider:         req.Provider,
 			Result:           inner.Result,
 			StructuredOutput: inner.StructuredOutput,
 			DurationMs:       inner.DurationMs,
@@ -113,9 +113,9 @@ func classify(req Request, model string, stdout, stderr []byte, exitCode int, ti
 	}
 
 	// is_error == true. Classify and emit a CANONICAL message: never copy
-	// inner.result vendor text into error_msg.
+	// inner.result provider text into error_msg.
 	code := classifyError(inner)
-	r := fail(code, errorMessage(code, inner), req.Vendor, suggestionFor(code))
+	r := fail(code, errorMessage(code, inner), req.Provider, suggestionFor(code))
 	r.APIErrorStatus = inner.APIErrorStatus // always set
 	// Carry a few non-secret structured fields that aid the lead even on error.
 	r.DurationMs = inner.DurationMs
@@ -141,13 +141,13 @@ func classifyError(inner innerEnvelope) string {
 	case 401, 403:
 		// A Cloudflare edge block answers 403 — an IP/client problem, not a bad
 		// key, so it must not surface as KEY_INVALID.
-		if vendorclass.MatchClass(inner.Result) == vendorclass.ClassCloudflareBlocked {
+		if providerclass.MatchClass(inner.Result) == providerclass.ClassCloudflareBlocked {
 			return ErrCodeCloudflareBlocked
 		}
 		return ErrCodeKeyInvalid
 	case 429, 402:
 		// Balance outranks a bare 429 — a retry can't fix being out of credit.
-		if vendorclass.MatchClass(inner.Result) == vendorclass.ClassInsufficientBalance {
+		if providerclass.MatchClass(inner.Result) == providerclass.ClassInsufficientBalance {
 			return ErrCodeInsufficientBalance
 		}
 		return ErrCodeRateLimited
@@ -155,46 +155,46 @@ func classifyError(inner innerEnvelope) string {
 		if looksLikeModelRejection(inner.Result) {
 			return ErrCodeModelNotFound
 		}
-		return ErrCodeVendorAPIError
+		return ErrCodeProviderAPIError
 	case 0:
 		// No HTTP status. The turn/budget/exec-exhaustion variants carry subtype
 		// error_* (and errors[] instead of result) — surface them as
-		// SUBAGENT_FAILED, not a vendor API error.
+		// SUBAGENT_FAILED, not a provider API error.
 		if strings.HasPrefix(inner.Subtype, "error_") {
 			return ErrCodeFailed
 		}
 		if looksLikeTransport(inner.Result) {
-			return ErrCodeVendorUnreachable
+			return ErrCodeProviderUnreachable
 		}
-		return ErrCodeVendorAPIError
+		return ErrCodeProviderAPIError
 	default:
-		// 5xx / overloaded / anything else the vendor reported.
-		return ErrCodeVendorAPIError
+		// 5xx / overloaded / anything else the provider reported.
+		return ErrCodeProviderAPIError
 	}
 }
 
 // errorMessage returns a canonical, key-safe message for code. For
 // SUBAGENT_FAILED arising from an error_* subtype, it names the subtype so a
-// max_turns/budget exhaustion is legible without echoing vendor prose.
+// max_turns/budget exhaustion is legible without echoing provider prose.
 func errorMessage(code string, inner innerEnvelope) string {
 	switch code {
 	case ErrCodeKeyInvalid:
-		return "vendor rejected the API key (HTTP 401/403)"
+		return "provider rejected the API key (HTTP 401/403)"
 	case ErrCodeRateLimited:
-		return "vendor rate limit (HTTP 429)"
+		return "provider rate limit (HTTP 429)"
 	case ErrCodeInsufficientBalance:
-		return "vendor out of balance/quota (HTTP 429/402)"
+		return "provider out of balance/quota (HTTP 429/402)"
 	case ErrCodeModelNotFound:
-		return "vendor rejected the model name (HTTP 400)"
+		return "provider rejected the model name (HTTP 400)"
 	case ErrCodeCloudflareBlocked:
-		return "vendor edge (Cloudflare) blocked this IP/client (HTTP 403)"
-	case ErrCodeVendorUnreachable:
-		return "vendor unreachable (transport failure reported by claude)"
-	case ErrCodeVendorAPIError:
+		return "provider edge (Cloudflare) blocked this IP/client (HTTP 403)"
+	case ErrCodeProviderUnreachable:
+		return "provider unreachable (transport failure reported by claude)"
+	case ErrCodeProviderAPIError:
 		if inner.APIErrorStatus > 0 {
-			return fmt.Sprintf("vendor API error (HTTP %d)", inner.APIErrorStatus)
+			return fmt.Sprintf("provider API error (HTTP %d)", inner.APIErrorStatus)
 		}
-		return "vendor API error"
+		return "provider API error"
 	case ErrCodeFailed:
 		// Budget exhaustion gets a friendly message that names the cap + spent $;
 		// other error_* subtypes (e.g. error_max_turns) keep the subtype-named
@@ -213,7 +213,7 @@ func errorMessage(code string, inner innerEnvelope) string {
 
 // budgetMessage names a --max-budget-usd exhaustion and, when claude reported a
 // cost, the amount already spent — so the failure reads as "spent $X, capped"
-// rather than an opaque stop. The cost is claude's own metering, not vendor body
+// rather than an opaque stop. The cost is claude's own metering, not provider body
 // text, so it is key-safe.
 func budgetMessage(spent float64) string {
 	if spent > 0 {
@@ -244,32 +244,32 @@ func suggestionFor(code string) string {
 	switch code {
 	case ErrCodeBadArgs:
 		return "Pass exactly one of --prompt or --prompt-file"
-	case ErrCodeUnknownVendor:
-		return "Run cc-fleet add <vendor> (or check cc-fleet list --json)"
-	case ErrCodeVendorDisabled:
-		return "Run cc-fleet edit <vendor> --enable"
+	case ErrCodeUnknownProvider:
+		return "Run cc-fleet add <provider> (or check cc-fleet list --json)"
+	case ErrCodeProviderDisabled:
+		return "Run cc-fleet edit <provider> --enable"
 	case ErrCodeFingerprintMissing, ErrCodeFingerprintStale:
 		return "Run the FINGERPRINT self-heal flow (native probe → cc-fleet refresh-fingerprint), then retry"
 	case ErrCodeProxyUnavailable:
 		return "Conversion daemon failed to start — for codex run cc-fleet codex login (add --credential <name> for an extra one); otherwise free the base_url port, then retry"
 	case ErrCodeKeyInvalid:
-		return "Rotate the vendor API key; do not retry until fixed"
+		return "Rotate the provider API key; do not retry until fixed"
 	case ErrCodeCloudflareBlocked:
 		return "Switch network/IP or retry later; the key is not the problem"
 	case ErrCodeInsufficientBalance:
-		return "Vendor out of credit — top up, switch vendor, or fall back to native Agent"
+		return "Provider out of credit — top up, switch provider, or fall back to native Agent"
 	case ErrCodeRateLimited:
-		return "Wait briefly then retry once, or switch vendor"
+		return "Wait briefly then retry once, or switch provider"
 	case ErrCodeModelNotFound:
-		return "Run cc-fleet refresh <vendor> then retry, or drop --model to use the default"
-	case ErrCodeVendorUnreachable:
+		return "Run cc-fleet refresh <provider> then retry, or drop --model to use the default"
+	case ErrCodeProviderUnreachable:
 		return "Run cc-fleet doctor; if urgent, fall back to native Agent"
 	case ErrCodeTimeout:
-		return "Real long task → raise --timeout (or use --background) and retry; suspected hang → switch vendor or fall back"
-	case ErrCodeVendorAPIError:
-		return "Retry once or switch vendor"
+		return "Real long task → raise --timeout (or use --background) and retry; suspected hang → switch provider or fall back"
+	case ErrCodeProviderAPIError:
+		return "Retry once or switch provider"
 	case ErrCodeFailed:
-		return "Inspect the error; retry or switch vendor"
+		return "Inspect the error; retry or switch provider"
 	case ErrCodeOutputTooLarge:
 		return "Narrow the task or cap it with --max-turns / --output-format json"
 	default:
@@ -324,7 +324,7 @@ func failWithPreview(req Request, stderr []byte, exitCode int) Result {
 	if prev := stderrPreview(stderr); prev != "" {
 		msg += ": " + prev
 	}
-	return fail(ErrCodeFailed, msg, req.Vendor, suggestionFor(ErrCodeFailed))
+	return fail(ErrCodeFailed, msg, req.Provider, suggestionFor(ErrCodeFailed))
 }
 
 // stderrPreview returns up to stderrPreviewMax bytes of stderr after passing
@@ -349,11 +349,11 @@ func canonicalTimeoutMsg(timeout time.Duration) string {
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
-	return fmt.Sprintf("vendor subagent exceeded %s; process group killed", timeout)
+	return fmt.Sprintf("provider subagent exceeded %s; process group killed", timeout)
 }
 
 // modelRejectionSignatures detect a 400 that means "bad --model name" rather
-// than a generic bad request (vendors answer "supported names: …").
+// than a generic bad request (providers answer "supported names: …").
 var modelRejectionSignatures = []string{
 	"model not found", "invalid model", "unknown model", "supported names",
 	"model_not_found", "does not exist", "no such model", "not a valid model",
@@ -372,7 +372,7 @@ func looksLikeModelRejection(text string) bool {
 
 // transportSignatures catch a result text that describes a connection-layer
 // failure when claude reported no api_error_status — surfaced as
-// VENDOR_UNREACHABLE rather than a generic API error.
+// PROVIDER_UNREACHABLE rather than a generic API error.
 var transportSignatures = []string{
 	"connection refused", "no such host", "dial tcp", "tls handshake",
 	"network is unreachable", "connection reset", "timed out", "i/o timeout",

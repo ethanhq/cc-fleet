@@ -302,13 +302,13 @@ func TestCheckAttachedTmux_TmuxErrorWarns(t *testing.T) {
 	}
 }
 
-// ---------- Check 6: vendor keys ----------
+// ---------- Check 6: provider keys ----------
 
-// installVendorWithEndpoint writes vendors.toml + secret file pointing at
-// endpointURL so a CheckVendorKeys call probes the test server.
-func installVendorWithEndpoint(t *testing.T, name, endpoint string, enabled bool) {
+// installProviderWithEndpoint writes providers.toml + secret file pointing at
+// endpointURL so a CheckProviderKeys call probes the test server.
+func installProviderWithEndpoint(t *testing.T, name, endpoint string, enabled bool) {
 	t.Helper()
-	v := &config.Vendor{
+	v := &config.Provider{
 		Name:           name,
 		BaseURL:        endpoint,
 		DefaultModel:   name + "-latest",
@@ -318,10 +318,10 @@ func installVendorWithEndpoint(t *testing.T, name, endpoint string, enabled bool
 		Enabled:        enabled,
 		AddedAt:        time.Date(2026, 5, 24, 0, 0, 0, 0, time.UTC),
 	}
-	cfg := &config.Config{Version: config.SchemaVersion, Vendors: map[string]*config.Vendor{name: v}}
-	cfgPath, err := config.VendorsPath()
+	cfg := &config.Config{Version: config.SchemaVersion, Providers: map[string]*config.Provider{name: v}}
+	cfgPath, err := config.ProvidersPath()
 	if err != nil {
-		t.Fatalf("VendorsPath: %v", err)
+		t.Fatalf("ProvidersPath: %v", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
 		t.Fatalf("mkdir config: %v", err)
@@ -341,32 +341,32 @@ func installVendorWithEndpoint(t *testing.T, name, endpoint string, enabled bool
 	}
 }
 
-func TestCheckVendorKeys_NoVendors(t *testing.T) {
+func TestCheckProviderKeys_NoProviders(t *testing.T) {
 	setupHome(t)
-	r := CheckVendorKeys()
+	r := CheckProviderKeys()
 	if r.Status != StatusOK {
 		t.Fatalf("Status = %s, want ok (detail=%s)", r.Status, r.Detail)
 	}
-	if r.Detail != "no vendors configured" {
-		t.Fatalf("detail = %q, want 'no vendors configured'", r.Detail)
+	if r.Detail != "no providers configured" {
+		t.Fatalf("detail = %q, want 'no providers configured'", r.Detail)
 	}
 }
 
-func TestCheckVendorKeys_AllReachable(t *testing.T) {
+func TestCheckProviderKeys_AllReachable(t *testing.T) {
 	setupHome(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"data":[{"id":"x","owned_by":"y"}]}`)
 	}))
 	defer srv.Close()
-	installVendorWithEndpoint(t, "deepseek", srv.URL, true)
-	r := CheckVendorKeys()
+	installProviderWithEndpoint(t, "deepseek", srv.URL, true)
+	r := CheckProviderKeys()
 	if r.Status != StatusOK {
 		t.Fatalf("Status = %s, want ok (detail=%s)", r.Status, r.Detail)
 	}
 }
 
-func TestCheckVendorKeys_OneFails(t *testing.T) {
+func TestCheckProviderKeys_OneFails(t *testing.T) {
 	setupHome(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
@@ -374,28 +374,28 @@ func TestCheckVendorKeys_OneFails(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "bad key"})
 	}))
 	defer srv.Close()
-	installVendorWithEndpoint(t, "deepseek", srv.URL, true)
-	r := CheckVendorKeys()
+	installProviderWithEndpoint(t, "deepseek", srv.URL, true)
+	r := CheckProviderKeys()
 	if r.Status != StatusFail {
 		t.Fatalf("Status = %s, want fail (detail=%s)", r.Status, r.Detail)
 	}
 	if !strings.Contains(r.Detail, "deepseek") {
-		t.Fatalf("detail = %q, want it to mention failed vendor name", r.Detail)
+		t.Fatalf("detail = %q, want it to mention failed provider name", r.Detail)
 	}
 	if r.FixHint == "" {
 		t.Fatalf("FixHint empty, want a hint")
 	}
 }
 
-func TestCheckVendorKeys_DisabledSkipped(t *testing.T) {
+func TestCheckProviderKeys_DisabledSkipped(t *testing.T) {
 	setupHome(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		// If this fires, the disabled vendor was incorrectly probed.
+		// If this fires, the disabled provider was incorrectly probed.
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer srv.Close()
-	installVendorWithEndpoint(t, "deepseek", srv.URL, false)
-	r := CheckVendorKeys()
+	installProviderWithEndpoint(t, "deepseek", srv.URL, false)
+	r := CheckProviderKeys()
 	if r.Status != StatusOK {
 		t.Fatalf("Status = %s, want ok (detail=%s)", r.Status, r.Detail)
 	}
@@ -707,7 +707,7 @@ func TestCheckOAuthCredentials_PresentLegacy(t *testing.T) {
 }
 
 func TestCheckOAuthCredentials_MissingIsOK(t *testing.T) {
-	// Absence is informational, NOT a warning. A main session on a vendor profile
+	// Absence is informational, NOT a warning. A main session on a provider profile
 	// legitimately has no credentials.json — doctor must not show a yellow WARN
 	// for it.
 	setupHome(t)

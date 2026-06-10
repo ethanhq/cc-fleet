@@ -56,7 +56,7 @@ func readKeyFromFile(path string) (string, error) {
 // addJSONEnvelope is the success-side JSON shape `cc-fleet add --json` emits.
 type addJSONEnvelope struct {
 	OK          bool      `json:"ok"`
-	Vendor      string    `json:"vendor"`
+	Provider    string    `json:"provider"`
 	ProfilePath string    `json:"profile_path"`
 	AddedAt     time.Time `json:"added_at"`
 	ModelCount  int       `json:"model_count"`
@@ -81,18 +81,18 @@ func newAddCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "add <vendor>",
-		Short: "Register a vendor and probe its /v1/models endpoint",
-		Long: `Register a vendor in vendors.toml and write its Claude Code profile JSON.
+		Use:   "add <provider>",
+		Short: "Register a provider and probe its /v1/models endpoint",
+		Long: `Register a provider in providers.toml and write its Claude Code profile JSON.
 
-The vendor name must match ^[a-zA-Z][a-zA-Z0-9_-]{0,31}$. Existing entries
+The provider name must match ^[a-zA-Z][a-zA-Z0-9_-]{0,31}$. Existing entries
 are NOT overwritten — use ` + "`cc-fleet edit`" + ` or ` + "`cc-fleet remove`" + ` first.
 
-Add performs a synchronous probe of the vendor's models_endpoint with a 3s
-timeout. The probe MUST succeed before the vendor is persisted:
+Add performs a synchronous probe of the provider's models_endpoint with a 3s
+timeout. The probe MUST succeed before the provider is persisted:
 
-  KEY_INVALID         vendor returned HTTP 401         (exit 1)
-  VENDOR_UNREACHABLE  DNS / connect / HTTP timeout    (exit 1)
+  KEY_INVALID         provider returned HTTP 401         (exit 1)
+  PROVIDER_UNREACHABLE  DNS / connect / HTTP timeout    (exit 1)
   ADD_FAILED          anything else                    (exit 1)
 
 If --api-key is supplied with --secret-backend file, the key is written to
@@ -175,23 +175,23 @@ when stdin is a tty; otherwise the command exits 1 with a usage error.`,
 			if asJSON {
 				emitJSON(addJSONEnvelope{
 					OK:          true,
-					Vendor:      res.Vendor,
+					Provider:    res.Provider,
 					ProfilePath: res.ProfilePath,
 					AddedAt:     res.AddedAt,
 					ModelCount:  res.ModelCount,
 				})
 				return nil
 			}
-			fmt.Printf("added vendor %s (profile: %s, models: %d)\n",
-				res.Vendor, res.ProfilePath, res.ModelCount)
+			fmt.Printf("added provider %s (profile: %s, models: %d)\n",
+				res.Provider, res.ProfilePath, res.ModelCount)
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&baseURL, "base-url", "",
-		"Vendor base URL written into the profile's ANTHROPIC_BASE_URL env var (required)")
+		"Provider base URL written into the profile's ANTHROPIC_BASE_URL env var (required)")
 	cmd.Flags().StringVar(&modelsEndpoint, "models-endpoint", "",
-		"Vendor /v1/models URL used for probe + cc-fleet refresh (required)")
+		"Provider /v1/models URL used for probe + cc-fleet refresh (required)")
 	cmd.Flags().StringVar(&defaultModel, "default-model", "",
 		"Model id passed to spawn when --model is omitted (required)")
 	cmd.Flags().StringVar(&strongModel, "strong-model", "",
@@ -213,7 +213,7 @@ when stdin is a tty; otherwise the command exits 1 with a usage error.`,
 	cmd.Flags().StringVar(&apiKeyFile, "api-key-file", "",
 		"Read the API key from this file (mode must be <= 0600). file backend only.")
 	cmd.Flags().BoolVar(&disabled, "disabled", false,
-		"Add the vendor in the disabled state (default: enabled)")
+		"Add the provider in the disabled state (default: enabled)")
 	cmd.Flags().BoolVar(&asJSON, "json", false,
 		"Emit a machine-readable JSON envelope (for skill consumption)")
 

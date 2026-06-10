@@ -8,9 +8,9 @@ import (
 	"testing"
 )
 
-// vendor returns a minimal valid Vendor for the resolver tests.
-func vendor(name string, enabled bool) *Vendor {
-	return &Vendor{
+// provider returns a minimal valid Provider for the resolver tests.
+func provider(name string, enabled bool) *Provider {
+	return &Provider{
 		Name:           name,
 		BaseURL:        "https://api." + name + ".com/anthropic",
 		DefaultModel:   name + "-model",
@@ -21,10 +21,10 @@ func vendor(name string, enabled bool) *Vendor {
 	}
 }
 
-func cfgWith(def string, vs ...*Vendor) *Config {
-	c := &Config{Version: SchemaVersion, Vendors: map[string]*Vendor{}, DefaultProvider: def}
+func cfgWith(def string, vs ...*Provider) *Config {
+	c := &Config{Version: SchemaVersion, Providers: map[string]*Provider{}, DefaultProvider: def}
 	for _, v := range vs {
-		c.Vendors[v.Name] = v
+		c.Providers[v.Name] = v
 	}
 	return c
 }
@@ -40,15 +40,15 @@ func TestResolveProvider(t *testing.T) {
 		wantSource string
 		wantErr    error
 	}{
-		{"explicit wins", cfgWith("glm", vendor("glm", true), vendor("kimi", true)), "kimi", "kimi", "explicit", nil},
-		{"explicit even when disabled", cfgWith("", vendor("kimi", false)), "kimi", "kimi", "explicit", nil},
-		{"configured default", cfgWith("glm", vendor("glm", true), vendor("kimi", true)), "", "glm", "default", nil},
-		{"sole enabled auto", cfgWith("", vendor("kimi", true)), "", "kimi", "sole", nil},
-		{"sole among disabled", cfgWith("", vendor("kimi", true), vendor("glm", false)), "", "kimi", "sole", nil},
-		{"none enabled", cfgWith("", vendor("a", false), vendor("b", false)), "", "", "", ErrNoDefaultProvider},
-		{"multiple, no default", cfgWith("", vendor("a", true), vendor("b", true)), "", "", "", ErrNoDefaultProvider},
-		{"default disabled never falls through", cfgWith("glm", vendor("glm", false), vendor("kimi", true)), "", "", "", ErrDefaultProviderDisabled},
-		{"default unknown", cfgWith("gone", vendor("kimi", true)), "", "", "", ErrDefaultProviderUnknown},
+		{"explicit wins", cfgWith("glm", provider("glm", true), provider("kimi", true)), "kimi", "kimi", "explicit", nil},
+		{"explicit even when disabled", cfgWith("", provider("kimi", false)), "kimi", "kimi", "explicit", nil},
+		{"configured default", cfgWith("glm", provider("glm", true), provider("kimi", true)), "", "glm", "default", nil},
+		{"sole enabled auto", cfgWith("", provider("kimi", true)), "", "kimi", "sole", nil},
+		{"sole among disabled", cfgWith("", provider("kimi", true), provider("glm", false)), "", "kimi", "sole", nil},
+		{"none enabled", cfgWith("", provider("a", false), provider("b", false)), "", "", "", ErrNoDefaultProvider},
+		{"multiple, no default", cfgWith("", provider("a", true), provider("b", true)), "", "", "", ErrNoDefaultProvider},
+		{"default disabled never falls through", cfgWith("glm", provider("glm", false), provider("kimi", true)), "", "", "", ErrDefaultProviderDisabled},
+		{"default unknown", cfgWith("gone", provider("kimi", true)), "", "", "", ErrDefaultProviderUnknown},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -74,9 +74,9 @@ func TestResolveProvider(t *testing.T) {
 // "default") loads with DefaultProvider "" and is not rejected.
 func TestDefaultProviderRoundTrips(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "vendors.toml")
+	path := filepath.Join(dir, "providers.toml")
 
-	c := cfgWith("glm", vendor("glm", true), vendor("kimi", true))
+	c := cfgWith("glm", provider("glm", true), provider("kimi", true))
 	if err := SaveToPath(c, path); err != nil {
 		t.Fatalf("save: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestDefaultProviderRoundTrips(t *testing.T) {
 	}
 
 	// A provider literally named "default" is NOT reserved — it round-trips.
-	c2 := cfgWith("", vendor("default", true))
+	c2 := cfgWith("", provider("default", true))
 	if err := SaveToPath(c2, path); err != nil {
 		t.Fatalf("save provider named default: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestDefaultProviderRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load provider named default: %v", err)
 	}
-	if _, ok := got2.Vendors["default"]; !ok {
+	if _, ok := got2.Providers["default"]; !ok {
 		t.Fatalf("provider %q lost on round-trip", "default")
 	}
 	if got2.DefaultProvider != "" {
@@ -110,7 +110,7 @@ func TestDefaultProviderRoundTrips(t *testing.T) {
 }
 
 // TestParseDefaultProviderScalarWrongType: a non-string, non-table default_provider
-// (e.g. an integer) is not the scalar key and not a vendor table → rejected.
+// (e.g. an integer) is not the scalar key and not a provider table → rejected.
 func TestParseDefaultProviderScalarWrongType(t *testing.T) {
 	_, err := parse([]byte("version = 1\ndefault_provider = 5\n"))
 	if err == nil || !strings.Contains(err.Error(), "default_provider") {
@@ -118,9 +118,9 @@ func TestParseDefaultProviderScalarWrongType(t *testing.T) {
 	}
 }
 
-// TestParseLegacyDefaultProviderTable: a config with a vendor TABLE named
+// TestParseLegacyDefaultProviderTable: a config with a provider TABLE named
 // "default_provider" (a hand-named provider, not the scalar key) must still load —
-// it parses as a vendor — so an old config never bricks.
+// it parses as a provider — so an old config never bricks.
 func TestParseLegacyDefaultProviderTable(t *testing.T) {
 	body := `version = 1
 
@@ -136,8 +136,8 @@ enabled = true
 	if err != nil {
 		t.Fatalf("parse legacy table: %v", err)
 	}
-	if _, ok := cfg.Vendors["default_provider"]; !ok {
-		t.Fatalf("vendor named default_provider lost (vendors: %v)", cfg.Vendors)
+	if _, ok := cfg.Providers["default_provider"]; !ok {
+		t.Fatalf("provider named default_provider lost (providers: %v)", cfg.Providers)
 	}
 	if cfg.DefaultProvider != "" {
 		t.Fatalf("DefaultProvider = %q, want empty (a table is not the scalar)", cfg.DefaultProvider)

@@ -18,9 +18,9 @@ func pinIdentityProfile(t *testing.T) {
 	t.Cleanup(func() { resolveProfile = old })
 }
 
-// TestPoolBoundsConcurrentExecs: concurrent vendor EXECS never exceed the pool, even with
+// TestPoolBoundsConcurrentExecs: concurrent provider EXECS never exceed the pool, even with
 // many elements — the slot (acquired in each leaf goroutine, held only across its exec) is
-// the meaningful, deadlock-free bound on real vendor processes; a full pool queues leaf
+// the meaningful, deadlock-free bound on real provider processes; a full pool queues leaf
 // goroutines without ever stalling the script loop.
 func TestPoolBoundsConcurrentExecs(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -52,7 +52,7 @@ func TestPoolBoundsConcurrentExecs(t *testing.T) {
 	go func() {
 		_, _ = eng.run("pb.js", []byte(`
 const thunks = [];
-for (let i = 0; i < 30; i++) thunks.push(() => agent("x", {vendor: "v"}));
+for (let i = 0; i < 30; i++) thunks.push(() => agent("x", {provider: "v"}));
 await parallel(thunks);
 return {};
 `), Options{})
@@ -88,8 +88,8 @@ func TestNestedParallelNoDeadlock(t *testing.T) {
 	go func() {
 		_, _ = eng.run("nd.js", []byte(`
 await parallel([
-    () => parallel([() => agent("a", {vendor: "v"}), () => agent("b", {vendor: "v"})]),
-    () => parallel([() => agent("c", {vendor: "v"}), () => agent("d", {vendor: "v"})]),
+    () => parallel([() => agent("a", {provider: "v"}), () => agent("b", {provider: "v"})]),
+    () => parallel([() => agent("c", {provider: "v"}), () => agent("d", {provider: "v"})]),
 ]);
 return {};
 `), Options{})
@@ -123,7 +123,7 @@ func TestAcceptsLargeList(t *testing.T) {
 	eng := newTestEngine(context.Background(), "ll", 8)
 	v, err := eng.run("ll.js", []byte(`
 const thunks = [];
-for (let i = 0; i < 1500; i++) thunks.push(() => agent("x", {vendor: "v"}));
+for (let i = 0; i < 1500; i++) thunks.push(() => agent("x", {provider: "v"}));
 const r = await parallel(thunks);
 return { r };
 `), Options{})

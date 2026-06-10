@@ -1,4 +1,4 @@
-package vendorclass
+package providerclass
 
 import (
 	"context"
@@ -13,27 +13,27 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/secrets"
 )
 
-// probeTimeout caps the vendor reachability check: long enough for a healthy
-// vendor, short enough that an outage doesn't stall the caller.
+// probeTimeout caps the provider reachability check: long enough for a healthy
+// provider, short enough that an outage doesn't stall the caller.
 const probeTimeout = 3 * time.Second
 
-// Probe is the outcome of a vendor reachability check (Reachability). It is
+// Probe is the outcome of a provider reachability check (Reachability). It is
 // decision-only: callers map it onto their own Result type. Block=true means
 // the caller should abort with Code; Warn (non-empty) is a non-blocking notice
 // the caller prints to stderr.
 type Probe struct {
 	Block      bool   // true → caller should abort the operation
-	Code       string // error code when Block: VENDOR_UNREACHABLE | KEY_INVALID
+	Code       string // error code when Block: PROVIDER_UNREACHABLE | KEY_INVALID
 	Msg        string // human message for the failure Result
 	Suggestion string // remediation hint
 	Warn       string // non-blocking warning (e.g. a 5xx); print to stderr, then proceed
 }
 
-// Reachability does a 3s GET against the vendor's models_endpoint (with the
-// vendor key, best-effort) and classifies the outcome. spawn and subagent both
+// Reachability does a 3s GET against the provider's models_endpoint (with the
+// provider key, best-effort) and classifies the outcome. spawn and subagent both
 // call it so the classification stays single-sourced.
 //
-//   - transport failure (DNS / dial / TLS / timeout)  -> Block VENDOR_UNREACHABLE
+//   - transport failure (DNS / dial / TLS / timeout)  -> Block PROVIDER_UNREACHABLE
 //   - HTTP 401 / 403                                   -> Block KEY_INVALID
 //   - HTTP 2xx                                         -> no block
 //   - other 4xx/5xx                                    -> no block + Warn
@@ -46,7 +46,7 @@ type Probe struct {
 //
 // The Code values are the canonical error-code strings shared with spawn.Result
 // and subagent.Result (their ErrCode* consts equal these literals).
-func Reachability(v *config.Vendor) Probe {
+func Reachability(v *config.Provider) Probe {
 	if v == nil || v.ModelsEndpoint == "" {
 		// No probe possible — treat as success rather than blocking.
 		return Probe{}
@@ -64,7 +64,7 @@ func Reachability(v *config.Vendor) Probe {
 		// 2xx: reachable and authorized.
 		return Probe{}
 	case errors.Is(err, models.ErrKeyInvalid):
-		// HTTP 401: vendor responded, but rejected the key.
+		// HTTP 401: provider responded, but rejected the key.
 		return Probe{
 			Block:      true,
 			Code:       "KEY_INVALID",
@@ -84,12 +84,12 @@ func Reachability(v *config.Vendor) Probe {
 				Suggestion: "Verify the API key / account permissions: cc-fleet edit " + v.Name,
 			}
 		}
-		// Other 4xx/5xx: the vendor is reachable, the endpoint just answered
+		// Other 4xx/5xx: the provider is reachable, the endpoint just answered
 		// unhappily. Don't block (the real call uses base_url, not this), but
-		// surface a warning so a genuinely sick vendor isn't silent.
+		// surface a warning so a genuinely sick provider isn't silent.
 		return Probe{
 			Warn: fmt.Sprintf(
-				"cc-fleet: warning: probe %s returned HTTP %d; vendor reachable, continuing\n",
+				"cc-fleet: warning: probe %s returned HTTP %d; provider reachable, continuing\n",
 				v.ModelsEndpoint, httpErr.StatusCode),
 		}
 	}
@@ -98,13 +98,13 @@ func Reachability(v *config.Vendor) Probe {
 		// Connection-layer failure: no HTTP response at all -> unreachable.
 		return Probe{
 			Block:      true,
-			Code:       "VENDOR_UNREACHABLE",
+			Code:       "PROVIDER_UNREACHABLE",
 			Msg:        fmt.Sprintf("probe %s: %v", v.ModelsEndpoint, err),
 			Suggestion: "Check network / DNS or run cc-fleet doctor",
 		}
 	}
 
 	// Got an HTTP response we couldn't parse (e.g. 2xx with an odd body) or a
-	// non-network error: the vendor is reachable, so proceed.
+	// non-network error: the provider is reachable, so proceed.
 	return Probe{}
 }

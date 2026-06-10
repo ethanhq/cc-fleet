@@ -31,7 +31,7 @@ func writeCorruptManifest(t *testing.T, runID string) {
 func writeLiveRunMember(t *testing.T, dir, jobID, runID string) {
 	t.Helper()
 	meta := jobMeta{
-		JobID: jobID, PID: os.Getpid(), PGID: os.Getpid(), Vendor: "glm",
+		JobID: jobID, PID: os.Getpid(), PGID: os.Getpid(), Provider: "glm",
 		StartedAt: time.Now().Format(time.RFC3339), Status: "running", RunID: runID,
 	}
 	data, err := json.Marshal(meta)

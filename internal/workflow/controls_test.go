@@ -37,7 +37,7 @@ func TestPersistIOPlumbing(t *testing.T) {
 			old := runLeaf
 			runLeaf = echoLeaf(rec)
 			t.Cleanup(func() { runLeaf = old })
-			_, script := writeScript(t, `await agent("hello", {vendor: "v"});`)
+			_, script := writeScript(t, `await agent("hello", {provider: "v"});`)
 			run, err := Prepare(script)
 			if err != nil {
 				t.Fatal(err)
@@ -67,8 +67,8 @@ func TestMetaModelFallbackAndWhenToUse(t *testing.T) {
 	t.Cleanup(func() { runLeaf = old })
 	script := filepath.Join(t.TempDir(), "m.js")
 	full := `const meta = {name: "n", description: "d", model: "meta-default", whenToUse: "for audits"};
-await agent("uses default", {vendor: "v"});
-await agent("overrides", {vendor: "v", model: "explicit"});
+await agent("uses default", {provider: "v"});
+await agent("overrides", {provider: "v", model: "explicit"});
 `
 	if err := os.WriteFile(script, []byte(full), 0o600); err != nil {
 		t.Fatal(err)
@@ -104,7 +104,7 @@ func TestEnginePIDAndScriptPersisted(t *testing.T) {
 	old := runLeaf
 	runLeaf = echoLeaf(rec)
 	t.Cleanup(func() { runLeaf = old })
-	_, script := writeScript(t, `await agent("hi", {vendor: "v"});`)
+	_, script := writeScript(t, `await agent("hi", {provider: "v"});`)
 
 	id, err := Launch(context.Background(), script, Options{}, true) // foreground
 	if err != nil {

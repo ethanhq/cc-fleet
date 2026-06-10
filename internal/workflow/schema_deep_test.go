@@ -16,7 +16,7 @@ func TestDeepSchemaNestedValid(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"user":{"id":7,"tags":["a","b"]}}`)}
 	})
 	v, err := runScript(t, "ds1", 1, leaf, `
-const res = await agent("q", {vendor: "v", schema: {
+const res = await agent("q", {provider: "v", schema: {
   type: "object", required: ["user"],
   properties: {user: {type: "object", required: ["id", "tags"],
     properties: {id: {type: "integer"}, tags: {type: "array", items: {type: "string"}}}}}}});
@@ -39,7 +39,7 @@ func TestDeepSchemaNestedTypeMismatchTerminal(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"user":{"id":"not-an-int"}}`)}
 	})
 	_, err := runScript(t, "ds2", 1, leaf, `
-return await agent("q", {vendor: "v", schema: {type: "object",
+return await agent("q", {provider: "v", schema: {type: "object",
   properties: {user: {type: "object", properties: {id: {type: "integer"}}}}}});
 `)
 	if err == nil || !strings.Contains(err.Error(), "schema not satisfied") {
@@ -50,7 +50,7 @@ return await agent("q", {vendor: "v", schema: {type: "object",
 	}
 }
 
-// TestDeepSchemaIntegerAcceptsZeroFractionFloat: a vendor emitting 5.0 for an integer
+// TestDeepSchemaIntegerAcceptsZeroFractionFloat: a provider emitting 5.0 for an integer
 // field is accepted (zero-fraction float == integer).
 func TestDeepSchemaIntegerAcceptsZeroFractionFloat(t *testing.T) {
 	rec := &recorder{}
@@ -58,7 +58,7 @@ func TestDeepSchemaIntegerAcceptsZeroFractionFloat(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"n":5.0}`)}
 	})
 	if _, err := runScript(t, "ds3", 1, leaf,
-		`return await agent("q", {vendor: "v", schema: {properties: {n: {type: "integer"}}}});`); err != nil {
+		`return await agent("q", {provider: "v", schema: {properties: {n: {type: "integer"}}}});`); err != nil {
 		t.Fatalf("5.0 must satisfy an integer field: %v", err)
 	}
 }
@@ -72,7 +72,7 @@ func TestDeepSchemaRequiredRejectsScalar(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`"oops"`)} // valid JSON, but a scalar string
 	})
 	_, err := runScript(t, "dssc", 1, leaf,
-		`return await agent("q", {vendor: "v", schema: {required: ["answer"]}});`)
+		`return await agent("q", {provider: "v", schema: {required: ["answer"]}});`)
 	if err == nil || !strings.Contains(err.Error(), "schema not satisfied") {
 		t.Fatalf("a scalar payload must fail a required-keys schema, got %v", err)
 	}
@@ -86,7 +86,7 @@ func TestDeepSchemaEnum(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"color":"purple"}`)} // not in enum
 	})
 	_, err := runScript(t, "ds4", 1, leaf,
-		`return await agent("q", {vendor: "v", schema: {properties: {color: {enum: ["red", "green", "blue"]}}}});`)
+		`return await agent("q", {provider: "v", schema: {properties: {color: {enum: ["red", "green", "blue"]}}}});`)
 	if err == nil || !strings.Contains(err.Error(), "schema not satisfied") {
 		t.Fatalf("an out-of-enum value must fail, got %v", err)
 	}
@@ -99,7 +99,7 @@ func TestDeepSchemaEnum(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"color":"red"}`)}
 	})
 	v, err := runScript(t, "ds4b", 1, leaf2, `
-const res = await agent("q", {vendor: "v", schema: {properties: {color: {enum: ["red", "green", "blue"]}}}});
+const res = await agent("q", {provider: "v", schema: {properties: {color: {enum: ["red", "green", "blue"]}}}});
 return { c: res.color };
 `)
 	if err != nil {

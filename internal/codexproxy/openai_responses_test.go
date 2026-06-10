@@ -75,7 +75,7 @@ func TestResponsesTranslate_CodexOmitsMaxOutput(t *testing.T) {
 // upstream's per-request convert redactor (the exact-key path), for both the
 // Chat and Responses converters.
 func TestOpenAIConvert_RedactsStreamingErrorKey(t *testing.T) {
-	const key = "raw-vendor-key-9999" // not an sk-/Bearer shape
+	const key = "raw-provider-key-9999" // not an sk-/Bearer shape
 
 	chatBody := `data: {"error":{"message":"upstream rejected ` + key + ` here"}}` + "\n\n"
 	csink := &recSink{}

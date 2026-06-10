@@ -29,7 +29,7 @@ Core (every run mode — subagent / workflow / run / teammate):
   [1] ~/.claude/settings.json exists and is valid JSON
   [2] ~/.claude/profiles/ writable
   [4] claude binary present; version known
-  [6] all configured vendors' keys reachable (probe /v1/models, 3s/vendor)
+  [6] all configured providers' keys reachable (probe /v1/models, 3s/provider)
   [7] skill installed at ~/.claude/skills/cc-fleet/ (or via plugin)
   [8] fingerprint cached and matches current cc version
   [9] OAuth credentials.json exists (informational only)

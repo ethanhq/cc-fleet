@@ -23,7 +23,7 @@ func codexCredentialRef(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	for _, v := range cfg.Vendors {
+	for _, v := range cfg.Providers {
 		if v.EffectiveProtocol() == config.ProtocolCodexOAuth && codexproxy.IsDefaultCredentialRef(v.SecretRef) {
 			return name, nil
 		}
@@ -145,7 +145,7 @@ func newCodexCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Fprintf(cmd.OutOrStdout(), "added provider %s (port %d, model %s)\n", res.Vendor, chosen, model)
+			fmt.Fprintf(cmd.OutOrStdout(), "added provider %s (port %d, model %s)\n", res.Provider, chosen, model)
 			if loggedIn, _ := codexproxy.LoginStatus(ref); !loggedIn {
 				if codexproxy.IsDefaultCredentialRef(ref) {
 					fmt.Fprintln(cmd.OutOrStdout(), "next: cc-fleet codex login")

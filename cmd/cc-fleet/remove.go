@@ -9,7 +9,7 @@ import (
 )
 
 // removeJSONEnvelope is the success-side JSON shape `cc-fleet remove --json`
-// emits. `removed` echoes the vendor name; `secret_removed` and
+// emits. `removed` echoes the provider name; `secret_removed` and
 // `profile_removed` let the skill confirm side-effects without re-reading
 // the filesystem.
 type removeJSONEnvelope struct {
@@ -26,9 +26,9 @@ func newRemoveCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "remove <vendor>",
-		Short: "Delete a vendor and its profile (and optionally its secret)",
-		Long: `Delete <vendor> from vendors.toml, remove its profile JSON, and (unless
+		Use:   "remove <provider>",
+		Short: "Delete a provider and its profile (and optionally its secret)",
+		Long: `Delete <provider> from providers.toml, remove its profile JSON, and (unless
 --keep-secret is set) the credential it owns: a file-backend secret file, or
 a codex provider's own cc-fleet login token plus its daemon.
 
@@ -37,8 +37,8 @@ their secrets untouched — remove those with the backend's own CLI if you no
 longer want them.
 
 Remove is idempotent at the filesystem level: a missing profile or secret
-file is not an error. Removing a non-existent vendor IS an error
-(VENDOR_UNKNOWN) so the skill doesn't silently drop typos.`,
+file is not an error. Removing a non-existent provider IS an error
+(PROVIDER_UNKNOWN) so the skill doesn't silently drop typos.`,
 		Args:          cobra.ExactArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -54,14 +54,14 @@ file is not an error. Removing a non-existent vendor IS an error
 			if asJSON {
 				emitJSON(removeJSONEnvelope{
 					OK:             true,
-					Removed:        res.Vendor,
+					Removed:        res.Provider,
 					SecretRemoved:  res.SecretRemoved,
 					ProfileRemoved: res.ProfileRemoved,
 				})
 				return nil
 			}
-			fmt.Printf("removed vendor %s (profile_removed=%v, secret_removed=%v)\n",
-				res.Vendor, res.ProfileRemoved, res.SecretRemoved)
+			fmt.Printf("removed provider %s (profile_removed=%v, secret_removed=%v)\n",
+				res.Provider, res.ProfileRemoved, res.SecretRemoved)
 			return nil
 		},
 	}

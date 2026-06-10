@@ -34,7 +34,7 @@ func seedFinishedJob(t *testing.T, dir, jobID string) []string {
 		t.Fatalf("mkdir jobs dir: %v", err)
 	}
 	files := map[string]string{
-		jobID + ".json":        fmt.Sprintf(`{"job_id":%q,"pid":999999,"status":"running","vendor":"glm","model":"glm-4.6"}`, jobID),
+		jobID + ".json":        fmt.Sprintf(`{"job_id":%q,"pid":999999,"status":"running","provider":"glm","model":"glm-4.6"}`, jobID),
 		jobID + ".out":         "stdout fragment",
 		jobID + ".err":         "stderr fragment",
 		jobID + ".prompt":      "prompt fragment",
@@ -100,7 +100,7 @@ func TestUninstall_KeepsRunningSubagentJob(t *testing.T) {
 	// kill(0)).
 	jobID := "live1"
 	metaPath := filepath.Join(dir, jobID+".json")
-	meta := fmt.Sprintf(`{"job_id":%q,"pid":%d,"status":"running","vendor":"glm","model":"glm-4.6"}`, jobID, os.Getpid())
+	meta := fmt.Sprintf(`{"job_id":%q,"pid":%d,"status":"running","provider":"glm","model":"glm-4.6"}`, jobID, os.Getpid())
 	if err := os.WriteFile(metaPath, []byte(meta), 0o600); err != nil {
 		t.Fatalf("seed meta: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestUninstall_MixedJobsPartialClean(t *testing.T) {
 	// Running job "live": meta with our own (alive) PID and NO .result.json, so
 	// PurgeJobs's result-cache-first check falls through to processAlive (alive).
 	liveMeta := filepath.Join(dir, "live.json")
-	liveMetaBody := fmt.Sprintf(`{"job_id":"live","pid":%d,"status":"running","vendor":"glm","model":"glm-4.6"}`, os.Getpid())
+	liveMetaBody := fmt.Sprintf(`{"job_id":"live","pid":%d,"status":"running","provider":"glm","model":"glm-4.6"}`, os.Getpid())
 	if err := os.WriteFile(liveMeta, []byte(liveMetaBody), 0o600); err != nil {
 		t.Fatalf("seed live meta: %v", err)
 	}

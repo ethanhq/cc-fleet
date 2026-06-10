@@ -85,7 +85,7 @@ func configFreeReap(team string) (agentIDs []string, warnings []string) {
 // OK with empty Panes/Members. tmux failures become warnings. Only a
 // filesystem failure on RemoveAll flips OK to false.
 //
-// Even when the team dir is already gone, a swarm server / vendor process can
+// Even when the team dir is already gone, a swarm server / provider process can
 // still be alive under this team name (a prior teardown left it, or the dir was
 // deleted out of band). Both the swarm socket and the per-proc --team-name are
 // derivable from the team name alone, so recovery runs config-free — and under
@@ -193,7 +193,7 @@ func TeardownTeam(team string, dg *diag.Logger) Result {
 			reapIDs = append(reapIDs, ids...)
 		default:
 			// ErrTeamNotFound: the dir was absent (recreated empty by the lock) or
-			// carries no config.json. A swarm server / vendor proc may still be
+			// carries no config.json. A swarm server / provider proc may still be
 			// alive under this team name with no record to find it — recover
 			// config-free, same as the parse-fail path but without a load warning.
 			ids, warns := configFreeReap(team)

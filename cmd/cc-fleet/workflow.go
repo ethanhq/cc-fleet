@@ -288,8 +288,8 @@ func newWorkflowRunCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "run <script.js>",
-		Short: "Run a JavaScript workflow script (orchestrates vendor subagents off the main context)",
-		Long: `Run a JavaScript workflow script that fans out vendor subagents. The script's
+		Short: "Run a JavaScript workflow script (orchestrates provider subagents off the main context)",
+		Long: `Run a JavaScript workflow script that fans out provider subagents. The script's
 plan executes in a cc-fleet process, NOT the main Claude context: it declares
 const meta = {...} and awaits agent()/parallel()/pipeline() with phase()/log().
 By default the run is launched detached and this prints the bare run id; poll it
@@ -386,15 +386,15 @@ with 'workflow status' or watch the board. --foreground runs inline to completio
 	cmd.Flags().StringVar(&resume, "resume", "",
 		"Resume an existing run id: replay its journaled leaves (no re-exec) and run only the rest")
 	cmd.Flags().IntVar(&maxConcurrency, "max-concurrency", 0,
-		"Max concurrent vendor leaves (default: min(16, cores-2))")
+		"Max concurrent provider leaves (default: min(16, cores-2))")
 	cmd.Flags().StringVar(&argsJSON, "args-json", "",
 		"JSON value passed to the script as `args`")
 	cmd.Flags().BoolVar(&noPersistIO, "no-persist-io", false,
 		"Don't persist leaf prompts/answers for board drill-in (persistence is default-on)")
 	cmd.Flags().Float64Var(&budgetUSD, "budget-usd", 0,
-		"Cap total spend in USD (an Anthropic list-price estimate, not the vendor's actual charge); agent() fails once reached (0 = uncapped)")
+		"Cap total spend in USD (an Anthropic list-price estimate, not the provider's actual charge); agent() fails once reached (0 = uncapped)")
 	cmd.Flags().Int64Var(&budgetTokens, "budget-tokens", 0,
-		"Cap total tokens (input+output, the exact vendor-neutral ceiling); agent() fails once reached (0 = uncapped)")
+		"Cap total tokens (input+output, the exact provider-neutral ceiling); agent() fails once reached (0 = uncapped)")
 	cmd.Flags().BoolVar(&noBudget, "no-budget", false,
 		"Uncap both budgets (on resume, override an inherited cap; an explicit --budget-* value wins)")
 	cmd.Flags().StringVar(&leadSessionID, "lead-session-id", "",
@@ -556,7 +556,7 @@ func newWorkflowStatusCmd() *cobra.Command {
 }
 
 // newWorkflowStopCmd builds `cc-fleet workflow stop <run-id>` — reap a running workflow
-// run: kill the engine's process tree (its in-flight vendor leaves included, behind a
+// run: kill the engine's process tree (its in-flight provider leaves included, behind a
 // cmdline reuse guard) and mark the manifest stopped. Restart it with `workflow run
 // <script> --resume <run-id>` (the journal makes the replay cheap).
 func newWorkflowStopCmd() *cobra.Command {

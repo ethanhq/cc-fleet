@@ -28,15 +28,15 @@ func setupHome(t *testing.T) string {
 	return home
 }
 
-// seedVendor writes a vendor row directly into vendors.toml without running
-// Add (no probe). Used by tests that exercise paths after a vendor exists.
-func seedVendor(t *testing.T, name string) *config.Vendor {
+// seedProvider writes a provider row directly into providers.toml without running
+// Add (no probe). Used by tests that exercise paths after a provider exists.
+func seedProvider(t *testing.T, name string) *config.Provider {
 	t.Helper()
 	cfg, err := config.Load()
 	if err != nil {
-		t.Fatalf("seedVendor: config.Load: %v", err)
+		t.Fatalf("seedProvider: config.Load: %v", err)
 	}
-	v := &config.Vendor{
+	v := &config.Provider{
 		Name:           name,
 		BaseURL:        "https://api." + name + ".example/anthropic",
 		ModelsEndpoint: "https://api." + name + ".example/v1/models",
@@ -46,9 +46,9 @@ func seedVendor(t *testing.T, name string) *config.Vendor {
 		Enabled:        true,
 		AddedAt:        time.Date(2026, 5, 24, 12, 0, 0, 0, time.UTC),
 	}
-	cfg.Vendors[name] = v
+	cfg.Providers[name] = v
 	if err := config.Save(cfg); err != nil {
-		t.Fatalf("seedVendor: config.Save: %v", err)
+		t.Fatalf("seedProvider: config.Save: %v", err)
 	}
 	return v
 }
@@ -83,7 +83,7 @@ func TestInit_CreatesTreeOnce(t *testing.T) {
 		filepath.Join(home, ".config", "cc-fleet", "secrets"),
 		filepath.Join(home, ".claude", "profiles"),
 		filepath.Join(home, ".claude", "skills"),
-		filepath.Join(home, ".config", "cc-fleet", "vendors.toml"),
+		filepath.Join(home, ".config", "cc-fleet", "providers.toml"),
 	}
 	for _, p := range wantDirs {
 		if !contains(res.Created, p) {
@@ -94,8 +94,8 @@ func TestInit_CreatesTreeOnce(t *testing.T) {
 			t.Fatalf("stat %s: %v", p, err)
 		}
 		if runtime.GOOS != "windows" {
-			// vendors.toml should be 0600; the directories should be 0700.
-			if filepath.Base(p) == "vendors.toml" {
+			// providers.toml should be 0600; the directories should be 0700.
+			if filepath.Base(p) == "providers.toml" {
 				if got := info.Mode().Perm(); got != 0o600 {
 					t.Fatalf("%s mode = %o, want 0600", p, got)
 				}
@@ -120,27 +120,27 @@ func TestInit_CreatesTreeOnce(t *testing.T) {
 	}
 }
 
-func TestInit_PreservesExistingVendorsTOML(t *testing.T) {
-	// Init must NOT overwrite vendors.toml if one already exists — that
-	// would destroy user-added vendors on every run.
+func TestInit_PreservesExistingProvidersTOML(t *testing.T) {
+	// Init must NOT overwrite providers.toml if one already exists — that
+	// would destroy user-added providers on every run.
 	setupHome(t)
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	v := seedVendor(t, "glm")
+	v := seedProvider(t, "glm")
 	if _, err := Init(); err != nil {
-		t.Fatalf("Init (re-run with vendor): %v", err)
+		t.Fatalf("Init (re-run with provider): %v", err)
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("Load after re-init: %v", err)
 	}
-	got, ok := cfg.Vendors["glm"]
+	got, ok := cfg.Providers["glm"]
 	if !ok {
-		t.Fatalf("vendor glm vanished after Init")
+		t.Fatalf("provider glm vanished after Init")
 	}
 	if got.BaseURL != v.BaseURL {
-		t.Fatalf("vendor mutated: got %+v, want %+v", got, v)
+		t.Fatalf("provider mutated: got %+v, want %+v", got, v)
 	}
 }
 
@@ -149,7 +149,7 @@ func TestAdd_RejectsDuplicate(t *testing.T) {
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	seedVendor(t, "glm")
+	seedProvider(t, "glm")
 
 	_, err := Add(AddRequest{
 		Name:           "glm",
@@ -166,8 +166,8 @@ func TestAdd_RejectsDuplicate(t *testing.T) {
 	if !errors.As(err, &op) {
 		t.Fatalf("err type = %T, want *Op", err)
 	}
-	if op.Code != CodeVendorExists {
-		t.Fatalf("err code = %q, want %q", op.Code, CodeVendorExists)
+	if op.Code != CodeProviderExists {
+		t.Fatalf("err code = %q, want %q", op.Code, CodeProviderExists)
 	}
 }
 
@@ -191,8 +191,8 @@ func TestAdd_RejectsBadName(t *testing.T) {
 	if !errors.As(err, &op) {
 		t.Fatalf("err type = %T, want *Op", err)
 	}
-	if op.Code != CodeVendorNameInvalid {
-		t.Fatalf("err code = %q, want %q", op.Code, CodeVendorNameInvalid)
+	if op.Code != CodeProviderNameInvalid {
+		t.Fatalf("err code = %q, want %q", op.Code, CodeProviderNameInvalid)
 	}
 }
 
@@ -255,7 +255,7 @@ func TestAdd_RejectsUnsafeSecretRef(t *testing.T) {
 	}
 }
 
-func TestEdit_VendorUnknown(t *testing.T) {
+func TestEdit_ProviderUnknown(t *testing.T) {
 	setupHome(t)
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -263,14 +263,14 @@ func TestEdit_VendorUnknown(t *testing.T) {
 	model := "glm-4.5"
 	_, err := Edit(EditRequest{Name: "ghost", DefaultModel: &model})
 	if err == nil {
-		t.Fatalf("Edit unknown vendor: want error, got nil")
+		t.Fatalf("Edit unknown provider: want error, got nil")
 	}
 	var op *Op
 	if !errors.As(err, &op) {
 		t.Fatalf("err type = %T, want *Op", err)
 	}
-	if op.Code != CodeVendorUnknown {
-		t.Fatalf("err code = %q, want %q", op.Code, CodeVendorUnknown)
+	if op.Code != CodeProviderUnknown {
+		t.Fatalf("err code = %q, want %q", op.Code, CodeProviderUnknown)
 	}
 }
 
@@ -281,33 +281,33 @@ func TestEdit_AppliesOnlySetFields(t *testing.T) {
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	original := seedVendor(t, "glm")
+	original := seedProvider(t, "glm")
 
 	newModel := "glm-4.5"
 	res, err := Edit(EditRequest{Name: "glm", DefaultModel: &newModel})
 	if err != nil {
 		t.Fatalf("Edit: %v", err)
 	}
-	if res.Vendor.DefaultModel != newModel {
-		t.Fatalf("DefaultModel = %q, want %q", res.Vendor.DefaultModel, newModel)
+	if res.Provider.DefaultModel != newModel {
+		t.Fatalf("DefaultModel = %q, want %q", res.Provider.DefaultModel, newModel)
 	}
-	if res.Vendor.BaseURL != original.BaseURL {
-		t.Fatalf("BaseURL mutated: got %q, want %q", res.Vendor.BaseURL, original.BaseURL)
+	if res.Provider.BaseURL != original.BaseURL {
+		t.Fatalf("BaseURL mutated: got %q, want %q", res.Provider.BaseURL, original.BaseURL)
 	}
-	if !res.Vendor.AddedAt.Equal(original.AddedAt) {
-		t.Fatalf("AddedAt mutated: got %v, want %v", res.Vendor.AddedAt, original.AddedAt)
+	if !res.Provider.AddedAt.Equal(original.AddedAt) {
+		t.Fatalf("AddedAt mutated: got %v, want %v", res.Provider.AddedAt, original.AddedAt)
 	}
 }
 
 func TestEdit_APIKeyRotatesFileSecret(t *testing.T) {
-	// `cc-fleet edit <vendor> --api-key` rotates the key in place, writing to
-	// the vendor's EXISTING secret_ref (no --secret-ref needed) and leaving
+	// `cc-fleet edit <provider> --api-key` rotates the key in place, writing to
+	// the provider's EXISTING secret_ref (no --secret-ref needed) and leaving
 	// every other field untouched.
 	setupHome(t)
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	orig := seedVendor(t, "glm") // file backend, SecretRef "glm.key"
+	orig := seedProvider(t, "glm") // file backend, SecretRef "glm.key"
 	secretPath := seedSecretFile(t, orig.SecretRef, "old-key")
 
 	res, err := Edit(EditRequest{Name: "glm", APIKey: "new-rotated-key"})
@@ -325,20 +325,20 @@ func TestEdit_APIKeyRotatesFileSecret(t *testing.T) {
 	}
 
 	// Only --api-key was passed → every other field is preserved.
-	if res.Vendor.BaseURL != orig.BaseURL ||
-		res.Vendor.DefaultModel != orig.DefaultModel ||
-		res.Vendor.ModelsEndpoint != orig.ModelsEndpoint ||
-		res.Vendor.SecretBackend != orig.SecretBackend ||
-		res.Vendor.SecretRef != orig.SecretRef ||
-		res.Vendor.Enabled != orig.Enabled ||
-		!res.Vendor.AddedAt.Equal(orig.AddedAt) {
-		t.Fatalf("non-key fields mutated:\n got: %+v\nwant: %+v", res.Vendor, orig)
+	if res.Provider.BaseURL != orig.BaseURL ||
+		res.Provider.DefaultModel != orig.DefaultModel ||
+		res.Provider.ModelsEndpoint != orig.ModelsEndpoint ||
+		res.Provider.SecretBackend != orig.SecretBackend ||
+		res.Provider.SecretRef != orig.SecretRef ||
+		res.Provider.Enabled != orig.Enabled ||
+		!res.Provider.AddedAt.Equal(orig.AddedAt) {
+		t.Fatalf("non-key fields mutated:\n got: %+v\nwant: %+v", res.Provider, orig)
 	}
 }
 
 func TestEdit_APIKeyRejectsNonFileBackend(t *testing.T) {
 	// Inline --api-key is only legal for the file backend; a pass/vault/etc.
-	// vendor must rotate through its own tool. Mirrors Add's same guard.
+	// provider must rotate through its own tool. Mirrors Add's same guard.
 	setupHome(t)
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -347,7 +347,7 @@ func TestEdit_APIKeyRejectsNonFileBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	cfg.Vendors["kp"] = &config.Vendor{
+	cfg.Providers["kp"] = &config.Provider{
 		Name:           "kp",
 		BaseURL:        "https://api.kp.example/anthropic",
 		ModelsEndpoint: "https://api.kp.example/v1/models",
@@ -379,7 +379,7 @@ func TestEdit_APIKeyEmptySecretRefRejected(t *testing.T) {
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	seedVendor(t, "glm") // file backend, ref "glm.key"
+	seedProvider(t, "glm") // file backend, ref "glm.key"
 
 	emptyRef := ""
 	_, err := Edit(EditRequest{Name: "glm", SecretRef: &emptyRef, APIKey: "new-key"})
@@ -399,7 +399,7 @@ func TestEdit_RejectsUnsafeSecretRef(t *testing.T) {
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	seedVendor(t, "glm") // file backend, ref "glm.key"
+	seedProvider(t, "glm") // file backend, ref "glm.key"
 
 	bad := "../../etc/shadow"
 	_, err := Edit(EditRequest{Name: "glm", SecretRef: &bad, APIKey: "sk-x"})
@@ -414,22 +414,22 @@ func TestEdit_AppliesKeyRotation(t *testing.T) {
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	seedVendor(t, "glm") // file backend
+	seedProvider(t, "glm") // file backend
 
 	rr := "round_robin"
 	res, err := Edit(EditRequest{Name: "glm", KeyRotation: &rr})
 	if err != nil {
 		t.Fatalf("Edit --key-rotation: %v", err)
 	}
-	if res.Vendor.KeyRotation != "round_robin" {
-		t.Fatalf("result key_rotation = %q, want round_robin", res.Vendor.KeyRotation)
+	if res.Provider.KeyRotation != "round_robin" {
+		t.Fatalf("result key_rotation = %q, want round_robin", res.Provider.KeyRotation)
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	if cfg.Vendors["glm"].KeyRotation != "round_robin" {
-		t.Fatalf("persisted key_rotation = %q, want round_robin", cfg.Vendors["glm"].KeyRotation)
+	if cfg.Providers["glm"].KeyRotation != "round_robin" {
+		t.Fatalf("persisted key_rotation = %q, want round_robin", cfg.Providers["glm"].KeyRotation)
 	}
 
 	// An invalid strategy is rejected by config.Validate during Edit.
@@ -440,13 +440,13 @@ func TestEdit_AppliesKeyRotation(t *testing.T) {
 }
 
 func TestEdit_MultiKeyAPIKeyGuard(t *testing.T) {
-	// A vendor in multi-key mode (keys.json present) must reject inline
+	// A provider in multi-key mode (keys.json present) must reject inline
 	// --api-key with a clear, TUI-pointing error that carries no key bytes.
 	setupHome(t)
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	seedVendor(t, "glm")
+	seedProvider(t, "glm")
 	if err := secrets.SaveKeySet("glm", []secrets.KeyEntry{
 		{Label: "a", Key: "sk-aaa-111", Enabled: true},
 		{Label: "b", Key: "sk-bbb-222", Enabled: true},
@@ -471,21 +471,21 @@ func TestEdit_MultiKeyAPIKeyGuard(t *testing.T) {
 	}
 }
 
-func TestRemove_VendorUnknown(t *testing.T) {
+func TestRemove_ProviderUnknown(t *testing.T) {
 	setupHome(t)
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
 	_, err := Remove(RemoveRequest{Name: "ghost"})
 	if err == nil {
-		t.Fatalf("Remove unknown vendor: want error, got nil")
+		t.Fatalf("Remove unknown provider: want error, got nil")
 	}
 	var op *Op
 	if !errors.As(err, &op) {
 		t.Fatalf("err type = %T, want *Op", err)
 	}
-	if op.Code != CodeVendorUnknown {
-		t.Fatalf("err code = %q, want %q", op.Code, CodeVendorUnknown)
+	if op.Code != CodeProviderUnknown {
+		t.Fatalf("err code = %q, want %q", op.Code, CodeProviderUnknown)
 	}
 }
 
@@ -494,7 +494,7 @@ func TestRemove_FileBackendDeletesSecret(t *testing.T) {
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	seedVendor(t, "glm")
+	seedProvider(t, "glm")
 	secretPath := seedSecretFile(t, "glm.key", "sk-fake-glm")
 
 	res, err := Remove(RemoveRequest{Name: "glm"})
@@ -511,13 +511,13 @@ func TestRemove_FileBackendDeletesSecret(t *testing.T) {
 		t.Fatalf("secret still exists at %s (err=%v)", secretPath, err)
 	}
 
-	// Vendor row must be gone from vendors.toml.
+	// Provider row must be gone from providers.toml.
 	cfg, err := config.Load()
 	if err != nil {
 		t.Fatalf("Load post-remove: %v", err)
 	}
-	if _, ok := cfg.Vendors["glm"]; ok {
-		t.Fatalf("vendor glm still in vendors.toml after Remove")
+	if _, ok := cfg.Providers["glm"]; ok {
+		t.Fatalf("provider glm still in providers.toml after Remove")
 	}
 }
 
@@ -538,7 +538,7 @@ func TestRemove_CodexDeletesOwnLogin(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cfg.Vendors["codex"] = &config.Vendor{
+			cfg.Providers["codex"] = &config.Provider{
 				Name: "codex", BaseURL: "http://127.0.0.1:17222/",
 				ModelsEndpoint: "http://127.0.0.1:17222/v1/models", DefaultModel: "gpt-5.5",
 				SecretBackend: config.CodexOAuthBackend, SecretRef: config.CodexOAuthBackend,
@@ -576,7 +576,7 @@ func TestRemove_KeepSecretPreservesFile(t *testing.T) {
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	seedVendor(t, "glm")
+	seedProvider(t, "glm")
 	secretPath := seedSecretFile(t, "glm.key", "sk-keep-me")
 
 	res, err := Remove(RemoveRequest{Name: "glm", KeepSecret: true})
@@ -592,13 +592,13 @@ func TestRemove_KeepSecretPreservesFile(t *testing.T) {
 }
 
 func TestRemove_CleansMultiKeyFiles(t *testing.T) {
-	// Removing a file-backend vendor (without --keep-secret) also purges its
+	// Removing a file-backend provider (without --keep-secret) also purges its
 	// multi-key store and rotation counter.
 	setupHome(t)
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	seedVendor(t, "glm")
+	seedProvider(t, "glm")
 	seedSecretFile(t, "glm.key", "legacy")
 	if err := secrets.SaveKeySet("glm", []secrets.KeyEntry{{Key: "k", Enabled: true}}); err != nil {
 		t.Fatalf("SaveKeySet: %v", err)
@@ -625,7 +625,7 @@ func TestRemove_KeepSecretPreservesMultiKeyFiles(t *testing.T) {
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	seedVendor(t, "glm")
+	seedProvider(t, "glm")
 	if err := secrets.SaveKeySet("glm", []secrets.KeyEntry{{Key: "k", Enabled: true}}); err != nil {
 		t.Fatalf("SaveKeySet: %v", err)
 	}
@@ -652,7 +652,7 @@ func TestRemove_NonFileBackendNeverTouchesSecret(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	cfg.Vendors["passy"] = &config.Vendor{
+	cfg.Providers["passy"] = &config.Provider{
 		Name:           "passy",
 		BaseURL:        "https://x.example",
 		ModelsEndpoint: "https://x.example/v1/models",
@@ -676,7 +676,7 @@ func TestRemove_NonFileBackendNeverTouchesSecret(t *testing.T) {
 }
 
 func TestList_EmptyConfigReturnsArray(t *testing.T) {
-	// list --json must emit a `vendors` array even when empty so jq dispatch in
+	// list --json must emit a `providers` array even when empty so jq dispatch in
 	// the skill doesn't have to special-case nil.
 	setupHome(t)
 	if _, err := Init(); err != nil {
@@ -686,11 +686,11 @@ func TestList_EmptyConfigReturnsArray(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if res.Vendors == nil {
-		t.Fatalf("List.Vendors = nil, want empty slice")
+	if res.Providers == nil {
+		t.Fatalf("List.Providers = nil, want empty slice")
 	}
-	if len(res.Vendors) != 0 {
-		t.Fatalf("List.Vendors = %v, want empty", res.Vendors)
+	if len(res.Providers) != 0 {
+		t.Fatalf("List.Providers = %v, want empty", res.Providers)
 	}
 }
 
@@ -699,31 +699,31 @@ func TestList_PopulatedSortedByName(t *testing.T) {
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	seedVendor(t, "zeta")
-	seedVendor(t, "alpha")
-	seedVendor(t, "mu")
+	seedProvider(t, "zeta")
+	seedProvider(t, "alpha")
+	seedProvider(t, "mu")
 
 	res, err := List()
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(res.Vendors) != 3 {
-		t.Fatalf("len = %d, want 3", len(res.Vendors))
+	if len(res.Providers) != 3 {
+		t.Fatalf("len = %d, want 3", len(res.Providers))
 	}
-	got := []string{res.Vendors[0].Name, res.Vendors[1].Name, res.Vendors[2].Name}
+	got := []string{res.Providers[0].Name, res.Providers[1].Name, res.Providers[2].Name}
 	want := []string{"alpha", "mu", "zeta"}
 	for i, n := range got {
 		if n != want[i] {
-			t.Fatalf("Vendors[%d].Name = %q, want %q (full: %v)", i, n, want[i], got)
+			t.Fatalf("Providers[%d].Name = %q, want %q (full: %v)", i, n, want[i], got)
 		}
 	}
-	// No cache entries seeded → every vendor should be flagged stale=true.
-	for _, vv := range res.Vendors {
+	// No cache entries seeded → every provider should be flagged stale=true.
+	for _, vv := range res.Providers {
 		if !vv.ModelsStale {
-			t.Fatalf("vendor %q ModelsStale = false; want true (no cache yet)", vv.Name)
+			t.Fatalf("provider %q ModelsStale = false; want true (no cache yet)", vv.Name)
 		}
 		if vv.ModelsCount != 0 {
-			t.Fatalf("vendor %q ModelsCount = %d; want 0", vv.Name, vv.ModelsCount)
+			t.Fatalf("provider %q ModelsCount = %d; want 0", vv.Name, vv.ModelsCount)
 		}
 	}
 }
@@ -733,8 +733,8 @@ func TestRepair_RewritesAllProfiles(t *testing.T) {
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	seedVendor(t, "glm")
-	seedVendor(t, "deepseek")
+	seedProvider(t, "glm")
+	seedProvider(t, "deepseek")
 
 	// Pre-delete glm.json so we can prove Repair recreated it.
 	glmProfile, err := profile.ProfilePath("glm")
@@ -770,21 +770,21 @@ func TestRepair_RewritesAllProfiles(t *testing.T) {
 
 func TestUninstall_KeepSecretsDefault(t *testing.T) {
 	// Default KeepSecrets=true preserves the secrets/ dir and the secret
-	// files inside it. Profiles, vendors.toml, fingerprint, models cache
+	// files inside it. Profiles, providers.toml, fingerprint, models cache
 	// must all be removed.
 	home := setupHome(t)
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	seedVendor(t, "glm")
+	seedProvider(t, "glm")
 	secretPath := seedSecretFile(t, "glm.key", "sk-keep")
 	// Seed a profile so Uninstall has something to clean up.
 	v, err := config.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if _, err := profile.WriteForVendor(v.Vendors["glm"], "/usr/bin/cc-fleet"); err != nil {
-		t.Fatalf("WriteForVendor: %v", err)
+	if _, err := profile.WriteForProvider(v.Providers["glm"], "/usr/bin/cc-fleet"); err != nil {
+		t.Fatalf("WriteForProvider: %v", err)
 	}
 	// Seed fingerprint.json + models-cache.json by writing empty files.
 	cfgDir, _ := config.ConfigDir()
@@ -800,10 +800,10 @@ func TestUninstall_KeepSecretsDefault(t *testing.T) {
 		t.Fatalf("Uninstall: %v", err)
 	}
 
-	// vendors.toml + fingerprint.json + models-cache.json + the glm profile
+	// providers.toml + fingerprint.json + models-cache.json + the glm profile
 	// must all be in Removed.
 	mustRemoved := []string{
-		filepath.Join(cfgDir, "vendors.toml"),
+		filepath.Join(cfgDir, "providers.toml"),
 		filepath.Join(cfgDir, "fingerprint.json"),
 		filepath.Join(cfgDir, "models-cache.json"),
 		filepath.Join(home, ".claude", "profiles", "glm.json"),
@@ -833,7 +833,7 @@ func TestUninstall_WipeSecrets(t *testing.T) {
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	seedVendor(t, "glm")
+	seedProvider(t, "glm")
 	secretPath := seedSecretFile(t, "glm.key", "sk-burn")
 
 	res, err := Uninstall(UninstallRequest{KeepSecrets: false})
@@ -905,7 +905,7 @@ func TestClassifyAddErr_KeyInvalidSentinel(t *testing.T) {
 	}
 	// Non-sentinel errors fall through to ADD_FAILED unless they look like
 	// transport errors (DNS / dial / deadline).
-	if got := classifyAddErr(errors.New("random vendor returned 500")); got != CodeAddFailed {
+	if got := classifyAddErr(errors.New("random provider returned 500")); got != CodeAddFailed {
 		t.Fatalf("classifyAddErr(random) = %q, want %q", got, CodeAddFailed)
 	}
 }
@@ -964,13 +964,13 @@ func TestWriteFileSecret_AtomicReplace(t *testing.T) {
 	}
 }
 
-// TestVendorsConfigLock_ConcurrentEdits_NoLostUpdate: N concurrent Edit calls
-// each mutate a DIFFERENT seeded vendor;
+// TestProvidersConfigLock_ConcurrentEdits_NoLostUpdate: N concurrent Edit calls
+// each mutate a DIFFERENT seeded provider;
 // because every Edit does a full config.Load → mutate → config.Save against the
-// one global vendors.toml, without the global flock the last writer would
+// one global providers.toml, without the global flock the last writer would
 // clobber the others' rows (lost update). Under the lock every edit must
 // survive. Runs clean under `go test -race`.
-func TestVendorsConfigLock_ConcurrentEdits_NoLostUpdate(t *testing.T) {
+func TestProvidersConfigLock_ConcurrentEdits_NoLostUpdate(t *testing.T) {
 	setupHome(t)
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -979,7 +979,7 @@ func TestVendorsConfigLock_ConcurrentEdits_NoLostUpdate(t *testing.T) {
 	names := make([]string, n)
 	for i := 0; i < n; i++ {
 		names[i] = fmt.Sprintf("v%d", i)
-		seedVendor(t, names[i]) // DefaultModel defaults to "<name>-flash"
+		seedProvider(t, names[i]) // DefaultModel defaults to "<name>-flash"
 	}
 
 	var wg sync.WaitGroup
@@ -1006,13 +1006,13 @@ func TestVendorsConfigLock_ConcurrentEdits_NoLostUpdate(t *testing.T) {
 		t.Fatalf("Load post-edits: %v", err)
 	}
 	for i := 0; i < n; i++ {
-		v, ok := cfg.Vendors[names[i]]
+		v, ok := cfg.Providers[names[i]]
 		if !ok {
-			t.Fatalf("vendor %q lost from vendors.toml after concurrent edits", names[i])
+			t.Fatalf("provider %q lost from providers.toml after concurrent edits", names[i])
 		}
 		want := fmt.Sprintf("edited-%d", i)
 		if v.DefaultModel != want {
-			t.Fatalf("vendor %q DefaultModel = %q, want %q (lost update — lock failed)",
+			t.Fatalf("provider %q DefaultModel = %q, want %q (lost update — lock failed)",
 				names[i], v.DefaultModel, want)
 		}
 	}
@@ -1029,7 +1029,7 @@ func chmodForTest(t *testing.T, path string, perm os.FileMode) {
 }
 
 // TestRemove_ConfigSaveFailure_LeavesArtifactsIntact is the load-bearing case:
-// when config.Save fails, vendors.toml must be UNCHANGED and the profile +
+// when config.Save fails, providers.toml must be UNCHANGED and the profile +
 // secret must still exist — never a config row pointing at already-deleted
 // artifacts (deleting profile+secret first would orphan the config row AND lose
 // the key). We force the save to fail by making ConfigDir read-only after the
@@ -1042,14 +1042,14 @@ func TestRemove_ConfigSaveFailure_LeavesArtifactsIntact(t *testing.T) {
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	v := seedVendor(t, "glm")
+	v := seedProvider(t, "glm")
 	secretPath := seedSecretFile(t, v.SecretRef, "sk-keep")
-	profPath, err := profile.WriteForVendor(v, "/usr/bin/cc-fleet")
+	profPath, err := profile.WriteForProvider(v, "/usr/bin/cc-fleet")
 	if err != nil {
-		t.Fatalf("WriteForVendor: %v", err)
+		t.Fatalf("WriteForProvider: %v", err)
 	}
 
-	// Acquire+release the vendors lock once so its lock file exists BEFORE we
+	// Acquire+release the providers lock once so its lock file exists BEFORE we
 	// lock the dir down (a no-field Edit is the cheapest such op; it Saves
 	// successfully while the dir is still writable).
 	if _, err := Edit(EditRequest{Name: "glm"}); err != nil {
@@ -1080,8 +1080,8 @@ func TestRemove_ConfigSaveFailure_LeavesArtifactsIntact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load post-failed-remove: %v", err)
 	}
-	if _, ok := cfg.Vendors["glm"]; !ok {
-		t.Fatal("vendor glm dropped from vendors.toml despite save failure (dangling-reference window)")
+	if _, ok := cfg.Providers["glm"]; !ok {
+		t.Fatal("provider glm dropped from providers.toml despite save failure (dangling-reference window)")
 	}
 	if _, err := os.Stat(secretPath); err != nil {
 		t.Fatalf("secret deleted despite save failure: %v", err)
@@ -1103,10 +1103,10 @@ func TestRemove_ProfileDeleteFailure_RowAlreadyCommitted(t *testing.T) {
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	v := seedVendor(t, "glm")
-	profPath, err := profile.WriteForVendor(v, "/usr/bin/cc-fleet")
+	v := seedProvider(t, "glm")
+	profPath, err := profile.WriteForProvider(v, "/usr/bin/cc-fleet")
 	if err != nil {
-		t.Fatalf("WriteForVendor: %v", err)
+		t.Fatalf("WriteForProvider: %v", err)
 	}
 	chmodForTest(t, filepath.Dir(profPath), 0o500) // can't unlink the profile
 
@@ -1123,7 +1123,7 @@ func TestRemove_ProfileDeleteFailure_RowAlreadyCommitted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if _, ok := cfg.Vendors["glm"]; ok {
+	if _, ok := cfg.Providers["glm"]; ok {
 		t.Fatal("config still references glm after committed save; row should be gone (no dangling reference)")
 	}
 }
@@ -1139,10 +1139,10 @@ func TestRemove_SecretDeleteFailure_RowAlreadyCommitted(t *testing.T) {
 	if _, err := Init(); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	v := seedVendor(t, "glm")
+	v := seedProvider(t, "glm")
 	secretPath := seedSecretFile(t, v.SecretRef, "sk-orphan")
-	if _, err := profile.WriteForVendor(v, "/usr/bin/cc-fleet"); err != nil {
-		t.Fatalf("WriteForVendor: %v", err)
+	if _, err := profile.WriteForProvider(v, "/usr/bin/cc-fleet"); err != nil {
+		t.Fatalf("WriteForProvider: %v", err)
 	}
 	secretsDir, err := config.SecretsDir()
 	if err != nil {
@@ -1163,7 +1163,7 @@ func TestRemove_SecretDeleteFailure_RowAlreadyCommitted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if _, ok := cfg.Vendors["glm"]; ok {
+	if _, ok := cfg.Providers["glm"]; ok {
 		t.Fatal("config still references glm after committed save; row should be gone (no dangling reference)")
 	}
 	// The orphan secret is still on disk (delete failed) but nothing references

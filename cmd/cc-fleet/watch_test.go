@@ -12,15 +12,15 @@ import (
 var fixedNow = time.Date(2026, 1, 1, 15, 4, 5, 0, time.UTC)
 
 // TestRenderFleetKeySafe: renderFleet prints a field allowlist — never a job's Result (the
-// vendor answer) — and scrubs control runes from opaque strings.
+// provider answer) — and scrubs control runes from opaque strings.
 func TestRenderFleetKeySafe(t *testing.T) {
 	snap := fleetSnap{
 		teammates: []teardown.Teammate{{
-			Name: "wkr\x1b[31m", Team: "team", Vendor: "deepseek", Model: "chat",
+			Name: "wkr\x1b[31m", Team: "team", Provider: "deepseek", Model: "chat",
 			PaneID: "%1", PID: 42, Status: "ok", LeadSessionID: "lead1",
 		}},
 		jobs: []subagent.Result{{
-			Phase: "Build", Label: "analyze", Vendor: "glm", Model: "4", Status: "done",
+			Phase: "Build", Label: "analyze", Provider: "glm", Model: "4", Status: "done",
 			JobID: "job-1", Result: "SECRET_ANSWER_DO_NOT_PRINT",
 		}},
 		runs:   []subagent.WorkflowRun{{RunID: "run-1", Name: "nightly", Status: "running", StartedAt: "2026-01-01T00:00:00Z"}},
@@ -29,7 +29,7 @@ func TestRenderFleetKeySafe(t *testing.T) {
 	out := renderFleet(snap, fixedNow)
 
 	if strings.Contains(out, "SECRET_ANSWER_DO_NOT_PRINT") {
-		t.Errorf("a job's Result (vendor answer) leaked to stdout:\n%s", out)
+		t.Errorf("a job's Result (provider answer) leaked to stdout:\n%s", out)
 	}
 	if strings.ContainsRune(out, '\x1b') {
 		t.Errorf("a control rune leaked (terminal-injection risk):\n%s", out)

@@ -1,10 +1,10 @@
-// Package vendorclass is the one shared place that turns a raw vendor failure
+// Package providerclass is the one shared place that turns a raw provider failure
 // into a stable, key-safe classification. Two call sites need the same answer:
 //
 //   - teardown/health.go scans a teammate's tmux pane text (`ps --check`);
 //   - internal/subagent parses claude's inner `is_error` result envelope.
 //
-// Both must map vendor noise into the same small vocabulary
+// Both must map provider noise into the same small vocabulary
 // (insufficient_balance / cloudflare_blocked / auth / rate_limit / api_error) with
 // the same priority, and a reachability probe (the spawn / subagent `--probe`) must
 // classify a models-endpoint result identically. Keeping both here stops the two
@@ -12,15 +12,15 @@
 //
 // Imports are deliberately limited to config / models / secrets / neterr so this
 // package never forms an import cycle with spawn / teardown / subagent.
-package vendorclass
+package providerclass
 
 import "strings"
 
-// Vendor error classes returned by MatchClass. They match teardown's
+// Provider error classes returned by MatchClass. They match teardown's
 // error_class vocabulary so the lead's mental model is identical across
 // `ps --check` (teammate) and `subagent` error codes:
 // auth↔KEY_INVALID, rate_limit↔RATE_LIMITED, insufficient_balance↔INSUFFICIENT_BALANCE,
-// api_error↔VENDOR_API_ERROR, cloudflare_blocked↔CODEX_CLOUDFLARE_BLOCKED.
+// api_error↔PROVIDER_API_ERROR, cloudflare_blocked↔CODEX_CLOUDFLARE_BLOCKED.
 const (
 	ClassInsufficientBalance = "insufficient_balance"
 	ClassAuth                = "auth"
@@ -62,14 +62,14 @@ var (
 	}
 )
 
-// MatchClass classifies vendor error text into one of the Class* constants, or
+// MatchClass classifies provider error text into one of the Class* constants, or
 // "" when no signature matches.
 //
 // Priority: out-of-balance > cloudflare > auth > rate-limit > generic API
 // error. A single real-world line like "API Error: Request rejected (429)
 // 余额不足无可用资源包" carries several signals at once; the most actionable
 // root cause wins — being out of balance means a retry can't help (top up /
-// switch vendor), whereas a bare 429 might clear on its own, so balance must
+// switch provider), whereas a bare 429 might clear on its own, so balance must
 // outrank the 429 symptom. Cloudflare outranks auth because an edge block
 // answers 403, which the generic auth rule would misread as a bad key.
 func MatchClass(text string) string {

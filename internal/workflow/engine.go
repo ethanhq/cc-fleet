@@ -1,14 +1,14 @@
 // Package workflow is cc-fleet's deterministic orchestration runtime: it runs a
-// JavaScript workflow script that fans out vendor subagent leaves, in a cc-fleet
+// JavaScript workflow script that fans out provider subagent leaves, in a cc-fleet
 // process OFF the main Claude context. The script's plan lives in script variables
 // (CPU, ~0 tokens); the model is invoked only at agent() leaves. The API mirrors the
 // native Claude Code Workflow tool (const meta / agent / parallel / pipeline / phase /
 // log / budget / args / workflow); the only shape difference is agent()'s required
-// opts.vendor.
+// opts.provider.
 //
 // Concurrency is a single-owner loop (see loop.go): one goroutine runs ALL script
 // execution and engine-state mutation, builtins return Promises, and the blocking
-// vendor execs run on leaf goroutines — so the engine is -race clean while the slow
+// provider execs run on leaf goroutines — so the engine is -race clean while the slow
 // leaves still overlap up to a bounded pool.
 package workflow
 
@@ -26,7 +26,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
-// runLeaf is the vendor-subagent leaf — a seam so tests inject a deterministic fake
+// runLeaf is the provider-subagent leaf — a seam so tests inject a deterministic fake
 // in place of a real `claude -p` exec. Production = subagent.Run (in-process,
 // key-safe via apiKeyHelper, board-registered, tagged with run/phase/label). The ctx
 // is the engine's per-leaf cancel handle: an aborting run cancels it and the exec
@@ -73,13 +73,13 @@ type Options struct {
 	// answer-stripped either way, so the board table is unaffected. Propagated to the
 	// detached child so the whole run honors it.
 	NoPersistIO bool
-	// BudgetUSD caps total vendor spend in USD (a sum of leaf CostUSD — an Anthropic list-price
-	// estimate, not the third-party vendor's actual charge); agent() raises once the cap would be
+	// BudgetUSD caps total provider spend in USD (a sum of leaf CostUSD — an Anthropic list-price
+	// estimate, not the third-party provider's actual charge); agent() raises once the cap would be
 	// breached. <=0 is uncapped; a -1 sentinel from --no-budget is normalized to 0 (explicit uncap)
 	// in Launch before any persist. Propagated to the detached child.
 	BudgetUSD float64
-	// BudgetTokens caps total vendor token spend (Usage.InputTokens+OutputTokens summed across
-	// leaves, cache-read excluded — the exact vendor-neutral ceiling); <=0 uncapped, -1 normalized
+	// BudgetTokens caps total provider token spend (Usage.InputTokens+OutputTokens summed across
+	// leaves, cache-read excluded — the exact provider-neutral ceiling); <=0 uncapped, -1 normalized
 	// to 0 like BudgetUSD. The first cap to trip aborts. Propagated to the detached child.
 	BudgetTokens int64
 	// LeadSessionID is the parent Claude session this run was launched from (detected at
@@ -197,7 +197,7 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 		cwd:                prepared.Cwd,       // launching project dir; ditto
 		argsJSON:           opts.ArgsJSON,
 		defaultProvider:    prepared.DefaultProvider,      // resolved at mint; re-persisted on every save
-		defaultProviderErr: prepared.DefaultProviderError, // the code a vendor-less agent() throws
+		defaultProviderErr: prepared.DefaultProviderError, // the code a provider-less agent() throws
 	}
 	// Load the run's content-hash journal (resume). The path is derived from the
 	// already-validated runID; a missing file (a fresh run) yields an empty cache that
@@ -391,9 +391,9 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 		}
 		run = existing
 		// Inherit the recorded default-resolution (do NOT re-resolve — a mid-run
-		// change of default_provider must never re-key an omitted-vendor leaf). A
+		// change of default_provider must never re-key an omitted-provider leaf). A
 		// PRE-feature manifest carries neither field; resolve+stamp once here so a
-		// vendor-less script resumed on an old run still has a default.
+		// provider-less script resumed on an old run still has a default.
 		if run.DefaultProvider == "" && run.DefaultProviderError == "" {
 			run.DefaultProvider, run.DefaultProviderError = resolveRunDefault()
 		}
@@ -458,7 +458,7 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 		run.BudgetUSD = opts.BudgetUSD
 		run.BudgetTokens = opts.BudgetTokens
 		// Resolve the run's default provider ONCE at mint and record the RESULT (the
-		// provider OR the error code a vendor-less agent() will throw). An all-explicit
+		// provider OR the error code a provider-less agent() will throw). An all-explicit
 		// script never reads either, so an unresolvable default does not block launch.
 		run.DefaultProvider, run.DefaultProviderError = resolveRunDefault()
 		if cwd, cerr := os.Getwd(); cerr == nil {

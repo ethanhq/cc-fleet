@@ -36,7 +36,7 @@ const (
 	jwtAuthClaim = "https://api.openai.com/auth"
 )
 
-// SecretBackend is the vendors.toml secret_backend value selecting a codex provider,
+// SecretBackend is the providers.toml secret_backend value selecting a codex provider,
 // and the sentinel secret_ref it pairs with (config requires a non-empty secret_ref).
 const (
 	SecretBackend = "codex-oauth"

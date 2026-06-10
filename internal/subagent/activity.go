@@ -16,7 +16,7 @@ import (
 // activityRecord is one line of a leaf's activity sidecar (<jobID>.activity, NDJSON, 0600). It is
 // PURE OBSERVABILITY + content-privacy (PersistIO-gated, like <id>.prompt/.answer): a "tool" record
 // carries the tool name + a masked/truncated preview of the model's first tool input; a "usage"
-// record carries a running token snapshot. It NEVER carries the vendor key (that flows only through
+// record carries a running token snapshot. It NEVER carries the provider key (that flows only through
 // the apiKeyHelper, never into claude's stdout) nor a tool_result body nor the final answer.
 type activityRecord struct {
 	Seq   int64  `json:"seq"`
@@ -40,7 +40,7 @@ type activityWriter struct {
 	seq  int64
 	// inputSeed is a prompt-derived estimate of the leaf's input tokens. consume() seeds the live
 	// input figure with it so the board shows a non-zero token count from the first streamed message
-	// even for a vendor that reports no per-message usage; a real usage.input_tokens supersedes it.
+	// even for a provider that reports no per-message usage; a real usage.input_tokens supersedes it.
 	inputSeed int
 }
 
@@ -54,7 +54,7 @@ func newActivityWriter(path string) *activityWriter {
 }
 
 // estimatePromptTokens roughly estimates a prompt's input-token count from its rune count (≈3 runes
-// per token), used to seed the live input figure before the vendor reports real usage.
+// per token), used to seed the live input figure before the provider reports real usage.
 func estimatePromptTokens(prompt string) int {
 	return utf8.RuneCountInString(prompt) / 3
 }
@@ -170,13 +170,13 @@ type streamContent struct {
 
 // parseStreamLine decodes one stream-json line: it emits a tool record per tool_use block and one
 // usage snapshot per assistant message. Output is a MONOTONIC cumulative for the leaf: the summed real
-// output_tokens of MEASURED messages (those whose usage the vendor reported) PLUS a runes/3 estimate
+// output_tokens of MEASURED messages (those whose usage the provider reported) PLUS a runes/3 estimate
 // for the text of UNMEASURED messages (≈3 runes/token). A measured message's own text does NOT feed
 // the estimate — its real count already covers it — so confirmed usage is never overridden by the
 // estimate, and the two non-decreasing terms keep the count from ever stepping backward. cc-fleet
 // parses CLAUDE's normalized stream (`--output-format stream-json --verbose`, no partial messages →
 // exactly one usage per assistant message), so summing the measured messages is the cumulative without
-// double-counting; the estimate covers vendors that stream no per-message usage until the result line.
+// double-counting; the estimate covers providers that stream no per-message usage until the result line.
 // Input is seeded from the prompt estimate (so the live count is never 0 even for a no-usage,
 // tool-heavy leaf) and superseded by a real, larger usage.input_tokens; cache is the latest reported.
 // The accurate final still arrives from Result.Usage on completion. A non-assistant line / decode

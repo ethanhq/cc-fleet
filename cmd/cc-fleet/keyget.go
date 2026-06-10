@@ -9,15 +9,15 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/secrets"
 )
 
-// newKeygetCmd builds the `cc-fleet keyget <vendor>` command. It's wired up so
+// newKeygetCmd builds the `cc-fleet keyget <provider>` command. It's wired up so
 // that the API key is written to stdout exactly once with no trailing newline,
 // and any error path writes to stderr only — matching Claude Code's
 // apiKeyHelper contract (stdout = key, exit code 0 = success).
 func newKeygetCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "keyget <vendor>",
-		Short: "Fetch vendor API key (used by Claude Code apiKeyHelper)",
-		Long: `Resolve <vendor>'s API key via its configured secret_backend and
+		Use:   "keyget <provider>",
+		Short: "Fetch provider API key (used by Claude Code apiKeyHelper)",
+		Long: `Resolve <provider>'s API key via its configured secret_backend and
 write it to stdout. The key never appears in logs or in this process's
 environment. Invoked automatically by Claude Code through apiKeyHelper.`,
 		Args:          cobra.ExactArgs(1),

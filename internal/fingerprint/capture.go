@@ -16,7 +16,7 @@ import (
 
 // envAllowlist is the closed set of environment variables we copy from the
 // probe's /proc/<pid>/environ into the fingerprint. These two suffice for the
-// native Agent's spawn — every other vendor-agnostic var either comes from the
+// native Agent's spawn — every other provider-agnostic var either comes from the
 // user's shell on demand or is set by the spawning shell wrapper.
 var envAllowlist = []string{
 	"CLAUDECODE",
@@ -24,17 +24,17 @@ var envAllowlist = []string{
 }
 
 // modelFlag is removed from the captured template — cc-fleet always appends
-// its own --model <vendor-model-id> at spawn time.
+// its own --model <provider-model-id> at spawn time.
 const modelFlag = "--model"
 
 // settingsFlag is removed for the SAME reason as modelFlag: cc-fleet always
-// appends its own --settings <vendor-profile>.json at spawn time. A captured
+// appends its own --settings <provider-profile>.json at spawn time. A captured
 // --settings is either absent (a native Agent probe — the intended source) or a
-// vendor-profile path (if the probe snapshotted was itself a vendor teammate).
-// Either way it must be stripped: leaving a vendor's --settings in the "native"
-// template freezes that vendor's base_url/apiKeyHelper into EVERY later spawn —
-// it lands first, so the request hits the wrong vendor's endpoint carrying
-// another vendor's model → "model not found" for all non-matching vendors.
+// provider-profile path (if the probe snapshotted was itself a provider teammate).
+// Either way it must be stripped: leaving a provider's --settings in the "native"
+// template freezes that provider's base_url/apiKeyHelper into EVERY later spawn —
+// it lands first, so the request hits the wrong provider's endpoint carrying
+// another provider's model → "model not found" for all non-matching providers.
 // removeFlagPair drops all occurrences, so a doubly-tainted capture is cleaned
 // too.
 const settingsFlag = "--settings"
@@ -152,10 +152,10 @@ func filterEnv(entries, allow []string) map[string]string {
 
 // templatize transforms the captured argv tail into a placeholder template:
 //   - drops "--model <value>" (cc-fleet appends its own model flag at spawn)
-//   - drops "--settings <value>" (cc-fleet appends its own vendor profile at
-//     spawn; a captured vendor --settings would otherwise taint every spawn —
+//   - drops "--settings <value>" (cc-fleet appends its own provider profile at
+//     spawn; a captured provider --settings would otherwise taint every spawn —
 //     see settingsFlag)
-//   - replaces vendor-agnostic but spawn-specific values with {placeholder}
+//   - replaces provider-agnostic but spawn-specific values with {placeholder}
 //
 // Unknown flags are kept verbatim — e.g. --agent-type general-purpose and
 // --dangerously-skip-permissions pass through unchanged. The order of

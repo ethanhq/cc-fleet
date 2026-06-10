@@ -16,8 +16,8 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/ids"
 	"github.com/ethanhq/cc-fleet/internal/procintrospect"
 	"github.com/ethanhq/cc-fleet/internal/profile"
+	"github.com/ethanhq/cc-fleet/internal/providerclass"
 	"github.com/ethanhq/cc-fleet/internal/tmux"
-	"github.com/ethanhq/cc-fleet/internal/vendorclass"
 )
 
 // Test seams. Production code calls the helpers behind these vars; tests can
@@ -116,62 +116,62 @@ func Spawn(req Request) Result {
 	// value is present.
 	if req.Team != "" {
 		if _, err := ids.NewTeamID(req.Team); err != nil {
-			return fail(ErrCodeTeamNotFound, err.Error(), req.Vendor, "")
+			return fail(ErrCodeTeamNotFound, err.Error(), req.Provider, "")
 		}
 	}
 	if req.AgentName != "" {
 		if _, err := ids.NewAgentName(req.AgentName); err != nil {
-			return fail(ErrCodeUnknownVendor, err.Error(), req.Vendor, "")
+			return fail(ErrCodeUnknownProvider, err.Error(), req.Provider, "")
 		}
 	}
-	// 1. Load vendor config.
+	// 1. Load provider config.
 	cfg, err := config.Load()
 	if err != nil {
-		return fail(ErrCodeUnknownVendor,
-			fmt.Sprintf("load vendors.toml: %v", err),
-			req.Vendor,
+		return fail(ErrCodeUnknownProvider,
+			fmt.Sprintf("load providers.toml: %v", err),
+			req.Provider,
 			"Run cc-fleet init to scaffold config")
 	}
-	v, ok := cfg.Vendors[req.Vendor]
+	v, ok := cfg.Providers[req.Provider]
 	if !ok {
-		return fail(ErrCodeUnknownVendor,
-			fmt.Sprintf("vendor %q not in vendors.toml", req.Vendor),
-			req.Vendor,
-			"Run cc-fleet add "+req.Vendor)
+		return fail(ErrCodeUnknownProvider,
+			fmt.Sprintf("provider %q not in providers.toml", req.Provider),
+			req.Provider,
+			"Run cc-fleet add "+req.Provider)
 	}
 	if !v.Enabled {
-		return fail(ErrCodeVendorDisabled,
-			fmt.Sprintf("vendor %q is disabled in vendors.toml", req.Vendor),
-			req.Vendor,
-			"Run cc-fleet edit "+req.Vendor+" --enable")
+		return fail(ErrCodeProviderDisabled,
+			fmt.Sprintf("provider %q is disabled in providers.toml", req.Provider),
+			req.Provider,
+			"Run cc-fleet edit "+req.Provider+" --enable")
 	}
 
 	// 2. Required request fields.
 	if req.AgentName == "" {
-		return fail(ErrCodeUnknownVendor, // closest existing code; CLI validates first
-			"agent name (--as) is required", req.Vendor, "")
+		return fail(ErrCodeUnknownProvider, // closest existing code; CLI validates first
+			"agent name (--as) is required", req.Provider, "")
 	}
 	if req.Team == "" {
 		return fail(ErrCodeTeamNotFound,
-			"team (--team) is required", req.Vendor, "")
+			"team (--team) is required", req.Provider, "")
 	}
 
 	// 3. Resolve model (capability keyword default/strong/fast → slot id, else a
 	//    literal id, "" → default_model).
 	model := v.ResolveModel(req.Model)
 
-	// 4. Optional vendor probe (3s GET against models_endpoint, with key).
+	// 4. Optional provider probe (3s GET against models_endpoint, with key).
 	//    Skipped for a codex provider: its models endpoint is served by the
 	//    lazily-started conversion daemon, so probing here (before 5c starts it)
 	//    would always fail — daemon readiness at 5c is the real health signal. An
 	//    openai-* provider still probes (its models_endpoint is the real upstream).
 	dg := req.Diag
 	if req.Probe && v.EffectiveProtocol() != config.ProtocolCodexOAuth {
-		if res := probeVendor(v); res != nil {
-			res.Vendor = req.Vendor
+		if res := probeProvider(v); res != nil {
+			res.Provider = req.Provider
 			return *res
 		}
-		dg.Logf("spawn: probe %s ok", req.Vendor)
+		dg.Logf("spawn: probe %s ok", req.Provider)
 	}
 
 	// 5. Resolve the spawn recipe: the user's probed fingerprint if present,
@@ -182,7 +182,7 @@ func Spawn(req Request) Result {
 	if err != nil {
 		return fail(ErrCodeFingerprintMissing,
 			fmt.Sprintf("load fingerprint: %v", err),
-			req.Vendor,
+			req.Provider,
 			"Existing fingerprint cache is unreadable — remove it or run cc-fleet refresh-fingerprint")
 	}
 	// 5b. Resolve the binary path live (cached-if-still-on-disk, else ccver) so a
@@ -195,7 +195,7 @@ func Spawn(req Request) Result {
 	if err != nil {
 		return fail(ErrCodeFingerprintStale,
 			err.Error(),
-			req.Vendor,
+			req.Provider,
 			"No claude binary found — install Claude Code or check PATH")
 	}
 	fp.BinaryPath = binPath
@@ -205,7 +205,7 @@ func Spawn(req Request) Result {
 	if err := fingerprint.ValidateForRuntime(fp); err != nil {
 		return fail(ErrCodeFingerprintStale,
 			err.Error(),
-			req.Vendor,
+			req.Provider,
 			"Skill's self-heal probe re-captures the recipe")
 	}
 	dg.Logf("spawn: fingerprint gate ok (binary %s)", binPath)
@@ -219,17 +219,17 @@ func Spawn(req Request) Result {
 	// 5c. For a codex provider, ensure the conversion daemon is up — after the
 	//     fingerprint gate, before the profile write and the tmux split, so a
 	//     daemon failure is fail-before-mutation (no profile, no pane).
-	if err := ensureVendorProxy(v, dg); err != nil {
-		return fail(ErrCodeProxyUnavailable, err.Error(), req.Vendor,
+	if err := ensureProviderProxy(v, dg); err != nil {
+		return fail(ErrCodeProxyUnavailable, err.Error(), req.Provider,
 			"Conversion daemon failed to start — for codex run cc-fleet codex login (add --credential <name> for an extra one); otherwise free the base_url port, then retry")
 	}
 
-	// 6. Ensure the per-vendor profile exists (idempotent write).
-	profilePath, err := profile.WriteForVendor(v, "")
+	// 6. Ensure the per-provider profile exists (idempotent write).
+	profilePath, err := profile.WriteForProvider(v, "")
 	if err != nil {
-		return fail(ErrCodeUnknownVendor,
-			fmt.Sprintf("write profile for %s: %v", req.Vendor, err),
-			req.Vendor, "")
+		return fail(ErrCodeUnknownProvider,
+			fmt.Sprintf("write profile for %s: %v", req.Provider, err),
+			req.Provider, "")
 	}
 	dg.Logf("spawn: profile written %s", profilePath)
 
@@ -272,7 +272,7 @@ func Spawn(req Request) Result {
 				if err != nil {
 					return fail(ErrCodePaneCreationFailed,
 						fmt.Sprintf("pick tmux target: %v", err),
-						req.Vendor,
+						req.Provider,
 						"Open a tmux session first (e.g. tmux new -s 1) and re-run")
 				}
 				target = picked
@@ -453,7 +453,7 @@ func Spawn(req Request) Result {
 		tc.Members = append(tc.Members, member)
 		// Post-split rollback. Pane + claude process are live now. If
 		// WriteTeamConfig or EnsureInbox fails, the team has no record of the pane
-		// → teardown can't find it → vendor key keeps burning. Undo here: KillPane
+		// → teardown can't find it → provider key keeps burning. Undo here: KillPane
 		// on the right server (default for in-tmux, the swarm socket for swarm),
 		// KillServer for swarm, and reap any reparented claude process by agent id.
 		// The lock is still held so no concurrent spawn can grab the same pane id.
@@ -496,22 +496,22 @@ func Spawn(req Request) Result {
 		// Categorise lock-region errors back into result codes.
 		switch {
 		case errors.Is(lockErr, ErrTeamNotFound):
-			return fail(ErrCodeTeamNotFound, lockErr.Error(), req.Vendor,
+			return fail(ErrCodeTeamNotFound, lockErr.Error(), req.Provider,
 				"Run with --auto-team or create the team first")
 		case strings.HasPrefix(lockErr.Error(), "DUPLICATE_NAME"):
 			// Pre-split duplicate detection — no resources spent.
-			return fail(ErrCodeDuplicateName, lockErr.Error(), req.Vendor,
+			return fail(ErrCodeDuplicateName, lockErr.Error(), req.Provider,
 				"Pick a fresh --as name or `cc-fleet teardown` the old teammate first")
 		case strings.Contains(lockErr.Error(), "no lead session"):
-			return fail(ErrCodeNoLeadSession, lockErr.Error(), req.Vendor,
+			return fail(ErrCodeNoLeadSession, lockErr.Error(), req.Provider,
 				"Pass --lead-session-id or enable --auto-team")
 		case strings.Contains(lockErr.Error(), "split-window"):
-			return fail(ErrCodePaneCreationFailed, lockErr.Error(), req.Vendor,
+			return fail(ErrCodePaneCreationFailed, lockErr.Error(), req.Provider,
 				"Check tmux target exists and is attached")
 		default:
 			return fail(ErrCodePaneCreationFailed,
 				fmt.Sprintf("spawn pipeline: %v", lockErr),
-				req.Vendor, "")
+				req.Provider, "")
 		}
 	}
 
@@ -531,7 +531,7 @@ func Spawn(req Request) Result {
 		return fail(ErrCodeSpawnDidNotSettle,
 			fmt.Sprintf("teammate %s exited during startup — likely a spawn-recipe mismatch on a Claude Code newer than the bundled recipe (%s)",
 				agentID, fingerprint.BundledVersion),
-			req.Vendor,
+			req.Provider,
 			"Run the skill's self-heal probe to capture the current recipe, then retry the spawn")
 	}
 
@@ -563,7 +563,7 @@ func Spawn(req Request) Result {
 // rollbackPane is the post-split cleanup path. After SplitWindow / SpawnSwarm
 // returned a live paneID but a later state-write step (WriteTeamConfig /
 // EnsureInbox) failed, the pane + its claude process are orphaned — no team
-// config records the pane, so teardown will never find it, and the vendor key
+// config records the pane, so teardown will never find it, and the provider key
 // keeps billing. This function undoes the pane creation:
 //
 //  1. KillPane on the correct server — default tmux for in-tmux spawns, the
@@ -576,7 +576,7 @@ func Spawn(req Request) Result {
 //     the already-running first member. createdServer is false for those, so we
 //     only KillPane the failed pane.
 //  3. Best-effort process reap by agent id — claude reparents to init if its
-//     pane dies first, and a reparented process keeps burning vendor quota.
+//     pane dies first, and a reparented process keeps burning provider quota.
 //
 // best-effort: each step's failure is ignored. The point is to free as much as
 // we can; the caller already has a real error to surface, the rollback's job
@@ -613,10 +613,10 @@ var settleOK = func(socket, paneID string) bool {
 	return tmux.NewServer(socket).PaneExists(paneID)
 }
 
-// ensureVendorProxy ensures the codex conversion daemon for a codex provider
-// (a no-op for every other vendor). A package var so tests can stub it without
+// ensureProviderProxy ensures the codex conversion daemon for a codex provider
+// (a no-op for every other provider). A package var so tests can stub it without
 // launching a real daemon process.
-var ensureVendorProxy = codexproxy.EnsureForVendor
+var ensureProviderProxy = codexproxy.EnsureForProvider
 
 // rollbackSpawnedMember undoes a FULLY committed spawn (pane + config member +
 // inbox) when the post-spawn settle check fails. Unlike rollbackPane — which
@@ -653,14 +653,14 @@ func rollbackSpawnedMember(team, name, paneID string, swarm bool, swarmSocket, a
 	}
 }
 
-// probeVendor is a thin wrapper over vendorclass.Reachability (the shared
+// probeProvider is a thin wrapper over providerclass.Reachability (the shared
 // classifier that also backs cc-fleet subagent --probe). It returns a non-nil
 // *Result only when the spawn should be blocked; nil lets the spawn proceed. A
-// non-blocking warning (e.g. a 5xx, "vendor reachable but unhappy") is printed
-// to stderr. The probe's Code values (VENDOR_UNREACHABLE / KEY_INVALID) equal
+// non-blocking warning (e.g. a 5xx, "provider reachable but unhappy") is printed
+// to stderr. The probe's Code values (PROVIDER_UNREACHABLE / KEY_INVALID) equal
 // this package's ErrCode* consts.
-func probeVendor(v *config.Vendor) *Result {
-	p := vendorclass.Reachability(v)
+func probeProvider(v *config.Provider) *Result {
+	p := providerclass.Reachability(v)
 	if p.Warn != "" {
 		fmt.Fprint(os.Stderr, p.Warn)
 	}
@@ -678,17 +678,17 @@ func probeVendor(v *config.Vendor) *Result {
 //	  CLAUDECODE=1 CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 \
 //	  <binary> <fingerprint flags...> --settings <profile> --model <model>
 //
-// Every token is shell-quoted via tmux.Quote() so vendor-supplied strings
+// Every token is shell-quoted via tmux.Quote() so provider-supplied strings
 // can't escape into shell metacharacters. The CLAUDECODE/teams env vars come
 // straight from fingerprint.Env to match whatever the probe captured.
 //
 // The leading `env -u` unsets the main session's Anthropic credentials before
 // launching the teammate. A new tmux pane inherits the tmux server's
 // environment, so a main session running in ANTHROPIC_API_KEY mode (rather
-// than OAuth) would otherwise leak its real Anthropic key into the vendor
+// than OAuth) would otherwise leak its real Anthropic key into the provider
 // teammate — at best an undefined precedence clash with the profile's
-// apiKeyHelper, at worst the main key being sent to the vendor's endpoint.
-// Vendor auth must come solely from the --settings profile's apiKeyHelper.
+// apiKeyHelper, at worst the main key being sent to the provider's endpoint.
+// Provider auth must come solely from the --settings profile's apiKeyHelper.
 //
 // inherited carries the permission flags the teammate should adopt from the lead
 // session (or a manual override); stripPerms says whether to first remove any

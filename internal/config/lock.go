@@ -22,14 +22,14 @@ const teamLockBasename = ".cc-fleet-lock"
 // different teams spawning into the same tmux window. See WithServerLock.
 const serverLockBasename = ".cc-fleet-tmux.lock"
 
-// vendorsLockBasename is a single process-wide lock co-located with the global
-// vendors.toml (inside ConfigDir). It serializes the load→mutate→save cycle of
+// providersLockBasename is a single process-wide lock co-located with the global
+// providers.toml (inside ConfigDir). It serializes the load→mutate→save cycle of
 // `cc-fleet add` / `edit` / `remove`, which all rewrite that one global file:
 // without it two concurrent CLI mutations each read the same old config and the
 // later Save clobbers the earlier writer's update (lost update).
-// Co-locating the lock with vendors.toml keeps it inside that file's ownership
+// Co-locating the lock with providers.toml keeps it inside that file's ownership
 // boundary (ConfigDir, not ~/.claude/).
-const vendorsLockBasename = ".cc-fleet-vendors.lock"
+const providersLockBasename = ".cc-fleet-providers.lock"
 
 // WithTeamLock acquires an exclusive flock on
 // $HOME/.claude/teams/<team>/.cc-fleet-lock, runs fn, then releases the lock.
@@ -84,24 +84,24 @@ func WithServerLock(fn func() error) error {
 	return withFlock(path, fn)
 }
 
-// WithVendorsConfigLock acquires a single process-wide exclusive flock at
-// <ConfigDir>/.cc-fleet-vendors.lock, runs fn, then releases it.
+// WithProvidersConfigLock acquires a single process-wide exclusive flock at
+// <ConfigDir>/.cc-fleet-providers.lock, runs fn, then releases it.
 //
-// It guards the GLOBAL vendors.toml lifecycle (add / edit / remove): the full
+// It guards the GLOBAL providers.toml lifecycle (add / edit / remove): the full
 // config.Load → mutate → config.Save cycle must run under it so concurrent CLI
 // mutations serialize instead of clobbering each other.
 //
 // Lock ordering: this is a THIRD, independent scope alongside WithTeamLock
 // (per-team config.json) and WithServerLock (tmux window race). The three guard
-// disjoint resources (global vendors.toml vs a per-team dir vs the tmux server),
+// disjoint resources (global providers.toml vs a per-team dir vs the tmux server),
 // so no acquisition cycle exists today. If a future flow ever needs more than
-// one at once, acquire this vendors-config lock OUTERMOST — it covers a global
+// one at once, acquire this providers-config lock OUTERMOST — it covers a global
 // file touched before any team/tmux work — then team, then server inner.
-func WithVendorsConfigLock(fn func() error) error {
+func WithProvidersConfigLock(fn func() error) error {
 	if fn == nil {
-		return errors.New("config: WithVendorsConfigLock: nil fn")
+		return errors.New("config: WithProvidersConfigLock: nil fn")
 	}
-	path, err := vendorsLockPath()
+	path, err := providersLockPath()
 	if err != nil {
 		return err
 	}
@@ -179,14 +179,14 @@ func serverLockPath() (string, error) {
 	return filepath.Join(home, ".claude", serverLockBasename), nil
 }
 
-// vendorsLockPath returns <ConfigDir>/.cc-fleet-vendors.lock — the single global
-// lock guarding the vendors.toml load→mutate→save cycle (see
-// WithVendorsConfigLock). It lives in ConfigDir so it shares vendors.toml's
+// providersLockPath returns <ConfigDir>/.cc-fleet-providers.lock — the single global
+// lock guarding the providers.toml load→mutate→save cycle (see
+// WithProvidersConfigLock). It lives in ConfigDir so it shares providers.toml's
 // ownership boundary and honors $XDG_CONFIG_HOME.
-func vendorsLockPath() (string, error) {
+func providersLockPath() (string, error) {
 	dir, err := ConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, vendorsLockBasename), nil
+	return filepath.Join(dir, providersLockBasename), nil
 }

@@ -30,7 +30,7 @@ func TestRunClaude_SuccessEnvelope(t *testing.T) {
 	if len(stderr) != 0 {
 		t.Fatalf("clean success wrote to stderr: %q", stderr)
 	}
-	res := classify(Request{Vendor: "mimo", JSON: true}, "fallback", stdout, nil, code, false, true)
+	res := classify(Request{Provider: "mimo", JSON: true}, "fallback", stdout, nil, code, false, true)
 	if !res.OK || res.Result != "SUBAGENT_SMOKE_OK=42" {
 		t.Fatalf("classify of fake success: OK=%v result=%q", res.OK, res.Result)
 	}
@@ -49,7 +49,7 @@ func TestRunClaude_ErrorEnvelopeExit1(t *testing.T) {
 	if err == nil {
 		t.Fatal("exit-1 returned nil err, want a non-nil run error")
 	}
-	res := classify(Request{Vendor: "glm", JSON: true}, "glm-4.6", stdout, nil, code, false, true)
+	res := classify(Request{Provider: "glm", JSON: true}, "glm-4.6", stdout, nil, code, false, true)
 	if res.OK || res.ErrorCode != ErrCodeInsufficientBalance {
 		t.Fatalf("want INSUFFICIENT_BALANCE from exit-1 envelope, got OK=%v code=%s", res.OK, res.ErrorCode)
 	}
@@ -112,7 +112,7 @@ func TestRunClaude_TimeoutKillsProcessGroup(t *testing.T) {
 // ~/.config/cc-fleet/fingerprint.json, Run must NOT return FINGERPRINT_MISSING —
 // LoadOrBundled supplies the embedded recipe and the binary path resolves live.
 // A fast-exit fake claude on PATH keeps the run from reaching the (unreachable)
-// vendor or launching a real claude.
+// provider or launching a real claude.
 func TestRun_NoUserFingerprint_UsesBundled(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
@@ -127,7 +127,7 @@ func TestRun_NoUserFingerprint_UsesBundled(t *testing.T) {
 	}
 	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	// Minimal vendors.toml with one enabled vendor.
+	// Minimal providers.toml with one enabled provider.
 	dir := filepath.Join(xdg, "cc-fleet")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -143,11 +143,11 @@ secret_ref      = "glm.key"
 enabled         = true
 added_at        = 2026-05-24T05:00:00Z
 `
-	if err := os.WriteFile(filepath.Join(dir, "vendors.toml"), []byte(toml), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "providers.toml"), []byte(toml), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	res := Run(context.Background(), Request{Vendor: "glm", Prompt: "hi", JSON: true})
+	res := Run(context.Background(), Request{Provider: "glm", Prompt: "hi", JSON: true})
 	// The bundled fallback must engage: no FINGERPRINT_MISSING, and the binary
 	// resolved (no FINGERPRINT_STALE either, since the fake claude is on PATH).
 	if res.ErrorCode == ErrCodeFingerprintMissing || res.ErrorCode == ErrCodeFingerprintStale {

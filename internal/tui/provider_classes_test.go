@@ -153,7 +153,7 @@ func TestAddPicker_CodexRowNoSourceGoesToConsent(t *testing.T) {
 func TestFirstCodexClaimsDefaultCredential(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())            // no ~/.codex
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no own login
-	m := withVendors(t)                      // no providers yet
+	m := withProviders(t)                    // no providers yet
 	if m.codexDefaultTaken() {
 		t.Fatal("with no codex, the default credential must be free")
 	}
@@ -174,7 +174,7 @@ func TestFirstCodexClaimsDefaultCredential(t *testing.T) {
 func TestCodexInvalidNameRejectedBeforeLogin(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	m := withVendors(t)
+	m := withProviders(t)
 	mm, _ := m.enterCodexFlow()
 	m = mm.(Model)
 	m.form.setValue("name", "../escape")
@@ -194,12 +194,12 @@ func TestCodexInvalidNameRejectedBeforeLogin(t *testing.T) {
 func TestSecondCodexGetsOwnCredential(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	existing := userops.VendorView{
+	existing := userops.ProviderView{
 		Name: "codex", BaseURL: "http://127.0.0.1:17222/", ModelsEndpoint: "http://127.0.0.1:17222/v1/models",
 		DefaultModel: "gpt-5.5", SecretBackend: config.CodexOAuthBackend, SecretRef: config.CodexOAuthBackend,
 		Protocol: config.ProtocolCodexOAuth, Enabled: true,
 	}
-	m := withVendors(t, existing)
+	m := withProviders(t, existing)
 	if !m.codexDefaultTaken() {
 		t.Fatal("an existing default-credential codex must mark the default taken")
 	}
@@ -223,7 +223,7 @@ func TestSecondCodexGetsOwnCredential(t *testing.T) {
 
 	// Naming the second codex with the sentinel would collapse onto the default
 	// credential: rejected on the form before any commit.
-	mm2, _ := withVendors(t, existing).enterCodexFlow()
+	mm2, _ := withProviders(t, existing).enterCodexFlow()
 	m2 := mm2.(Model)
 	m2.form.setValue("name", codexproxy.SecretRef)
 	m2 = pressN(t, m2, "down", len(m2.form.fields))
@@ -380,7 +380,7 @@ func TestCodexAuthModalContent(t *testing.T) {
 // The read-only preview card and the edit form keep the same Note→Config gap, so
 // entering edit does not shift the Config block down.
 func TestPreviewMatchesEditNoteGap(t *testing.T) {
-	v := userops.VendorView{Name: "glm", DefaultModel: "glm-4.5-air", SecretBackend: "file"}
+	v := userops.ProviderView{Name: "glm", DefaultModel: "glm-4.5-air", SecretBackend: "file"}
 	gap := func(lines []string) int {
 		note, cfg := -1, -1
 		for i, l := range lines {
@@ -394,7 +394,7 @@ func TestPreviewMatchesEditNoteGap(t *testing.T) {
 		return cfg - note
 	}
 	const w = 60
-	if p, e := gap(vendorDetailLines(v, w, "")), gap(newEditForm(v).viewLines(w)); p != e {
+	if p, e := gap(providerDetailLines(v, w, "")), gap(newEditForm(v).viewLines(w)); p != e {
 		t.Fatalf("Note→Config gap differs (Config jumps entering edit): preview=%d edit=%d", p, e)
 	}
 }
@@ -478,23 +478,23 @@ func focusEditDefault(t *testing.T, m Model) Model {
 
 // The edit-form model picker seeds from the static codex list for a codex
 // provider, and fetches the real endpoint for a non-codex one — driven by the
-// edited vendor's class (so a prior codex flow can't leak into a deepseek edit).
+// edited provider's class (so a prior codex flow can't leak into a deepseek edit).
 func TestEditForm_ModelPickerSourceByClass(t *testing.T) {
-	deepseek := userops.VendorView{
+	deepseek := userops.ProviderView{
 		Name: "deepseek", BaseURL: "https://api.deepseek.com/anthropic",
 		ModelsEndpoint: "https://api.deepseek.com/v1/models", DefaultModel: "x",
 		SecretBackend: "file", Protocol: "", Enabled: true,
 	}
-	codex := userops.VendorView{
+	codex := userops.ProviderView{
 		Name: "codex", BaseURL: "http://127.0.0.1:17222/", ModelsEndpoint: "http://127.0.0.1:17222/v1/models",
 		DefaultModel: "gpt-5.5", SecretBackend: config.CodexOAuthBackend, Protocol: config.ProtocolCodexOAuth, Enabled: true,
 	}
-	m := withVendors(t, deepseek, codex) // class-sorted: deepseek (0), codex (1)
+	m := withProviders(t, deepseek, codex) // class-sorted: deepseek (0), codex (1)
 
 	// editing codex -> static codex list, and no key-manager row.
 	mc := m
 	mc.screen = screenList
-	mc.vendorCursor = 1
+	mc.providerCursor = 1
 	mc, _ = press(t, mc, "enter")
 	if mc.addProtocol != config.ProtocolCodexOAuth {
 		t.Fatalf("edit codex addProtocol = %q", mc.addProtocol)
@@ -513,7 +513,7 @@ func TestEditForm_ModelPickerSourceByClass(t *testing.T) {
 	// editing deepseek -> fetch its own endpoint.
 	md := m
 	md.screen = screenList
-	md.vendorCursor = 0
+	md.providerCursor = 0
 	md, _ = press(t, md, "enter")
 	if md.addProtocol != "" {
 		t.Fatalf("edit deepseek addProtocol = %q, want empty", md.addProtocol)
@@ -529,13 +529,13 @@ func TestEditForm_ModelPickerSourceByClass(t *testing.T) {
 // OpenAI-protocol, then CLI auth (stable within a class).
 func TestProvidersList_GroupedByClass(t *testing.T) {
 	m := NewModel()
-	in := []userops.VendorView{
+	in := []userops.ProviderView{
 		{Name: "codex", Protocol: config.ProtocolCodexOAuth},
 		{Name: "deepseek", Protocol: ""},
 		{Name: "groq", Protocol: config.ProtocolOpenAIChat},
 	}
-	m, _ = step(t, m, vendorsMsg{vendors: in})
-	got := []string{m.vendors[0].Name, m.vendors[1].Name, m.vendors[2].Name}
+	m, _ = step(t, m, providersMsg{providers: in})
+	got := []string{m.providers[0].Name, m.providers[1].Name, m.providers[2].Name}
 	want := []string{"deepseek", "groq", "codex"}
 	for i := range want {
 		if got[i] != want[i] {
@@ -554,15 +554,15 @@ func TestEditForm_FieldsByClass(t *testing.T) {
 		}
 		return s
 	}
-	oai := keys(newEditForm(userops.VendorView{Name: "openai", Protocol: config.ProtocolOpenAIResponses, UpstreamURL: "https://api.openai.com/v1", SecretBackend: "file"}))
+	oai := keys(newEditForm(userops.ProviderView{Name: "openai", Protocol: config.ProtocolOpenAIResponses, UpstreamURL: "https://api.openai.com/v1", SecretBackend: "file"}))
 	if !oai["upstream_url"] || oai["base_url"] || !oai["manage_keys"] {
 		t.Fatalf("openai edit fields = %v (want upstream_url + keys, no base_url)", oai)
 	}
-	cdx := keys(newEditForm(userops.VendorView{Name: "codex", Protocol: config.ProtocolCodexOAuth, SecretBackend: config.CodexOAuthBackend}))
+	cdx := keys(newEditForm(userops.ProviderView{Name: "codex", Protocol: config.ProtocolCodexOAuth, SecretBackend: config.CodexOAuthBackend}))
 	if cdx["base_url"] || cdx["models_endpoint"] || cdx["upstream_url"] || cdx["manage_keys"] {
 		t.Fatalf("codex edit fields = %v (want only default_model + enabled)", cdx)
 	}
-	ant := keys(newEditForm(userops.VendorView{Name: "deepseek", Protocol: "", SecretBackend: "file"}))
+	ant := keys(newEditForm(userops.ProviderView{Name: "deepseek", Protocol: "", SecretBackend: "file"}))
 	if !ant["base_url"] || ant["upstream_url"] {
 		t.Fatalf("anthropic edit fields = %v (want base_url, no upstream_url)", ant)
 	}

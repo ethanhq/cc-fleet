@@ -1,8 +1,8 @@
-![cc-fleet — spawn any vendor LLM (DeepSeek · GLM · Qwen · Kimi …) as real Claude Code teammates](docs/assets/cc-fleet-banner.png)
+![cc-fleet — spawn any provider LLM (DeepSeek · GLM · Qwen · Kimi …) as real Claude Code teammates](docs/assets/cc-fleet-banner.png)
 
 # 🚢 cc-fleet
 
-<p align="center"><strong>🤖 Spawn any vendor LLM — DeepSeek · GLM · Qwen · Kimi · MiniMax … — as real Claude Code teammates or ⚡ one-shot subagents 🚀</strong></p>
+<p align="center"><strong>🤖 Spawn any provider LLM — DeepSeek · GLM · Qwen · Kimi · MiniMax … — as real Claude Code teammates or ⚡ one-shot subagents 🚀</strong></p>
 
 <div align="center">
 
@@ -22,19 +22,19 @@
 
 </div>
 
-Vendor workers are **real Claude Code teammates** — driven exactly like native ones — with
+Provider workers are **real Claude Code teammates** — driven exactly like native ones — with
 the LLM backend swapped to any provider that exposes an Anthropic-compatible API. Your main
-session's own auth (OAuth subscription or API key) is untouched; vendor workers bill the
-vendor API key via `apiKeyHelper`, and the key never enters env, argv, or shell history.
+session's own auth (OAuth subscription or API key) is untouched; provider workers bill the
+provider API key via `apiKeyHelper`, and the key never enters env, argv, or shell history.
 
-`cc-fleet` is a small Go CLI plus one Claude Code skill. The CLI manages per-vendor
+`cc-fleet` is a small Go CLI plus one Claude Code skill. The CLI manages per-provider
 profiles, dispatches API keys via `apiKeyHelper`, and spawns teammate sessions in tmux
 panes. The skill teaches Claude Code *when* to delegate work to those teammates.
 
 ## Requirements
 
 - **Claude Code** (the `claude` CLI) on your PATH.
-- **tmux** — vendor teammates run in tmux panes.
+- **tmux** — provider teammates run in tmux panes.
 - **macOS or Linux**, amd64 or arm64 — the tested platforms. Windows can in theory run
   the one-shot **subagent** mode, but it is untested.
 - **Teammate** mode needs Claude Code's agent-teams enabled. Turn it on in your global
@@ -90,36 +90,36 @@ Run `cc-fleet` (or the `ccf` alias) with no arguments to open the interactive TU
 cc-fleet
 ```
 
-In the TUI you register a vendor — give it a name, its Anthropic-compatible base URL, a
+In the TUI you register a provider — give it a name, its Anthropic-compatible base URL, a
 models endpoint, a default model, and paste the API key. The key is written `0600` under
 `~/.config/cc-fleet/secrets/` and is **never** passed via argv or shell history.
 
-<p align="center"><img src="docs/assets/tui-add-vendor.png" alt="cc-fleet TUI — add vendor form" width="760" /></p>
+<p align="center"><img src="docs/assets/tui-add-provider.png" alt="cc-fleet TUI — add provider form" width="760" /></p>
 
 The config tree is created automatically on first save, so there is no separate init step.
-The TUI also lists your vendors, lets you edit them, and manage multiple keys per vendor.
+The TUI also lists your providers, lets you edit them, and manage multiple keys per provider.
 
-<p align="center"><img src="docs/assets/tui-vendors.png" alt="cc-fleet TUI — vendor list" width="760" /></p>
+<p align="center"><img src="docs/assets/tui-providers.png" alt="cc-fleet TUI — provider list" width="760" /></p>
 
 Press `tab` to switch to the **Agents Board** — it shows every live teammate grouped by
-session → team, with its vendor, model, pane, PID, health, and hidden state, plus a list of
+session → team, with its provider, model, pane, PID, health, and hidden state, plus a list of
 subagent jobs. From here you can hide (`h`) / show (`s`) a teammate pane or refresh (`r`).
 
 <p align="center"><img src="docs/assets/tui-agent-status.png" alt="cc-fleet TUI — Agents Board" width="760" /></p>
 
-Once at least one vendor is registered, just talk to Claude Code in plain language. The
+Once at least one provider is registered, just talk to Claude Code in plain language. The
 skill reads your request and picks how to run the work — there are two execution modes.
 
-### Teammate mode — a long-lived vendor worker on your team
+### Teammate mode — a long-lived provider worker on your team
 
 > *"Spawn a deepseek teammate to refactor the parser package, then report back."*
 
-Runs the vendor as a **real Claude Code agent-team teammate**:
+Runs the provider as a **real Claude Code agent-team teammate**:
 
-- Claude calls native `TeamCreate`; cc-fleet launches the vendor's own `claude` process in a tmux pane.
+- Claude calls native `TeamCreate`; cc-fleet launches the provider's own `claude` process in a tmux pane.
 - Claude drives it with native `SendMessage` — you assign tasks, it works and reports back.
 - The teammate **stays alive across turns**, so you keep handing it follow-ups. Run several in parallel.
-- Your main session keeps its own auth — only the teammate pane bills the vendor key (via `apiKeyHelper`).
+- Your main session keeps its own auth — only the teammate pane bills the provider key (via `apiKeyHelper`).
 
 > [!NOTE]
 > Teammate mode needs Claude Code's agent-teams enabled — see [Requirements](#requirements).
@@ -156,9 +156,9 @@ fan-out of independent tasks.
 
 > [!NOTE]
 > You never pick the mode by hand — Claude decides teammate vs subagent from the request,
-> spawns the vendor worker, and coordinates it for you.
+> spawns the provider worker, and coordinates it for you.
 
-### Run a vendor in your own session
+### Run a provider in your own session
 
 > *Not delegation — this one is all you.*
 
@@ -168,8 +168,8 @@ cc-fleet run deepseek --dangerously-skip-permissions
 ```
 
 `cc-fleet run [provider]` drops you straight into an interactive Claude Code session with the LLM
-backend swapped to the vendor — the same `claude` you know, just on DeepSeek / GLM / Qwen / … and
-billing the vendor key. Reach for a cheaper or different-jurisdiction model for your own
+backend swapped to the provider — the same `claude` you know, just on DeepSeek / GLM / Qwen / … and
+billing the provider key. Reach for a cheaper or different-jurisdiction model for your own
 day-to-day coding, not only for delegated work. `--model` overrides the default; `--permission-mode`
 / `--dangerously-skip-permissions` set the permission posture. **No tmux, no agent-teams** — just a
 terminal.
@@ -213,7 +213,7 @@ claude plugin install cc-fleet@ethanhq
 
 ## Contributing
 
-PRs are very welcome — bug fixes, new vendor recipes, docs, tests, and features. Please read
+PRs are very welcome — bug fixes, new provider recipes, docs, tests, and features. Please read
 the **[contribution guide](CONTRIBUTING.md)** first; a few house rules:
 
 - **UI changes and bug fixes need a screenshot or GIF** in the PR.

@@ -34,7 +34,7 @@ func TestStopRunUniformlyStopped(t *testing.T) {
 
 		ctx, cancel := context.WithCancel(context.Background())
 		eng := newTestEngine(ctx, "uni", 1) // pool of 1 → later leaves queue behind the first
-		src := `return await parallel([() => agent("a", {vendor: "v"}), () => agent("b", {vendor: "v"}), () => agent("c", {vendor: "v"})]);`
+		src := `return await parallel([() => agent("a", {provider: "v"}), () => agent("b", {provider: "v"}), () => agent("c", {provider: "v"})]);`
 
 		done := make(chan error, 1)
 		go func() {

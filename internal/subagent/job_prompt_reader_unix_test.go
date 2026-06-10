@@ -29,7 +29,7 @@ func TestLaunchBackground_PromptReaderError_FailsBeforeStart(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", t.TempDir())
-	writeMinimalVendors(t, xdg)
+	writeMinimalProviders(t, xdg)
 
 	// Fake claude that records every invocation to argv.log. If launchBackground
 	// regresses and cmd.Start runs anyway, this log will be non-empty.
@@ -52,7 +52,7 @@ exit 0
 	}
 
 	res := Run(context.Background(), Request{
-		Vendor:       "glm",
+		Provider:     "glm",
 		PromptReader: reader,
 		Background:   true,
 	})
@@ -104,7 +104,7 @@ func TestLaunchBackground_MaterializeWriteError_RemovesPromptFile(t *testing.T) 
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", t.TempDir())
-	writeMinimalVendors(t, xdg)
+	writeMinimalProviders(t, xdg)
 
 	// Fake claude that logs every argv. If launchBackground regresses and runs
 	// cmd.Start anyway, this would be non-empty.
@@ -135,7 +135,7 @@ exit 0
 	t.Cleanup(func() { materializePromptFn = origMat })
 
 	res := Run(context.Background(), Request{
-		Vendor:       "glm",
+		Provider:     "glm",
 		PromptReader: strings.NewReader("any prompt body; reader type is not *os.File"),
 		Background:   true,
 	})

@@ -205,11 +205,11 @@ func TestWithServerLock_NilFn(t *testing.T) {
 	}
 }
 
-// TestWithVendorsConfigLock_SerializesGlobally verifies the global vendors.toml
+// TestWithProvidersConfigLock_SerializesGlobally verifies the global providers.toml
 // lock serializes ALL callers — the guarantee add/edit/remove need so two
 // concurrent load→mutate→save cycles don't clobber each other. Two concurrent
 // holders must run back-to-back, not in parallel.
-func TestWithVendorsConfigLock_SerializesGlobally(t *testing.T) {
+func TestWithProvidersConfigLock_SerializesGlobally(t *testing.T) {
 	isolateHome(t)
 	const hold = 100 * time.Millisecond
 
@@ -220,7 +220,7 @@ func TestWithVendorsConfigLock_SerializesGlobally(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := WithVendorsConfigLock(func() error {
+			if err := WithProvidersConfigLock(func() error {
 				time.Sleep(hold)
 				return nil
 			}); err != nil {
@@ -231,26 +231,26 @@ func TestWithVendorsConfigLock_SerializesGlobally(t *testing.T) {
 	wg.Wait()
 	close(errs)
 	for err := range errs {
-		t.Fatalf("WithVendorsConfigLock: %v", err)
+		t.Fatalf("WithProvidersConfigLock: %v", err)
 	}
 
 	elapsed := time.Since(start)
 	min := 2*hold - 20*time.Millisecond // 10% jitter slack
 	if elapsed < min {
-		t.Fatalf("two 100ms vendors-config-lock holders finished in %v, want >= %v (lock did not serialize)",
+		t.Fatalf("two 100ms providers-config-lock holders finished in %v, want >= %v (lock did not serialize)",
 			elapsed, min)
 	}
 }
 
-// TestWithVendorsConfigLock_CreatesLockFileInConfigDir verifies the lock file
-// lives next to vendors.toml (ConfigDir), honoring XDG_CONFIG_HOME, at 0600.
-func TestWithVendorsConfigLock_CreatesLockFileInConfigDir(t *testing.T) {
+// TestWithProvidersConfigLock_CreatesLockFileInConfigDir verifies the lock file
+// lives next to providers.toml (ConfigDir), honoring XDG_CONFIG_HOME, at 0600.
+func TestWithProvidersConfigLock_CreatesLockFileInConfigDir(t *testing.T) {
 	home := isolateHome(t)
 	t.Setenv("XDG_CONFIG_HOME", "") // force the $HOME/.config fallback
-	if err := WithVendorsConfigLock(func() error { return nil }); err != nil {
-		t.Fatalf("WithVendorsConfigLock: %v", err)
+	if err := WithProvidersConfigLock(func() error { return nil }); err != nil {
+		t.Fatalf("WithProvidersConfigLock: %v", err)
 	}
-	path := filepath.Join(home, ".config", "cc-fleet", vendorsLockBasename)
+	path := filepath.Join(home, ".config", "cc-fleet", providersLockBasename)
 	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("stat lock file: %v", err)
@@ -261,18 +261,18 @@ func TestWithVendorsConfigLock_CreatesLockFileInConfigDir(t *testing.T) {
 	}
 }
 
-// TestWithVendorsConfigLock_PropagatesFnError + nil-fn guard.
-func TestWithVendorsConfigLock_PropagatesFnError(t *testing.T) {
+// TestWithProvidersConfigLock_PropagatesFnError + nil-fn guard.
+func TestWithProvidersConfigLock_PropagatesFnError(t *testing.T) {
 	isolateHome(t)
 	sentinel := errors.New("boom")
-	if err := WithVendorsConfigLock(func() error { return sentinel }); !errors.Is(err, sentinel) {
+	if err := WithProvidersConfigLock(func() error { return sentinel }); !errors.Is(err, sentinel) {
 		t.Fatalf("err = %v, want wraps sentinel", err)
 	}
 }
 
-func TestWithVendorsConfigLock_NilFn(t *testing.T) {
-	if err := WithVendorsConfigLock(nil); err == nil {
-		t.Fatal("WithVendorsConfigLock(nil) should return an error")
+func TestWithProvidersConfigLock_NilFn(t *testing.T) {
+	if err := WithProvidersConfigLock(nil); err == nil {
+		t.Fatal("WithProvidersConfigLock(nil) should return an error")
 	}
 }
 

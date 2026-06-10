@@ -66,19 +66,19 @@ func press(t *testing.T, m Model, key string) (Model, tea.Cmd) {
 	return step(t, m, keyMsg(key))
 }
 
-// withVendors returns a fresh model on the Model Providers list with vs already
-// loaded. It pins screenList so the screenList-owned vendorsMsg is always applied —
+// withProviders returns a fresh model on the Model Providers list with vs already
+// loaded. It pins screenList so the screenList-owned providersMsg is always applied —
 // otherwise a fresh install with no tmux/agent-teams (CI) opens on a setup nudge and
-// the message is dropped, leaving m.vendors empty.
-func withVendors(t *testing.T, vs ...userops.VendorView) Model {
+// the message is dropped, leaving m.providers empty.
+func withProviders(t *testing.T, vs ...userops.ProviderView) Model {
 	t.Helper()
 	m := NewModel()
 	m.screen, m.loading = screenList, true
-	m, _ = step(t, m, vendorsMsg{vendors: vs})
+	m, _ = step(t, m, providersMsg{providers: vs})
 	return m
 }
 
-func TestNewModelStartsOnVendorList(t *testing.T) {
+func TestNewModelStartsOnProviderList(t *testing.T) {
 	// Make agent-teams look configured so NewModel takes the normal hub path
 	// (deterministic regardless of the ambient env). The setup-gating branch is
 	// covered separately by TestNewModel_SetupGating.
@@ -88,44 +88,44 @@ func TestNewModelStartsOnVendorList(t *testing.T) {
 		t.Fatalf("screen = %d, want screenList", m.screen)
 	}
 	if !m.loading {
-		t.Fatal("NewModel should start loading (Init kicks off loadVendors)")
+		t.Fatal("NewModel should start loading (Init kicks off loadProviders)")
 	}
 	if m.Init() == nil {
-		t.Fatal("Init should return the loadVendors command")
+		t.Fatal("Init should return the loadProviders command")
 	}
 }
 
-func TestVendorListLoadsAndRenders(t *testing.T) {
-	m := withVendors(t,
-		userops.VendorView{Name: "deepseek", DefaultModel: "deepseek-v4-flash", Enabled: true},
-		userops.VendorView{Name: "kimi", DefaultModel: "kimi-latest", Enabled: false},
+func TestProviderListLoadsAndRenders(t *testing.T) {
+	m := withProviders(t,
+		userops.ProviderView{Name: "deepseek", DefaultModel: "deepseek-v4-flash", Enabled: true},
+		userops.ProviderView{Name: "kimi", DefaultModel: "kimi-latest", Enabled: false},
 	)
 	if m.loading {
-		t.Fatal("loading should be false after vendorsMsg")
+		t.Fatal("loading should be false after providersMsg")
 	}
-	if len(m.vendors) != 2 {
-		t.Fatalf("vendors len = %d, want 2", len(m.vendors))
+	if len(m.providers) != 2 {
+		t.Fatalf("providers len = %d, want 2", len(m.providers))
 	}
 	if out := m.View(); out == "" {
-		t.Fatal("vendor list rendered empty")
+		t.Fatal("provider list rendered empty")
 	}
 }
 
-// TestVendorListCursorClamps: the cursor walks [0, len(vendors)] — the last
+// TestProviderListCursorClamps: the cursor walks [0, len(providers)] — the last
 // index being the trailing "+ Add provider…" row — and clamps at both ends.
-func TestVendorListCursorClamps(t *testing.T) {
-	m := withVendors(t,
-		userops.VendorView{Name: "deepseek"}, userops.VendorView{Name: "glm"},
+func TestProviderListCursorClamps(t *testing.T) {
+	m := withProviders(t,
+		userops.ProviderView{Name: "deepseek"}, userops.ProviderView{Name: "glm"},
 	)
 	m, _ = press(t, m, "up")
-	if m.vendorCursor != 0 {
-		t.Fatalf("up at top: cursor = %d, want 0", m.vendorCursor)
+	if m.providerCursor != 0 {
+		t.Fatalf("up at top: cursor = %d, want 0", m.providerCursor)
 	}
 	for i := 0; i < 6; i++ {
 		m, _ = press(t, m, "down")
 	}
-	if m.vendorCursor != 2 {
-		t.Fatalf("after many downs: cursor = %d, want 2 (the Add row)", m.vendorCursor)
+	if m.providerCursor != 2 {
+		t.Fatalf("after many downs: cursor = %d, want 2 (the Add row)", m.providerCursor)
 	}
 }
 
@@ -144,7 +144,7 @@ func TestQuitKeys(t *testing.T) {
 // loads it); tab from the board returns to the Model Providers list — the cycle is now
 // List ↔ Spawn (the Dynamic Workflows screen folded into the Agents Board).
 func TestTabTogglesSpawnStatus(t *testing.T) {
-	m := withVendors(t, userops.VendorView{Name: "glm"})
+	m := withProviders(t, userops.ProviderView{Name: "glm"})
 	m, cmd := press(t, m, "tab")
 	if m.screen != screenSpawn {
 		t.Fatalf("tab: screen = %d, want screenSpawn", m.screen)
@@ -157,7 +157,7 @@ func TestTabTogglesSpawnStatus(t *testing.T) {
 	}
 	m, _ = step(t, m, boardMsg{
 		teammates: []teardown.Teammate{
-			{Name: "alice", Team: "t1", Vendor: "glm", Model: "glm-4.6", PaneID: "%3", PID: 42},
+			{Name: "alice", Team: "t1", Provider: "glm", Model: "glm-4.6", PaneID: "%3", PID: 42},
 		},
 		epoch: m.boardEpoch, // stamp the live epoch so the gate accepts
 	})
@@ -180,10 +180,10 @@ func TestTabTogglesSpawnStatus(t *testing.T) {
 }
 
 // TestAddRowOpensWizard: enter on the trailing "+ Add provider…" row (the only
-// row when no vendors exist) opens the template picker; the chosen template
+// row when no providers exist) opens the template picker; the chosen template
 // prefills the form; esc returns to the Model Providers list.
 func TestAddRowOpensWizardAndPrefills(t *testing.T) {
-	m := NewModel() // no vendors loaded -> cursor 0 == the Add row
+	m := NewModel() // no providers loaded -> cursor 0 == the Add row
 	m, _ = press(t, m, "enter")
 	if m.screen != screenPickTemplate {
 		t.Fatalf("enter on Add row: screen = %d, want screenPickTemplate", m.screen)
@@ -289,15 +289,15 @@ func TestAddFormTypingAndSubmitDispatches(t *testing.T) {
 	}
 }
 
-// TestEditFromListPrefillsVendor: enter on a highlighted vendor row opens the
+// TestEditFromListPrefillsProvider: enter on a highlighted provider row opens the
 // edit form directly (no separate picker step).
-func TestEditFromListPrefillsVendor(t *testing.T) {
-	v := userops.VendorView{
+func TestEditFromListPrefillsProvider(t *testing.T) {
+	v := userops.ProviderView{
 		Name: "glm", BaseURL: "https://open.bigmodel.cn/api/anthropic",
 		ModelsEndpoint: "https://open.bigmodel.cn/api/paas/v4/models",
 		DefaultModel:   "glm-4.6", Enabled: true,
 	}
-	m := withVendors(t, v)
+	m := withProviders(t, v)
 	m, _ = press(t, m, "enter") // cursor 0 == glm row -> edit form
 	if m.screen != screenForm || m.formMode != modeEdit {
 		t.Fatalf("screen=%d formMode=%d, want screenForm+modeEdit", m.screen, m.formMode)
@@ -314,7 +314,7 @@ func TestEditFromListPrefillsVendor(t *testing.T) {
 }
 
 func TestEditEnabledToggle(t *testing.T) {
-	f := newEditForm(userops.VendorView{Name: "x", Enabled: true})
+	f := newEditForm(userops.ProviderView{Name: "x", Enabled: true})
 	// Walk focus to the Enabled toggle by key (the edit form also has a trailing
 	// "Manage API keys →" action row, so it is no longer the last field).
 	for i := 0; i < len(f.fields) && f.focusedKey() != "enabled"; i++ {
@@ -336,7 +336,7 @@ func TestEditEnabledToggle(t *testing.T) {
 // TestEditForm_1mLateralNav: ↑/↓ walk rows and skip the inline 1M toggles, while
 // → reaches a model slot's 1M toggle and ← returns to the slot.
 func TestEditForm_1mLateralNav(t *testing.T) {
-	f := newEditForm(userops.VendorView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
+	f := newEditForm(userops.ProviderView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
 	for i := 0; i < len(f.fields) && f.focusedKey() != "default_model"; i++ {
 		f, _, _ = f.Update(keyMsg("down"))
 	}
@@ -365,7 +365,7 @@ func TestEditForm_1mLateralNav(t *testing.T) {
 // TestUniqueName: a taken template name prefills the first free "<name>-N"; a free
 // name and a blank (Custom) name pass through.
 func TestUniqueName(t *testing.T) {
-	m := Model{vendors: []userops.VendorView{{Name: "deepseek"}, {Name: "deepseek-2"}}}
+	m := Model{providers: []userops.ProviderView{{Name: "deepseek"}, {Name: "deepseek-2"}}}
 	if got := m.uniqueName("deepseek"); got != "deepseek-3" {
 		t.Errorf("uniqueName(deepseek) = %q, want deepseek-3", got)
 	}
@@ -380,7 +380,7 @@ func TestUniqueName(t *testing.T) {
 // TestNoteBlockConstantHeight: the Note block reserves the same number of lines
 // regardless of which field is focused, so the Config header doesn't move.
 func TestNoteBlockConstantHeight(t *testing.T) {
-	f := newEditForm(userops.VendorView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
+	f := newEditForm(userops.ProviderView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
 	noteToConfig := func(ff form) int {
 		lines := ff.viewLines(46)
 		note, cfg := -1, -1
@@ -423,7 +423,7 @@ func TestAddForm_HasModelConfigNav(t *testing.T) {
 // (default_1m ↓ → strong_1m), and fall back to the model column when the next row
 // has no toggle (fast_1m ↓ → effort).
 func TestEditForm_1mColumnVerticalNav(t *testing.T) {
-	f := newEditForm(userops.VendorView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
+	f := newEditForm(userops.ProviderView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
 	focus := func(key string) {
 		for i := 0; i < len(f.fields)*2 && f.focusedKey() != key; i++ {
 			f, _, _ = f.Update(keyMsg("down"))
@@ -454,7 +454,7 @@ func TestEditForm_1mColumnVerticalNav(t *testing.T) {
 // TestEditForm_ModelSlotsPrefill: the edit form splits each model slot into a
 // bare-id text field + a 1M toggle, and prefills effort/permission choices.
 func TestEditForm_ModelSlotsPrefill(t *testing.T) {
-	f := newEditForm(userops.VendorView{
+	f := newEditForm(userops.ProviderView{
 		Name:          "deepseek",
 		DefaultModel:  "d[1m]",
 		StrongModel:   "s[1m]",
@@ -486,7 +486,7 @@ func TestEditForm_ModelSlotsPrefill(t *testing.T) {
 // TestEditForm_UnsetChoicesShowOff: a provider with no effort / default_permission
 // prefills both dropdowns to "off".
 func TestEditForm_UnsetChoicesShowOff(t *testing.T) {
-	f := newEditForm(userops.VendorView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
+	f := newEditForm(userops.ProviderView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
 	if got := f.choiceValue("effort"); got != "off" {
 		t.Errorf("unset effort = %q, want off", got)
 	}
@@ -510,13 +510,13 @@ func TestCombine1MAndOffToEmpty(t *testing.T) {
 	}
 }
 
-// TestDeleteFromListConfirmAndCancel: d on a highlighted vendor row opens the centered
+// TestDeleteFromListConfirmAndCancel: d on a highlighted provider row opens the centered
 // confirm modal over the list; Cancel (the default) closes it in place, Confirm
 // dispatches the remove and the outcome pops as an info modal over the list.
 func TestDeleteFromListConfirmAndCancel(t *testing.T) {
 	mk := func() Model {
-		m := withVendors(t, userops.VendorView{Name: "kimi", Enabled: true})
-		m, _ = press(t, m, "d") // delete highlighted vendor -> confirm modal
+		m := withProviders(t, userops.ProviderView{Name: "kimi", Enabled: true})
+		m, _ = press(t, m, "d") // delete highlighted provider -> confirm modal
 		return m
 	}
 
@@ -524,8 +524,8 @@ func TestDeleteFromListConfirmAndCancel(t *testing.T) {
 	if m.screen != screenList || m.confirm == nil {
 		t.Fatalf("screen=%d confirmOpen=%v, want modal open over screenList", m.screen, m.confirm != nil)
 	}
-	if m.confirm.kind != confirmRemoveVendor || m.confirm.id != "kimi" {
-		t.Fatalf("modal kind=%q id=%q, want remove-vendor + kimi", m.confirm.kind, m.confirm.id)
+	if m.confirm.kind != confirmRemoveProvider || m.confirm.id != "kimi" {
+		t.Fatalf("modal kind=%q id=%q, want remove-provider + kimi", m.confirm.kind, m.confirm.id)
 	}
 	if !strings.Contains(m.View(), "Remove kimi?") {
 		t.Fatalf("modal prompt missing from view")
@@ -555,7 +555,7 @@ func TestDeleteFromListConfirmAndCancel(t *testing.T) {
 // TestDeleteGatedWhileMutationInFlight: d opens no new ask while a mutation is loading —
 // its outcome modal would find the new ask open and be silently swallowed.
 func TestDeleteGatedWhileMutationInFlight(t *testing.T) {
-	m := withVendors(t, userops.VendorView{Name: "kimi", Enabled: true})
+	m := withProviders(t, userops.ProviderView{Name: "kimi", Enabled: true})
 	m.loading = true
 	m, _ = press(t, m, "d")
 	if m.confirm != nil {
@@ -567,7 +567,7 @@ func TestDeleteGatedWhileMutationInFlight(t *testing.T) {
 // submit is in flight — a key confirm opened in that window would swallow the pending
 // outcome modal.
 func TestManageKeysGatedWhileMutationInFlight(t *testing.T) {
-	m := withVendors(t, userops.VendorView{
+	m := withProviders(t, userops.ProviderView{
 		Name: "glm", BaseURL: "https://api.example/anthropic",
 		ModelsEndpoint: "https://api.example/v1/models", DefaultModel: "m", Enabled: true,
 	})
@@ -585,7 +585,7 @@ func TestManageKeysGatedWhileMutationInFlight(t *testing.T) {
 // TestRemoveCodexPromptStatesLoginCleanup: the remove prompt for a codex provider names
 // the login teardown (and ~/.codex safety) instead of the file-secret wording.
 func TestRemoveCodexPromptStatesLoginCleanup(t *testing.T) {
-	m := withVendors(t, userops.VendorView{Name: "codex", Enabled: true, Protocol: config.ProtocolCodexOAuth})
+	m := withProviders(t, userops.ProviderView{Name: "codex", Enabled: true, Protocol: config.ProtocolCodexOAuth})
 	m, _ = press(t, m, "d")
 	if m.confirm == nil {
 		t.Fatalf("d should open the remove modal")
@@ -598,10 +598,10 @@ func TestRemoveCodexPromptStatesLoginCleanup(t *testing.T) {
 // TestDeleteIgnoredOnAddRow: d on the trailing Add row is a no-op (nothing to
 // delete).
 func TestDeleteIgnoredOnAddRow(t *testing.T) {
-	m := withVendors(t, userops.VendorView{Name: "glm"})
+	m := withProviders(t, userops.ProviderView{Name: "glm"})
 	m, _ = press(t, m, "down") // cursor -> Add row (index 1)
-	if m.vendorCursor != 1 {
-		t.Fatalf("cursor = %d, want 1 (Add row)", m.vendorCursor)
+	if m.providerCursor != 1 {
+		t.Fatalf("cursor = %d, want 1 (Add row)", m.providerCursor)
 	}
 	m, _ = press(t, m, "d")
 	if m.screen != screenList {
@@ -633,7 +633,7 @@ func TestTemplatesSeedTable(t *testing.T) {
 // resulting form has a models_endpoint prefilled, so the model picker is live.
 func addFormOnDeepseek(t *testing.T) Model {
 	t.Helper()
-	m := NewModel()             // no vendors -> cursor 0 == Add row
+	m := NewModel()             // no providers -> cursor 0 == Add row
 	m, _ = press(t, m, "enter") // +Add -> grouped picker (cursor 0 = DeepSeek)
 	m, _ = press(t, m, "enter") // choose DeepSeek -> add form
 	return m
@@ -664,7 +664,7 @@ func TestModelPickerOpensFromForm(t *testing.T) {
 }
 
 func TestModelPickerOpensFromEditForm(t *testing.T) {
-	m := withVendors(t, userops.VendorView{
+	m := withProviders(t, userops.ProviderView{
 		Name: "glm", BaseURL: "https://open.bigmodel.cn/api/anthropic",
 		ModelsEndpoint: "https://open.bigmodel.cn/api/paas/v4/models",
 		DefaultModel:   "glm-4.6", Enabled: true,
@@ -860,7 +860,7 @@ func TestModelPickerFilterResetsOnReopen(t *testing.T) {
 // already loaded (screen=screenSpawn, boardEpoch=1, loading=false).
 func boardModel(t *testing.T, tms []teardown.Teammate, jobs []subagent.Result) Model {
 	t.Helper()
-	m := withVendors(t, userops.VendorView{Name: "glm"})
+	m := withProviders(t, userops.ProviderView{Name: "glm"})
 	m, _ = press(t, m, "tab") // enter board (epoch 1, loading)
 	// stamp the live boardEpoch so the gate accepts the refresh.
 	m, _ = step(t, m, boardMsg{teammates: tms, jobs: jobs, epoch: m.boardEpoch})
@@ -874,11 +874,11 @@ func boardModel(t *testing.T, tms []teardown.Teammate, jobs []subagent.Result) M
 func TestBoardSingleSessionBoxes(t *testing.T) {
 	m := boardModel(t,
 		[]teardown.Teammate{
-			{Name: "alice", Team: "t1", Vendor: "glm", Model: "glm-4.6", PaneID: "%3", PID: 42, Status: "ok", LeadSessionID: "sess-aaaaaaaa"},
-			{Name: "bob", Team: "t1", Vendor: "kimi", Model: "kimi-k2", PaneID: "%4", PID: 43, Status: "error", ErrorClass: "rate_limit", Hidden: true, LeadSessionID: "sess-aaaaaaaa"},
+			{Name: "alice", Team: "t1", Provider: "glm", Model: "glm-4.6", PaneID: "%3", PID: 42, Status: "ok", LeadSessionID: "sess-aaaaaaaa"},
+			{Name: "bob", Team: "t1", Provider: "kimi", Model: "kimi-k2", PaneID: "%4", PID: 43, Status: "error", ErrorClass: "rate_limit", Hidden: true, LeadSessionID: "sess-aaaaaaaa"},
 		},
 		[]subagent.Result{{
-			JobID: "abcdef0123456789", Vendor: "glm", Model: "glm-4.6",
+			JobID: "abcdef0123456789", Provider: "glm", Model: "glm-4.6",
 			Status: "running", StartedAt: "2026-05-26T01:02:03Z", LeadSessionID: "sess-aaaaaaaa",
 			Result: "TOP-SECRET-ANSWER", // must never render
 		}},
@@ -914,7 +914,7 @@ func TestBoardMultiSessionList(t *testing.T) {
 			{Name: "dave", Team: "t3", PaneID: "%4"}, // no session
 		},
 		[]subagent.Result{
-			{JobID: "job-a0000000", Vendor: "glm", Status: "done", StartedAt: "1970-01-01T00:00:01Z", LeadSessionID: "sess-aaaaaaaa"},
+			{JobID: "job-a0000000", Provider: "glm", Status: "done", StartedAt: "1970-01-01T00:00:01Z", LeadSessionID: "sess-aaaaaaaa"},
 		},
 	)
 	if m.asMode != asModeSessions {
@@ -1155,7 +1155,7 @@ func TestBoardSessionHeaderUsesResolvedTitle(t *testing.T) {
 			{Name: "alice", Team: "t1", PaneID: "%1", LeadSessionID: "sess-aaaaaaaa"},
 		},
 		[]subagent.Result{{
-			JobID: "job-a000", Vendor: "glm", Status: "done", StartedAt: "2026-05-26T02:00:00Z",
+			JobID: "job-a000", Provider: "glm", Status: "done", StartedAt: "2026-05-26T02:00:00Z",
 			LeadSessionID: "sess-aaaaaaaa", Result: "TOP-SECRET",
 		}},
 	)
@@ -1170,10 +1170,10 @@ func TestBoardSessionHeaderUsesResolvedTitle(t *testing.T) {
 }
 
 // TestBoardEntityDetailCard: →/⏎ opens the inline detail card showing UNtruncated
-// vendor/model (the row clips them); esc returns to the rail with the screen unchanged.
+// provider/model (the row clips them); esc returns to the rail with the screen unchanged.
 func TestBoardEntityDetailCard(t *testing.T) {
 	m := boardModel(t, []teardown.Teammate{
-		{Name: "worker-1", Team: "alpha", Vendor: "xiaomimimo", Model: "mimo-v2-flash", PaneID: "%7", PID: 4242, Status: "ok", LeadSessionID: "s"},
+		{Name: "worker-1", Team: "alpha", Provider: "xiaomimimo", Model: "mimo-v2-flash", PaneID: "%7", PID: 4242, Status: "ok", LeadSessionID: "s"},
 	}, nil)
 	// A single-team, no-jobs session lands straight on the detail view.
 	if m.screen != screenSpawn || m.asMode != asModeEntity {
@@ -1187,14 +1187,14 @@ func TestBoardEntityDetailCard(t *testing.T) {
 			t.Errorf("detail card missing %q:\n%s", want, out)
 		}
 	}
-	// The card IS the board's top level here: ← clamps (stays), esc leaves for Vendors.
+	// The card IS the board's top level here: ← clamps (stays), esc leaves for Providers.
 	m, _ = press(t, m, "left")
 	if m.screen != screenSpawn || m.asMode != asModeEntity {
 		t.Fatalf("left at the top: screen=%d mode=%d, want screenSpawn + entity (clamped)", m.screen, m.asMode)
 	}
 	m, _ = press(t, m, "esc")
 	if m.screen != screenList {
-		t.Fatalf("esc at the top should leave for Vendors, screen=%d", m.screen)
+		t.Fatalf("esc at the top should leave for Providers, screen=%d", m.screen)
 	}
 }
 
@@ -1655,7 +1655,7 @@ func TestAgentBoardNewSurfacesKeySafe(t *testing.T) {
 	const answerCanary = "ANSWER-CANARY-sk-9f8e7d"
 	const errCanary = "ERRMSG-CANARY-sk-1a2b3c"
 	job := subagent.Result{
-		JobID: "deadbeef00000000", Vendor: "glm", Model: "glm-4.6",
+		JobID: "deadbeef00000000", Provider: "glm", Model: "glm-4.6",
 		Status: "failed", StartedAt: "2026-05-26T01:00:00Z", LeadSessionID: "s",
 		Result: answerCanary, ErrorCode: "SUBAGENT_FAILED", ErrorMsg: errCanary,
 		Usage: &subagent.Usage{InputTokens: 1200, OutputTokens: 340},
@@ -1790,12 +1790,12 @@ func TestViewsRenderForEveryScreen(t *testing.T) {
 	for _, s := range screens {
 		m := NewModel()
 		m.loading = false // exercise the populated render paths, not "loading…"
-		m.vendors = []userops.VendorView{{Name: "x", DefaultModel: "m", Enabled: true, ModelsCount: 1}}
-		m.teammates = []teardown.Teammate{{Name: "a", Team: "t1", Vendor: "v", Model: "m", PaneID: "%1", PID: 1}}
+		m.providers = []userops.ProviderView{{Name: "x", DefaultModel: "m", Enabled: true, ModelsCount: 1}}
+		m.teammates = []teardown.Teammate{{Name: "a", Team: "t1", Provider: "v", Model: "m", PaneID: "%1", PID: 1}}
 		m.screen = s
 		m.form = newAddForm(Templates[0])
 		m.modelList = []models.Model{{ID: "x", OwnedBy: "y"}}
-		m.keyVendor = "x"
+		m.keyProvider = "x"
 		m.keys = []secrets.KeyEntry{{Label: "key1", Key: "sk-abcdef-123", Enabled: true}}
 		if out := m.View(); out == "" {
 			t.Errorf("screen %d rendered empty view", s)
@@ -1810,13 +1810,13 @@ func TestViewsRenderForEveryScreen(t *testing.T) {
 // keysModel walks from the Model Providers list into the EDIT form, focuses the "Manage
 // API keys →" action row, opens screenKeys, and delivers the given key set
 // (bypassing disk). It returns the model parked on screenKeys.
-func keysModel(t *testing.T, vendor, rotation string, ks ...secrets.KeyEntry) Model {
+func keysModel(t *testing.T, provider, rotation string, ks ...secrets.KeyEntry) Model {
 	t.Helper()
-	m := withVendors(t, userops.VendorView{
-		Name: vendor, BaseURL: "https://api.example/anthropic",
+	m := withProviders(t, userops.ProviderView{
+		Name: provider, BaseURL: "https://api.example/anthropic",
 		ModelsEndpoint: "https://api.example/v1/models", DefaultModel: "m", Enabled: true,
 	})
-	m, _ = press(t, m, "enter") // edit vendor -> form
+	m, _ = press(t, m, "enter") // edit provider -> form
 	if m.screen != screenForm || m.formMode != modeEdit {
 		t.Fatalf("expected edit form, screen=%d mode=%d", m.screen, m.formMode)
 	}
@@ -1842,8 +1842,8 @@ func TestKeyManagerOpensAndLoads(t *testing.T) {
 		secrets.KeyEntry{Label: "primary", Key: "sk-aaa-111", Enabled: true},
 		secrets.KeyEntry{Label: "backup", Key: "sk-bbb-222", Enabled: false},
 	)
-	if m.keyVendor != "glm" {
-		t.Fatalf("keyVendor = %q, want glm", m.keyVendor)
+	if m.keyProvider != "glm" {
+		t.Fatalf("keyProvider = %q, want glm", m.keyProvider)
 	}
 	if len(m.keys) != 2 || m.keyRotation != "round_robin" {
 		t.Fatalf("keys=%d rotation=%q, want 2 + round_robin", len(m.keys), m.keyRotation)
@@ -2233,7 +2233,7 @@ func TestHandlersRegistry_AllScreensRegistered(t *testing.T) {
 // without mutating model state.
 func TestAsyncMsg_NonOwningScreenDrop(t *testing.T) {
 	// Model on screenList; receive a modelsMsg (owned by screenModelPick).
-	m := withVendors(t, userops.VendorView{Name: "glm"})
+	m := withProviders(t, userops.ProviderView{Name: "glm"})
 	if m.screen != screenList {
 		t.Fatalf("setup: screen = %d, want screenList", m.screen)
 	}
@@ -2252,7 +2252,7 @@ func TestAsyncMsg_NonOwningScreenDrop(t *testing.T) {
 // TestAsyncMsg_PaneVisOffBoardDrop: a hide/show outcome landing after the user left the
 // board is dropped — it must not open its info modal over a hub screen.
 func TestAsyncMsg_PaneVisOffBoardDrop(t *testing.T) {
-	m := withVendors(t, userops.VendorView{Name: "glm"})
+	m := withProviders(t, userops.ProviderView{Name: "glm"})
 	m, _ = step(t, m, paneVisMsg{res: panevis.Result{OK: true, Action: "hide", Name: "alice"}})
 	if m.confirm != nil {
 		t.Fatal("an off-board paneVisMsg must not open a modal on the hub")
@@ -2262,7 +2262,7 @@ func TestAsyncMsg_PaneVisOffBoardDrop(t *testing.T) {
 // TestAsyncMsg_OwningScreenAccepts verifies the inverse: an owned msg DOES
 // reach the model when on the matching screen.
 func TestAsyncMsg_OwningScreenAccepts(t *testing.T) {
-	m := withVendors(t, userops.VendorView{Name: "glm"})
+	m := withProviders(t, userops.ProviderView{Name: "glm"})
 	// Navigate into the model picker via the same flow real users take.
 	// Simpler: just set the screen directly; we're testing the dispatch, not
 	// the entrypoint chain.
@@ -2274,29 +2274,29 @@ func TestAsyncMsg_OwningScreenAccepts(t *testing.T) {
 	}
 }
 
-// TestAsyncMsg_VendorsMsgNonOwningScreenDrop: a vendor-list result arriving
+// TestAsyncMsg_ProvidersMsgNonOwningScreenDrop: a provider-list result arriving
 // while the user has navigated off screenList (e.g. to the board) must NOT
-// clobber m.loading / m.vendors / m.vendorsErr — otherwise a slow userops.List
+// clobber m.loading / m.providers / m.providersErr — otherwise a slow userops.List
 // could blank the board's "loading…" while it is still mid-discover.
-func TestAsyncMsg_VendorsMsgNonOwningScreenDrop(t *testing.T) {
-	m := withVendors(t, userops.VendorView{Name: "live"})
+func TestAsyncMsg_ProvidersMsgNonOwningScreenDrop(t *testing.T) {
+	m := withProviders(t, userops.ProviderView{Name: "live"})
 	// Navigate to the board (epoch bumps to 1, loading=true). The board hasn't
-	// resolved yet, so m.loading must STAY true after a stale vendorsMsg.
+	// resolved yet, so m.loading must STAY true after a stale providersMsg.
 	m, _ = press(t, m, "tab")
 	if m.screen != screenSpawn || !m.loading {
 		t.Fatalf("setup: screen=%d loading=%v, want screenSpawn + loading=true", m.screen, m.loading)
 	}
-	wantVendors := m.vendors
-	stale := vendorsMsg{vendors: []userops.VendorView{{Name: "stale"}}, err: errors.New("late err")}
+	wantProviders := m.providers
+	stale := providersMsg{providers: []userops.ProviderView{{Name: "stale"}}, err: errors.New("late err")}
 	m, _ = step(t, m, stale)
 	if !m.loading {
-		t.Fatal("non-owning screen received vendorsMsg: m.loading flipped to false")
+		t.Fatal("non-owning screen received providersMsg: m.loading flipped to false")
 	}
-	if len(m.vendors) != len(wantVendors) || (len(m.vendors) > 0 && m.vendors[0].Name != "live") {
-		t.Fatalf("non-owning screen overwrote m.vendors = %+v, want unchanged %+v", m.vendors, wantVendors)
+	if len(m.providers) != len(wantProviders) || (len(m.providers) > 0 && m.providers[0].Name != "live") {
+		t.Fatalf("non-owning screen overwrote m.providers = %+v, want unchanged %+v", m.providers, wantProviders)
 	}
-	if m.vendorsErr != nil {
-		t.Fatalf("non-owning screen overwrote m.vendorsErr = %v", m.vendorsErr)
+	if m.providersErr != nil {
+		t.Fatalf("non-owning screen overwrote m.providersErr = %v", m.providersErr)
 	}
 }
 
@@ -2313,7 +2313,7 @@ func TestAsyncMsg_BoardMsgNonOwningScreenDrop(t *testing.T) {
 	t.Run("screen mismatch", func(t *testing.T) {
 		// Park the model on screenList (the hub). A boardMsg arriving here
 		// from a previous board visit must not mutate state.
-		m := withVendors(t, userops.VendorView{Name: "glm"})
+		m := withProviders(t, userops.ProviderView{Name: "glm"})
 		if m.screen != screenList {
 			t.Fatalf("setup: screen=%d, want screenList", m.screen)
 		}
@@ -2334,7 +2334,7 @@ func TestAsyncMsg_BoardMsgNonOwningScreenDrop(t *testing.T) {
 		// User entered the board (epoch 1), then re-entered (epoch 2). A
 		// boardMsg stamped with epoch 1 must be dropped — the gate keeps the
 		// fresh visit's loading=true and empty teammates list.
-		m := withVendors(t, userops.VendorView{Name: "glm"})
+		m := withProviders(t, userops.ProviderView{Name: "glm"})
 		m, _ = press(t, m, "tab") // enter -> epoch 1
 		if m.boardEpoch != 1 || !m.loading {
 			t.Fatalf("setup: epoch=%d loading=%v, want 1 + loading", m.boardEpoch, m.loading)
@@ -2362,7 +2362,7 @@ func TestAsyncMsg_BoardMsgNonOwningScreenDrop(t *testing.T) {
 	t.Run("matching epoch + owning screen accepts", func(t *testing.T) {
 		// Sanity: when both gates pass, the refresh DOES land — proving the
 		// drop above is not just "always dropped".
-		m := withVendors(t, userops.VendorView{Name: "glm"})
+		m := withProviders(t, userops.ProviderView{Name: "glm"})
 		m, _ = press(t, m, "tab")
 		fresh := boardMsg{
 			teammates: []teardown.Teammate{{Name: "ok", Team: "t1"}},
@@ -2378,13 +2378,13 @@ func TestAsyncMsg_BoardMsgNonOwningScreenDrop(t *testing.T) {
 	})
 }
 
-// TestLoadKeysetCmd_SurfacesConfigLoadError: when vendors.toml is corrupt
+// TestLoadKeysetCmd_SurfacesConfigLoadError: when providers.toml is corrupt
 // (config.Load returns an error), the resulting keysetMsg must carry that error
 // so it renders into m.keyErr in the key manager instead of being silently
 // swallowed (which left rotation "").
 //
 // The setup uses a valid keys.json (so secrets.LoadKeySet returns nil err)
-// alongside a malformed vendors.toml; the config.Load error is the ONLY error
+// alongside a malformed providers.toml; the config.Load error is the ONLY error
 // path, so the assertion is unambiguous.
 func TestLoadKeysetCmd_SurfacesConfigLoadError(t *testing.T) {
 	xdg := t.TempDir()
@@ -2400,9 +2400,9 @@ func TestLoadKeysetCmd_SurfacesConfigLoadError(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(appDir, "secrets", "glm.keys.json"), keysJSON, 0o600); err != nil {
 		t.Fatalf("write keys.json: %v", err)
 	}
-	// Malformed vendors.toml so config.Load returns an error.
-	if err := os.WriteFile(filepath.Join(appDir, "vendors.toml"), []byte("this is not [valid toml"), 0o600); err != nil {
-		t.Fatalf("write corrupt vendors.toml: %v", err)
+	// Malformed providers.toml so config.Load returns an error.
+	if err := os.WriteFile(filepath.Join(appDir, "providers.toml"), []byte("this is not [valid toml"), 0o600); err != nil {
+		t.Fatalf("write corrupt providers.toml: %v", err)
 	}
 
 	cmd := loadKeysetCmd("glm")
@@ -2415,7 +2415,7 @@ func TestLoadKeysetCmd_SurfacesConfigLoadError(t *testing.T) {
 		t.Fatalf("loadKeysetCmd returned %T, want keysetMsg", raw)
 	}
 	if msg.err == nil {
-		t.Fatal("keysetMsg.err is nil; a corrupt vendors.toml must surface to the TUI")
+		t.Fatal("keysetMsg.err is nil; a corrupt providers.toml must surface to the TUI")
 	}
 	// keys still parsed; only the rotation lookup failed.
 	if len(msg.keys) != 1 {
@@ -2619,8 +2619,8 @@ func TestGroupByRun_NoManifestRunOrdersByEarliestJob(t *testing.T) {
 // Dynamic Workflows box instead); the plain job's does.
 func TestPartition_RunTaggedJobNotOnSpawnBoard(t *testing.T) {
 	tagged := subagent.Result{JobID: "tagged00", RunID: "run-1", Phase: "build", Label: "b1",
-		Vendor: "glm", Status: "running", StartedAt: "2026-05-01T00:00:00Z", LeadSessionID: "s"}
-	plain := subagent.Result{JobID: "plain000", Vendor: "kimi", Status: "done",
+		Provider: "glm", Status: "running", StartedAt: "2026-05-01T00:00:00Z", LeadSessionID: "s"}
+	plain := subagent.Result{JobID: "plain000", Provider: "kimi", Status: "done",
 		StartedAt: "2026-05-01T00:00:00Z", LeadSessionID: "s"}
 	runs := []subagent.WorkflowRun{{RunID: "run-1", Name: "sweep", SessionID: "s", StartedAt: "2026-05-01T00:00:00Z"}}
 	m := boardModel(t, nil, nil)
@@ -2744,7 +2744,7 @@ func endedMate(team, name, session string) teardown.Teammate {
 // plus any live teammates, stamping endedSeen so the card + rail recognize it.
 func endedBoard(t *testing.T, ended map[string]time.Time, tms []teardown.Teammate) Model {
 	t.Helper()
-	m := withVendors(t, userops.VendorView{Name: "glm"})
+	m := withProviders(t, userops.ProviderView{Name: "glm"})
 	m, _ = press(t, m, "tab")
 	m, _ = step(t, m, boardMsg{teammates: tms, endedSeen: ended, epoch: m.boardEpoch})
 	return m

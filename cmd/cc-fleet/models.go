@@ -25,17 +25,17 @@ type modelRole struct {
 // serialized (even when empty) so skill code can iterate without a presence check.
 type modelsEnvelope struct {
 	OK         bool        `json:"ok"`
-	Vendor     string      `json:"vendor"`
+	Provider   string      `json:"provider"`
 	Models     []modelRole `json:"models"`
 	Error      string      `json:"error,omitempty"`
 	ErrorCode  string      `json:"error_code,omitempty"`
 	Suggestion string      `json:"suggestion,omitempty"`
 }
 
-// Error codes for `cc-fleet models <vendor>` — kept stable so the skill can
+// Error codes for `cc-fleet models <provider>` — kept stable so the skill can
 // dispatch on them without prose parsing.
 const (
-	codeModelsVendorUnknown    = "VENDOR_UNKNOWN"
+	codeModelsProviderUnknown  = "PROVIDER_UNKNOWN"
 	codeModelsConfigLoadFailed = "CONFIG_LOAD_FAILED"
 )
 
@@ -43,10 +43,10 @@ func newModelsCmd() *cobra.Command {
 	var asJSON bool
 
 	cmd := &cobra.Command{
-		Use:   "models <vendor>",
+		Use:   "models <provider>",
 		Short: "List a provider's configured model roster (default/strong/fast)",
-		Long: `List the configured capability roster for <vendor>: the default, strong, and
-fast model slots from vendors.toml (a blank strong/fast slot follows the
+		Long: `List the configured capability roster for <provider>: the default, strong, and
+fast model slots from providers.toml (a blank strong/fast slot follows the
 default). This is intentionally NOT the full ` + "`/v1/models`" + ` catalog — that
 list is only used by the TUI model picker; ` + "`cc-fleet models`" + ` shows just the
 few configured slots so a provider with a large catalog can't flood an agent.
@@ -67,18 +67,18 @@ select a slot. Use --json for skill consumption.`,
 	return cmd
 }
 
-func runModels(vendor string, asJSON bool) error {
+func runModels(provider string, asJSON bool) error {
 	cfg, err := config.Load()
 	if err != nil {
-		return reportModelsErr(asJSON, vendor, codeModelsConfigLoadFailed,
-			fmt.Errorf("load vendors.toml: %w", err),
-			"check ~/.config/cc-fleet/vendors.toml")
+		return reportModelsErr(asJSON, provider, codeModelsConfigLoadFailed,
+			fmt.Errorf("load providers.toml: %w", err),
+			"check ~/.config/cc-fleet/providers.toml")
 	}
 
-	v, ok := cfg.Vendors[vendor]
+	v, ok := cfg.Providers[provider]
 	if !ok {
-		return reportModelsErr(asJSON, vendor, codeModelsVendorUnknown,
-			fmt.Errorf("vendor %q not in vendors.toml (run: cc-fleet list)", vendor),
+		return reportModelsErr(asJSON, provider, codeModelsProviderUnknown,
+			fmt.Errorf("provider %q not in providers.toml (run: cc-fleet list)", provider),
 			"cc-fleet list")
 	}
 
@@ -89,7 +89,7 @@ func runModels(vendor string, asJSON bool) error {
 	}
 
 	if asJSON {
-		env := modelsEnvelope{OK: true, Vendor: v.Name, Models: roster}
+		env := modelsEnvelope{OK: true, Provider: v.Name, Models: roster}
 		data, mErr := json.Marshal(env)
 		if mErr != nil {
 			fmt.Fprintln(os.Stderr, "models: marshal:", mErr)
@@ -112,11 +112,11 @@ func runModels(vendor string, asJSON bool) error {
 // non-zero so the skill never sees a half-line. Returns nil only because
 // the os.Exit call won't return — keeps the signature consistent with
 // reportSpawn / reportTeardown.
-func reportModelsErr(asJSON bool, vendor, code string, err error, suggestion string) error {
+func reportModelsErr(asJSON bool, provider, code string, err error, suggestion string) error {
 	if asJSON {
 		env := modelsEnvelope{
 			OK:         false,
-			Vendor:     vendor,
+			Provider:   provider,
 			Models:     []modelRole{},
 			Error:      err.Error(),
 			ErrorCode:  code,

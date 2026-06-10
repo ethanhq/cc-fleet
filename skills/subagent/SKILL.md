@@ -1,6 +1,6 @@
 ---
 name: subagent
-description: Run a one-shot or a flat parallel batch of vendor LLM subagents (headless `cc-fleet subagent`) for offloaded, specialized, or bulk work that returns a result. Use when fanning out N independent tasks, doing bulk edits or per-file analysis, calling a specialized model (DeepSeek / GLM / Kimi / Qwen / MiniMax), or offloading heavy one-shot work from the main session. NOT a long-lived collaborator you message back and forth (that is /cc-fleet:team); NOT a multi-phase pipeline with dependencies or resume (that is /cc-fleet:workflow); NOT trivial single-file work the main session should just do.
+description: Run a one-shot or a flat parallel batch of provider LLM subagents (headless `cc-fleet subagent`) for offloaded, specialized, or bulk work that returns a result. Use when fanning out N independent tasks, doing bulk edits or per-file analysis, calling a specialized model (DeepSeek / GLM / Kimi / Qwen / MiniMax), or offloading heavy one-shot work from the main session. NOT a long-lived collaborator you message back and forth (that is /cc-fleet:team); NOT a multi-phase pipeline with dependencies or resume (that is /cc-fleet:workflow); NOT trivial single-file work the main session should just do.
 ---
 
 # subagent — one-shot / batch / background provider subagent
@@ -50,7 +50,7 @@ Useful flags (full list in shared/cli-reference.md):
 
 ## Success envelope
 ```json
-{"ok":true,"result":"<answer text>","vendor":"deepseek","model":"deepseek-reasoner",
+{"ok":true,"result":"<answer text>","provider":"deepseek","model":"deepseek-reasoner",
  "duration_ms":12044,"usage":{"input_tokens":812,"output_tokens":1530},
  "total_cost_usd":0.0031,"session_id":"…"}
 ```
@@ -64,16 +64,16 @@ Useful flags (full list in shared/cli-reference.md):
 | `SUBAGENT_BAD_ARGS` | Missing/both `--prompt` & `--prompt-file`. | Fix the call (exactly one). |
 | `NO_DEFAULT_PROVIDER` | No provider arg and no default configured. | Apply the ask ladder (Choosing the provider). |
 | `DEFAULT_PROVIDER_DISABLED` | The default provider is disabled. | Apply the ask ladder; or the user re-enables via `cc-fleet edit <provider> --enable`. |
-| `UNKNOWN_VENDOR` / `VENDOR_DISABLED` | Provider not configured / disabled. | Tell the user to `cc-fleet add` / `cc-fleet edit <provider> --enable`. |
+| `UNKNOWN_PROVIDER` / `PROVIDER_DISABLED` | Provider not configured / disabled. | Tell the user to `cc-fleet add` / `cc-fleet edit <provider> --enable`. |
 | `FINGERPRINT_MISSING` | An existing `fingerprint.json` is corrupt (a fresh install uses the bundled recipe, so this is rare). | Run the **self-heal flow** in shared/troubleshooting.md, then retry. |
 | `FINGERPRINT_STALE` | No `claude` binary found anywhere (not a missing recipe). | Tell the user to install/fix Claude Code or PATH; the self-heal flow can't help. `cc-fleet doctor` confirms. |
 | `KEY_INVALID` | Provider 401/403. | Have the user rotate the key; do not retry blindly. |
 | `INSUFFICIENT_BALANCE` | Out of balance / quota (429/402 + balance signature). | Retry can't help — propose the next provider (ask ladder step 4) or fall back to native `Agent`; tell the user they're out of credit. |
 | `RATE_LIMITED` | Provider 429. | Wait briefly, retry once, or propose a switch (ask ladder step 4). |
 | `MODEL_NOT_FOUND` | Model name rejected (400). | `cc-fleet refresh <provider>` then retry, or drop `--model` to use the default. |
-| `VENDOR_UNREACHABLE` | Transport failure (only with `--probe`). | `cc-fleet doctor`; if urgent, fall back to native `Agent`. |
+| `PROVIDER_UNREACHABLE` | Transport failure (only with `--probe`). | `cc-fleet doctor`; if urgent, fall back to native `Agent`. |
 | `SUBAGENT_TIMEOUT` | Exceeded `--timeout`. | Real long task → raise `--timeout` (or use `--background`) and retry; suspected hang → switch provider / fall back (with user confirmation). |
-| `VENDOR_API_ERROR` | Other provider failure (5xx / overloaded). | Retry once or propose a switch. |
+| `PROVIDER_API_ERROR` | Other provider failure (5xx / overloaded). | Retry once or propose a switch. |
 | `CODEX_PROXY_UNAVAILABLE` | The codex conversion daemon could not start (no login, or the loopback port is held). | Tell the user: `cc-fleet codex login`, or free / change the port (`cc-fleet codex add --port <n>`). |
 | `CODEX_CLOUDFLARE_BLOCKED` | The ChatGPT backend's edge blocked this IP/client — not a key problem. | Switch network/IP or retry later; don't rotate credentials. |
 | `SUBAGENT_FAILED` | claude exited with no parseable result (or turn/budget exhaustion). | Inspect; retry or switch provider. |

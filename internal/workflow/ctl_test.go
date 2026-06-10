@@ -153,8 +153,8 @@ func TestLeafStopHoldsAndRestartResumes(t *testing.T) {
 	g := newGateLeaf(rec)
 	eng, vals, errs := ctlHarness(t, "wsl", 2, g.run, `
 return await parallel([
-    () => agent("a", {vendor: "v", label: "leaf-a"}),
-    () => agent("b", {vendor: "v", label: "leaf-b"}),
+    () => agent("a", {provider: "v", label: "leaf-a"}),
+    () => agent("b", {provider: "v", label: "leaf-b"}),
 ]);`)
 
 	a := jobByLabel(t, "leaf-a", "queued")
@@ -193,7 +193,7 @@ return await parallel([
 func TestLeafRestartInflight(t *testing.T) {
 	rec := &recorder{}
 	g := newGateLeaf(rec)
-	eng, vals, errs := ctlHarness(t, "wri", 2, g.run, `return await agent("a", {vendor: "v", label: "leaf-a"});`)
+	eng, vals, errs := ctlHarness(t, "wri", 2, g.run, `return await agent("a", {provider: "v", label: "leaf-a"});`)
 
 	a := jobByLabel(t, "leaf-a", "queued")
 	waitCalled(t, rec, "a")
@@ -227,7 +227,7 @@ func TestLeafStopSuccessWins(t *testing.T) {
 		ignoreCtx.Wait() // ignores its ctx: the kill cannot take effect
 		return subagent.Result{OK: true, Result: "survived"}
 	})
-	eng, vals, errs := ctlHarness(t, "wsw", 1, leaf, `return await agent("a", {vendor: "v", label: "leaf-a"});`)
+	eng, vals, errs := ctlHarness(t, "wsw", 1, leaf, `return await agent("a", {provider: "v", label: "leaf-a"});`)
 
 	a := jobByLabel(t, "leaf-a", "queued")
 	waitCalled(t, rec, "a")
@@ -254,8 +254,8 @@ func TestLeafDirectiveEdges(t *testing.T) {
 	g := newGateLeaf(rec)
 	eng, vals, errs := ctlHarness(t, "wde", 1, g.run, `
 return await parallel([
-    () => agent("a", {vendor: "v", label: "leaf-a"}),
-    () => agent("b", {vendor: "v", label: "leaf-b"}),
+    () => agent("a", {provider: "v", label: "leaf-a"}),
+    () => agent("b", {provider: "v", label: "leaf-b"}),
 ]);`)
 
 	a := jobByLabel(t, "leaf-a", "queued")
@@ -302,7 +302,7 @@ func TestRunStopReleasesHeldLeaf(t *testing.T) {
 	eng := newTestEngine(ctx, "wrh", 2)
 	errs := make(chan error, 1)
 	go func() {
-		_, err := eng.run("c.js", []byte(`return await agent("a", {vendor: "v", label: "leaf-a"});`), Options{})
+		_, err := eng.run("c.js", []byte(`return await agent("a", {provider: "v", label: "leaf-a"});`), Options{})
 		errs <- err
 	}()
 	a := jobByLabel(t, "leaf-a", "queued")
@@ -339,7 +339,7 @@ func TestCtlPollerEndToEnd(t *testing.T) {
 
 	dir := t.TempDir()
 	script := filepath.Join(dir, "w.js")
-	src := "const meta = {name: \"n\", description: \"d\"};\nreturn await agent(\"a\", {vendor: \"v\", label: \"leaf-a\"});\n"
+	src := "const meta = {name: \"n\", description: \"d\"};\nreturn await agent(\"a\", {provider: \"v\", label: \"leaf-a\"});\n"
 	if err := os.WriteFile(script, []byte(src), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -394,7 +394,7 @@ func TestResumeDropsStaleHold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	stale := subagent.MintQueuedLeaf(subagent.Request{Vendor: "v", RunID: run.RunID, Label: "stale"}, "m")
+	stale := subagent.MintQueuedLeaf(subagent.Request{Provider: "v", RunID: run.RunID, Label: "stale"}, "m")
 	subagent.HoldLeaf(stale)
 	if err := Execute(context.Background(), script, run.RunID, Options{}); err != nil {
 		t.Fatalf("execute: %v", err)
@@ -412,9 +412,9 @@ func TestPhaseStopParksAndRestartResumes(t *testing.T) {
 	g := newGateLeaf(rec)
 	eng, vals, errs := ctlHarness(t, "wpl", 2, g.run, `
 phase("p1");
-const a = agent("a", {vendor: "v", label: "leaf-a"});
+const a = agent("a", {provider: "v", label: "leaf-a"});
 const ra = await a;
-const b = await agent("b", {vendor: "v", label: "leaf-b"});
+const b = await agent("b", {provider: "v", label: "leaf-b"});
 return [ra, b];`)
 
 	a := jobByLabel(t, "leaf-a", "queued")

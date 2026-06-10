@@ -1,6 +1,6 @@
 # Contributing to cc-fleet
 
-Thanks for helping improve cc-fleet! PRs of every size are welcome — bug fixes, new vendor
+Thanks for helping improve cc-fleet! PRs of every size are welcome — bug fixes, new provider
 recipes, docs, tests, and features. This document is the contribution standard; please read
 it before opening a PR.
 

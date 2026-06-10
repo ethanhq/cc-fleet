@@ -34,7 +34,7 @@ func TestRealLeafIntegration(t *testing.T) {
 	}
 
 	// Fake `claude`: append the prompt it receives on stdin to a log, then emit a
-	// `claude --output-format json` result envelope — standing in for a vendor leaf.
+	// `claude --output-format json` result envelope — standing in for a provider leaf.
 	promptLog := filepath.Join(home, "prompts.log")
 	fakeClaude := filepath.Join(home, "claude")
 	fakeScript := "#!/bin/sh\ncat >> " + promptLog + "\n" +
@@ -44,12 +44,12 @@ func TestRealLeafIntegration(t *testing.T) {
 	}
 
 	// Point the fingerprint cache at the fake binary (ResolveBinaryPath keeps a valid
-	// cached path), and declare one enabled vendor.
+	// cached path), and declare one enabled provider.
 	fpJSON := `{"cc_version":"2.1.150","binary_path":"` + fakeClaude + `","env":{},"flags_template":[]}`
 	if err := os.WriteFile(filepath.Join(cfgDir, "fingerprint.json"), []byte(fpJSON), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	vendors := "version = 1\n\n[fake]\n" +
+	providers := "version = 1\n\n[fake]\n" +
 		"base_url = \"https://example.invalid/anthropic\"\n" +
 		"default_model = \"fake-model\"\n" +
 		"models_endpoint = \"https://example.invalid/v1/models\"\n" +
@@ -57,7 +57,7 @@ func TestRealLeafIntegration(t *testing.T) {
 		"secret_ref = \"fake.key\"\n" +
 		"enabled = true\n" +
 		"added_at = 2026-01-01T00:00:00Z\n"
-	if err := os.WriteFile(filepath.Join(cfgDir, "vendors.toml"), []byte(vendors), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(cfgDir, "providers.toml"), []byte(providers), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -67,10 +67,10 @@ func TestRealLeafIntegration(t *testing.T) {
 	wfSrc := `const meta = {name: "e2e", description: "real fake-claude leaves", phases: [{title: "map"}]};
 phase("map");
 const fan = (await parallel([
-    () => agent("alpha", {vendor: "fake", label: "a"}),
-    () => agent("beta", {vendor: "fake", label: "b"}),
+    () => agent("alpha", {provider: "fake", label: "a"}),
+    () => agent("beta", {provider: "fake", label: "b"}),
 ])).filter((r) => r !== null);
-const chain = await pipeline(["x"], (prev, item, i) => agent("stage1:" + item, {vendor: "fake"}));
+const chain = await pipeline(["x"], (prev, item, i) => agent("stage1:" + item, {provider: "fake"}));
 return {
     ok: fan.filter((r) => r === "LEAF_OK").length,
     chained: chain[0],

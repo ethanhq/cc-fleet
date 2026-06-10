@@ -2,9 +2,9 @@
 // answer the same way: did a request fail at the transport layer — before any
 // HTTP response came back?
 //
-// The vendor probe, Add's synchronous probe, and `cc-fleet refresh` all classify
-// a models-endpoint failure as either "vendor unreachable" (network/DNS/dial/TLS
-// /timeout) or "vendor answered, just unhappily" (any HTTP status). This package
+// The provider probe, Add's synchronous probe, and `cc-fleet refresh` all classify
+// a models-endpoint failure as either "provider unreachable" (network/DNS/dial/TLS
+// /timeout) or "provider answered, just unhappily" (any HTTP status). This package
 // is the one shared definition of that distinction.
 package neterr
 
@@ -25,7 +25,7 @@ import (
 //   - *net.OpError — dial / connect / TLS / read failure
 //
 // Any other error (including an *url.Error that did not time out, e.g. a bad
-// redirect) is treated as non-transport: the vendor is reachable and the
+// redirect) is treated as non-transport: the provider is reachable and the
 // failure is something the caller should surface differently. Detection is
 // structural (errors.Is / errors.As) so it survives wrapping, and IsTransport
 // reports false for a nil error.

@@ -60,7 +60,7 @@ func TestChoosePort(t *testing.T) {
 	}
 }
 
-// A port already assigned to a daemon-backed vendor in vendors.toml is never
+// A port already assigned to a daemon-backed provider in providers.toml is never
 // handed to a new provider (daemons start lazily, so the bind check alone would
 // let two providers collide on one port).
 func TestChoosePort_SkipsAssigned(t *testing.T) {
@@ -68,14 +68,14 @@ func TestChoosePort_SkipsAssigned(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 
 	base := fmt.Sprintf("http://127.0.0.1:%d/", defaultPortBase)
-	cfg := &config.Config{Version: config.SchemaVersion, Vendors: map[string]*config.Vendor{
+	cfg := &config.Config{Version: config.SchemaVersion, Providers: map[string]*config.Provider{
 		"codex": {
 			Name: "codex", BaseURL: base, ModelsEndpoint: base + "v1/models",
 			DefaultModel: "gpt-5.5", SecretBackend: config.CodexOAuthBackend,
 			SecretRef: config.CodexOAuthBackend, Enabled: true,
 		},
 	}}
-	p, err := config.VendorsPath()
+	p, err := config.ProvidersPath()
 	if err != nil {
 		t.Fatal(err)
 	}

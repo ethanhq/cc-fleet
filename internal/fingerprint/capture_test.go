@@ -180,11 +180,11 @@ func TestCapture_TemplatizeIdempotent(t *testing.T) {
 }
 
 // TestCapture_TemplatizeStripsSettings: a fingerprint accidentally captured from
-// a VENDOR teammate (not a native Agent probe) carries `--settings <vendor>.json`.
+// a PROVIDER teammate (not a native Agent probe) carries `--settings <provider>.json`.
 // templatize MUST strip it (like --model) — otherwise
-// that vendor's profile is frozen into the "native" template, lands first on every
-// later spawn, and the request hits the wrong vendor's endpoint carrying another
-// vendor's model → "model not found" for all non-matching vendors. A doubly-tainted
+// that provider's profile is frozen into the "native" template, lands first on every
+// later spawn, and the request hits the wrong provider's endpoint carrying another
+// provider's model → "model not found" for all non-matching providers. A doubly-tainted
 // capture (two --settings) must also be fully cleaned.
 func TestCapture_TemplatizeStripsSettings(t *testing.T) {
 	in := []string{
@@ -214,7 +214,7 @@ func TestCapture_TemplatizeStripsSettings(t *testing.T) {
 	}
 	for _, a := range got {
 		if a == "--settings" {
-			t.Fatal("--settings survived templatize — vendor profile would taint every spawn")
+			t.Fatal("--settings survived templatize — provider profile would taint every spawn")
 		}
 	}
 }

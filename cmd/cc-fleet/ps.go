@@ -42,10 +42,10 @@ Output: pretty table by default; --json emits {"ok":true,"teammates":[...]}
 with one entry per live teammate. An empty fleet returns ok=true with an
 empty array.
 
---check scans each teammate's tmux pane for vendor API-error signatures
+--check scans each teammate's tmux pane for provider API-error signatures
 (429 / 401 / out-of-balance / rate limit) and adds a "status" field
 (ok | error | unknown) plus "error_class" / "detail". Use it to detect a
-vendor teammate wedged in a retry loop — it never goes idle, so waiting on
+provider teammate wedged in a retry loop — it never goes idle, so waiting on
 an idle notification would block forever. The scan reports only the error
 CLASS, never raw pane text (which can contain key fragments).`,
 		Args:          cobra.NoArgs,
@@ -110,17 +110,17 @@ func runPs(asJSON, check bool) error {
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	if check {
-		fmt.Fprintln(w, "NAME\tTEAM\tPANE\tVENDOR\tMODEL\tPID\tSTATUS\tDETAIL")
+		fmt.Fprintln(w, "NAME\tTEAM\tPANE\tPROVIDER\tMODEL\tPID\tSTATUS\tDETAIL")
 		for _, t := range teammates {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
-				t.Name, t.Team, t.PaneID, t.Vendor, t.Model, t.PID, t.Status, t.Detail)
+				t.Name, t.Team, t.PaneID, t.Provider, t.Model, t.PID, t.Status, t.Detail)
 		}
 		return w.Flush()
 	}
-	fmt.Fprintln(w, "NAME\tTEAM\tPANE\tVENDOR\tMODEL\tPID")
+	fmt.Fprintln(w, "NAME\tTEAM\tPANE\tPROVIDER\tMODEL\tPID")
 	for _, t := range teammates {
 		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\n",
-			t.Name, t.Team, t.PaneID, t.Vendor, t.Model, t.PID)
+			t.Name, t.Team, t.PaneID, t.Provider, t.Model, t.PID)
 	}
 	return w.Flush()
 }

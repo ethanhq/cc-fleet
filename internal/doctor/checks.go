@@ -20,10 +20,10 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/version"
 )
 
-// vendorProbeTimeout caps each vendor's /v1/models probe in check 6 at
-// 3s/vendor so the total check time stays bounded even with several vendors
+// providerProbeTimeout caps each provider's /v1/models probe in check 6 at
+// 3s/provider so the total check time stays bounded even with several providers
 // configured.
-const vendorProbeTimeout = 3 * time.Second
+const providerProbeTimeout = 3 * time.Second
 
 // (There is deliberately no agent-teams detector here: agent-teams is a Claude
 // runtime state set by GrowthBook, invisible to an external process. The env
@@ -229,32 +229,32 @@ func CheckAttachedTmux() CheckResult {
 	return r
 }
 
-// CheckVendorKeys is check 6: every enabled vendor's /v1/models endpoint
-// answers within vendorProbeTimeout. Each vendor is probed with its own
-// 3s-bounded context so a slow vendor can't drag the rest down.
+// CheckProviderKeys is check 6: every enabled provider's /v1/models endpoint
+// answers within providerProbeTimeout. Each provider is probed with its own
+// 3s-bounded context so a slow provider can't drag the rest down.
 //
-// "Enabled" means Vendor.Enabled = true in vendors.toml. Disabled vendors are
-// reported in the detail but not probed. A missing vendors.toml is OK (returns
-// an empty Config) — the check just reports "no vendors configured".
-func CheckVendorKeys() CheckResult {
-	r := CheckResult{ID: 6, Title: "all configured vendors' keys reachable"}
+// "Enabled" means Provider.Enabled = true in providers.toml. Disabled providers are
+// reported in the detail but not probed. A missing providers.toml is OK (returns
+// an empty Config) — the check just reports "no providers configured".
+func CheckProviderKeys() CheckResult {
+	r := CheckResult{ID: 6, Title: "all configured providers' keys reachable"}
 	cfg, err := config.Load()
 	if err != nil {
 		r.Status = StatusFail
-		r.Detail = fmt.Sprintf("load vendors.toml: %s", err.Error())
+		r.Detail = fmt.Sprintf("load providers.toml: %s", err.Error())
 		return r
 	}
-	if len(cfg.Vendors) == 0 {
-		// No vendors configured — nothing to probe; surface as OK with a
+	if len(cfg.Providers) == 0 {
+		// No providers configured — nothing to probe; surface as OK with a
 		// hint so the user knows the check did consider its inputs.
 		r.Status = StatusOK
-		r.Detail = "no vendors configured"
+		r.Detail = "no providers configured"
 		return r
 	}
 
 	// Deterministic order so detail text doesn't churn between runs.
-	names := make([]string, 0, len(cfg.Vendors))
-	for n := range cfg.Vendors {
+	names := make([]string, 0, len(cfg.Providers))
+	for n := range cfg.Providers {
 		names = append(names, n)
 	}
 	sort.Strings(names)
@@ -264,12 +264,12 @@ func CheckVendorKeys() CheckResult {
 		failures []string
 	)
 	for _, name := range names {
-		v := cfg.Vendors[name]
+		v := cfg.Providers[name]
 		if !v.Enabled {
 			continue
 		}
 		probed++
-		ctx, cancel := context.WithTimeout(context.Background(), vendorProbeTimeout)
+		ctx, cancel := context.WithTimeout(context.Background(), providerProbeTimeout)
 		_, fetchErr := models.Fetch(ctx, v)
 		cancel()
 		if fetchErr != nil {
@@ -278,18 +278,18 @@ func CheckVendorKeys() CheckResult {
 	}
 	if probed == 0 {
 		r.Status = StatusOK
-		r.Detail = "no enabled vendors"
+		r.Detail = "no enabled providers"
 		return r
 	}
 	if len(failures) > 0 {
 		r.Status = StatusFail
-		r.Detail = fmt.Sprintf("%d/%d vendor(s) failed: %s",
+		r.Detail = fmt.Sprintf("%d/%d provider(s) failed: %s",
 			len(failures), probed, strings.Join(failures, "; "))
-		r.FixHint = "verify the vendor's API key (cc-fleet keyget <vendor>) and base_url"
+		r.FixHint = "verify the provider's API key (cc-fleet keyget <provider>) and base_url"
 		return r
 	}
 	r.Status = StatusOK
-	r.Detail = fmt.Sprintf("%d vendor(s) reachable", probed)
+	r.Detail = fmt.Sprintf("%d provider(s) reachable", probed)
 	return r
 }
 
@@ -578,8 +578,8 @@ func checkBundledFingerprintRuntime(r CheckResult) CheckResult {
 // CheckOAuthCredentials is check 9: does the main session have an OAuth /
 // subscription credential on disk? **Purely informational** — its purpose is to
 // report which auth the MAIN session can use, NOT to flag a problem. cc-fleet's
-// model is: main session on the OAuth subscription, vendor teammates on their
-// own API key. A main session that runs entirely on a vendor profile has no
+// model is: main session on the OAuth subscription, provider teammates on their
+// own API key. A main session that runs entirely on a provider profile has no
 // credentials.json and that is completely fine — so ABSENCE is reported as OK
 // (informational), never a WARN, and this check can never flip doctor's overall OK.
 func CheckOAuthCredentials() CheckResult {
@@ -607,9 +607,9 @@ func CheckOAuthCredentials() CheckResult {
 		}
 	}
 	// Absent is fine and NOT a warning: only a main session on an OAuth /
-	// subscription login needs this file; vendor teammates authenticate with
+	// subscription login needs this file; provider teammates authenticate with
 	// their own API key via apiKeyHelper.
 	r.Status = StatusOK
-	r.Detail = "no credentials.json (fine — only a main session on an OAuth/subscription login needs it; vendor teammates use their own API key)"
+	r.Detail = "no credentials.json (fine — only a main session on an OAuth/subscription login needs it; provider teammates use their own API key)"
 	return r
 }

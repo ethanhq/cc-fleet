@@ -201,7 +201,7 @@ func TestChatFixture_LengthStop(t *testing.T) {
 // with a key that does NOT match the generic pattern, exercising the exact-key
 // path) before it becomes an upstreamError.
 func TestOpenAIChatUpstream_CallConvertAndRedact(t *testing.T) {
-	const key = "raw-vendor-key-9999" // not an sk-/Bearer shape: only exact-match redaction catches it
+	const key = "raw-provider-key-9999" // not an sk-/Bearer shape: only exact-match redaction catches it
 	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer "+key {
 			w.WriteHeader(http.StatusBadRequest)

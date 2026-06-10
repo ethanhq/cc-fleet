@@ -1,7 +1,7 @@
 // Package tui implements the interactive terminal UI shown when cc-fleet is
 // run bare (no subcommand) from an interactive terminal. It is a thin
 // arrow-key front end over the same internal packages the subcommands use
-// (userops for vendor CRUD, teardown for teammate discovery) so the two never
+// (userops for provider CRUD, teardown for teammate discovery) so the two never
 // drift. It is gated behind a tty check in cmd/cc-fleet so pipes, CI, and
 // --json callers never block on the bubbletea event loop.
 package tui
@@ -46,7 +46,7 @@ const (
 	screenPickTemplate
 	screenForm
 	screenModelPick
-	screenKeys      // EDIT form → "Manage API keys →": per-vendor multi-key manager
+	screenKeys      // EDIT form → "Manage API keys →": per-provider multi-key manager
 	screenSetupTmux // first-run tmux setup nudge; shown before agent-teams/hub
 	screenSetup     // first-run agent-teams setup nudge; shown before the hub
 	screenCodexAuth // CLI-auth → codex: committing → consent → device-code login, modal-rendered
@@ -103,12 +103,12 @@ type Model struct {
 	width  int
 	height int
 
-	// Vendor data, loaded for the Model Providers list (the hub) and reused to seed the
-	// edit form. vendorCursor ranges over [0, len(vendors)]; the final index is
+	// Provider data, loaded for the Model Providers list (the hub) and reused to seed the
+	// edit form. providerCursor ranges over [0, len(providers)]; the final index is
 	// the trailing "+ Add provider…" row.
-	vendors      []userops.VendorView
-	vendorsErr   error
-	vendorCursor int
+	providers      []userops.ProviderView
+	providersErr   error
+	providerCursor int
 	// defaultProvider is the CONFIGURED default provider ("" = unset, then a sole
 	// enabled provider serves implicitly as "auto"). Drives the "default" label's
 	// configured/auto/disabled wording and whether `s` sets fresh vs switches.
@@ -255,7 +255,7 @@ type Model struct {
 	formMode formMode
 	editName string
 
-	// Model picker: models fetched from the vendor's models_endpoint to fill the
+	// Model picker: models fetched from the provider's models_endpoint to fill the
 	// default_model field. While loading, modelList is nil and modelsErr is nil;
 	// the picker view branches on those. modelFilter is the live type-to-narrow
 	// query; modelCursor indexes the FILTERED list, not modelList.
@@ -272,10 +272,10 @@ type Model struct {
 	// renders ONLY secrets.MaskKey. keyCursor ranges over [0, len(keys)] (the last
 	// index is the "+ Add key…" row). keyEditing is true while the password input
 	// is active; keyEditIdx is the entry being edited (-1 = adding). keyRotation
-	// mirrors the vendor's current strategy for the header + cycle.
+	// mirrors the provider's current strategy for the header + cycle.
 	keys        []secrets.KeyEntry
 	keyCursor   int
-	keyVendor   string
+	keyProvider string
 	keyInput    textinput.Model
 	keyEditIdx  int
 	keyEditing  bool
@@ -302,7 +302,7 @@ type Model struct {
 }
 
 // NewModel returns the initial model. It normally parks on the Model Providers list
-// (the hub) with loading=true so Init can kick off the vendor load. On a first
+// (the hub) with loading=true so Init can kick off the provider load. On a first
 // run where agent-teams looks unconfigured (and the user hasn't dismissed the
 // nudge), it instead opens on the agent-teams setup screen; the hub loads when
 // the user leaves setup via toList.
@@ -321,31 +321,31 @@ func NewModel() Model {
 	}
 }
 
-// Init satisfies tea.Model: load the vendor list so the home screen is
+// Init satisfies tea.Model: load the provider list so the home screen is
 // populated as soon as the program starts. On a setup screen there's nothing to
-// load yet — toList kicks off loadVendors when the user proceeds.
+// load yet — toList kicks off loadProviders when the user proceeds.
 func (m Model) Init() tea.Cmd {
 	if m.screen == screenSetup || m.screen == screenSetupTmux {
 		return nil
 	}
-	return loadVendors
+	return loadProviders
 }
 
 // ---------------------------------------------------------------------------
 // messages + commands
 // ---------------------------------------------------------------------------
 
-// vendorsMsg carries the result of a userops.List call. It opts into
+// providersMsg carries the result of a userops.List call. It opts into
 // screenOwnedAsyncMsg (owningScreen → screenList) so a late result arriving
-// after the user navigated away can't clobber m.loading / m.vendors /
-// m.vendorsErr — the vendor list only ever loads from screenList.
-type vendorsMsg struct {
-	vendors         []userops.VendorView
+// after the user navigated away can't clobber m.loading / m.providers /
+// m.providersErr — the provider list only ever loads from screenList.
+type providersMsg struct {
+	providers       []userops.ProviderView
 	defaultProvider string // the CONFIGURED default ("" = unset / auto)
 	err             error
 }
 
-func (vendorsMsg) owningScreen() screen { return screenList }
+func (providersMsg) owningScreen() screen { return screenList }
 
 // boardMsg carries one Agents Board refresh: the discovered teammates
 // (health + hidden annotated) and the async subagent jobs. It opts into
@@ -390,13 +390,13 @@ type opDoneMsg struct {
 	err  error
 }
 
-// loadVendors is a tea.Cmd (func() tea.Msg) that reads the vendor list.
-func loadVendors() tea.Msg {
+// loadProviders is a tea.Cmd (func() tea.Msg) that reads the provider list.
+func loadProviders() tea.Msg {
 	res, err := userops.List()
 	if err != nil {
-		return vendorsMsg{err: err}
+		return providersMsg{err: err}
 	}
-	return vendorsMsg{vendors: res.Vendors, defaultProvider: res.DefaultProvider}
+	return providersMsg{providers: res.Providers, defaultProvider: res.DefaultProvider}
 }
 
 // loadBoard returns a tea.Cmd that assembles a board refresh tagged with the
@@ -479,7 +479,7 @@ func synthesizeEnded(live []teardown.Teammate, meta map[string]sessiontitle.Meta
 			ended = append(ended, teardown.Teammate{
 				Name:          mr.Name,
 				Team:          rec.Team,
-				Vendor:        mr.Vendor,
+				Provider:      mr.Provider,
 				Model:         mr.Model,
 				SpawnTime:     mr.SpawnTime,
 				LeadSessionID: mr.LeadSessionID,
@@ -1125,21 +1125,21 @@ func loadTeamStatsCmd(t asTeam, cwdOf map[string]sessiontitle.Meta, nonce, epoch
 	}
 }
 
-func addVendorCmd(req userops.AddRequest) tea.Cmd {
+func addProviderCmd(req userops.AddRequest) tea.Cmd {
 	return func() tea.Msg {
 		_, err := userops.Add(req)
 		return opDoneMsg{verb: "add", name: req.Name, err: err}
 	}
 }
 
-func editVendorCmd(req userops.EditRequest) tea.Cmd {
+func editProviderCmd(req userops.EditRequest) tea.Cmd {
 	return func() tea.Msg {
 		_, err := userops.Edit(req)
 		return opDoneMsg{verb: "edit", name: req.Name, err: err}
 	}
 }
 
-func removeVendorCmd(name string) tea.Cmd {
+func removeProviderCmd(name string) tea.Cmd {
 	return func() tea.Msg {
 		_, err := userops.Remove(userops.RemoveRequest{Name: name})
 		return opDoneMsg{verb: "remove", name: name, err: err}
@@ -1181,7 +1181,7 @@ func codexRollbackCmd(name string, epoch int) tea.Cmd {
 	}
 }
 
-// modelsMsg carries the result of fetching a vendor's model list for the picker.
+// modelsMsg carries the result of fetching a provider's model list for the picker.
 // It implements screenOwnedAsyncMsg so a result arriving after the user has
 // left the picker is dropped — otherwise a stale modelList would leak into the
 // next picker visit.
@@ -1197,7 +1197,7 @@ func (modelsMsg) owningScreen() screen { return screenModelPick }
 // the picker in its loading state forever.
 const modelsFetchTimeout = 12 * time.Second
 
-// fetchModelsCmd fetches the vendor's model list off the Update goroutine and
+// fetchModelsCmd fetches the provider's model list off the Update goroutine and
 // reuses models.FetchWithKey (the same secrets-free core the spawn probe uses).
 // For an add the key is the one just typed into the form (not yet persisted);
 // for an edit it's read from disk via secrets.Keyget. Any error / empty result
@@ -1217,7 +1217,7 @@ func fetchModelsCmd(mode formMode, name, endpoint, apiKey string) tea.Cmd {
 	}
 }
 
-// keysetMsg carries the loaded key set + the vendor's current rotation strategy
+// keysetMsg carries the loaded key set + the provider's current rotation strategy
 // when entering the key manager (or reloading after a change). Owned by
 // screenKeys.
 type keysetMsg struct {
@@ -1243,23 +1243,23 @@ type rotationSetMsg struct {
 
 func (rotationSetMsg) owningScreen() screen { return screenKeys }
 
-// loadKeysetCmd reads the vendor's key set (LoadKeySet) and its current
-// key_rotation (from vendors.toml) off the Update goroutine. A config.Load
-// failure surfaces into keysetMsg.err so a corrupt vendors.toml is visible in
+// loadKeysetCmd reads the provider's key set (LoadKeySet) and its current
+// key_rotation (from providers.toml) off the Update goroutine. A config.Load
+// failure surfaces into keysetMsg.err so a corrupt providers.toml is visible in
 // the key manager instead of silently leaving rotation empty; the LoadKeySet
 // error (different on-disk file) takes precedence. Either error fails the load.
-func loadKeysetCmd(vendor string) tea.Cmd {
+func loadKeysetCmd(provider string) tea.Cmd {
 	return func() tea.Msg {
-		ks, err := secrets.LoadKeySet(vendor)
+		ks, err := secrets.LoadKeySet(provider)
 		rotation := ""
 		cfg, cErr := config.Load()
 		if cErr != nil {
 			// Take the LoadKeySet error if there is one; otherwise surface the
-			// config.Load error so the user sees the corrupt vendors.toml.
+			// config.Load error so the user sees the corrupt providers.toml.
 			if err == nil {
-				err = fmt.Errorf("load vendors.toml: %w", cErr)
+				err = fmt.Errorf("load providers.toml: %w", cErr)
 			}
-		} else if v, ok := cfg.Vendors[vendor]; ok {
+		} else if v, ok := cfg.Providers[provider]; ok {
 			rotation = v.KeyRotation
 		}
 		return keysetMsg{keys: ks, rotation: rotation, err: err}
@@ -1269,17 +1269,17 @@ func loadKeysetCmd(vendor string) tea.Cmd {
 // saveKeysetCmd persists a snapshot of the current key set. The snapshot is
 // copied so a later in-memory mutation can't change what this write commits.
 func (m Model) saveKeysetCmd() tea.Cmd {
-	vendor := m.keyVendor
+	provider := m.keyProvider
 	snapshot := cloneKeys(m.keys)
 	return func() tea.Msg {
-		return keysSavedMsg{err: secrets.SaveKeySet(vendor, snapshot)}
+		return keysSavedMsg{err: secrets.SaveKeySet(provider, snapshot)}
 	}
 }
 
 // setRotationCmd applies a new rotation strategy via userops.Edit.
-func setRotationCmd(vendor, next string) tea.Cmd {
+func setRotationCmd(provider, next string) tea.Cmd {
 	return func() tea.Msg {
-		_, err := userops.Edit(userops.EditRequest{Name: vendor, KeyRotation: &next})
+		_, err := userops.Edit(userops.EditRequest{Name: provider, KeyRotation: &next})
 		return rotationSetMsg{rotation: next, err: err}
 	}
 }
@@ -1307,10 +1307,10 @@ func nextRotation(cur string) string {
 // update
 // ---------------------------------------------------------------------------
 
-// Update is the single tea.Model entry point. Async results (vendorsMsg etc.)
+// Update is the single tea.Model entry point. Async results (providersMsg etc.)
 // are handled regardless of screen unless they implement screenOwnedAsyncMsg —
 // in that case Update drops the message when the user has navigated off the
-// owning screen, so e.g. a slow models-fetch result can't reach the vendor list
+// owning screen, so e.g. a slow models-fetch result can't reach the provider list
 // after the user esc'd back. Key handling dispatches on the active screen.
 // ctrl+c always quits.
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -1325,38 +1325,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		return m, nil
 
-	case vendorsMsg:
+	case providersMsg:
 		m.loading = false
 		// Remember which provider the cursor was on so a re-sort (e.g. after setting a
 		// default hoists it to the top) keeps focus on the SAME provider, not whatever
 		// now sits at that index. The Add row (cursor == len) stays positional.
 		var cursorName string
-		if m.vendorCursor < len(m.vendors) {
-			cursorName = m.vendors[m.vendorCursor].Name
+		if m.providerCursor < len(m.providers) {
+			cursorName = m.providers[m.providerCursor].Name
 		}
-		m.vendors = msg.vendors
+		m.providers = msg.providers
 		m.defaultProvider = msg.defaultProvider
 		// The default provider sorts to the top; the rest group by wire class (stable,
 		// so the name order within a class that List returns is preserved).
-		sort.SliceStable(m.vendors, func(i, j int) bool {
-			if m.vendors[i].Default != m.vendors[j].Default {
-				return m.vendors[i].Default
+		sort.SliceStable(m.providers, func(i, j int) bool {
+			if m.providers[i].Default != m.providers[j].Default {
+				return m.providers[i].Default
 			}
-			return vendorClassRank(m.vendors[i].Protocol) < vendorClassRank(m.vendors[j].Protocol)
+			return providerClassRank(m.providers[i].Protocol) < providerClassRank(m.providers[j].Protocol)
 		})
-		m.vendorsErr = msg.err
+		m.providersErr = msg.err
 		// Re-anchor to the remembered provider; fall back to the clamped index (incl.
-		// the trailing "+ Add provider…" row at len(vendors)).
+		// the trailing "+ Add provider…" row at len(providers)).
 		if cursorName != "" {
-			for i, v := range m.vendors {
+			for i, v := range m.providers {
 				if v.Name == cursorName {
-					m.vendorCursor = i
+					m.providerCursor = i
 					break
 				}
 			}
 		}
-		if m.vendorCursor > len(m.vendors) {
-			m.vendorCursor = len(m.vendors)
+		if m.providerCursor > len(m.providers) {
+			m.providerCursor = len(m.providers)
 		}
 		return m, nil
 
@@ -1632,7 +1632,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			line = fmt.Sprintf("%s %q failed: %v", msg.verb, msg.name, msg.err)
 			isErr = true
 		}
-		return m.withInfo(line, isErr), loadVendors
+		return m.withInfo(line, isErr), loadProviders
 
 	case codexAuthBegunMsg:
 		// Drop a begin from a prior login attempt (esc then re-enter starts a new
@@ -1672,7 +1672,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.codexCommittedName = ""
 			m.loading = false
 			m.screen = screenList
-			return m.withInfo(fmt.Sprintf("add %q: OK", name), false), loadVendors
+			return m.withInfo(fmt.Sprintf("add %q: OK", name), false), loadProviders
 		}
 		return m, codexAuthTickCmd(m.codexAuthEpoch, m.codexAuth.Interval())
 
@@ -1715,7 +1715,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// truth so the UI no longer disagrees with what apiKeyHelper will read.
 		if msg.err != nil {
 			m.keyErr = "save failed: " + msg.err.Error()
-			return m, loadKeysetCmd(m.keyVendor)
+			return m, loadKeysetCmd(m.keyProvider)
 		}
 		m.keyErr = ""
 		return m, nil
@@ -1765,10 +1765,10 @@ func (m Model) toList() (tea.Model, tea.Cmd) {
 	m.screen = screenList
 	m.loading = true
 	m.confirm = nil
-	return m, loadVendors
+	return m, loadProviders
 }
 
-// updateList drives the Model Providers hub. The cursor ranges over [0, len(vendors)];
+// updateList drives the Model Providers hub. The cursor ranges over [0, len(providers)];
 // the final index is the synthetic "+ Add provider…" row. →/enter edits the
 // highlighted provider (or opens the add wizard on the Add row); d deletes it
 // (via a confirm modal); tab switches to the Agents Board; q/esc quit.
@@ -1776,7 +1776,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.confirm != nil {
 		return m.updateConfirm(msg) // the remove-confirm modal traps focus until resolved
 	}
-	addRow := len(m.vendors) // index of the trailing "+ Add provider…" row
+	addRow := len(m.providers) // index of the trailing "+ Add provider…" row
 	switch msg.String() {
 	case "q", "esc":
 		m.quitting = true
@@ -1806,20 +1806,20 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.boardEpoch++
 		return m, tea.Batch(loadBoard(m.boardEpoch), boardTick(m.boardEpoch))
 	case "up", "k":
-		if m.vendorCursor > 0 {
-			m.vendorCursor--
+		if m.providerCursor > 0 {
+			m.providerCursor--
 		}
 	case "down", "j":
-		if m.vendorCursor < addRow {
-			m.vendorCursor++
+		if m.providerCursor < addRow {
+			m.providerCursor++
 		}
 	case "enter", "right":
-		if m.vendorCursor == addRow {
+		if m.providerCursor == addRow {
 			m.screen = screenPickTemplate
 			m.tmplCursor = 0
 			return m, nil
 		}
-		v := m.vendors[m.vendorCursor]
+		v := m.providers[m.providerCursor]
 		m.form = newEditForm(v)
 		m.formMode = modeEdit
 		m.editName = v.Name
@@ -1829,8 +1829,8 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		// No new ask while a mutation is in flight: its outcome modal would find this
 		// one open and be silently swallowed (withInfo never clobbers an open modal).
-		if m.vendorCursor < addRow && !m.loading { // a vendor row, not the Add row
-			v := m.vendors[m.vendorCursor]
+		if m.providerCursor < addRow && !m.loading { // a provider row, not the Add row
+			v := m.providers[m.providerCursor]
 			// State the real consequences per class: a codex remove tears down cc-fleet's
 			// own login (when unreferenced), never ~/.codex; a file-backend remove drops
 			// the secret + key store.
@@ -1841,15 +1841,15 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if m.defaultProvider == v.Name {
 				prompt += " It is the default provider — also clears the default."
 			}
-			return m.openConfirm(confirmRemoveVendor, v.Name, prompt)
+			return m.openConfirm(confirmRemoveProvider, v.Name, prompt)
 		}
 	case "s":
 		// Set / switch / clear the default provider. Clearing the pinned row is always
 		// allowed (even if disabled); SETTING a disabled provider is refused — it can't
 		// serve as the default. A fresh set acts immediately; switching away from a
 		// pinned default confirms first.
-		if m.vendorCursor < addRow && !m.loading {
-			v := m.vendors[m.vendorCursor]
+		if m.providerCursor < addRow && !m.loading {
+			v := m.providers[m.providerCursor]
 			switch {
 			case m.defaultProvider == v.Name:
 				return m.openConfirm(confirmUnsetDefault, v.Name, "Clear "+v.Name+" as the default provider?")
@@ -1914,7 +1914,7 @@ func (m Model) updateSpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // updateAsProjects (L0, >1 project): ↑/↓ choose a project (the right pane previews its
-// sessions), →/⏎ descend; esc → Vendors (← clamps at this top level).
+// sessions), →/⏎ descend; esc → Providers (← clamps at this top level).
 func (m Model) updateAsProjects(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	projects := m.asProjects()
 	switch msg.String() {
@@ -2279,7 +2279,7 @@ func (m Model) focusMateIO() (tea.Model, tea.Cmd) {
 
 // asAscend climbs one level: entity → boxes, boxes → sessions (multi-session project) or
 // projects (multi-project), sessions → projects. At the board's TOP level there's nowhere
-// to climb: exitAtTop leaves for Vendors (esc) vs stays put (←) — so repeated ← can't fall
+// to climb: exitAtTop leaves for Providers (esc) vs stays put (←) — so repeated ← can't fall
 // out of the board (mirror wfAscend).
 func (m Model) asAscend(exitAtTop bool) (tea.Model, tea.Cmd) {
 	projects := m.asProjects()
@@ -3195,14 +3195,14 @@ func (m Model) updatePickTemplate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // uniqueName returns base, or the first free "<base>-N" when base is already a
 // configured provider — a prefill convenience for adding a second provider of one
-// type. The real uniqueness guard stays addLocked's VENDOR_EXISTS check; a blank
+// type. The real uniqueness guard stays addLocked's PROVIDER_EXISTS check; a blank
 // base (a Custom entry) is returned unchanged.
 func (m Model) uniqueName(base string) string {
 	if base == "" {
 		return ""
 	}
-	taken := make(map[string]bool, len(m.vendors))
-	for _, v := range m.vendors {
+	taken := make(map[string]bool, len(m.providers))
+	for _, v := range m.providers {
 		taken[v.Name] = true
 	}
 	if !taken[base] {
@@ -3265,7 +3265,7 @@ func (m Model) enterCodexFlow() (tea.Model, tea.Cmd) {
 // codexDefaultTaken reports whether an existing codex provider already claims the
 // default (cli-ride-capable) credential, so a new codex must get its own login.
 func (m Model) codexDefaultTaken() bool {
-	for _, v := range m.vendors {
+	for _, v := range m.providers {
 		if v.Protocol == config.ProtocolCodexOAuth && codexproxy.IsDefaultCredentialRef(v.SecretRef) {
 			return true
 		}
@@ -3273,9 +3273,9 @@ func (m Model) codexDefaultTaken() bool {
 	return false
 }
 
-// vendorClassRank and vendorClassHeader group the providers list by wire class:
+// providerClassRank and providerClassHeader group the providers list by wire class:
 // Anthropic-protocol (0) < OpenAI-protocol (1) < CLI auth (2).
-func vendorClassRank(protocol string) int {
+func providerClassRank(protocol string) int {
 	switch protocol {
 	case config.ProtocolOpenAIChat, config.ProtocolOpenAIResponses:
 		return 1
@@ -3286,7 +3286,7 @@ func vendorClassRank(protocol string) int {
 	}
 }
 
-func vendorClassHeader(protocol string) string {
+func providerClassHeader(protocol string) string {
 	switch protocol {
 	case config.ProtocolOpenAIChat, config.ProtocolOpenAIResponses:
 		return "OpenAI-protocol"
@@ -3356,7 +3356,7 @@ func (m Model) updateCodexAuth(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.diag.Logf("tui: codex auth → committing (source choice %d)", m.codexSourceCursor)
 			m.codexAuthStage = codexAuthCommitting
 			m.loading = true
-			return m, addVendorCmd(req)
+			return m, addProviderCmd(req)
 		}
 	case codexAuthConsent:
 		switch msg.String() {
@@ -3472,13 +3472,13 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.toList()
 	}
 	// Enter (or →, the descend key) on the "Manage API keys →" action row (edit
-	// form only) opens the per-vendor key manager and loads its key set. Not while a
+	// form only) opens the per-provider key manager and loads its key set. Not while a
 	// submit is in flight: a key confirm opened in that window would swallow the
 	// pending outcome modal (withInfo never clobbers an open modal).
 	if (msg.String() == "enter" || msg.String() == "right") && m.formMode == modeEdit &&
 		m.form.focusedKey() == "manage_keys" && !m.loading {
 		m.screen = screenKeys
-		m.keyVendor = m.editName
+		m.keyProvider = m.editName
 		m.keyCursor = 0
 		m.keyEditing = false
 		m.keyErr = ""
@@ -3500,7 +3500,7 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.modelFilter = ""
 		return m, nil
 	}
-	// Other providers hit their models_endpoint; custom vendors without one fall
+	// Other providers hit their models_endpoint; custom providers without one fall
 	// through to manual text entry.
 	if msg.String() == "enter" && isModelSlotKey(m.form.focusedKey()) &&
 		m.form.value("models_endpoint") != "" {
@@ -3529,7 +3529,7 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // updateModelPick drives the model picker. Enter accepts the highlighted model
 // id into the form's default_model field; esc (or an empty / failed fetch)
 // returns to the form so the user can type the id manually — the required
-// fallback when the vendor list is unavailable. Printable input narrows the
+// fallback when the provider list is unavailable. Printable input narrows the
 // list (type-to-filter), so vim j/k no longer navigate — letters are filter
 // input and the arrow keys move the cursor.
 func (m Model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -3719,7 +3719,7 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.keyCursor++
 		}
 	case "t":
-		return m, setRotationCmd(m.keyVendor, nextRotation(m.keyRotation))
+		return m, setRotationCmd(m.keyProvider, nextRotation(m.keyRotation))
 	case "a":
 		return m.startAddKey()
 	case "enter":
@@ -3742,7 +3742,7 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			prompt := "Delete key " + m.keyLabel(idx) + "?"
 			danger := false
 			if m.keys[idx].Enabled && countEnabled(m.keys) == 1 {
-				prompt += " It is the last enabled key — " + m.keyVendor + " will have no usable key."
+				prompt += " It is the last enabled key — " + m.keyProvider + " will have no usable key."
 				danger = true
 			}
 			// Built inline: the captured key value in arg is the delete's identity check
@@ -3789,7 +3789,7 @@ func (m Model) updateKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		if m.keyEditIdx < 0 {
-			// Add (the first add on a legacy vendor triggers the migration when
+			// Add (the first add on a legacy provider triggers the migration when
 			// SaveKeySet writes keys.json — keys[0] was seeded from the legacy key).
 			m.keys = append(m.keys, secrets.KeyEntry{Key: val, Enabled: true})
 			m.keyCursor = len(m.keys) - 1
@@ -3849,7 +3849,7 @@ func (m Model) keyLabel(idx int) string {
 }
 
 // submitAdd dispatches the add form by provider class. Required-field gaps are
-// surfaced inline (no command) so the user can fix them in place; vendor-side
+// surfaced inline (no command) so the user can fix them in place; provider-side
 // errors (bad key, unreachable) come back via opDoneMsg.
 func (m Model) submitAdd() (tea.Model, tea.Cmd) {
 	switch m.addProtocol {
@@ -3899,7 +3899,7 @@ func (m Model) submitAddOpenAI() (tea.Model, tea.Cmd) {
 	}
 	m.form.err = ""
 	m.loading = true
-	return m, addVendorCmd(userops.AddRequest{
+	return m, addProviderCmd(userops.AddRequest{
 		Name:           name,
 		BaseURL:        fmt.Sprintf("http://127.0.0.1:%d/", port),
 		ModelsEndpoint: modelsEndpoint,
@@ -3931,7 +3931,7 @@ func (m Model) submitAddCodex() (tea.Model, tea.Cmd) {
 	}
 	// Validate the name up front: a codex add may start a device login before
 	// userops.Add runs, so reject a bad name here rather than authorize then fail.
-	if err := ids.ValidateVendorName(name); err != nil {
+	if err := ids.ValidateProviderName(name); err != nil {
 		m.form.err = err.Error()
 		return m, nil
 	}
@@ -3975,7 +3975,7 @@ func (m Model) submitAddCodex() (tea.Model, tea.Cmd) {
 	case "own":
 		// cc-fleet already has its own login for this credential — reuse, no prompt.
 		m.loading = true
-		return m, addVendorCmd(req)
+		return m, addProviderCmd(req)
 	case "cli-ride":
 		// A codex subscription is signed in on the system; let the user reuse it or log
 		// in separately rather than silently riding ~/.codex. The choice is made before
@@ -3988,7 +3988,7 @@ func (m Model) submitAddCodex() (tea.Model, tea.Cmd) {
 		m.codexSourceCursor = 0
 		return m, nil
 	default: // "none" — no source; commit the row, then log in
-		// Commit the provider row (vendors lock) BEFORE the login writes its token (token
+		// Commit the provider row (providers lock) BEFORE the login writes its token (token
 		// lock), so a concurrent remove's referenced-check always sees the committed row
 		// and never unlinks the fresh login. opDoneMsg routes to the login once the row
 		// is in; abandoning the login rolls the row back. The committing stage owns the
@@ -3999,7 +3999,7 @@ func (m Model) submitAddCodex() (tea.Model, tea.Cmd) {
 		m.diag.Logf("tui: codex auth → committing (no source)")
 		m.codexAuthStage = codexAuthCommitting
 		m.loading = true
-		return m, addVendorCmd(req)
+		return m, addProviderCmd(req)
 	}
 }
 
@@ -4024,7 +4024,7 @@ func (m Model) submitAddAnthropic() (tea.Model, tea.Cmd) {
 
 	m.form.err = ""
 	m.loading = true
-	return m, addVendorCmd(userops.AddRequest{
+	return m, addProviderCmd(userops.AddRequest{
 		Name:           name,
 		BaseURL:        baseURL,
 		ModelsEndpoint: modelsEndpoint,
@@ -4061,7 +4061,7 @@ func (m Model) submitEdit() (tea.Model, tea.Cmd) {
 	// upstream_url, codex edits neither (loopback/internal), others edit base_url.
 	required := map[string]string{"Default model": defaultModel}
 	order := []string{"Default model"}
-	switch m.addProtocol { // set to the edited vendor's protocol on edit entry
+	switch m.addProtocol { // set to the edited provider's protocol on edit entry
 	case config.ProtocolOpenAIChat, config.ProtocolOpenAIResponses:
 		upstream := m.form.value("upstream_url")
 		models := m.form.value("models_endpoint")
@@ -4084,7 +4084,7 @@ func (m Model) submitEdit() (tea.Model, tea.Cmd) {
 	}
 	m.form.err = ""
 	m.loading = true
-	return m, editVendorCmd(req)
+	return m, editProviderCmd(req)
 }
 
 // combine1M folds a model slot's bare id and its 1M toggle into the stored id: a

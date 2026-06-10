@@ -90,23 +90,23 @@ git clone https://github.com/ethanhq/cc-fleet.git && cd cc-fleet && make install
 cc-fleet
 ```
 
-在 TUI 里注册一个 vendor —— 填名字、Anthropic 兼容的 base URL、models 端点、默认模型，并粘贴
+在 TUI 里注册一个 provider —— 填名字、Anthropic 兼容的 base URL、models 端点、默认模型，并粘贴
 API key。key 会以 `0600` 权限写入 `~/.config/cc-fleet/secrets/`，**绝不**经过 argv 或 shell 历史。
 
-<p align="center"><img src="docs/assets/tui-add-vendor.png" alt="cc-fleet TUI — add vendor form" width="760" /></p>
+<p align="center"><img src="docs/assets/tui-add-provider.png" alt="cc-fleet TUI — add provider form" width="760" /></p>
 
-配置目录树在首次保存时自动创建，无需单独执行 init 步骤。TUI 还会列出已有的 vendor，支持编辑，以及
-为同一个 vendor 管理多把 key。
+配置目录树在首次保存时自动创建，无需单独执行 init 步骤。TUI 还会列出已有的 provider，支持编辑，以及
+为同一个 provider 管理多把 key。
 
-<p align="center"><img src="docs/assets/tui-vendors.png" alt="cc-fleet TUI — vendor list" width="760" /></p>
+<p align="center"><img src="docs/assets/tui-providers.png" alt="cc-fleet TUI — provider list" width="760" /></p>
 
 按 `tab` 切到 **Agents Board** 看板 —— 它按 session → team 分组显示所有存活的 teammate，包含
-vendor、模型、pane、PID、健康状态、是否隐藏，以及 subagent 任务列表。在这里可以隐藏（`h`）/
+provider、模型、pane、PID、健康状态、是否隐藏，以及 subagent 任务列表。在这里可以隐藏（`h`）/
 显示（`s`）teammate 的 pane，或刷新（`r`）。
 
 <p align="center"><img src="docs/assets/tui-agent-status.png" alt="cc-fleet TUI — Agents Board" width="760" /></p>
 
-注册好至少一个 vendor 后，直接用自然语言和 Claude Code 说就行。skill 会解读你的请求并决定执行方式 ——
+注册好至少一个 provider 后，直接用自然语言和 Claude Code 说就行。skill 会解读你的请求并决定执行方式 ——
 共有两种执行模式。
 
 ### Teammate 模式 —— 长期存活、加入你团队的第三方模型 worker
@@ -143,7 +143,7 @@ tmux new-session -s cc-fleet
 
 > *"用 deepseek 总结这个 2000 行的日志文件。"*
 
-`cc-fleet subagent <vendor>` 以 headless 方式调用第三方模型，同步返回结果 —— **无 pane、无
+`cc-fleet subagent <provider>` 以 headless 方式调用第三方模型，同步返回结果 —— **无 pane、无
 team、也不需要 agent-teams**。最适合一次性分析，以及把互不依赖的任务批量并行展开。
 
 | 参数 | 用途 |
@@ -165,7 +165,7 @@ cc-fleet run deepseek                          # 在 DeepSeek 上开一个交互
 cc-fleet run deepseek --dangerously-skip-permissions
 ```
 
-`cc-fleet run <vendor>` 直接把你带进一个交互式 Claude Code 会话，后端 LLM 换成该第三方模型 —— 还是你
+`cc-fleet run <provider>` 直接把你带进一个交互式 Claude Code 会话，后端 LLM 换成该第三方模型 —— 还是你
 熟悉的 `claude`，只是跑在 DeepSeek / GLM / Qwen / … 上、用第三方模型的 key 计费。日常自己的 coding 也可
 以用更便宜或不同司法辖区的模型，而不只是用来委派任务。`--model` 覆盖默认模型；`--permission-mode` /
 `--dangerously-skip-permissions` 设定权限模式。**无需 tmux、无需 agent-teams** —— 一个终端就够。
@@ -208,7 +208,7 @@ claude plugin install cc-fleet@ethanhq
 
 ## 参与贡献
 
-非常欢迎 PR —— bug 修复、新 vendor 配方、文档、测试、功能都好。请先阅读
+非常欢迎 PR —— bug 修复、新 provider 配方、文档、测试、功能都好。请先阅读
 **[贡献指南](CONTRIBUTING.md)**；几条基本规则：
 
 - **界面改动和 bug 修复**需要在 PR 中**附截图或 GIF**。

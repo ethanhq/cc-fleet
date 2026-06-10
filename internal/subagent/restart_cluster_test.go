@@ -61,7 +61,7 @@ func TestFinalizeRunLeaves(t *testing.T) {
 	}
 	const runID = "11111111-1111-1111-1111-111111111111"
 	write := func(jobID, rid, status string, withResult bool) {
-		meta := jobMeta{JobID: jobID, RunID: rid, Vendor: "glm", Model: "m", Status: status,
+		meta := jobMeta{JobID: jobID, RunID: rid, Provider: "glm", Model: "m", Status: status,
 			StartedAt: time.Now().Format(time.RFC3339)}
 		data, _ := json.Marshal(meta)
 		if werr := os.WriteFile(filepath.Join(dir, jobID+".json"), data, 0o600); werr != nil {

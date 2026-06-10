@@ -15,9 +15,9 @@ import (
 func sampleCache(now time.Time) *Cache {
 	return &Cache{
 		Version: CacheVersion,
-		Vendors: map[string]*VendorCache{
+		Providers: map[string]*ProviderCache{
 			"deepseek": {
-				Vendor:    "deepseek",
+				Provider:  "deepseek",
 				Endpoint:  "https://api.deepseek.com/v1/models",
 				FetchedAt: now,
 				Models: []Model{
@@ -26,7 +26,7 @@ func sampleCache(now time.Time) *Cache {
 				},
 			},
 			"kimi": {
-				Vendor:    "kimi",
+				Provider:  "kimi",
 				Endpoint:  "https://api.moonshot.cn/anthropic/v1/models",
 				FetchedAt: now,
 				Models: []Model{
@@ -88,11 +88,11 @@ func TestLoad_MissingFile_ReturnsEmpty(t *testing.T) {
 	if got.Version != CacheVersion {
 		t.Fatalf("Version = %d, want %d", got.Version, CacheVersion)
 	}
-	if got.Vendors == nil {
-		t.Fatalf("Vendors map is nil; want empty initialised map")
+	if got.Providers == nil {
+		t.Fatalf("Providers map is nil; want empty initialised map")
 	}
-	if len(got.Vendors) != 0 {
-		t.Fatalf("Vendors len = %d, want 0", len(got.Vendors))
+	if len(got.Providers) != 0 {
+		t.Fatalf("Providers len = %d, want 0", len(got.Providers))
 	}
 }
 
@@ -103,8 +103,8 @@ func TestLoadFromPath_MissingFile_ReturnsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadFromPath(missing) = err %v, want nil", err)
 	}
-	if got == nil || got.Vendors == nil {
-		t.Fatalf("got = %+v, want non-nil Cache with non-nil Vendors", got)
+	if got == nil || got.Providers == nil {
+		t.Fatalf("got = %+v, want non-nil Cache with non-nil Providers", got)
 	}
 }
 
@@ -160,8 +160,8 @@ func TestSave_OverwriteExisting(t *testing.T) {
 		t.Fatalf("first Save: %v", err)
 	}
 	c2 := sampleCache(time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC))
-	c2.Vendors["glm"] = &VendorCache{
-		Vendor:    "glm",
+	c2.Providers["glm"] = &ProviderCache{
+		Provider:  "glm",
 		Endpoint:  "https://open.bigmodel.cn/api/anthropic/v1/models",
 		FetchedAt: time.Date(2026, 5, 25, 0, 0, 0, 0, time.UTC),
 		Models:    []Model{{ID: "glm-4.6"}},
@@ -173,11 +173,11 @@ func TestSave_OverwriteExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if _, ok := got.Vendors["glm"]; !ok {
-		t.Fatalf("Vendors missing glm after overwrite; got keys %v", vendorKeys(got))
+	if _, ok := got.Providers["glm"]; !ok {
+		t.Fatalf("Providers missing glm after overwrite; got keys %v", providerKeys(got))
 	}
-	if len(got.Vendors) != 3 {
-		t.Fatalf("Vendors len = %d, want 3", len(got.Vendors))
+	if len(got.Providers) != 3 {
+		t.Fatalf("Providers len = %d, want 3", len(got.Providers))
 	}
 }
 
@@ -196,7 +196,7 @@ func TestSave_JSONShape(t *testing.T) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	for _, key := range []string{"version", "vendors"} {
+	for _, key := range []string{"version", "providers"} {
 		if _, ok := raw[key]; !ok {
 			t.Fatalf("on-disk JSON missing %q field; got %v", key, rawKeys(raw))
 		}
@@ -207,20 +207,20 @@ func TestIsStale(t *testing.T) {
 	now := time.Now()
 	cases := []struct {
 		name string
-		vc   *VendorCache
+		vc   *ProviderCache
 		want bool
 	}{
 		{"nil", nil, true},
-		{"zero fetched_at", &VendorCache{}, true},
-		{"fresh (just now)", &VendorCache{FetchedAt: now}, false},
-		{"fresh (1d ago)", &VendorCache{FetchedAt: now.Add(-24 * time.Hour)}, false},
+		{"zero fetched_at", &ProviderCache{}, true},
+		{"fresh (just now)", &ProviderCache{FetchedAt: now}, false},
+		{"fresh (1d ago)", &ProviderCache{FetchedAt: now.Add(-24 * time.Hour)}, false},
 		// Edge: exactly StaleAfter old is considered stale (>=).
-		{"exact boundary", &VendorCache{FetchedAt: now.Add(-StaleAfter)}, true},
+		{"exact boundary", &ProviderCache{FetchedAt: now.Add(-StaleAfter)}, true},
 		// 1s younger than the boundary still counts as fresh.
-		{"just inside window", &VendorCache{FetchedAt: now.Add(-StaleAfter + time.Second)}, false},
+		{"just inside window", &ProviderCache{FetchedAt: now.Add(-StaleAfter + time.Second)}, false},
 		// 1s past the boundary is stale.
-		{"just past boundary", &VendorCache{FetchedAt: now.Add(-StaleAfter - time.Second)}, true},
-		{"very old", &VendorCache{FetchedAt: now.Add(-365 * 24 * time.Hour)}, true},
+		{"just past boundary", &ProviderCache{FetchedAt: now.Add(-StaleAfter - time.Second)}, true},
+		{"very old", &ProviderCache{FetchedAt: now.Add(-365 * 24 * time.Hour)}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -231,9 +231,9 @@ func TestIsStale(t *testing.T) {
 	}
 }
 
-func vendorKeys(c *Cache) []string {
-	out := make([]string, 0, len(c.Vendors))
-	for k := range c.Vendors {
+func providerKeys(c *Cache) []string {
+	out := make([]string, 0, len(c.Providers))
+	for k := range c.Providers {
 		out = append(out, k)
 	}
 	return out

@@ -130,7 +130,7 @@ func (h *httpSSE) event(name string, data any) error {
 }
 
 // anthropicErrorFor maps a classified upstream failure to an Anthropic error
-// (status, type, message). The status is what vendorclass / the claude client see.
+// (status, type, message). The status is what providerclass / the claude client see.
 func anthropicErrorFor(ue *upstreamError) (int, string, string) {
 	if ue == nil {
 		return http.StatusBadGateway, "api_error", "codex upstream error"

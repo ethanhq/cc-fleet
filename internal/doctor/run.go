@@ -34,7 +34,7 @@ func RunAll(fix bool) DoctorResult {
 		CheckTmuxInstalled,
 		CheckClaudeBinary,
 		CheckAttachedTmux,
-		CheckVendorKeys,
+		CheckProviderKeys,
 		CheckSkillInstalled,
 		CheckFingerprint,
 		CheckOAuthCredentials,

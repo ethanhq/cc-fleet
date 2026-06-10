@@ -17,10 +17,10 @@ import (
 )
 
 // e2eEnv is the fully-wired real-leaf sandbox: an isolated HOME/XDG config dir, a fake
-// `claude` binary reachable through the fingerprint cache, and a `[fake]` vendor in
-// vendors.toml. The engine drives the REAL subagent.Run (runLeaf is NOT overridden) so
+// `claude` binary reachable through the fingerprint cache, and a `[fake]` provider in
+// providers.toml. The engine drives the REAL subagent.Run (runLeaf is NOT overridden) so
 // every leaf shells out to the fake claude over stdin, exactly as production would shell
-// out to a vendor. Everything here keys off the PROMPT, never a clock/PID/random, so the
+// out to a provider. Everything here keys off the PROMPT, never a clock/PID/random, so the
 // whole suite is deterministic under -race.
 type e2eEnv struct {
 	home      string
@@ -62,7 +62,7 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"%s","num
 `
 
 // newE2EEnv builds the sandbox and points the runtime at the fake claude. It mirrors
-// integration_unix_test.go's wiring exactly (fingerprint.json + vendors.toml), adding the
+// integration_unix_test.go's wiring exactly (fingerprint.json + providers.toml), adding the
 // PROMPT_LOG env the fake appends to. The returned env's promptLog is read back by tests.
 func newE2EEnv(t *testing.T) *e2eEnv {
 	t.Helper()
@@ -90,7 +90,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	if err := os.WriteFile(filepath.Join(cfgDir, "fingerprint.json"), []byte(fpJSON), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	vendors := "version = 1\n\n[fake]\n" +
+	providers := "version = 1\n\n[fake]\n" +
 		"base_url = \"https://example.invalid/anthropic\"\n" +
 		"default_model = \"fake-model\"\n" +
 		"models_endpoint = \"https://example.invalid/v1/models\"\n" +
@@ -98,7 +98,7 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 		"secret_ref = \"fake.key\"\n" +
 		"enabled = true\n" +
 		"added_at = 2026-01-01T00:00:00Z\n"
-	if err := os.WriteFile(filepath.Join(cfgDir, "vendors.toml"), []byte(vendors), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(cfgDir, "providers.toml"), []byte(providers), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return &e2eEnv{home: home, cfgDir: cfgDir, promptLog: promptLog, fakePath: fakeClaude}
@@ -150,22 +150,22 @@ phase("map");
 
 // parallel fan-out: two leaves run concurrently; results collected in order.
 const fan = await parallel([
-    () => agent("alpha", {vendor: "fake", label: "a"}),
-    () => agent("beta", {vendor: "fake", label: "b"}),
+    () => agent("alpha", {provider: "fake", label: "a"}),
+    () => agent("beta", {provider: "fake", label: "b"}),
 ]);
 
 // no-barrier pipeline: one item through one stage.
-const chain = await pipeline(["gamma"], (prev, item, i) => agent("stage:" + item, {vendor: "fake", label: "p"}));
+const chain = await pipeline(["gamma"], (prev, item, i) => agent("stage:" + item, {provider: "fake", label: "p"}));
 
 // bounded for...break loop: run a leaf per item, stop early at the 2nd.
 const loop = [];
 for (const i of ["one", "two", "three"]) {
-    loop.push(await agent("loop:" + i, {vendor: "fake"}));
+    loop.push(await agent("loop:" + i, {provider: "fake"}));
     if (loop.length >= 2) break;
 }
 
 // schema leaf with a NESTED schema; the fake returns a conforming object.
-const shaped = await agent("produce a report", {vendor: "fake", label: "schema", schema: {
+const shaped = await agent("produce a report", {provider: "fake", label: "schema", schema: {
     type: "object",
     required: ["summary", "items", "meta"],
     properties: {
@@ -185,10 +185,10 @@ phase("reduce");
 const child = await workflow("CHILD_PATH", {topic: "delta"});
 
 // background leaf: launched unawaited so it runs alongside the worktree leaf below.
-const bg = agent("background-epsilon", {vendor: "fake", label: "bg"});
+const bg = agent("background-epsilon", {provider: "fake", label: "bg"});
 
 // worktree-isolated leaf (cwd must be a git repo).
-const wt = await agent("isolated-zeta", {vendor: "fake", label: "wt", isolation: "worktree"});
+const wt = await agent("isolated-zeta", {provider: "fake", label: "wt", isolation: "worktree"});
 
 const bg_result = await bg;
 
@@ -209,7 +209,7 @@ return {
 
 // childScript is the nested workflow target: it runs one leaf and returns its result.
 const childScript = `const meta = {name: "child", description: "nested child run"};
-return await agent("child-task:" + args.topic, {vendor: "fake", label: "child"});
+return await agent("child-task:" + args.topic, {provider: "fake", label: "child"});
 `
 
 // writeComprehensive writes the comprehensive + child scripts into dir and returns the
@@ -259,7 +259,7 @@ func gitInitRepo(t *testing.T) string {
 // (manifest/journal/events) in ONE engine instance AND returns the script's settled
 // value as an exported map (so the run's results are assertable) — i.e. it is Execute,
 // inlined, returning the script's return object. Sharing the on-disk journal makes a
-// repeated call a resume: journaled leaves replay without a vendor exec.
+// repeated call a resume: journaled leaves replay without a provider exec.
 func executeInline(t *testing.T, runID, mainPath string, opts Options) map[string]interface{} {
 	t.Helper()
 	src, err := os.ReadFile(mainPath)
@@ -628,13 +628,13 @@ func TestE2EStop(t *testing.T) {
 // bareSlimKey is the engine's content key for a bare (all-defaults) agent() leaf — the
 // effective slim profile with the resolved default tool set, skills on, and mcp
 // inheriting (the slim per-profile default).
-func bareSlimKey(t *testing.T, vendor, prompt string) string {
+func bareSlimKey(t *testing.T, provider, prompt string) string {
 	t.Helper()
 	tools, err := subagent.CanonicalizeTools(subagent.DefaultSlimTools(subagent.ProfileSlim, false))
 	if err != nil {
 		t.Fatal(err)
 	}
-	return journalKey(vendor, "", prompt, "", "", subagent.ProfileSlim, tools, false, true)
+	return journalKey(provider, "", prompt, "", "", subagent.ProfileSlim, tools, false, true)
 }
 
 // --- shared assertion helpers -------------------------------------------------------------

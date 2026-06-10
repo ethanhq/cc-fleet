@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// spaceSettings is a per-vendor profile path under a HOME that contains a space.
+// spaceSettings is a per-provider profile path under a HOME that contains a space.
 // claudeBinSpace is the version-pinned claude binary under the same
 // space-bearing HOME.
 const (
@@ -71,7 +71,7 @@ func TestStatusForAndGC_DarwinSpaceSettings_LiveJobStaysRunning(t *testing.T) {
 		JobID:        jobID,
 		PID:          os.Getpid(), // a definitely-live pid
 		PGID:         os.Getpid(),
-		Vendor:       "glm",
+		Provider:     "glm",
 		Model:        "glm-4.6",
 		StartedAt:    time.Now().UTC().Format(time.RFC3339),
 		Status:       "running",

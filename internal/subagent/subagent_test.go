@@ -73,7 +73,7 @@ func TestBuildArgv(t *testing.T) {
 // ----- classify -----
 
 func TestClassify(t *testing.T) {
-	req := Request{Vendor: "v", JSON: true}
+	req := Request{Provider: "v", JSON: true}
 
 	t.Run("success", func(t *testing.T) {
 		res := classify(req, "fallback-model", []byte(smokeSuccessJSON), nil, 0, false, true)
@@ -118,9 +118,9 @@ func TestClassify(t *testing.T) {
 		if res.APIErrorStatus != 429 {
 			t.Fatalf("api_error_status = %d, want 429", res.APIErrorStatus)
 		}
-		// error_msg must be canonical, never the raw Chinese vendor text.
+		// error_msg must be canonical, never the raw Chinese provider text.
 		if strings.Contains(res.ErrorMsg, "余额") {
-			t.Fatalf("error_msg leaked raw vendor text: %q", res.ErrorMsg)
+			t.Fatalf("error_msg leaked raw provider text: %q", res.ErrorMsg)
 		}
 	})
 
@@ -156,11 +156,11 @@ func TestClassify(t *testing.T) {
 		}
 	})
 
-	t.Run("400 generic → vendor api error", func(t *testing.T) {
+	t.Run("400 generic → provider api error", func(t *testing.T) {
 		js := `{"type":"result","is_error":true,"api_error_status":400,"result":"bad request: malformed body"}`
 		res := classify(req, "m", []byte(js), nil, 1, false, true)
-		if res.ErrorCode != ErrCodeVendorAPIError {
-			t.Fatalf("want VENDOR_API_ERROR, got %s", res.ErrorCode)
+		if res.ErrorCode != ErrCodeProviderAPIError {
+			t.Fatalf("want PROVIDER_API_ERROR, got %s", res.ErrorCode)
 		}
 	})
 
@@ -219,11 +219,11 @@ func TestClassify(t *testing.T) {
 		}
 	})
 
-	t.Run("5xx → vendor api error", func(t *testing.T) {
+	t.Run("5xx → provider api error", func(t *testing.T) {
 		js := `{"type":"result","is_error":true,"api_error_status":503,"result":"service unavailable"}`
 		res := classify(req, "m", []byte(js), nil, 1, false, true)
-		if res.ErrorCode != ErrCodeVendorAPIError || res.APIErrorStatus != 503 {
-			t.Fatalf("want VENDOR_API_ERROR/503, got %s/%d", res.ErrorCode, res.APIErrorStatus)
+		if res.ErrorCode != ErrCodeProviderAPIError || res.APIErrorStatus != 503 {
+			t.Fatalf("want PROVIDER_API_ERROR/503, got %s/%d", res.ErrorCode, res.APIErrorStatus)
 		}
 	})
 
@@ -245,25 +245,25 @@ func TestClassify(t *testing.T) {
 	})
 
 	t.Run("timeout", func(t *testing.T) {
-		res := classify(Request{Vendor: "v", Timeout: 2 * time.Second, JSON: true}, "m", nil, nil, -1, true, true)
+		res := classify(Request{Provider: "v", Timeout: 2 * time.Second, JSON: true}, "m", nil, nil, -1, true, true)
 		if res.ErrorCode != ErrCodeTimeout {
 			t.Fatalf("want SUBAGENT_TIMEOUT, got %s", res.ErrorCode)
 		}
 	})
 
 	t.Run("text mode success", func(t *testing.T) {
-		res := classify(Request{Vendor: "v"}, "m", []byte("plain answer"), nil, 0, false, false)
+		res := classify(Request{Provider: "v"}, "m", []byte("plain answer"), nil, 0, false, false)
 		if !res.OK || res.Result != "plain answer" {
 			t.Fatalf("text mode: OK=%v result=%q", res.OK, res.Result)
 		}
 	})
 }
 
-func TestRun_UnknownVendor(t *testing.T) {
+func TestRun_UnknownProvider(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
-	res := Run(context.Background(), Request{Vendor: "nope", Prompt: "hi", JSON: true})
-	if res.OK || res.ErrorCode != ErrCodeUnknownVendor {
-		t.Fatalf("want UNKNOWN_VENDOR, got OK=%v code=%s", res.OK, res.ErrorCode)
+	res := Run(context.Background(), Request{Provider: "nope", Prompt: "hi", JSON: true})
+	if res.OK || res.ErrorCode != ErrCodeUnknownProvider {
+		t.Fatalf("want UNKNOWN_PROVIDER, got OK=%v code=%s", res.OK, res.ErrorCode)
 	}
 }

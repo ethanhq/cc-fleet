@@ -27,13 +27,13 @@ func ConfigDir() (string, error) {
 	return filepath.Join(home, ".config", appDirName), nil
 }
 
-// VendorsPath returns the absolute path to vendors.toml inside ConfigDir.
-func VendorsPath() (string, error) {
+// ProvidersPath returns the absolute path to providers.toml inside ConfigDir.
+func ProvidersPath() (string, error) {
 	dir, err := ConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "vendors.toml"), nil
+	return filepath.Join(dir, "providers.toml"), nil
 }
 
 // SecretsDir returns the absolute path to the secrets/ directory inside ConfigDir.

@@ -2,20 +2,20 @@ package tui
 
 import "github.com/ethanhq/cc-fleet/internal/config"
 
-// Template is a built-in vendor seed: prefill values for the add wizard so a
+// Template is a built-in provider seed: prefill values for the add wizard so a
 // user picking "DeepSeek" doesn't have to type the base_url / models_endpoint
-// by hand. These are SEEDS — vendor URLs and model ids drift over time, so the
+// by hand. These are SEEDS — provider URLs and model ids drift over time, so the
 // add wizard lets the user confirm or edit every field, and `cc-fleet add`
 // still probes /v1/models before committing.
 //
-// Each entry follows the vendor's published Anthropic-compatible endpoint. An
+// Each entry follows the provider's published Anthropic-compatible endpoint. An
 // entry WITHOUT a Note has a models_endpoint that has been probe-verified; an
 // entry WITH a Note has an inferred or plan-specific endpoint flagged for the
 // user to confirm (the probe on add does this automatically). Only first-party
-// LLM vendors that run their own models are seeded — not Claude-relay
-// aggregators, which run Claude and defeat the point of a vendor teammate.
+// LLM providers that run their own models are seeded — not Claude-relay
+// aggregators, which run Claude and defeat the point of a provider teammate.
 type Template struct {
-	Name           string // vendors.toml table name (lowercase id)
+	Name           string // providers.toml table name (lowercase id)
 	Label          string // display name in the picker
 	BaseURL        string // ANTHROPIC_BASE_URL
 	ModelsEndpoint string // /v1/models URL used for the probe + refresh
@@ -56,7 +56,7 @@ var OAITemplates = []OAITemplate{
 		Label:    "OpenAI-compatible · Chat (Groq / Together / Fireworks / vLLM …)",
 		Name:     "",
 		Protocol: config.ProtocolOpenAIChat,
-		Note:     "Set upstream_url to the vendor's base (often …/v1, e.g. https://api.groq.com/openai/v1).",
+		Note:     "Set upstream_url to the provider's base (often …/v1, e.g. https://api.groq.com/openai/v1).",
 	},
 }
 
@@ -64,7 +64,7 @@ var OAITemplates = []OAITemplate{
 // add wizard's picker. A synthetic "Custom" entry (empty fields) is appended
 // by the picker itself, so it is intentionally NOT in this slice.
 var Templates = []Template{
-	// Core vendors — widely used; endpoints verified.
+	// Core providers — widely used; endpoints verified.
 	{
 		Name:           "deepseek",
 		Label:          "DeepSeek",
@@ -109,7 +109,7 @@ var Templates = []Template{
 		DefaultModel:   "mimo-v2.5-pro",
 		Note:           "models_endpoint sits at the host root (not under /anthropic); probe-verified.",
 	},
-	// Additional first-party LLM vendors — newer; entries with a Note have an
+	// Additional first-party LLM providers — newer; entries with a Note have an
 	// inferred or plan-specific endpoint that the probe on add confirms.
 	{
 		Name:           "zai",

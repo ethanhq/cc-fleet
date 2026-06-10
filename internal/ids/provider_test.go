@@ -6,29 +6,29 @@ import (
 	"testing"
 )
 
-// TestValidateVendorName_Accept keeps the vendor-name grammar practical for
-// real vendor ids.
-func TestValidateVendorName_Accept(t *testing.T) {
+// TestValidateProviderName_Accept keeps the provider-name grammar practical for
+// real provider ids.
+func TestValidateProviderName_Accept(t *testing.T) {
 	cases := []string{
 		"a",
 		"glm",
 		"deepseek-v4",
-		"vendor_1",
+		"provider_1",
 		"Acc3pt",
 		"a" + strings.Repeat("x", 31), // exactly 32 chars
 	}
 	for _, name := range cases {
-		if err := ValidateVendorName(name); err != nil {
-			t.Errorf("ValidateVendorName(%q) = %v; want nil", name, err)
+		if err := ValidateProviderName(name); err != nil {
+			t.Errorf("ValidateProviderName(%q) = %v; want nil", name, err)
 		}
 	}
 }
 
-// TestValidateVendorName_Reject: a hand-edited vendors.toml table name that's
+// TestValidateProviderName_Reject: a hand-edited providers.toml table name that's
 // path-traversal ("../escape") or shell-injection ("bad;touch x", "$(...)")
 // shaped must fail the grammar, since the name flows into a filepath.Join
 // (profile path) AND a shell-evaluated apiKeyHelper.
-func TestValidateVendorName_Reject(t *testing.T) {
+func TestValidateProviderName_Reject(t *testing.T) {
 	cases := []struct {
 		name, in string
 	}{
@@ -52,12 +52,12 @@ func TestValidateVendorName_Reject(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateVendorName(tc.in)
+			err := ValidateProviderName(tc.in)
 			if err == nil {
-				t.Fatalf("ValidateVendorName(%q) = nil; want error", tc.in)
+				t.Fatalf("ValidateProviderName(%q) = nil; want error", tc.in)
 			}
-			if !errors.Is(err, ErrInvalidVendorName) {
-				t.Fatalf("ValidateVendorName(%q): err=%v, want ErrInvalidVendorName", tc.in, err)
+			if !errors.Is(err, ErrInvalidProviderName) {
+				t.Fatalf("ValidateProviderName(%q): err=%v, want ErrInvalidProviderName", tc.in, err)
 			}
 		})
 	}

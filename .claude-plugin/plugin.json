@@ -1,6 +1,6 @@
 {
   "name": "cc-fleet",
-  "description": "Spawn any third-party LLM provider with an Anthropic-compatible API (e.g. DeepSeek, GLM, Kimi, Qwen, MiniMax) as real Claude Code agent-team teammates or one-shot subagents — driven exactly like native teammates. Your main session's own auth is untouched (OAuth subscription or API key, either works); vendor workers bill the vendor API key via apiKeyHelper (the key never enters env/argv/history). Requires the `cc-fleet` binary on PATH, installed separately.",
+  "description": "Spawn any third-party LLM provider with an Anthropic-compatible API (e.g. DeepSeek, GLM, Kimi, Qwen, MiniMax) as real Claude Code agent-team teammates or one-shot subagents — driven exactly like native teammates. Your main session's own auth is untouched (OAuth subscription or API key, either works); provider workers bill the provider API key via apiKeyHelper (the key never enters env/argv/history). Requires the `cc-fleet` binary on PATH, installed separately.",
   "version": "0.1.8",
   "author": {
     "name": "Ethan Guo",
@@ -10,7 +10,7 @@
   "repository": "https://github.com/ethanhq/cc-fleet",
   "keywords": [
     "claude-code",
-    "vendor",
+    "provider",
     "teammates",
     "subagent",
     "tmux",

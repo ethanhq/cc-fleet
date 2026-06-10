@@ -110,7 +110,7 @@ func (m Model) View() string {
 	return ""
 }
 
-// viewKeys renders the per-vendor key manager in the hub box. It renders ONLY
+// viewKeys renders the per-provider key manager in the hub box. It renders ONLY
 // secrets.MaskKey for each key — the full key never reaches the screen — and the
 // add/edit input is an EchoPassword field (bullets), so no plaintext is ever displayed.
 func (m Model) viewKeys() string {
@@ -118,13 +118,13 @@ func (m Model) viewKeys() string {
 	if rot == "" {
 		rot = "off"
 	}
-	ctx := "API keys · " + m.keyVendor
+	ctx := "API keys · " + m.keyProvider
 	if m.keyEditing {
 		rightTitle := "add key"
 		if m.keyEditIdx >= 0 {
 			rightTitle = "edit " + m.keyLabel(m.keyEditIdx)
 		}
-		return m.vendorFlowView(ctx, "rotation: "+rot, m.keyVendor, rightTitle,
+		return m.providerFlowView(ctx, "rotation: "+rot, m.keyProvider, rightTitle,
 			"enter save · esc cancel", func(rightW int) []string {
 				lines := []string{" " + m.keyInput.View()}
 				if m.keyErr != "" {
@@ -133,7 +133,7 @@ func (m Model) viewKeys() string {
 				return lines
 			})
 	}
-	return m.vendorFlowView(ctx, "rotation: "+rot, m.keyVendor, "keys",
+	return m.providerFlowView(ctx, "rotation: "+rot, m.keyProvider, "keys",
 		"↑/↓ move · space toggle · e edit · d delete · a/enter add · t cycle rotation · esc back",
 		func(rightW int) []string {
 			var lines []string
@@ -171,33 +171,33 @@ func (m Model) viewKeys() string {
 }
 
 // hubTitle is the Model Providers app title + tab hint — the first chrome line of the
-// hub and every vendor flow (mirror spawnTitle).
+// hub and every provider flow (mirror spawnTitle).
 func (m Model) hubTitle() string {
 	return titleStyle.Render("cc-fleet · Model Providers") + faintStyle.Render("    tab → Agents Board")
 }
 
 // viewList renders the Model Providers hub in the board chrome: the fixed title line, the cursored
-// vendor beside its status rollup in the header, a rule, then one master-detail box —
-// vendor rail (with the trailing "+ Add provider…" row) | the cursored vendor's read-only
+// provider beside its status rollup in the header, a rule, then one master-detail box —
+// provider rail (with the trailing "+ Add provider…" row) | the cursored provider's read-only
 // config card. enter still opens the edit form; the card saves a trip into it.
 func (m Model) viewList() string {
 	title := m.hubTitle()
 	if m.loading {
 		return title + "\n\nloading…"
 	}
-	if m.vendorsErr != nil {
-		return title + "\n\n" + errStyle.Render("error: "+m.vendorsErr.Error())
+	if m.providersErr != nil {
+		return title + "\n\n" + errStyle.Render("error: "+m.providersErr.Error())
 	}
-	addRow := len(m.vendors)
+	addRow := len(m.providers)
 	left, right := "+ Add provider…", ""
-	if m.vendorCursor < addRow {
-		v := m.vendors[m.vendorCursor]
+	if m.providerCursor < addRow {
+		v := m.providers[m.providerCursor]
 		left = v.Name
 		state := "enabled"
 		if !v.Enabled {
 			state = "disabled"
 		}
-		right = state + " · " + vendorCacheFig(v)
+		right = state + " · " + providerCacheFig(v)
 		switch {
 		case v.Default:
 			right += " · " + noteStyle.Render("default")
@@ -205,7 +205,7 @@ func (m Model) viewList() string {
 			right += " · " + faintStyle.Render("default (disabled)")
 		}
 	}
-	leftLines, cursorVisualLine := m.providerRail(m.vendorCursor, func(i int, v userops.VendorView) string {
+	leftLines, cursorVisualLine := m.providerRail(m.providerCursor, func(i int, v userops.ProviderView) string {
 		marker := "  "
 		// The default provider's dot is yellow; otherwise green (enabled) / hollow (disabled).
 		dot := okStyle.Render("●")
@@ -217,7 +217,7 @@ func (m Model) viewList() string {
 		}
 		name := trunc(v.Name, 22)
 		switch {
-		case i == m.vendorCursor:
+		case i == m.providerCursor:
 			marker = cursorStyle.Render("❯ ")
 			name = selectedStyle.Render(name)
 		case v.Enabled:
@@ -227,31 +227,31 @@ func (m Model) viewList() string {
 		}
 		return "  " + marker + dot + " " + name
 	})
-	if len(m.vendors) == 0 {
+	if len(m.providers) == 0 {
 		leftLines = append(leftLines, faintStyle.Render("  (none yet)"))
 	}
-	// Trailing synthetic "+ Add provider…" row at index len(vendors).
+	// Trailing synthetic "+ Add provider…" row at index len(providers).
 	addLabel := faintStyle.Render("+ Add provider…")
 	addMarker := "  "
-	if m.vendorCursor == addRow {
+	if m.providerCursor == addRow {
 		addMarker = cursorStyle.Render("❯ ")
 		addLabel = selectedStyle.Render("+ Add provider…")
 	}
 	addLine := addMarker + addLabel
-	listTitle := fmt.Sprintf("Providers · %d", len(m.vendors))
+	listTitle := fmt.Sprintf("Providers · %d", len(m.providers))
 	// Size the rail to the rows + add line, then draw the divider to that width.
 	leftLines = append(leftLines, addLine)
 	leftW, rightW := m.paneWidths(leftWidth(listTitle, leftLines, m.boardInner()))
 	leftLines = append(leftLines[:len(leftLines)-1], railSeparator(leftW), addLine)
 	cardTitle := "pick a provider"
 	rightLines := m.addPickerLines(-1) // read-only preview of the grouped list
-	if m.vendorCursor < addRow {
-		v := m.vendors[m.vendorCursor]
+	if m.providerCursor < addRow {
+		v := m.providers[m.providerCursor]
 		cardTitle = trunc(v.Name, 24)
-		rightLines = vendorDetailLines(v, rightW, m.defaultProvider)
+		rightLines = providerDetailLines(v, rightW, m.defaultProvider)
 	}
 	cursorLine := cursorVisualLine
-	if m.vendorCursor >= addRow {
+	if m.providerCursor >= addRow {
 		cursorLine = len(leftLines) - 1
 	}
 	bodyH := m.boardBodyHeight()
@@ -262,8 +262,8 @@ func (m Model) viewList() string {
 		"\n" + pad + footer("↑/↓ move · →/⏎ edit · s default · d delete · tab agents board · q quit")
 }
 
-// vendorCacheFig is a vendor's models-cache figure: "N models[ (stale)]".
-func vendorCacheFig(v userops.VendorView) string {
+// providerCacheFig is a provider's models-cache figure: "N models[ (stale)]".
+func providerCacheFig(v userops.ProviderView) string {
 	fig := fmt.Sprintf("%d models", v.ModelsCount)
 	if v.ModelsStale {
 		fig += " (stale)"
@@ -281,10 +281,10 @@ func resolvedSlot(slot, def string) string {
 	return slot
 }
 
-// vendorDetailLines is the Model Providers hub's read-only config card: the enabled state + default
-// model, then the vendors.toml fields. The key row shows only the secret backend + ref —
+// providerDetailLines is the Model Providers hub's read-only config card: the enabled state + default
+// model, then the providers.toml fields. The key row shows only the secret backend + ref —
 // never key material (the status line already carries the model, so no separate field).
-func vendorDetailLines(v userops.VendorView, rightW int, configuredDefault string) []string {
+func providerDetailLines(v userops.ProviderView, rightW int, configuredDefault string) []string {
 	status := okStyle.Render("● enabled")
 	if !v.Enabled {
 		status = liveStyle.Render("○ disabled")
@@ -329,7 +329,7 @@ func vendorDetailLines(v userops.VendorView, rightW int, configuredDefault strin
 	detailField(&lines, "fast", resolvedSlot(v.FastModel, v.DefaultModel), rightW)
 	detailField(&lines, "effort", orOff(v.Effort), rightW)
 	detailFieldStyled(&lines, "run perm", orOff(v.DefaultPerm), rightW, permModeStyle(v.DefaultPerm))
-	detailField(&lines, "cache", vendorCacheFig(v), rightW)
+	detailField(&lines, "cache", providerCacheFig(v), rightW)
 	key := v.SecretBackend
 	if v.SecretRef != "" {
 		key += " · " + v.SecretRef
@@ -350,33 +350,33 @@ func railSeparator(leftW int) string {
 }
 
 // providerRail renders the provider list grouped by wire class (one header per
-// class, vendors indented under it). row(i, v) renders each vendor's line; the
-// returned int is the visual line index of the vendor at activeIdx (-1 if none),
+// class, providers indented under it). row(i, v) renders each provider's line; the
+// returned int is the visual line index of the provider at activeIdx (-1 if none),
 // for cursor windowing. Shared by the home list and the flow screens so their
 // rails stay identical.
-func (m Model) providerRail(activeIdx int, row func(i int, v userops.VendorView) string) ([]string, int) {
+func (m Model) providerRail(activeIdx int, row func(i int, v userops.ProviderView) string) ([]string, int) {
 	var lines []string
 	activeLine := -1
 	// The effective default is sorted to index 0; render it under its own "Default
 	// provider" header ABOVE the class groups (matching their header style) so hoisting
 	// it never splits its class into two headers, then group the rest normally.
 	start := 0
-	if len(m.vendors) > 0 && m.vendors[0].Default {
+	if len(m.providers) > 0 && m.providers[0].Default {
 		lines = append(lines, "  "+faintStyle.Render("Default provider"))
 		if activeIdx == 0 {
 			activeLine = len(lines)
 		}
-		lines = append(lines, row(0, m.vendors[0]), "")
+		lines = append(lines, row(0, m.providers[0]), "")
 		start = 1
 	}
 	prevRank := -1
-	for i := start; i < len(m.vendors); i++ {
-		v := m.vendors[i]
-		if r := vendorClassRank(v.Protocol); r != prevRank {
+	for i := start; i < len(m.providers); i++ {
+		v := m.providers[i]
+		if r := providerClassRank(v.Protocol); r != prevRank {
 			if prevRank != -1 {
 				lines = append(lines, "")
 			}
-			lines = append(lines, "  "+faintStyle.Render(vendorClassHeader(v.Protocol)))
+			lines = append(lines, "  "+faintStyle.Render(providerClassHeader(v.Protocol)))
 			prevRank = r
 		}
 		if i == activeIdx {
@@ -387,19 +387,19 @@ func (m Model) providerRail(activeIdx int, row func(i int, v userops.VendorView)
 	return lines, activeLine
 }
 
-// vendorFlowView wraps a vendor flow (edit / add / model pick / keys / confirm / result)
+// providerFlowView wraps a provider flow (edit / add / model pick / keys / confirm / result)
 // in the hub chrome: the SAME master-detail box as the list, the inert provider rail on
 // the left keeping the spatial anchor, the flow's pane on the right. active highlights
 // the provider the flow concerns ("+" highlights the Add row, "" none); ctx/ctxRight fill
 // the header line; rightLines builds the pane content for its column budget.
-func (m Model) vendorFlowView(ctx, ctxRight, active, rightTitle, hint string, rightLines func(rightW int) []string) string {
-	activeVendorIdx := -1
-	for i, v := range m.vendors {
+func (m Model) providerFlowView(ctx, ctxRight, active, rightTitle, hint string, rightLines func(rightW int) []string) string {
+	activeProviderIdx := -1
+	for i, v := range m.providers {
 		if v.Name == active {
-			activeVendorIdx = i
+			activeProviderIdx = i
 		}
 	}
-	leftLines, activeLine := m.providerRail(activeVendorIdx, func(i int, v userops.VendorView) string {
+	leftLines, activeLine := m.providerRail(activeProviderIdx, func(i int, v userops.ProviderView) string {
 		// Same dot scheme as the list rail: default = yellow, enabled = green, disabled = hollow.
 		dot := okStyle.Render("●")
 		switch {
@@ -421,7 +421,7 @@ func (m Model) vendorFlowView(ctx, ctxRight, active, rightTitle, hint string, ri
 		addLabel = selectedStyle.Render("+ Add provider…")
 	}
 	addLine := "  " + addLabel
-	listTitle := fmt.Sprintf("Providers · %d", len(m.vendors))
+	listTitle := fmt.Sprintf("Providers · %d", len(m.providers))
 	leftLines = append(leftLines, addLine)
 	leftW, rightW := m.paneWidths(leftWidth(listTitle, leftLines, m.boardInner()))
 	leftLines = append(leftLines[:len(leftLines)-1], railSeparator(leftW), addLine)
@@ -453,7 +453,7 @@ func (m Model) formBase(hint string) string {
 	if m.formMode == modeEdit {
 		active, rightTitle = m.editName, "edit "+trunc(m.editName, 20)
 	}
-	return m.vendorFlowView(m.form.title, "", active, rightTitle, hint,
+	return m.providerFlowView(m.form.title, "", active, rightTitle, hint,
 		func(rightW int) []string { return m.form.viewLines(rightW) })
 }
 
@@ -2446,7 +2446,7 @@ func (m Model) teammateDetailLines(t teardown.Teammate, rightW int) []string {
 	}
 	fields := []detailKV{
 		{"team", sessiontitle.CleanTitle(displayTeam(t.Team))},
-		{"provider", sessiontitle.CleanTitle(t.Vendor)},
+		{"provider", sessiontitle.CleanTitle(t.Provider)},
 		{"pane", pane},
 		{"pid", fmt.Sprintf("%d", t.PID)},
 		{"status", teammateStatusWord(t)},
@@ -2862,7 +2862,7 @@ func shortJobID(id string) string {
 // with its seeds under one header (indented), one cursor over the flat selectable
 // rows, and a seed preview for the highlighted row.
 func (m Model) viewPickTemplate() string {
-	return m.vendorFlowView("Add provider", "", "+", "pick a provider",
+	return m.providerFlowView("Add provider", "", "+", "pick a provider",
 		"↑/↓ move · enter/→ choose · esc cancel", func(rightW int) []string {
 			return m.addPickerLines(m.tmplCursor)
 		})
@@ -3089,7 +3089,7 @@ func (m Model) viewSetup() string {
 		return b.String()
 	}
 	b.WriteString("agent-teams isn't set in your env / shell rc / settings.json.\n")
-	b.WriteString("It powers vendor " + selectedStyle.Render("teammates") + ".\n")
+	b.WriteString("It powers provider " + selectedStyle.Render("teammates") + ".\n")
 	b.WriteString(faintStyle.Render("(subagent / workflow / run all work without it.)") + "\n\n")
 	b.WriteString(renderSetupOptions(setupOptions, m.setupCursor))
 	b.WriteString("\n" + footer("↑/↓ move · enter select · esc skip"))
@@ -3101,7 +3101,7 @@ func (m Model) viewModelPick() string {
 	if m.formMode == modeEdit {
 		active = m.editName
 	}
-	return m.vendorFlowView("Select default model", "", active, "models",
+	return m.providerFlowView("Select default model", "", active, "models",
 		"type to filter · ↑/↓ move · enter pick · esc manual entry", func(rightW int) []string {
 			switch {
 			case m.loading:

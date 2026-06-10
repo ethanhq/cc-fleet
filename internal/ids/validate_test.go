@@ -135,7 +135,7 @@ func TestEnsureUnderRoot_AcceptsRootItself(t *testing.T) {
 // TestValidateID_RejectsWhitespace: a team/member name with whitespace must be
 // rejected. macOS recovers argv via space-joined `ps -o command=`, so a
 // whitespace-bearing name would split into tokens and the --agent-id reap /
-// teardown / ps match would miss it, leaking the vendor process.
+// teardown / ps match would miss it, leaking the provider process.
 func TestValidateID_RejectsWhitespace(t *testing.T) {
 	for _, s := range []string{"my team", "a\tb", "trailing ", " leading", "a\nb", "a\rb"} {
 		if err := ValidateTeamName(s); err == nil {

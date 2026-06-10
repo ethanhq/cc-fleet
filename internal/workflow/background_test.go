@@ -16,11 +16,11 @@ import (
 func TestBackgroundLaunchAndAwait(t *testing.T) {
 	rec := &recorder{}
 	v, err := runScript(t, "bg", 4, echoLeaf(rec), `
-const p1 = agent("a", {vendor: "v"});
-const p2 = agent("b", {vendor: "v"});
+const p1 = agent("a", {provider: "v"});
+const p2 = agent("b", {provider: "v"});
 const thenable = typeof p1.then === "function";
 const both = [await p1, await p2];
-const one = await agent("c", {vendor: "v"});
+const one = await agent("c", {provider: "v"});
 return { thenable, both, one };
 `)
 	if err != nil {
@@ -53,8 +53,8 @@ func TestBackgroundSchemaResult(t *testing.T) {
 		return subagent.Result{OK: true, Result: "ok:" + c.prompt}
 	})
 	v, err := runScript(t, "bgs", 2, leaf, `
-const p = agent("q", {vendor: "v", schema: {required: ["a"]}});
-await agent("other", {vendor: "v"});
+const p = agent("q", {provider: "v", schema: {required: ["a"]}});
+await agent("other", {provider: "v"});
 const r = await p;
 return { a: r.a };
 `)
@@ -76,7 +76,7 @@ func TestDoubleAwaitNoDoubleCharge(t *testing.T) {
 	eng := budgetEngine(t, "bgw", 2, costLeaf(rec, 0.5))
 	eng.budgetTotal = 100
 	v, err := eng.run("bgw.js", []byte(`
-const p = agent("a", {vendor: "v"});
+const p = agent("a", {provider: "v"});
 const r1 = await p;
 const r2 = await p;
 return { same: r1 === r2, r1, sp: budget.spent() };
@@ -118,7 +118,7 @@ func TestAwaitBackgroundHonorsCancel(t *testing.T) {
 	eng := newTestEngine(ctx, "bgc", 2)
 	done := make(chan error, 1)
 	go func() {
-		_, err := eng.run("bgc.js", []byte(`const p = agent("a", {vendor: "v"}); return await p;`), Options{})
+		_, err := eng.run("bgc.js", []byte(`const p = agent("a", {provider: "v"}); return await p;`), Options{})
 		done <- err
 	}()
 	<-started
@@ -142,7 +142,7 @@ func TestAwaitBackgroundHonorsCancel(t *testing.T) {
 func TestBackgroundOmittedTimeoutDelegates(t *testing.T) {
 	rec := &recorder{}
 	_, err := runScript(t, "bgd", 2, echoLeaf(rec), `
-const p = agent("a", {vendor: "v"});
+const p = agent("a", {provider: "v"});
 await p;
 return {};
 `)
@@ -165,8 +165,8 @@ func TestBackgroundJournalsAtCompletion(t *testing.T) {
 	t.Cleanup(func() { runLeaf = old })
 
 	const runID = "bgj"
-	src := `agent("a", {vendor: "v"});
-return await agent("b", {vendor: "v"});`
+	src := `agent("a", {provider: "v"});
+return await agent("b", {provider: "v"});`
 	if _, err := newEngineFor(t, runID, 2).run("bgj.js", []byte(src), Options{}); err != nil {
 		t.Fatalf("pass1: %v", err)
 	}

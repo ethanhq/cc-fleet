@@ -89,24 +89,24 @@ func ResolveEffectiveProfile(requested string, fp *fingerprint.Fingerprint) (eff
 // bare-CLI paths reject identically.
 func validateSlimArgs(req Request) *Result {
 	if err := ValidateProfile(req.PromptProfile); err != nil {
-		r := fail(ErrCodeBadArgs, err.Error(), req.Vendor, "")
+		r := fail(ErrCodeBadArgs, err.Error(), req.Provider, "")
 		return &r
 	}
 	isFull := req.PromptProfile == "" || req.PromptProfile == ProfileFull
 	if isFull && (len(req.Tools) > 0 || req.NoSkills || req.MCP) {
 		r := fail(ErrCodeBadArgs,
 			"--tools / --skills / --mcp are slim-only; they require --profile slim or slim-ro",
-			req.Vendor, "")
+			req.Provider, "")
 		return &r
 	}
 	if len(req.Tools) > 0 {
 		if _, err := CanonicalizeTools(req.Tools); err != nil {
-			r := fail(ErrCodeBadArgs, fmt.Sprintf("invalid --tools: %v", err), req.Vendor, "")
+			r := fail(ErrCodeBadArgs, fmt.Sprintf("invalid --tools: %v", err), req.Provider, "")
 			return &r
 		}
 	}
 	if err := ValidateToolsSkills(req.Tools, req.NoSkills); err != nil {
-		r := fail(ErrCodeBadArgs, err.Error(), req.Vendor, "")
+		r := fail(ErrCodeBadArgs, err.Error(), req.Provider, "")
 		return &r
 	}
 	return nil

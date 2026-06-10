@@ -15,7 +15,7 @@ func TestBackgroundJobCarriesRunGrouping(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", t.TempDir())
-	writeMinimalVendors(t, xdg)
+	writeMinimalProviders(t, xdg)
 
 	fakeClaude := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
 	orig := loadFP
@@ -24,7 +24,7 @@ func TestBackgroundJobCarriesRunGrouping(t *testing.T) {
 	}
 	t.Cleanup(func() { loadFP = orig })
 
-	res := Run(context.Background(), Request{Vendor: "glm", Prompt: "hi", JSON: true, Background: true,
+	res := Run(context.Background(), Request{Provider: "glm", Prompt: "hi", JSON: true, Background: true,
 		RunID: "run-bg", Phase: "verify", Label: "v2"})
 	if !res.OK || res.JobID == "" {
 		t.Fatalf("background launch failed: %+v", res)
@@ -43,7 +43,7 @@ func TestRun_SyncResultCarriesRunGrouping(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", t.TempDir())
-	writeMinimalVendors(t, xdg)
+	writeMinimalProviders(t, xdg)
 
 	fakeClaude := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
 	orig := loadFP
@@ -52,7 +52,7 @@ func TestRun_SyncResultCarriesRunGrouping(t *testing.T) {
 	}
 	t.Cleanup(func() { loadFP = orig })
 
-	res := Run(context.Background(), Request{Vendor: "glm", Prompt: "hi", JSON: true,
+	res := Run(context.Background(), Request{Provider: "glm", Prompt: "hi", JSON: true,
 		RunID: "run-sync", Phase: "review", Label: "r3"})
 	if res.RunID != "run-sync" || res.Phase != "review" || res.Label != "r3" {
 		t.Fatalf("sync Run result missing run grouping: %+v", res)

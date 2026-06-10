@@ -195,7 +195,7 @@ const claudeMdSentinel = "SLIMCAPTURE_SENTINEL_CLAUDE_MD"
 
 // slimCaptureArgv builds the real argv for a profile via buildSlimArgv +
 // buildArgv. settingsPath is an inert `{}` settings file so the exact buildArgv
-// shape is preserved without a real vendor profile. mods adjust the Request
+// shape is preserved without a real provider profile. mods adjust the Request
 // before the build (e.g. MCP inherit, a JSON schema).
 func slimCaptureArgv(t *testing.T, bin, settingsPath, model, dir, profile string, mods ...func(*Request)) ([]string, string) {
 	t.Helper()

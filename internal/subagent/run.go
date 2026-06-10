@@ -52,13 +52,13 @@ type WorkflowRun struct {
 	Status    string     `json:"status,omitempty"`
 	// EnginePID is the OS pid of the process running the engine (the detached child for a
 	// normal run). `workflow stop` reaps its whole process tree — which includes the
-	// engine's in-flight vendor-leaf children — after a cmdline reuse-guard check, so a
+	// engine's in-flight provider-leaf children — after a cmdline reuse-guard check, so a
 	// recycled pid can never make stop kill an unrelated process.
 	EnginePID int `json:"engine_pid,omitempty"`
 	// Error is the failure cause, set when Status is "failed" — so a DETACHED run
 	// (whose stderr went to /dev/null) still records WHY it failed for `workflow
 	// status`. It is a canonical/script-level message (agent() failures carry
-	// subagent's canonical error_msg, never raw vendor body), so it is key-safe.
+	// subagent's canonical error_msg, never raw provider body), so it is key-safe.
 	Error string `json:"error,omitempty"`
 	// SessionID is the parent Claude session this run was launched from (leadsession.Detect
 	// at `workflow run`, or a --lead-session-id override) — so the board groups runs by
@@ -83,13 +83,13 @@ type WorkflowRun struct {
 	SpentUSD    float64 `json:"spent_usd,omitempty"`
 	SpentTokens int64   `json:"spent_tokens,omitempty"`
 	// DefaultProvider / DefaultProviderError record the run's default-provider
-	// resolution at mint, so a vendor-less agent() resolves to the SAME provider on
+	// resolution at mint, so a provider-less agent() resolves to the SAME provider on
 	// resume regardless of a live config change (a mid-run default change must never
-	// re-key an omitted-vendor leaf). Exactly one is set when the run uses any
+	// re-key an omitted-provider leaf). Exactly one is set when the run uses any
 	// default: the resolved provider name, or the error_code (NO_DEFAULT_PROVIDER /
-	// DEFAULT_PROVIDER_DISABLED) a vendor-less agent() then throws. Both empty when
+	// DEFAULT_PROVIDER_DISABLED) a provider-less agent() then throws. Both empty when
 	// no default was resolvable AND nothing needed one (an all-explicit script). Not
-	// a leaf determinant beyond the vendor it supplies.
+	// a leaf determinant beyond the provider it supplies.
 	DefaultProvider      string `json:"default_provider,omitempty"`
 	DefaultProviderError string `json:"default_provider_error,omitempty"`
 }
@@ -210,7 +210,7 @@ func RunLockPath(runID string) (string, error) { return runSidecarPath(runID, ".
 // delete) across processes via a blocking exclusive flock on runs/<id>.lock — the
 // workflow runtime's per-run execution lock. It is a STANDALONE flock scope,
 // independent of the three config scopes (the run-lifecycle paths take none of
-// vendors/team/server). It must wrap an entry point's whole decision and NEVER the
+// providers/team/server). It must wrap an entry point's whole decision and NEVER the
 // engine's Execute: the detached engine runs lock-free, so there is no re-entrancy
 // or deadlock when Restart composes stop + launch under one lock.
 func WithRunLock(runID string, fn func() error) error {
@@ -328,7 +328,7 @@ func removeRun(dir, runID string) {
 
 // StopRun reaps an actively-running workflow run and marks its manifest stopped. When a
 // reapable DETACHED engine is found it kills the engine's whole process TREE by ANCESTRY
-// — the engine plus its in-flight vendor-leaf `claude` children and their grandchildren
+// — the engine plus its in-flight provider-leaf `claude` children and their grandchildren
 // (each leaf is its OWN process group, so an ancestry walk, not a single group signal, is
 // required on unix; reapEngineTree handles the platform split). A cmdline reuse guard
 // means a recycled EnginePID can NEVER make this kill an unrelated process: the pid is
@@ -417,7 +417,7 @@ func finalizeRunLeaves(runID string) {
 			ReleaseHeldLeafStopped(jobID, "run stopped while the leaf was held")
 			continue
 		}
-		finalizeSyncJob(jobID, fail(ErrCodeStopped, "run stopped before the leaf finished", meta.Vendor, ""))
+		finalizeSyncJob(jobID, fail(ErrCodeStopped, "run stopped before the leaf finished", meta.Provider, ""))
 	}
 }
 

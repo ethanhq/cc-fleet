@@ -99,7 +99,7 @@ async function main() {
     "cc-fleet: this installs the BINARY only. To let Claude Code use it, also install the skill:\n" +
       "            claude plugin marketplace add ethanhq/cc-fleet\n" +
       "            claude plugin install cc-fleet@ethanhq\n" +
-      "          Then run `cc-fleet` to register a vendor."
+      "          Then run `cc-fleet` to register a provider."
   );
 }
 

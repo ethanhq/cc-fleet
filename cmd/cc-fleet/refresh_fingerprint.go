@@ -48,7 +48,7 @@ const probeAgentType = "general-purpose"
 
 // Seams: process introspection + capture/save are package vars so the probe-
 // selection / re-validation logic is unit-testable without a live process,
-// vendor, or network.
+// provider, or network.
 var (
 	listProcesses   = procintrospect.ProcessTable
 	procStartToken  = procintrospect.ProcStart

@@ -28,9 +28,9 @@ func writeFakeBin(t *testing.T, script string) string {
 	return p
 }
 
-// writeMinimalVendors installs a vendors.toml with one enabled vendor under the
+// writeMinimalProviders installs a providers.toml with one enabled provider under the
 // test's XDG config dir.
-func writeMinimalVendors(t *testing.T, xdg string) {
+func writeMinimalProviders(t *testing.T, xdg string) {
 	t.Helper()
 	dir := filepath.Join(xdg, "cc-fleet")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -47,7 +47,7 @@ secret_ref      = "glm.key"
 enabled         = true
 added_at        = 2026-05-24T05:00:00Z
 `
-	if err := os.WriteFile(filepath.Join(dir, "vendors.toml"), []byte(toml), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "providers.toml"), []byte(toml), 0o600); err != nil {
 		t.Fatal(err)
 	}
 }

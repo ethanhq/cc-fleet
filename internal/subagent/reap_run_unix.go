@@ -10,11 +10,11 @@ import (
 )
 
 // reapEngineTree reaps a workflow engine's whole process tree by ANCESTRY — the engine
-// process plus its in-flight vendor-leaf `claude` children and their grandchildren —
+// process plus its in-flight provider-leaf `claude` children and their grandchildren —
 // not merely the engine's own process group. This matters because each leaf claude makes
 // itself its OWN group leader (runClaude → setGroupAttr → Setpgid), so a bare
 // kill(-EnginePID) reaches only the engine's group and leaves the leaves running; they
-// would keep burning vendor quota until each hit its per-agent timeout. We walk the
+// would keep burning provider quota until each hit its per-agent timeout. We walk the
 // descendant set (procintrospect.Children, linux /proc + darwin ps) and signal each pid
 // AND its group (the negative-pid catches a leader's grandchildren that inherited its
 // pgid): SIGTERM, a short grace, then SIGKILL to survivors. Mirrors the Windows

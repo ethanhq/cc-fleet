@@ -721,7 +721,7 @@ func (s Server) ShowPane(paneID, originWindow string) error {
 
 // Quote returns s wrapped for safe inclusion in a single shell token using
 // POSIX single-quoting rules. Used by spawn to assemble the command line
-// passed to SplitWindow without trusting user-provided vendor / model /
+// passed to SplitWindow without trusting user-provided provider / model /
 // name strings.
 //
 // Rules:

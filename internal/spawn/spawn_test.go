@@ -48,7 +48,7 @@ func captureStderr(t *testing.T, fn func()) string {
 }
 
 // fixture is a per-test sandbox: isolated HOME / XDG, fake tmux on PATH,
-// optional vendor httptest.Server, optional fingerprint cache. Tests build
+// optional provider httptest.Server, optional fingerprint cache. Tests build
 // one with newFixture(t) and then customize via mutator methods before
 // calling Spawn.
 type fixture struct {
@@ -136,10 +136,10 @@ exit 0
 	return &fixture{t: t, home: home, xdg: xdg, argsPath: argsPath}
 }
 
-// writeVendorsTOML installs a vendors.toml at the canonical XDG path. The
-// caller can pass extra vendor stanzas; the first one is always "deepseek"
+// writeProvidersTOML installs a providers.toml at the canonical XDG path. The
+// caller can pass extra provider stanzas; the first one is always "deepseek"
 // pointing at f.serverURL() (if a server is running) or example.invalid.
-func (f *fixture) writeVendorsTOML(extra string) {
+func (f *fixture) writeProvidersTOML(extra string) {
 	f.t.Helper()
 	dir := filepath.Join(f.xdg, "cc-fleet")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -163,13 +163,13 @@ enabled         = true
 added_at        = 2026-05-24T05:00:00Z
 %s
 `, baseURL, modelsURL, extra)
-	if err := os.WriteFile(filepath.Join(dir, "vendors.toml"), []byte(body), 0o600); err != nil {
-		f.t.Fatalf("write vendors.toml: %v", err)
+	if err := os.WriteFile(filepath.Join(dir, "providers.toml"), []byte(body), 0o600); err != nil {
+		f.t.Fatalf("write providers.toml: %v", err)
 	}
 
-	// Mirror production: `cc-fleet add` always persists the vendor key, so the
+	// Mirror production: `cc-fleet add` always persists the provider key, so the
 	// (now key-bearing) spawn probe finds one on disk via secrets.Keyget. The
-	// fake vendor server ignores it; the probe's error classification is what
+	// fake provider server ignores it; the probe's error classification is what
 	// the spawn-probe tests assert.
 	secretsDir, err := config.SecretsDir()
 	if err != nil {
@@ -183,7 +183,7 @@ added_at        = 2026-05-24T05:00:00Z
 	}
 }
 
-// probeKey is the fake vendor key the fixture persists; spawn-probe tests
+// probeKey is the fake provider key the fixture persists; spawn-probe tests
 // assert it is sent as the probe's bearer token. It deliberately avoids the
 // "sk-" prefix the happy-path test treats as a key-leak canary.
 const probeKey = "probe-test-key-deadbeef"
@@ -242,9 +242,9 @@ func (f *fixture) installFakeClaude() string {
 	return bin
 }
 
-// startVendorServer brings up an httptest.Server that responds 200 OK to
-// any GET. The fixture wires writeVendorsTOML to point at it.
-func (f *fixture) startVendorServer() {
+// startProviderServer brings up an httptest.Server that responds 200 OK to
+// any GET. The fixture wires writeProvidersTOML to point at it.
+func (f *fixture) startProviderServer() {
 	f.t.Helper()
 	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -297,12 +297,12 @@ func (f *fixture) splitWindowCall() []string {
 
 func TestSpawn_HappyPath(t *testing.T) {
 	f := newFixture(t)
-	f.startVendorServer()
-	f.writeVendorsTOML("")
+	f.startProviderServer()
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 
 	res := Spawn(Request{
-		Vendor:    "deepseek",
+		Provider:  "deepseek",
 		AgentName: "worker-1",
 		Team:      "myproj",
 		Probe:     true,
@@ -366,7 +366,7 @@ func TestSpawn_HappyPath(t *testing.T) {
 		}
 	}
 	// Hardening: the command must explicitly unset the main session's
-	// Anthropic credentials so a vendor teammate can't inherit them from the
+	// Anthropic credentials so a provider teammate can't inherit them from the
 	// tmux server environment (e.g. an ANTHROPIC_API_KEY-mode main session).
 	for _, want := range []string{"-u ANTHROPIC_API_KEY", "-u ANTHROPIC_AUTH_TOKEN"} {
 		if !strings.Contains(cmd, want) {
@@ -422,14 +422,14 @@ func TestSpawn_HappyPath(t *testing.T) {
 }
 
 func TestSpawn_NoProbe(t *testing.T) {
-	// Same as happy path but skip the vendor probe — uses example.invalid
+	// Same as happy path but skip the provider probe — uses example.invalid
 	// which would fail DNS if we tried to reach it.
 	f := newFixture(t)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 
 	res := Spawn(Request{
-		Vendor:    "deepseek",
+		Provider:  "deepseek",
 		AgentName: "worker-2",
 		Team:      "p2",
 		Probe:     false,
@@ -442,11 +442,11 @@ func TestSpawn_NoProbe(t *testing.T) {
 
 func TestSpawn_ModelOverride(t *testing.T) {
 	f := newFixture(t)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 
 	res := Spawn(Request{
-		Vendor:    "deepseek",
+		Provider:  "deepseek",
 		AgentName: "w",
 		Team:      "t",
 		Model:     "deepseek-reasoner-custom",
@@ -463,11 +463,11 @@ func TestSpawn_ModelOverride(t *testing.T) {
 
 func TestSpawn_ExplicitColor(t *testing.T) {
 	f := newFixture(t)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 
 	res := Spawn(Request{
-		Vendor:    "deepseek",
+		Provider:  "deepseek",
 		AgentName: "w",
 		Team:      "t",
 		Color:     "purple-unicorn",
@@ -484,12 +484,12 @@ func TestSpawn_ExplicitColor(t *testing.T) {
 
 func TestSpawn_LeadSessionIDOverride(t *testing.T) {
 	f := newFixture(t)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 
 	lead := "00000000-1111-2222-3333-444444444444"
 	res := Spawn(Request{
-		Vendor:        "deepseek",
+		Provider:      "deepseek",
 		AgentName:     "w",
 		Team:          "t",
 		LeadSessionID: lead,
@@ -513,12 +513,12 @@ func TestSpawn_LeadSessionIDOverride(t *testing.T) {
 // beside the caller) and reports the pane's resolved session name.
 func TestSpawn_PrefersTmuxPaneEnv(t *testing.T) {
 	f := newFixture(t)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 	t.Setenv("TMUX_PANE", "%63")
 
 	res := Spawn(Request{
-		Vendor: "deepseek", AgentName: "w", Team: "t",
+		Provider: "deepseek", AgentName: "w", Team: "t",
 		Probe: false, AutoTeam: true,
 	})
 	if !res.OK {
@@ -539,12 +539,12 @@ func TestSpawn_PrefersTmuxPaneEnv(t *testing.T) {
 // TestSpawn_ExplicitTargetBeatsEnv verifies --target outranks $TMUX_PANE.
 func TestSpawn_ExplicitTargetBeatsEnv(t *testing.T) {
 	f := newFixture(t)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 	t.Setenv("TMUX_PANE", "%63")
 
 	res := Spawn(Request{
-		Vendor: "deepseek", AgentName: "w", Team: "t",
+		Provider: "deepseek", AgentName: "w", Team: "t",
 		Target: "explicit-sess",
 		Probe:  false, AutoTeam: true,
 	})
@@ -590,13 +590,13 @@ func TestUseSwarm(t *testing.T) {
 // socket so a later teardown/ps can find it.
 func TestSpawn_OutOfTmuxUsesSwarm(t *testing.T) {
 	f := newFixture(t)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 	t.Setenv("TMUX", "")      // not inside tmux
 	t.Setenv("TMUX_PANE", "") // (already neutralized; explicit for intent)
 
 	res := Spawn(Request{
-		Vendor: "deepseek", AgentName: "w1", Team: "swarmt",
+		Provider: "deepseek", AgentName: "w1", Team: "swarmt",
 		Probe: false, AutoTeam: true,
 	})
 	if !res.OK {
@@ -633,12 +633,12 @@ func TestSpawn_OutOfTmuxUsesSwarm(t *testing.T) {
 // the result carries NO swarm socket.
 func TestSpawn_ExplicitTargetStaysInTmuxOutsideTmux(t *testing.T) {
 	f := newFixture(t)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 	t.Setenv("TMUX", "") // outside tmux, but --target is explicit
 
 	res := Spawn(Request{
-		Vendor: "deepseek", AgentName: "w", Team: "t",
+		Provider: "deepseek", AgentName: "w", Team: "t",
 		Target: "explicit-sess",
 		Probe:  false, AutoTeam: true,
 	})
@@ -657,27 +657,27 @@ func TestSpawn_ExplicitTargetStaysInTmuxOutsideTmux(t *testing.T) {
 
 // ----- error paths -----
 
-func TestSpawn_UnknownVendor(t *testing.T) {
+func TestSpawn_UnknownProvider(t *testing.T) {
 	f := newFixture(t)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 
 	res := Spawn(Request{
-		Vendor:    "nonesuch",
+		Provider:  "nonesuch",
 		AgentName: "w",
 		Team:      "t",
 		Probe:     false,
 		AutoTeam:  true,
 	})
 	if res.OK {
-		t.Fatal("Spawn: want failure for unknown vendor")
+		t.Fatal("Spawn: want failure for unknown provider")
 	}
-	if res.ErrorCode != ErrCodeUnknownVendor {
-		t.Fatalf("ErrorCode = %q, want %q", res.ErrorCode, ErrCodeUnknownVendor)
+	if res.ErrorCode != ErrCodeUnknownProvider {
+		t.Fatalf("ErrorCode = %q, want %q", res.ErrorCode, ErrCodeUnknownProvider)
 	}
 }
 
-func TestSpawn_VendorDisabled(t *testing.T) {
+func TestSpawn_ProviderDisabled(t *testing.T) {
 	f := newFixture(t)
 	f.writeFingerprint()
 	dir := filepath.Join(f.xdg, "cc-fleet")
@@ -693,12 +693,12 @@ secret_ref      = "deepseek.key"
 enabled         = false
 added_at        = 2026-05-24T05:00:00Z
 `
-	if err := os.WriteFile(filepath.Join(dir, "vendors.toml"), []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "providers.toml"), []byte(body), 0o600); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 
-	res := Spawn(Request{Vendor: "deepseek", AgentName: "w", Team: "t", Probe: false, AutoTeam: true})
-	if res.OK || res.ErrorCode != ErrCodeVendorDisabled {
+	res := Spawn(Request{Provider: "deepseek", AgentName: "w", Team: "t", Probe: false, AutoTeam: true})
+	if res.OK || res.ErrorCode != ErrCodeProviderDisabled {
 		t.Fatalf("got OK=%v code=%q, want disabled failure", res.OK, res.ErrorCode)
 	}
 }
@@ -709,12 +709,12 @@ added_at        = 2026-05-24T05:00:00Z
 // live (a fake claude on PATH here), so the spawn goes through.
 func TestSpawn_NoUserFingerprint_UsesBundled(t *testing.T) {
 	f := newFixture(t)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.installFakeClaude() // so ResolveBinaryPath finds a binary deterministically
 	// Deliberately do NOT writeFingerprint → LoadOrBundled returns the bundled recipe.
 
 	res := Spawn(Request{
-		Vendor:    "deepseek",
+		Provider:  "deepseek",
 		AgentName: "w",
 		Team:      "t",
 		Probe:     false,
@@ -744,7 +744,7 @@ func TestSpawn_NoUserFingerprint_UsesBundled(t *testing.T) {
 }
 
 // TestSpawn_HTTP500_DoesNotBlockSpawn: an HTTP 500 from the probe means the
-// vendor RESPONDED, so the network is reachable. The models endpoint is only
+// provider RESPONDED, so the network is reachable. The models endpoint is only
 // used for probe/refresh — the teammate authenticates against base_url at
 // runtime — so a 5xx must NOT block the spawn.
 func TestSpawn_HTTP500_DoesNotBlockSpawn(t *testing.T) {
@@ -753,20 +753,20 @@ func TestSpawn_HTTP500_DoesNotBlockSpawn(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	t.Cleanup(f.server.Close)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 
 	var res Result
 	stderr := captureStderr(t, func() {
 		res = Spawn(Request{
-			Vendor: "deepseek", AgentName: "w", Team: "t", Probe: true, AutoTeam: true,
+			Provider: "deepseek", AgentName: "w", Team: "t", Probe: true, AutoTeam: true,
 		})
 	})
 	if !res.OK {
 		t.Fatalf("got OK=false code=%q msg=%q, want spawn to proceed past a 5xx probe",
 			res.ErrorCode, res.ErrorMsg)
 	}
-	// Proceeding silently would hide a genuinely sick vendor, so the 5xx path
+	// Proceeding silently would hide a genuinely sick provider, so the 5xx path
 	// must still emit a warning. Assert it actually reached stderr.
 	if !strings.Contains(stderr, "warning") || !strings.Contains(stderr, "HTTP 500") {
 		t.Fatalf("expected a 5xx probe warning on stderr, got: %q", stderr)
@@ -775,8 +775,8 @@ func TestSpawn_HTTP500_DoesNotBlockSpawn(t *testing.T) {
 
 // TestSpawn_HTTP401_KeyInvalid: a 401 from the probe is an AUTH failure (key
 // rejected), not unreachability, so it maps to KEY_INVALID. It also asserts the
-// probe SENDS the vendor key as a bearer token — a keyless probe would 401 on
-// every key-gated vendor and get mislabeled VENDOR_UNREACHABLE.
+// probe SENDS the provider key as a bearer token — a keyless probe would 401 on
+// every key-gated provider and get mislabeled PROVIDER_UNREACHABLE.
 func TestSpawn_HTTP401_KeyInvalid(t *testing.T) {
 	f := newFixture(t)
 	var sawAuth string
@@ -785,11 +785,11 @@ func TestSpawn_HTTP401_KeyInvalid(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	t.Cleanup(f.server.Close)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 
 	res := Spawn(Request{
-		Vendor: "deepseek", AgentName: "w", Team: "t", Probe: true, AutoTeam: true,
+		Provider: "deepseek", AgentName: "w", Team: "t", Probe: true, AutoTeam: true,
 	})
 	if res.OK || res.ErrorCode != ErrCodeKeyInvalid {
 		t.Fatalf("got OK=%v code=%q, want KEY_INVALID", res.OK, res.ErrorCode)
@@ -807,54 +807,54 @@ func TestSpawn_HTTP403_KeyInvalid(t *testing.T) {
 		w.WriteHeader(http.StatusForbidden)
 	}))
 	t.Cleanup(f.server.Close)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 
 	res := Spawn(Request{
-		Vendor: "deepseek", AgentName: "w", Team: "t", Probe: true, AutoTeam: true,
+		Provider: "deepseek", AgentName: "w", Team: "t", Probe: true, AutoTeam: true,
 	})
 	if res.OK || res.ErrorCode != ErrCodeKeyInvalid {
 		t.Fatalf("got OK=%v code=%q, want KEY_INVALID", res.OK, res.ErrorCode)
 	}
 }
 
-func TestSpawn_VendorUnreachable_Timeout(t *testing.T) {
+func TestSpawn_ProviderUnreachable_Timeout(t *testing.T) {
 	f := newFixture(t)
 	// Server hangs forever — probe must time out at 3s and surface
-	// VENDOR_UNREACHABLE rather than hanging the spawn.
+	// PROVIDER_UNREACHABLE rather than hanging the spawn.
 	hang := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		<-r.Context().Done()
 	}))
 	t.Cleanup(hang.Close)
 	f.server = hang
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 
 	start := time.Now()
 	res := Spawn(Request{
-		Vendor: "deepseek", AgentName: "w", Team: "t", Probe: true, AutoTeam: true,
+		Provider: "deepseek", AgentName: "w", Team: "t", Probe: true, AutoTeam: true,
 	})
 	elapsed := time.Since(start)
 
-	if res.OK || res.ErrorCode != ErrCodeVendorUnreachable {
-		t.Fatalf("got OK=%v code=%q, want VENDOR_UNREACHABLE", res.OK, res.ErrorCode)
+	if res.OK || res.ErrorCode != ErrCodeProviderUnreachable {
+		t.Fatalf("got OK=%v code=%q, want PROVIDER_UNREACHABLE", res.OK, res.ErrorCode)
 	}
 	// Probe is 3s; total elapsed should be in the 3-5s window. Anything
 	// >>5s means the timeout didn't fire.
 	if elapsed > 5*time.Second {
-		t.Fatalf("Spawn took %v with hanging vendor, want < 5s (probe timeout broken)", elapsed)
+		t.Fatalf("Spawn took %v with hanging provider, want < 5s (probe timeout broken)", elapsed)
 	}
 }
 
-// TestSpawn_VendorUnreachable_ConnRefused verifies the other half of the
+// TestSpawn_ProviderUnreachable_ConnRefused verifies the other half of the
 // transport-failure classification: a refused TCP dial (no HTTP response at
-// all) is a connection-layer failure → VENDOR_UNREACHABLE, distinct from the
+// all) is a connection-layer failure → PROVIDER_UNREACHABLE, distinct from the
 // timeout case above and from any HTTP status. models_endpoint points at a
 // closed local port (127.0.0.1:1, the reserved tcpmux port that is never
 // listening in a test env), so the dial is refused immediately — no waiting,
 // no network egress. The closed-loop counterpart to the HTTP-status cases:
 // transport-down really does block, while any HTTP answer (4xx/5xx) does not.
-func TestSpawn_VendorUnreachable_ConnRefused(t *testing.T) {
+func TestSpawn_ProviderUnreachable_ConnRefused(t *testing.T) {
 	f := newFixture(t)
 	f.writeFingerprint()
 	dir := filepath.Join(f.xdg, "cc-fleet")
@@ -872,26 +872,26 @@ secret_ref      = "deepseek.key"
 enabled         = true
 added_at        = 2026-05-24T05:00:00Z
 `
-	if err := os.WriteFile(filepath.Join(dir, "vendors.toml"), []byte(body), 0o600); err != nil {
-		t.Fatalf("write vendors.toml: %v", err)
+	if err := os.WriteFile(filepath.Join(dir, "providers.toml"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
 	}
 
 	res := Spawn(Request{
-		Vendor: "deepseek", AgentName: "w", Team: "t", Probe: true, AutoTeam: true,
+		Provider: "deepseek", AgentName: "w", Team: "t", Probe: true, AutoTeam: true,
 	})
-	if res.OK || res.ErrorCode != ErrCodeVendorUnreachable {
-		t.Fatalf("got OK=%v code=%q, want VENDOR_UNREACHABLE (connection refused)",
+	if res.OK || res.ErrorCode != ErrCodeProviderUnreachable {
+		t.Fatalf("got OK=%v code=%q, want PROVIDER_UNREACHABLE (connection refused)",
 			res.OK, res.ErrorCode)
 	}
 }
 
 func TestSpawn_TeamNotFoundWithoutAutoTeam(t *testing.T) {
 	f := newFixture(t)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 
 	res := Spawn(Request{
-		Vendor: "deepseek", AgentName: "w", Team: "missing", Probe: false, AutoTeam: false,
+		Provider: "deepseek", AgentName: "w", Team: "missing", Probe: false, AutoTeam: false,
 	})
 	if res.OK || res.ErrorCode != ErrCodeTeamNotFound {
 		t.Fatalf("got OK=%v code=%q, want TEAM_NOT_FOUND", res.OK, res.ErrorCode)
@@ -905,7 +905,7 @@ func TestSpawn_TeamNotFoundWithoutAutoTeam(t *testing.T) {
 // miss the leak.
 func TestSpawn_FlockSerializesDuplicate(t *testing.T) {
 	f := newFixture(t)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 
 	const team = "concurrent"
@@ -919,7 +919,7 @@ func TestSpawn_FlockSerializesDuplicate(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			results[i] = Spawn(Request{
-				Vendor: "deepseek", AgentName: name, Team: team,
+				Provider: "deepseek", AgentName: name, Team: team,
 				Probe: false, AutoTeam: true,
 			})
 		}()
@@ -967,7 +967,7 @@ func TestSpawn_FlockSerializesDuplicate(t *testing.T) {
 // and the team config ends up with both members.
 func TestSpawn_FlockSerializesDifferentNames(t *testing.T) {
 	f := newFixture(t)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 
 	const team = "concurrent2"
@@ -979,7 +979,7 @@ func TestSpawn_FlockSerializesDifferentNames(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			res := Spawn(Request{
-				Vendor: "deepseek", AgentName: name, Team: team,
+				Provider: "deepseek", AgentName: name, Team: team,
 				Probe: false, AutoTeam: true,
 			})
 			if !res.OK {
@@ -1219,11 +1219,11 @@ func TestParseTeamConfig_PreservesUnknownFields(t *testing.T) {
 // leak any "" empty fields into the JSON output beyond what's documented.
 func TestSpawn_JSONMarshalIsClean(t *testing.T) {
 	f := newFixture(t)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 
 	res := Spawn(Request{
-		Vendor: "deepseek", AgentName: "w", Team: "t",
+		Provider: "deepseek", AgentName: "w", Team: "t",
 		Probe: false, AutoTeam: true,
 	})
 	if !res.OK {

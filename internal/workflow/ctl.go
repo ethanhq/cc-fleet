@@ -280,7 +280,7 @@ func (e *engine) releaseHeld() {
 			continue
 		}
 		subagent.ReleaseHeldLeafStopped(jobID, "run stopped while the leaf was held")
-		e.emitLeaf("stopped", h.spec.phase, h.spec.label, h.spec.vendor, h.spec.model)
+		e.emitLeaf("stopped", h.spec.phase, h.spec.label, h.spec.provider, h.spec.model)
 		e.releaseLeaf(jobID, h)
 	}
 }

@@ -13,7 +13,7 @@ func TestJournalKeyDeterministicAndDistinct(t *testing.T) {
 	}
 	// Each component changes the key.
 	cases := map[string]string{
-		"vendor":    journalKey("v2", "m", "prompt", `{"required":["x"]}`, "", "", nil, false, false),
+		"provider":  journalKey("v2", "m", "prompt", `{"required":["x"]}`, "", "", nil, false, false),
 		"model":     journalKey("v", "m2", "prompt", `{"required":["x"]}`, "", "", nil, false, false),
 		"prompt":    journalKey("v", "m", "prompt2", `{"required":["x"]}`, "", "", nil, false, false),
 		"schema":    journalKey("v", "m", "prompt", `{"required":["y"]}`, "", "", nil, false, false),

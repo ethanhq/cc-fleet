@@ -13,7 +13,7 @@ import (
 )
 
 // setupConfig redirects XDG_CONFIG_HOME at a fresh temp dir and writes
-// vendors.toml + an optional secret file. It returns the cc-fleet config root
+// providers.toml + an optional secret file. It returns the cc-fleet config root
 // so callers can poke at paths if they need to.
 //
 // secretContents is written verbatim under <ConfigDir>/secrets/<secretRef> iff
@@ -26,9 +26,9 @@ func setupConfig(t *testing.T, cfg *config.Config) string {
 	t.Setenv("HOME", filepath.Join(xdg, "fakehome"))
 
 	if cfg != nil {
-		path, err := config.VendorsPath()
+		path, err := config.ProvidersPath()
 		if err != nil {
-			t.Fatalf("VendorsPath: %v", err)
+			t.Fatalf("ProvidersPath: %v", err)
 		}
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 			t.Fatalf("mkdir config dir: %v", err)
@@ -60,11 +60,11 @@ func writeSecretFile(t *testing.T, ref string, contents []byte) {
 	}
 }
 
-// fileVendor returns a single-vendor Config that uses the file backend.
-func fileVendor(name, ref string) *config.Config {
+// fileProvider returns a single-provider Config that uses the file backend.
+func fileProvider(name, ref string) *config.Config {
 	return &config.Config{
 		Version: config.SchemaVersion,
-		Vendors: map[string]*config.Vendor{
+		Providers: map[string]*config.Provider{
 			name: {
 				Name:           name,
 				BaseURL:        "https://api." + name + ".com/anthropic",
@@ -84,7 +84,7 @@ func fileVendor(name, ref string) *config.Config {
 func TestKeyget_OpenAIChat_ReturnsRealKey(t *testing.T) {
 	cfg := &config.Config{
 		Version: config.SchemaVersion,
-		Vendors: map[string]*config.Vendor{
+		Providers: map[string]*config.Provider{
 			"groq": {
 				Name:           "groq",
 				BaseURL:        "http://127.0.0.1:17240/",
@@ -112,7 +112,7 @@ func TestKeyget_OpenAIChat_ReturnsRealKey(t *testing.T) {
 }
 
 func TestKeyget_File_OK(t *testing.T) {
-	setupConfig(t, fileVendor("deepseek", "deepseek.key"))
+	setupConfig(t, fileProvider("deepseek", "deepseek.key"))
 	writeSecretFile(t, "deepseek.key", []byte("sk-deepseek-abc123"))
 
 	got, err := Keyget("deepseek")
@@ -135,7 +135,7 @@ func TestKeyget_File_TrimsNewline(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			setupConfig(t, fileVendor("deepseek", "deepseek.key"))
+			setupConfig(t, fileProvider("deepseek", "deepseek.key"))
 			writeSecretFile(t, "deepseek.key", []byte(tc.raw))
 
 			got, err := Keyget("deepseek")
@@ -153,7 +153,7 @@ func TestKeyget_File_MissingFile(t *testing.T) {
 	// Config points at a secret file we never create, and there is no keys.json
 	// either, so this is an empty key set: keyget reports ErrNoEnabledKey (and
 	// writes no key bytes) rather than a read error.
-	setupConfig(t, fileVendor("deepseek", "deepseek.key"))
+	setupConfig(t, fileProvider("deepseek", "deepseek.key"))
 
 	got, err := Keyget("deepseek")
 	if err == nil {
@@ -167,25 +167,25 @@ func TestKeyget_File_MissingFile(t *testing.T) {
 	}
 }
 
-func TestKeyget_UnknownVendor(t *testing.T) {
-	// Valid config, but ask for a vendor that isn't in it.
-	setupConfig(t, fileVendor("deepseek", "deepseek.key"))
+func TestKeyget_UnknownProvider(t *testing.T) {
+	// Valid config, but ask for a provider that isn't in it.
+	setupConfig(t, fileProvider("deepseek", "deepseek.key"))
 
 	_, err := Keyget("nope")
 	if err == nil {
-		t.Fatalf("Keyget: want error for unknown vendor, got nil")
+		t.Fatalf("Keyget: want error for unknown provider, got nil")
 	}
-	if !strings.Contains(err.Error(), "unknown vendor") {
-		t.Fatalf("error %q should mention unknown vendor", err.Error())
+	if !strings.Contains(err.Error(), "unknown provider") {
+		t.Fatalf("error %q should mention unknown provider", err.Error())
 	}
 }
 
 func TestKeyget_UnknownBackend(t *testing.T) {
-	// LoadFromPath is default-strict, so a vendors.toml with an unknown
+	// LoadFromPath is default-strict, so a providers.toml with an unknown
 	// secret_backend is rejected at Load, before the dispatch switch sees it;
 	// the user-visible failure is the validator's "secret_backend %q invalid".
 	//
-	// We hand-write the vendors.toml because SaveToPath would refuse to persist
+	// We hand-write the providers.toml because SaveToPath would refuse to persist
 	// it (Validate rejects it). The test still asserts the bad backend value is
 	// named and no key bytes leak — the security property the consumer needs.
 	xdg := t.TempDir()
@@ -207,8 +207,8 @@ secret_ref = "x.key"
 enabled = true
 added_at = 2026-05-24T00:00:00Z
 `
-	if err := os.WriteFile(filepath.Join(dir, "vendors.toml"), []byte(body), 0o600); err != nil {
-		t.Fatalf("write vendors.toml: %v", err)
+	if err := os.WriteFile(filepath.Join(dir, "providers.toml"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write providers.toml: %v", err)
 	}
 
 	got, err := Keyget("weirdo")
@@ -234,14 +234,14 @@ added_at = 2026-05-24T00:00:00Z
 // 1password / vault / keyring backends
 // ---------------------------------------------------------------------------
 
-// backendVendor returns a single-vendor Config that uses an arbitrary secret
+// backendProvider returns a single-provider Config that uses an arbitrary secret
 // backend + ref. config.Validate accepts all five backend names and only
 // presence-checks secret_ref, so even a deliberately malformed ref persists
 // (it fails at keyget parse time, which is what these tests exercise).
-func backendVendor(name, backend, ref string) *config.Config {
+func backendProvider(name, backend, ref string) *config.Config {
 	return &config.Config{
 		Version: config.SchemaVersion,
-		Vendors: map[string]*config.Vendor{
+		Providers: map[string]*config.Provider{
 			name: {
 				Name:           name,
 				BaseURL:        "https://api." + name + ".com/anthropic",
@@ -307,7 +307,7 @@ func wantArgs(t *testing.T, path string, want ...string) {
 }
 
 func TestKeyget_Pass_OK(t *testing.T) {
-	setupConfig(t, backendVendor("ps", "pass", "cc-fleet/glm"))
+	setupConfig(t, backendProvider("ps", "pass", "cc-fleet/glm"))
 	args := fakeCLI(t, "pass")
 	t.Setenv("FAKE_OUT", "sk-pass-FAKE-000\n")
 
@@ -322,7 +322,7 @@ func TestKeyget_Pass_OK(t *testing.T) {
 }
 
 func TestKeyget_1Password_OK(t *testing.T) {
-	setupConfig(t, backendVendor("op1", "1password", "op://Personal/glm/credential"))
+	setupConfig(t, backendProvider("op1", "1password", "op://Personal/glm/credential"))
 	args := fakeCLI(t, "op")
 	t.Setenv("FAKE_OUT", "sk-op-FAKE-123\n")
 
@@ -337,7 +337,7 @@ func TestKeyget_1Password_OK(t *testing.T) {
 }
 
 func TestKeyget_Vault_OK(t *testing.T) {
-	setupConfig(t, backendVendor("vlt", "vault", "secret/data/cc-fleet/glm#api_key"))
+	setupConfig(t, backendProvider("vlt", "vault", "secret/data/cc-fleet/glm#api_key"))
 	args := fakeCLI(t, "vault")
 	t.Setenv("FAKE_OUT", "sk-vault-FAKE-456\r\n") // CRLF must be trimmed
 
@@ -354,7 +354,7 @@ func TestKeyget_Vault_OK(t *testing.T) {
 // TestKeyget_Vault_SplitsOnLastHash pins the "split on the LAST '#'" contract so
 // a '#' inside the KV path is preserved in the path, not the field.
 func TestKeyget_Vault_SplitsOnLastHash(t *testing.T) {
-	setupConfig(t, backendVendor("vlt", "vault", "secret/data/a#b#api_key"))
+	setupConfig(t, backendProvider("vlt", "vault", "secret/data/a#b#api_key"))
 	args := fakeCLI(t, "vault")
 	t.Setenv("FAKE_OUT", "k")
 
@@ -365,7 +365,7 @@ func TestKeyget_Vault_SplitsOnLastHash(t *testing.T) {
 }
 
 func TestKeyget_Keyring_OK(t *testing.T) {
-	setupConfig(t, backendVendor("kr", "keyring", "service cc-fleet account glm"))
+	setupConfig(t, backendProvider("kr", "keyring", "service cc-fleet account glm"))
 	args := fakeCLI(t, "secret-tool")
 	t.Setenv("FAKE_OUT", "sk-keyring-FAKE-789\n")
 
@@ -390,7 +390,7 @@ func TestKeyget_Backend_CLIMissing(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.backend, func(t *testing.T) {
-			setupConfig(t, backendVendor("v", c.backend, c.ref))
+			setupConfig(t, backendProvider("v", c.backend, c.ref))
 			// Point PATH at an empty dir so the backend CLI cannot be found.
 			t.Setenv("PATH", t.TempDir())
 
@@ -412,7 +412,7 @@ func TestKeyget_Backend_CLIMissing(t *testing.T) {
 // parsing — before any exec — so a key can never be fetched or leaked.
 func TestKeyget_Vault_MalformedRefNoExec(t *testing.T) {
 	const sentinel = "sk-VAULT-SENTINEL-must-never-appear"
-	setupConfig(t, backendVendor("v", "vault", "no-hash-here"))
+	setupConfig(t, backendProvider("v", "vault", "no-hash-here"))
 	args := fakeCLI(t, "vault")
 	t.Setenv("FAKE_OUT", sentinel)
 
@@ -435,7 +435,7 @@ func TestKeyget_Vault_MalformedRefNoExec(t *testing.T) {
 // must fail at parse time, never invoking secret-tool.
 func TestKeyget_Keyring_OddRefNoExec(t *testing.T) {
 	const sentinel = "sk-KEYRING-SENTINEL-must-never-appear"
-	setupConfig(t, backendVendor("k", "keyring", "service cc-fleet account")) // 3 tokens (odd)
+	setupConfig(t, backendProvider("k", "keyring", "service cc-fleet account")) // 3 tokens (odd)
 	args := fakeCLI(t, "secret-tool")
 	t.Setenv("FAKE_OUT", sentinel)
 
@@ -486,7 +486,7 @@ func TestParseKeyringRef(t *testing.T) {
 }
 
 // TestSelectKey_RejectsInvalidRotation: defense-in-depth. A
-// well-formed vendors.toml has been Validated at load, but a direct caller
+// well-formed providers.toml has been Validated at load, but a direct caller
 // (test fixture, hand-edited keys.json bypass, etc.) could still hand selectKey
 // a bogus rotation string. The typed dispatch must refuse explicitly rather
 // than fall through to a silent default-off / default-round_robin.

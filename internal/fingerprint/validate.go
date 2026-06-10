@@ -1,5 +1,5 @@
 // ValidateForRuntime is the SINGLE gate that checks a loaded *Fingerprint is
-// usable to spawn / subagent a vendor binary RIGHT NOW. Both spawn and subagent
+// usable to spawn / subagent a provider binary RIGHT NOW. Both spawn and subagent
 // run it BEFORE any state mutation (pane split / team-config write / profile
 // write), so a stale fingerprint fails before, not after, a pane is opened. A
 // doctor / refresh path can opt out by reading the cache directly — runtime

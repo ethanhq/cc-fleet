@@ -10,17 +10,17 @@ import (
 // OBSERVABILITY: `cc-fleet workflow watch` tails it for a scrubbed live status stream —
 // the engine NEVER reads it back and it NEVER feeds journalKey, so it cannot perturb
 // resume determinism (the load-bearing rule). It is key-safe BY CONSTRUCTION: there is
-// no prompt or answer field, so a vendor reply (and the never-present vendor key) cannot
+// no prompt or answer field, so a provider reply (and the never-present provider key) cannot
 // be written here; a leaf's prompt/answer live in their own 0600 io files. Msg is
-// author-supplied script text (phase title / log line), never vendor output.
+// author-supplied script text (phase title / log line), never provider output.
 type EventRecord struct {
-	Seq    int64  `json:"seq"`
-	Kind   string `json:"kind"`             // phase | log | leaf | group-open | group-close
-	Status string `json:"status,omitempty"` // leaf: launch | done | failed | cached | held | stopped
-	Phase  string `json:"phase,omitempty"`
-	Label  string `json:"label,omitempty"`
-	Vendor string `json:"vendor,omitempty"`
-	Model  string `json:"model,omitempty"`
+	Seq      int64  `json:"seq"`
+	Kind     string `json:"kind"`             // phase | log | leaf | group-open | group-close
+	Status   string `json:"status,omitempty"` // leaf: launch | done | failed | cached | held | stopped
+	Phase    string `json:"phase,omitempty"`
+	Label    string `json:"label,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
 	// Group fields: a parallel/pipeline/workflow group's id and (on group-open) its kind.
 	// `workflow watch` brackets the group by seq order (open…close), so no explicit parent
 	// id is needed. Empty for plain leaves.

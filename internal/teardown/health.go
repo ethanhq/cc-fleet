@@ -1,8 +1,8 @@
 package teardown
 
 import (
+	"github.com/ethanhq/cc-fleet/internal/providerclass"
 	"github.com/ethanhq/cc-fleet/internal/tmux"
-	"github.com/ethanhq/cc-fleet/internal/vendorclass"
 )
 
 // Health status values reported by `cc-fleet ps --check`. They describe what a
@@ -11,7 +11,7 @@ import (
 // once it's spawned (lead↔teammate messaging goes through inbox files, and a
 // wedged teammate stops writing those).
 const (
-	statusOK      = "ok"      // no vendor API-error signature in recent pane output
+	statusOK      = "ok"      // no provider API-error signature in recent pane output
 	statusError   = "error"   // an API-error signature was found (see error_class)
 	statusUnknown = "unknown" // pane could not be captured (gone / tmux unreachable)
 )
@@ -23,7 +23,7 @@ const (
 	errClassRateLimit    = "rate_limit"           // HTTP 429 / "rate limit"
 	errClassInsufficient = "insufficient_balance" // out of balance / quota
 	errClassAuth         = "auth"                 // HTTP 401/403 / bad key
-	errClassAPIError     = "api_error"            // generic vendor API failure
+	errClassAPIError     = "api_error"            // generic provider API failure
 	errClassCloudflare   = "cloudflare_blocked"   // Cloudflare edge blocked this IP/client
 )
 
@@ -39,13 +39,13 @@ var captureFn = capturePane
 // AnnotateHealth fills Status / ErrorClass / Detail on each teammate by
 // capturing and classifying its tmux pane's recent output.
 //
-// Why this exists: a vendor teammate whose API backend returns 429 / 401 /
+// Why this exists: a provider teammate whose API backend returns 429 / 401 /
 // out-of-balance gets wedged in claude's retry loop. It never finishes AND
 // never emits an idle notification — emitting one would require the LLM, which
 // is exactly what's down. A lead that only "waits for idle" then blocks
 // forever. This scan lets the lead poll for that state instead of waiting.
 //
-// SECURITY: a pane may contain fragments of the vendor API key (e.g. echoed in
+// SECURITY: a pane may contain fragments of the provider API key (e.g. echoed in
 // a verbose error). classifyPaneOutput therefore returns only canonical,
 // hard-coded strings; we NEVER copy any substring of the captured text into
 // the result, and never log it.
@@ -85,32 +85,32 @@ func capturePane(socket, paneID string) (string, error) {
 	return tmux.NewServer(socket).CapturePane(paneID)
 }
 
-// classifyPaneOutput inspects recent pane text for vendor API-error signatures
+// classifyPaneOutput inspects recent pane text for provider API-error signatures
 // and returns (status, errorClass, detail).
 //
 // It returns ONLY canonical strings — never any substring of the input — so a
 // key fragment in the pane can't leak into ps output (see AnnotateHealth's
 // SECURITY note). The signature matching + priority (out-of-balance > cloudflare
-// > auth > rate-limit > generic API error) live in internal/vendorclass so the
+// > auth > rate-limit > generic API error) live in internal/providerclass so the
 // subagent envelope classifier shares the exact same vocabulary; here we map
 // the shared class back onto teardown's status/error_class/detail triple.
 func classifyPaneOutput(text string) (status, errorClass, detail string) {
-	switch vendorclass.MatchClass(text) {
-	case vendorclass.ClassInsufficientBalance:
+	switch providerclass.MatchClass(text) {
+	case providerclass.ClassInsufficientBalance:
 		return statusError, errClassInsufficient,
-			"vendor account out of balance / quota — top up or switch vendor"
-	case vendorclass.ClassCloudflareBlocked:
+			"provider account out of balance / quota — top up or switch provider"
+	case providerclass.ClassCloudflareBlocked:
 		return statusError, errClassCloudflare,
-			"vendor edge (Cloudflare) blocked this IP/client — switch network or retry later"
-	case vendorclass.ClassAuth:
+			"provider edge (Cloudflare) blocked this IP/client — switch network or retry later"
+	case providerclass.ClassAuth:
 		return statusError, errClassAuth,
-			"vendor rejected the API key (HTTP 401/403) — rotate the key"
-	case vendorclass.ClassRateLimit:
+			"provider rejected the API key (HTTP 401/403) — rotate the key"
+	case providerclass.ClassRateLimit:
 		return statusError, errClassRateLimit,
-			"vendor rate limit (HTTP 429) — wait then retry once, or switch vendor"
-	case vendorclass.ClassAPIError:
+			"provider rate limit (HTTP 429) — wait then retry once, or switch provider"
+	case providerclass.ClassAPIError:
 		return statusError, errClassAPIError,
-			"vendor API error in pane — inspect with tmux capture-pane; consider switching vendor"
+			"provider API error in pane — inspect with tmux capture-pane; consider switching provider"
 	default:
 		return statusOK, "", ""
 	}

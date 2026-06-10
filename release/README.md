@@ -9,7 +9,7 @@ needed — this archive ships a compiled binary for your platform.
 # 1. install the binary (+ ccf alias) and the skill (skill via the plugin by default)
 ./install.sh --prefix ~/.local/bin
 
-# 2. add a vendor — pipe the key on stdin, never inline it in argv (it leaks
+# 2. add a provider — pipe the key on stdin, never inline it in argv (it leaks
 #    to shell history / `ps`)
 printf '%s' "$DEEPSEEK_KEY" | cc-fleet add deepseek \
   --base-url https://api.deepseek.com/anthropic \

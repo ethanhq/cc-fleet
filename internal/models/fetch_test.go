@@ -17,19 +17,19 @@ import (
 
 // fakeKey is the API key we install in the test secrets/ dir. We assert it
 // shows up in the Authorization header of recorded requests AND that it
-// never appears in any error string (even when the vendor echoes it).
+// never appears in any error string (even when the provider echoes it).
 const fakeKey = "sk-test-deepseek-XYZ-secret-deadbeef"
 
-// installVendor writes a vendors.toml + secret file pointing at endpointURL
+// installProvider writes a providers.toml + secret file pointing at endpointURL
 // using the file:// secrets backend so secrets.Keyget returns fakeKey when
-// Fetch asks for it. Returns the *config.Vendor that callers pass to Fetch.
-func installVendor(t *testing.T, name, endpointURL string) *config.Vendor {
+// Fetch asks for it. Returns the *config.Provider that callers pass to Fetch.
+func installProvider(t *testing.T, name, endpointURL string) *config.Provider {
 	t.Helper()
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", filepath.Join(xdg, "fakehome"))
 
-	v := &config.Vendor{
+	v := &config.Provider{
 		Name:           name,
 		BaseURL:        "https://" + name + ".example.com/anthropic",
 		DefaultModel:   name + "-latest",
@@ -40,12 +40,12 @@ func installVendor(t *testing.T, name, endpointURL string) *config.Vendor {
 		AddedAt:        time.Date(2026, 5, 24, 0, 0, 0, 0, time.UTC),
 	}
 	cfg := &config.Config{
-		Version: config.SchemaVersion,
-		Vendors: map[string]*config.Vendor{name: v},
+		Version:   config.SchemaVersion,
+		Providers: map[string]*config.Provider{name: v},
 	}
-	cfgPath, err := config.VendorsPath()
+	cfgPath, err := config.ProvidersPath()
 	if err != nil {
-		t.Fatalf("VendorsPath: %v", err)
+		t.Fatalf("ProvidersPath: %v", err)
 	}
 	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o700); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
@@ -79,7 +79,7 @@ func TestFetch_OpenAIStyle_OK(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	v := installVendor(t, "deepseek", srv.URL)
+	v := installProvider(t, "deepseek", srv.URL)
 
 	got, err := Fetch(context.Background(), v)
 	if err != nil {
@@ -114,7 +114,7 @@ func TestFetch_AnthropicStyle_DataEnvelope(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	v := installVendor(t, "kimi", srv.URL)
+	v := installProvider(t, "kimi", srv.URL)
 
 	got, err := Fetch(context.Background(), v)
 	if err != nil {
@@ -135,7 +135,7 @@ func TestFetch_AnthropicStyle_BareArray(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	v := installVendor(t, "glm", srv.URL)
+	v := installProvider(t, "glm", srv.URL)
 
 	got, err := Fetch(context.Background(), v)
 	if err != nil {
@@ -148,14 +148,14 @@ func TestFetch_AnthropicStyle_BareArray(t *testing.T) {
 
 func TestFetch_HTTP401_ReturnsErrKeyInvalid(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		// Some vendors echo the bearer key back in 401 bodies — we must
+		// Some providers echo the bearer key back in 401 bodies — we must
 		// neither leak it into the error nor swallow the sentinel.
 		w.WriteHeader(http.StatusUnauthorized)
 		fmt.Fprintf(w, `{"error":"Invalid key %s, please rotate"}`, fakeKey)
 	}))
 	defer srv.Close()
 
-	v := installVendor(t, "deepseek", srv.URL)
+	v := installProvider(t, "deepseek", srv.URL)
 
 	_, err := Fetch(context.Background(), v)
 	if err == nil {
@@ -176,7 +176,7 @@ func TestFetch_HTTP500_PlainError(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	v := installVendor(t, "deepseek", srv.URL)
+	v := installProvider(t, "deepseek", srv.URL)
 
 	_, err := Fetch(context.Background(), v)
 	if err == nil {
@@ -191,7 +191,7 @@ func TestFetch_HTTP500_PlainError(t *testing.T) {
 }
 
 // TestFetch_HTTP500_ErrorOmitsRawBody: the default Error() string MUST be
-// canonical: status + endpoint only, never raw body bytes. A vendor that echoes
+// canonical: status + endpoint only, never raw body bytes. A provider that echoes
 // its bearer key into the 5xx body must not leak through Error() / refresh --json.
 func TestFetch_HTTP500_ErrorOmitsRawBody(t *testing.T) {
 	// Sentinel placed at byte 0 of the body — the strictest form of the bug
@@ -203,7 +203,7 @@ func TestFetch_HTTP500_ErrorOmitsRawBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	v := installVendor(t, "deepseek", srv.URL)
+	v := installProvider(t, "deepseek", srv.URL)
 
 	_, err := Fetch(context.Background(), v)
 	if err == nil {
@@ -247,7 +247,7 @@ func TestFetch_HTTP400_ErrorOmitsRawBody(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	v := installVendor(t, "deepseek", srv.URL)
+	v := installProvider(t, "deepseek", srv.URL)
 
 	_, err := Fetch(context.Background(), v)
 	if err == nil {
@@ -277,7 +277,7 @@ func TestFetch_ParseError_MentionsEndpoint_NotKey(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	v := installVendor(t, "deepseek", srv.URL)
+	v := installProvider(t, "deepseek", srv.URL)
 
 	_, err := Fetch(context.Background(), v)
 	if err == nil {
@@ -304,7 +304,7 @@ func TestFetch_ContextTimeout(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	v := installVendor(t, "deepseek", srv.URL)
+	v := installProvider(t, "deepseek", srv.URL)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -318,7 +318,7 @@ func TestFetch_ContextTimeout(t *testing.T) {
 	}
 }
 
-func TestFetch_NilVendor(t *testing.T) {
+func TestFetch_NilProvider(t *testing.T) {
 	_, err := Fetch(context.Background(), nil)
 	if err == nil {
 		t.Fatalf("Fetch(nil): want error, got nil")
@@ -326,7 +326,7 @@ func TestFetch_NilVendor(t *testing.T) {
 }
 
 func TestFetch_EmptyEndpoint(t *testing.T) {
-	v := &config.Vendor{Name: "x"}
+	v := &config.Provider{Name: "x"}
 	_, err := Fetch(context.Background(), v)
 	if err == nil {
 		t.Fatalf("Fetch(empty endpoint): want error, got nil")
@@ -424,7 +424,7 @@ func TestFetch_SkipsEntriesWithEmptyID(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	v := installVendor(t, "deepseek", srv.URL)
+	v := installProvider(t, "deepseek", srv.URL)
 
 	got, err := Fetch(context.Background(), v)
 	if err != nil {

@@ -17,8 +17,8 @@ import (
 func TestAgentSlimOptionPlumbing(t *testing.T) {
 	rec := &recorder{}
 	_, err := runScript(t, "slimp", 2, echoLeaf(rec), `
-await agent("p", {vendor: "v", profile: "slim", tools: ["Read", "Bash", "Read"].slice(0, 2), skills: false, mcp: true});
-await agent("p2", {vendor: "v", profile: "slim", mcp: false});
+await agent("p", {provider: "v", profile: "slim", tools: ["Read", "Bash", "Read"].slice(0, 2), skills: false, mcp: true});
+await agent("p2", {provider: "v", profile: "slim", mcp: false});
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -53,9 +53,9 @@ await agent("p2", {vendor: "v", profile: "slim", mcp: false});
 func TestAgentSlimDefaults(t *testing.T) {
 	rec := &recorder{}
 	_, err := runScript(t, "slimd", 2, echoLeaf(rec), `
-await agent("a", {vendor: "v"});
-await agent("b", {vendor: "v", profile: "slim-ro"});
-await agent("c", {vendor: "v", profile: "full"});
+await agent("a", {provider: "v"});
+await agent("b", {provider: "v", profile: "slim-ro"});
+await agent("c", {provider: "v", profile: "full"});
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -86,17 +86,17 @@ func TestAgentSlimValidationErrors(t *testing.T) {
 	cases := []struct {
 		name, src, want string
 	}{
-		{"tools-with-full", `agent("p", {vendor: "v", profile: "full", tools: ["Read"]})`, "slim-only"},
-		{"skills-with-full", `agent("p", {vendor: "v", profile: "full", skills: false})`, "slim-only"},
-		{"mcp-with-full", `agent("p", {vendor: "v", profile: "full", mcp: true})`, "slim-only"},
-		{"mcp-false-with-full", `agent("p", {vendor: "v", profile: "full", mcp: false})`, "slim-only"},
-		{"bad-profile", `agent("p", {vendor: "v", profile: "turbo"})`, "unknown prompt profile"},
-		{"unknown-tool", `agent("p", {vendor: "v", profile: "slim", tools: ["Nope"]})`, "unknown tool"},
-		{"duplicate-tool", `agent("p", {vendor: "v", profile: "slim", tools: ["Read", "Read"]})`, "duplicate tool"},
-		{"skill-with-skills-off", `agent("p", {vendor: "v", profile: "slim", tools: ["Read", "Skill"], skills: false})`, "contradictory with skills disabled"},
-		{"bad-tools-type", `agent("p", {vendor: "v", profile: "slim", tools: "Read"})`, "must be an array"},
-		{"bad-profile-type", `agent("p", {vendor: "v", profile: 7})`, "must be a string"},
-		{"bad-mcp-type", `agent("p", {vendor: "v", profile: "slim", mcp: 7})`, "must be a boolean"},
+		{"tools-with-full", `agent("p", {provider: "v", profile: "full", tools: ["Read"]})`, "slim-only"},
+		{"skills-with-full", `agent("p", {provider: "v", profile: "full", skills: false})`, "slim-only"},
+		{"mcp-with-full", `agent("p", {provider: "v", profile: "full", mcp: true})`, "slim-only"},
+		{"mcp-false-with-full", `agent("p", {provider: "v", profile: "full", mcp: false})`, "slim-only"},
+		{"bad-profile", `agent("p", {provider: "v", profile: "turbo"})`, "unknown prompt profile"},
+		{"unknown-tool", `agent("p", {provider: "v", profile: "slim", tools: ["Nope"]})`, "unknown tool"},
+		{"duplicate-tool", `agent("p", {provider: "v", profile: "slim", tools: ["Read", "Read"]})`, "duplicate tool"},
+		{"skill-with-skills-off", `agent("p", {provider: "v", profile: "slim", tools: ["Read", "Skill"], skills: false})`, "contradictory with skills disabled"},
+		{"bad-tools-type", `agent("p", {provider: "v", profile: "slim", tools: "Read"})`, "must be an array"},
+		{"bad-profile-type", `agent("p", {provider: "v", profile: 7})`, "must be a string"},
+		{"bad-mcp-type", `agent("p", {provider: "v", profile: "slim", mcp: 7})`, "must be a boolean"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -133,7 +133,7 @@ func TestAgentSlimDowngradeLogsAndKeysFull(t *testing.T) {
 	runLeaf = echoLeaf(rec)
 	t.Cleanup(func() { runLeaf = old })
 
-	_, script := writeScript(t, `await agent("q", {vendor: "v", profile: "slim"});`)
+	_, script := writeScript(t, `await agent("q", {provider: "v", profile: "slim"});`)
 	run, err := Prepare(script)
 	if err != nil {
 		t.Fatal(err)
@@ -190,7 +190,7 @@ func TestSchemaAbsentStructuredOutputFails(t *testing.T) {
 		return subagent.Result{OK: true, Result: `{"answer": 5}`}
 	})
 	_, err := runScript(t, "slimso", 1, leaf,
-		`return await agent("q", {vendor: "v", schema: {required: ["answer"]}});`)
+		`return await agent("q", {provider: "v", schema: {required: ["answer"]}});`)
 	if err == nil || !strings.Contains(err.Error(), "structured_output") {
 		t.Fatalf("err = %v, want a no-structured_output failure", err)
 	}
@@ -211,7 +211,7 @@ func TestSchemaJournalsStructuredPayload(t *testing.T) {
 	})
 	t.Cleanup(func() { runLeaf = old })
 
-	_, script := writeScript(t, `await agent("q", {vendor: "v", schema: {required: ["answer"]}});`)
+	_, script := writeScript(t, `await agent("q", {provider: "v", schema: {required: ["answer"]}});`)
 	run, err := Prepare(script)
 	if err != nil {
 		t.Fatal(err)

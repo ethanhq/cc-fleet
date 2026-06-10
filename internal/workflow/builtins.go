@@ -16,8 +16,8 @@ import (
 )
 
 // ensureLeafProxy ensures the codex conversion daemon for a codex provider before a
-// leaf executes (a no-op for every other vendor). A seam so tests never start a daemon.
-var ensureLeafProxy = codexproxy.EnsureForVendorName
+// leaf executes (a no-op for every other provider). A seam so tests never start a daemon.
+var ensureLeafProxy = codexproxy.EnsureForProviderName
 
 // engine holds the per-run state the builtins close over. It is the single
 // authoritative writer of the run manifest — name/description/startedAt are fixed at
@@ -52,15 +52,15 @@ type engine struct {
 	argsJSON  string // --args-json, re-persisted so a restart resumes with the SAME args (else leaf keys shift)
 	// The run's default-provider resolution, fixed at mint and seeded from the manifest
 	// (re-persisted every save so the whole-manifest overwrite can't wipe it). A
-	// vendor-less agent() resolves to defaultProvider; when it is empty, agent() throws
+	// provider-less agent() resolves to defaultProvider; when it is empty, agent() throws
 	// defaultProviderErr (the recorded error_code). One of the two is set when the run
 	// uses a default; both empty for an all-explicit script.
 	defaultProvider    string
 	defaultProviderErr string
 	// Budget accounting, loop-protected. A cap (<=0 = uncapped) trips on the FIRST of two
 	// counters to breach: USD (an Anthropic list-price ESTIMATE — claude's own metering, not
-	// the third-party vendor's actual charge) and tokens (Usage.InputTokens+OutputTokens, the
-	// exact vendor-neutral ceiling). *Spent accumulates each completed leaf's real cost; *Reserved
+	// the third-party provider's actual charge) and tokens (Usage.InputTokens+OutputTokens, the
+	// exact provider-neutral ceiling). *Spent accumulates each completed leaf's real cost; *Reserved
 	// holds a pessimistic per-leaf estimate from the budget gate until the leaf reconciles to real,
 	// so a concurrent fan-out admits leaves against spent+reserved (not spent alone) and can't
 	// overshoot the cap by the whole in-flight set. See budgetReserve/budgetRelease/budgetCharge.
@@ -122,7 +122,7 @@ func (e *engine) effProfileFor(requested string) (string, string) {
 // Function global alone leaves `(function(){}).constructor("…")` compiling code) and
 // defines parallel/pipeline in JS over the host bracket hooks — Promise composition is
 // the natural expression of their barrier / no-barrier contracts — and aliases console
-// onto the log() narrator (vendor-model muscle memory writes console.log). The host
+// onto the log() narrator (provider-model muscle memory writes console.log). The host
 // object is deleted right after; user scripts can't reach it.
 const bootstrapJS = `(function (host) {
 	"use strict";
@@ -284,25 +284,25 @@ type promiseSettle struct {
 // leafSpec snapshots everything a leaf goroutine needs — plain Go data captured on the
 // loop, so the goroutine never touches the VM or the engine state.
 type leafSpec struct {
-	vendor, model, prompt, phase, label string
-	key, schemaJSON, isolation, profile string
-	tools                               []string
-	noSkills, mcp                       bool
-	timeoutSec, maxBudget               float64
-	maxTurns                            int
-	usdEst                              float64
-	tokEst                              int64
+	provider, model, prompt, phase, label string
+	key, schemaJSON, isolation, profile   string
+	tools                                 []string
+	noSkills, mcp                         bool
+	timeoutSec, maxBudget                 float64
+	maxTurns                              int
+	usdEst                                float64
+	tokEst                                int64
 }
 
 // agentOptKeys is the agent() options contract; an unknown key throws — a weak model's
 // typo'd option must fail loudly, not silently no-op.
 var agentOptKeys = map[string]bool{
-	"vendor": true, "model": true, "schema": true, "label": true, "phase": true,
+	"provider": true, "model": true, "schema": true, "label": true, "phase": true,
 	"timeout": true, "max_budget_usd": true, "max_turns": true,
 	"isolation": true, "profile": true, "tools": true, "skills": true, "mcp": true,
 }
 
-// jsAgent runs ONE vendor subagent leaf and returns a Promise that settles with its
+// jsAgent runs ONE provider subagent leaf and returns a Promise that settles with its
 // result. Argument errors, the budget gate, and the lifetime cap THROW synchronously
 // (faithful to native — and a throwing thunk inside parallel/pipeline degrades to
 // null); a leaf failure REJECTS the promise. With schema the leaf runs with
@@ -317,18 +317,18 @@ func (e *engine) jsAgent(call goja.FunctionCall) goja.Value {
 		panic(e.newError("agent: prompt must be a string"))
 	}
 	o := e.agentOpts(call.Argument(1))
-	vendor := o.str("vendor")
-	if vendor == "" {
-		// Vendor-less leaf: consume the run's mint-fixed default (recorded in the
+	provider := o.str("provider")
+	if provider == "" {
+		// Provider-less leaf: consume the run's mint-fixed default (recorded in the
 		// manifest, so a resume keys on the SAME provider — never a live re-resolve).
 		// The recorded NAME is used as-is; if the provider was since removed/disabled
-		// it fails through the normal vendor validation in subagent.Run AFTER the
+		// it fails through the normal provider validation in subagent.Run AFTER the
 		// journal lookup, so a completed leaf still cache-hits on resume. When no
 		// default resolved at mint, throw the recorded error_code.
 		if e.defaultProvider != "" {
-			vendor = e.defaultProvider
+			provider = e.defaultProvider
 		} else {
-			panic(e.newError("agent: opts.vendor omitted and no default provider (%s)", e.defaultProviderErr))
+			panic(e.newError("agent: opts.provider omitted and no default provider (%s)", e.defaultProviderErr))
 		}
 	}
 	isolation := o.str("isolation")
@@ -409,23 +409,23 @@ func (e *engine) jsAgent(call goja.FunctionCall) goja.Value {
 	// a cache hit returns without executing (the only place the leaf shape would otherwise
 	// be invisible). Routed through log() — the engine's user-visible narrator line.
 	if downgrade != "" {
-		e.logf("agent(%s): %s; running full", vendor, downgrade)
+		e.logf("agent(%s): %s; running full", provider, downgrade)
 	}
 
-	// Resume replay: a journaled leaf returns an already-resolved promise with NO vendor
+	// Resume replay: a journaled leaf returns an already-resolved promise with NO provider
 	// exec, NO slot, and NO lifetime-admit — a cache hit is free. The key spans the
-	// result's full determinant (vendor / model / base prompt / schema / effective slim
+	// result's full determinant (provider / model / base prompt / schema / effective slim
 	// shape). A schema leaf re-decodes + re-validates the cached raw answer
 	// (deterministic: it passed before); a corrupt/hand-edited entry that fails falls
 	// through to re-run the leaf rather than abort the run.
-	key := journalKey(vendor, model, prompt, schemaJSON, isolation, effProfile, keyTools, !skills, mcp)
+	key := journalKey(provider, model, prompt, schemaJSON, isolation, effProfile, keyTools, !skills, mcp)
 	if cached, hit := e.journal.lookup(key); hit {
 		if schemaJSON == "" {
-			e.emitLeaf("cached", phaseTag, label, vendor, model)
+			e.emitLeaf("cached", phaseTag, label, provider, model)
 			return e.resolved(e.vm.ToValue(cached))
 		}
 		if v, verr := e.replyToJS(cached, schemaJSON); verr == nil {
-			e.emitLeaf("cached", phaseTag, label, vendor, model)
+			e.emitLeaf("cached", phaseTag, label, provider, model)
 			return e.resolved(v)
 		}
 	}
@@ -452,7 +452,7 @@ func (e *engine) jsAgent(call goja.FunctionCall) goja.Value {
 	e.budgetReserve(usdEst, tokEst)
 
 	spec := leafSpec{
-		vendor: vendor, model: model, prompt: prompt, phase: phaseTag, label: label,
+		provider: provider, model: model, prompt: prompt, phase: phaseTag, label: label,
 		key: key, schemaJSON: schemaJSON, isolation: isolation, profile: profile,
 		tools: keyTools, noSkills: !skills, mcp: mcp,
 		timeoutSec: timeoutSec, maxBudget: maxBudget, maxTurns: maxTurns,
@@ -462,7 +462,7 @@ func (e *engine) jsAgent(call goja.FunctionCall) goja.Value {
 	// the on-loop journal/manifest writes) so the control plane can address the leaf by
 	// job id from the moment it exists; the attempt goroutines reuse the id.
 	jobID := mintQueuedLeaf(subagent.Request{
-		Vendor: vendor, RunID: e.runID, Phase: phaseTag, Label: label,
+		Provider: provider, RunID: e.runID, Phase: phaseTag, Label: label,
 		JournalKey: key, PersistIO: e.persistIO, PromptProfile: profile,
 	}, model)
 	p, resolve, reject := e.vm.NewPromise()
@@ -485,7 +485,7 @@ func (e *engine) jsAgent(call goja.FunctionCall) goja.Value {
 	if jobID != "" && e.heldPhases[phaseTag] {
 		subagent.HoldLeaf(jobID)
 		h.held = true
-		e.emitLeaf("held", phaseTag, label, vendor, model)
+		e.emitLeaf("held", phaseTag, label, provider, model)
 		return e.vm.ToValue(p)
 	}
 	e.spawnAttempt(jobID, h)
@@ -514,11 +514,11 @@ func (e *engine) execLeaf(ctx context.Context, jobID string, h *leafCtl, spec le
 	defer func() {
 		if r := recover(); r != nil {
 			res = subagent.Result{}
-			preErr = fmt.Errorf("agent(%s): leaf panicked: %v", spec.vendor, r)
+			preErr = fmt.Errorf("agent(%s): leaf panicked: %v", spec.provider, r)
 		}
 	}()
-	if perr := ensureLeafProxy(spec.vendor); perr != nil {
-		return subagent.Result{}, fmt.Errorf("agent(%s): codex proxy unavailable: %v", spec.vendor, perr)
+	if perr := ensureLeafProxy(spec.provider); perr != nil {
+		return subagent.Result{}, fmt.Errorf("agent(%s): codex proxy unavailable: %v", spec.provider, perr)
 	}
 	// Acquire a pool slot; the slot is held ONLY across this attempt's actual exec and
 	// released right after — never across anything a script branch nests — so nesting
@@ -542,10 +542,10 @@ func (e *engine) execLeaf(ctx context.Context, jobID string, h *leafCtl, spec le
 		workDir = dir
 	}
 	e.post(leafCB{state: func() {
-		e.emitLeaf("launch", spec.phase, spec.label, spec.vendor, spec.model)
+		e.emitLeaf("launch", spec.phase, spec.label, spec.provider, spec.model)
 	}})
 	res = runLeaf(ctx, subagent.Request{
-		Vendor:         spec.vendor,
+		Provider:       spec.provider,
 		Model:          spec.model,
 		PromptReader:   strings.NewReader(spec.prompt), // stdin, not argv
 		JSON:           true,                           // force inner json → res.Result is the answer text
@@ -605,21 +605,21 @@ func (e *engine) completeAttempt(jobID string, gen int, h *leafCtl, res subagent
 				// promise stays unsettled and inflight/reservation are kept.
 				h.held = true
 				h.cancel = nil
-				e.emitLeaf("held", spec.phase, spec.label, spec.vendor, spec.model)
+				e.emitLeaf("held", spec.phase, spec.label, spec.provider, spec.model)
 				return
 			case directive == "restart" && (stoppedClass || !res.OK):
 				if e.budgetWouldExceed(0, 0) {
 					e.logf("control: leaf %s restart refused — %v; the leaf stays held", jobID, e.budgetExceededErr())
 					h.held = true
 					h.cancel = nil
-					e.emitLeaf("held", spec.phase, spec.label, spec.vendor, spec.model)
+					e.emitLeaf("held", spec.phase, spec.label, spec.provider, spec.model)
 					return
 				}
 				if !e.sched.admit() {
 					e.logf("control: leaf %s restart refused — the %d-leaf lifetime cap is exhausted; the leaf stays held", jobID, maxLifetimeAgents)
 					h.held = true
 					h.cancel = nil
-					e.emitLeaf("held", spec.phase, spec.label, spec.vendor, spec.model)
+					e.emitLeaf("held", spec.phase, spec.label, spec.provider, spec.model)
 					return
 				}
 				h.gen++
@@ -637,15 +637,15 @@ func (e *engine) completeAttempt(jobID string, gen int, h *leafCtl, res subagent
 		defer e.releaseLeaf(jobID, h)
 		if preErr != nil {
 			subagent.FinalizeQueuedLeafFailed(jobID, res)
-			e.emitLeaf(failureEventStatus(res), spec.phase, spec.label, spec.vendor, spec.model)
+			e.emitLeaf(failureEventStatus(res), spec.phase, spec.label, spec.provider, spec.model)
 			out.err = preErr
 			return
 		}
 		if !res.OK {
 			// A pre-flight fail (no Run registration) keeps its real error class on the job.
 			subagent.FinalizeQueuedLeafFailed(jobID, res)
-			e.emitLeaf(failureEventStatus(res), spec.phase, spec.label, spec.vendor, spec.model)
-			out.err = fmt.Errorf("agent(%s): %s: %s", spec.vendor, res.ErrorCode, res.ErrorMsg)
+			e.emitLeaf(failureEventStatus(res), spec.phase, spec.label, spec.provider, spec.model)
+			out.err = fmt.Errorf("agent(%s): %s: %s", spec.provider, res.ErrorCode, res.ErrorMsg)
 			return
 		}
 		// Book the exec's real cost: USD (claude's list-price estimate) + tokens
@@ -654,30 +654,30 @@ func (e *engine) completeAttempt(jobID string, gen int, h *leafCtl, res subagent
 		e.budgetCharge(res.CostUSD, leafTokens(res))
 		if spec.schemaJSON == "" {
 			e.journal.append(spec.key, res.Result)
-			e.emitLeaf("done", spec.phase, spec.label, spec.vendor, spec.model)
+			e.emitLeaf("done", spec.phase, spec.label, spec.provider, spec.model)
 			out.payload = res.Result
 			out.settle = true
 			return
 		}
 		// Schema leaf: claude enforced that the StructuredOutput tool was CALLED; the
-		// client validation below is the backstop for a weak vendor filling it invalidly.
+		// client validation below is the backstop for a weak provider filling it invalidly.
 		// An OK envelope WITHOUT the payload (e.g. a max_turns-starved leaf) is a failure
 		// — never a prose-JSON fallback. Validation failure is terminal: an identical
 		// re-run reproduces it at full leaf cost.
 		if len(res.StructuredOutput) == 0 {
 			subagent.FinalizeQueuedLeafFailed(jobID, subagent.Result{})
-			e.emitLeaf("failed", spec.phase, spec.label, spec.vendor, spec.model)
-			out.err = fmt.Errorf("agent(%s): schema: no structured_output in the result envelope (the StructuredOutput call costs turns — raise max_turns)", spec.vendor)
+			e.emitLeaf("failed", spec.phase, spec.label, spec.provider, spec.model)
+			out.err = fmt.Errorf("agent(%s): schema: no structured_output in the result envelope (the StructuredOutput call costs turns — raise max_turns)", spec.provider)
 			return
 		}
 		if _, verr := decodeAndValidate(string(res.StructuredOutput), spec.schemaJSON); verr != nil {
 			subagent.FinalizeQueuedLeafFailed(jobID, subagent.Result{})
-			e.emitLeaf("failed", spec.phase, spec.label, spec.vendor, spec.model)
-			out.err = fmt.Errorf("agent(%s): schema not satisfied: %v", spec.vendor, verr)
+			e.emitLeaf("failed", spec.phase, spec.label, spec.provider, spec.model)
+			out.err = fmt.Errorf("agent(%s): schema not satisfied: %v", spec.provider, verr)
 			return
 		}
 		e.journal.append(spec.key, string(res.StructuredOutput))
-		e.emitLeaf("done", spec.phase, spec.label, spec.vendor, spec.model)
+		e.emitLeaf("done", spec.phase, spec.label, spec.provider, spec.model)
 		out.payload, out.schema = string(res.StructuredOutput), true
 		out.settle = true
 	}
@@ -695,7 +695,7 @@ func (e *engine) completeAttempt(jobID string, gen int, h *leafCtl, res subagent
 		}
 		v, perr := e.jsonParse(goja.Undefined(), e.vm.ToValue(stripCodeFence(out.payload)))
 		if perr != nil {
-			h.settle.reject(e.newError("agent(%s): schema payload is not valid JSON: %v", spec.vendor, perr))
+			h.settle.reject(e.newError("agent(%s): schema payload is not valid JSON: %v", spec.provider, perr))
 			return
 		}
 		h.settle.resolve(v)
@@ -793,8 +793,8 @@ func (e *engine) jsLog(call goja.FunctionCall) goja.Value {
 
 // emitLeaf records a leaf transition (launch/done/failed/cached) on the live-event
 // channel. Loop-held callers only; nil-safe via the writer.
-func (e *engine) emitLeaf(status, phase, label, vendor, model string) {
-	e.events.emit(EventRecord{Kind: "leaf", Status: status, Phase: phase, Label: label, Vendor: vendor, Model: model})
+func (e *engine) emitLeaf(status, phase, label, provider, model string) {
+	e.events.emit(EventRecord{Kind: "leaf", Status: status, Phase: phase, Label: label, Provider: provider, Model: model})
 }
 
 // logf is the engine-internal narrator: a formatted line to stderr plus a `log`
@@ -850,7 +850,7 @@ func (e *engine) saveManifest(status, errText string) {
 		SpentUSD:     e.budgetSpent,
 		SpentTokens:  e.budgetTokensSpent,
 		// The mint-fixed default resolution: re-persisted so a resume reads the SAME
-		// provider a vendor-less leaf already keyed on (never a live re-resolve).
+		// provider a provider-less leaf already keyed on (never a live re-resolve).
 		DefaultProvider:      e.defaultProvider,
 		DefaultProviderError: e.defaultProviderErr,
 	})

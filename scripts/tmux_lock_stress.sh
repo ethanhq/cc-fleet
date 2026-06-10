@@ -3,7 +3,7 @@
 # lock SCOPE. Reproduces cc-fleet's locked tmux section
 #   display-message (leader) -> list-panes (count) -> split-window
 #     [-> select-layout main-vertical + resize-pane leader 30%]
-# running `sleep 30` panes (NO vendor / NO claude) concurrently across processes
+# running `sleep 30` panes (NO provider / NO claude) concurrently across processes
 # on a throwaway tmux socket, under 3 lock regimes:
 #
 #   sameteam : all N spawns share ONE lock  == cc-fleet spawning N teammates

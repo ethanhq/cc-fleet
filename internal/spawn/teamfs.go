@@ -289,7 +289,7 @@ func parseTeamConfig(data []byte) (*TeamConfig, error) {
 	if v, ok := raw["members"]; ok {
 		// Re-marshal + unmarshal the members slice into the typed Member
 		// struct. This is simpler than walking the generic map and matches
-		// the round-trip strategy used in internal/config/vendor.go.
+		// the round-trip strategy used in internal/config/provider.go.
 		mb, err := json.Marshal(v)
 		if err != nil {
 			return nil, fmt.Errorf("spawn: re-marshal members: %w", err)

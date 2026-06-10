@@ -31,7 +31,7 @@ func TestWorktreeIsolationWiring(t *testing.T) {
 	}
 	t.Cleanup(func() { createWorktreeFn = oldW })
 
-	if _, err := runScript(t, "wt", 2, leaf, `await agent("edit", {vendor: "v", isolation: "worktree"});`); err != nil {
+	if _, err := runScript(t, "wt", 2, leaf, `await agent("edit", {provider: "v", isolation: "worktree"});`); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if gotDir != "/tmp/fake-wt" {
@@ -47,11 +47,11 @@ func TestWorktreeIsolationWiring(t *testing.T) {
 func TestWorktreeRejections(t *testing.T) {
 	rec := &recorder{}
 	if _, err := runScript(t, "wtb1", 2, echoLeaf(rec),
-		`return await agent("q", {vendor: "v", isolation: "docker"});`); err == nil || !strings.Contains(err.Error(), "isolation must be") {
+		`return await agent("q", {provider: "v", isolation: "docker"});`); err == nil || !strings.Contains(err.Error(), "isolation must be") {
 		t.Errorf("bad isolation value should error, got %v", err)
 	}
 	if _, err := runScript(t, "wtb2", 2, echoLeaf(rec),
-		`return await agent("q", {vendor: "v", isolation: "worktree", run_in_background: true});`); err == nil || !strings.Contains(err.Error(), "unknown option") {
+		`return await agent("q", {provider: "v", isolation: "worktree", run_in_background: true});`); err == nil || !strings.Contains(err.Error(), "unknown option") {
 		t.Errorf("run_in_background should be rejected as an unknown option, got %v", err)
 	}
 }
@@ -96,8 +96,8 @@ func TestWorktreeRealGit(t *testing.T) {
 
 	g, err := runScript(t, "wtgit", 2, leaf, `
 const r = await parallel([
-    () => agent("a", {vendor: "v", isolation: "worktree"}),
-    () => agent("b", {vendor: "v", isolation: "worktree"}),
+    () => agent("a", {provider: "v", isolation: "worktree"}),
+    () => agent("b", {provider: "v", isolation: "worktree"}),
 ]);
 return { r };
 `)

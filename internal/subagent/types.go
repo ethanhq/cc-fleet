@@ -1,18 +1,18 @@
-// Package subagent runs a ONE-SHOT, HEADLESS vendor subagent: it launches
-// `claude -p` backed by a third-party vendor model (via the vendor profile's
+// Package subagent runs a ONE-SHOT, HEADLESS provider subagent: it launches
+// `claude -p` backed by a third-party provider model (via the provider profile's
 // --settings + --model) and returns the result synchronously. It is the lean
-// half of the spawn pipeline (load vendor → write profile → load fingerprint)
+// half of the spawn pipeline (load provider → write profile → load fingerprint)
 // plus an exec shell, with the entire tmux / team / lock half removed.
 //
 // Three invariants hold here:
 //
-//   - Keys never leak: the vendor key flows ONLY via the profile's apiKeyHelper
-//     (`<abs cc-fleet> keyget <vendor>`), which claude execs; cc-fleet's subagent
+//   - Keys never leak: the provider key flows ONLY via the profile's apiKeyHelper
+//     (`<abs cc-fleet> keyget <provider>`), which claude execs; cc-fleet's subagent
 //     process never reads key bytes, never puts a key in argv/env/log/stdout.
 //   - Lock-free: subagent writes no team config / members / inbox and splits no
 //     tmux pane, so it takes NEITHER WithTeamLock NOR WithServerLock. The only
-//     write is profile.WriteForVendor (already atomic + idempotent), so N
-//     concurrent subagents for one vendor are embarrassingly parallel.
+//     write is profile.WriteForProvider (already atomic + idempotent), so N
+//     concurrent subagents for one provider are embarrassingly parallel.
 //   - The headless child's env strips the lead's creds AND the nested-CC /
 //     teams markers (see childenv.Clean); fp.Env is deliberately NOT re-applied.
 package subagent
@@ -28,8 +28,8 @@ import (
 // Request is the input to Run. Zero values fall back to the documented
 // defaults (OutputFormat "text", Timeout 300s, Probe off).
 type Request struct {
-	Vendor       string        // required: vendors.toml table name
-	Model        string        // empty → vendor.default_model
+	Provider     string        // required: providers.toml table name
+	Model        string        // empty → provider.default_model
 	Prompt       string        // task text (mutually exclusive with PromptReader)
 	PromptReader io.Reader     // --prompt-file / stdin; non-nil feeds claude's stdin, keeps -p value out of argv
 	OutputFormat string        // "text" | "json" — claude's inner output format
@@ -65,7 +65,7 @@ type Request struct {
 
 	// PersistIO opts this job into board drill-in: persist the prompt + answer to
 	// per-job 0600 side files (<id>.prompt / <id>.answer) for the boards' detail cards.
-	// It is CONTENT-PRIVACY, not key-safety — the vendor key never enters the prompt or
+	// It is CONTENT-PRIVACY, not key-safety — the provider key never enters the prompt or
 	// answer (it flows via apiKeyHelper). The sync finalizer's result cache stays
 	// answer-stripped; a background job's cache keeps the answer (subagent-status serves
 	// it from there), and board ROWS never show a reply by the render-side rule that
@@ -135,7 +135,7 @@ type Result struct {
 
 	// Success path (distilled from claude's inner result envelope).
 	Result        string  `json:"result,omitempty"` // inner .result (the answer text)
-	Vendor        string  `json:"vendor,omitempty"`
+	Provider      string  `json:"provider,omitempty"`
 	Model         string  `json:"model,omitempty"`           // inner modelUsage key (route evidence) else req.Model
 	DurationMs    int64   `json:"duration_ms,omitempty"`     // inner .duration_ms (incl. retry wall-clock)
 	APIDurationMs int64   `json:"duration_api_ms,omitempty"` // inner .duration_api_ms (pure API time)
@@ -173,7 +173,7 @@ type Result struct {
 	StartedAt  string `json:"started_at,omitempty"`
 	Removed    int    `json:"removed,omitempty"` // subagent-gc: job groups removed
 
-	// Failure path. error_msg is a CANONICAL string only (never raw vendor body
+	// Failure path. error_msg is a CANONICAL string only (never raw provider body
 	// text); the one raw-text exception is the SUBAGENT_FAILED stderr preview,
 	// which is claude's own (key-safe) stderr.
 	ErrorCode      string `json:"error_code,omitempty"`
@@ -201,21 +201,21 @@ const (
 	// Pre-flight failures (claude never launched). Reuse spawn's code spellings
 	// so the skill already recognizes them.
 	ErrCodeBadArgs            = "SUBAGENT_BAD_ARGS"       // --prompt/--prompt-file missing or both given (CLI layer)
-	ErrCodeUnknownVendor      = "UNKNOWN_VENDOR"          // vendor not in vendors.toml
-	ErrCodeVendorDisabled     = "VENDOR_DISABLED"         // enabled = false
+	ErrCodeUnknownProvider    = "UNKNOWN_PROVIDER"        // provider not in providers.toml
+	ErrCodeProviderDisabled   = "PROVIDER_DISABLED"       // enabled = false
 	ErrCodeFingerprintMissing = "FINGERPRINT_MISSING"     // never captured → skill self-heal
 	ErrCodeFingerprintStale   = "FINGERPRINT_STALE"       // BinaryPath gone from disk
 	ErrCodeProxyUnavailable   = "CODEX_PROXY_UNAVAILABLE" // codex conversion daemon could not be started
 
 	// Probe failure (only when --probe).
-	ErrCodeVendorUnreachable = "VENDOR_UNREACHABLE" // transport-layer failure
+	ErrCodeProviderUnreachable = "PROVIDER_UNREACHABLE" // transport-layer failure
 
 	// Runtime failures parsed from claude's inner envelope.
 	ErrCodeKeyInvalid          = "KEY_INVALID"              // api_error_status 401/403
 	ErrCodeRateLimited         = "RATE_LIMITED"             // 429 (no balance signature)
 	ErrCodeInsufficientBalance = "INSUFFICIENT_BALANCE"     // 429/402 + balance signature
 	ErrCodeModelNotFound       = "MODEL_NOT_FOUND"          // 400 + model-name rejection
-	ErrCodeVendorAPIError      = "VENDOR_API_ERROR"         // other is_error / 5xx / overloaded
+	ErrCodeProviderAPIError    = "PROVIDER_API_ERROR"       // other is_error / 5xx / overloaded
 	ErrCodeCloudflareBlocked   = "CODEX_CLOUDFLARE_BLOCKED" // 403 + Cloudflare edge-block signature
 
 	// cc-fleet layer.
@@ -225,13 +225,13 @@ const (
 	ErrCodeOutputTooLarge = "SUBAGENT_OUTPUT_TOO_LARGE" // child stdout/stderr exceeded the byte cap; group killed
 )
 
-// fail builds a failure Result, stamping vendor for context (mirrors spawn.fail).
-func fail(code, msg, vendor, suggestion string) Result {
+// fail builds a failure Result, stamping provider for context (mirrors spawn.fail).
+func fail(code, msg, provider, suggestion string) Result {
 	return Result{
 		OK:         false,
 		ErrorCode:  code,
 		ErrorMsg:   msg,
-		Vendor:     vendor,
+		Provider:   provider,
 		Suggestion: suggestion,
 	}
 }

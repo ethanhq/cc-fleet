@@ -10,9 +10,9 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/config"
 )
 
-// Loopback port selection for the codex vendor's base_url: a small reserved
+// Loopback port selection for the codex provider's base_url: a small reserved
 // scan range starting at a fixed literal. The chosen port is persisted into
-// vendors.toml at add time and baked into the cached profile, so it must stay
+// providers.toml at add time and baked into the cached profile, so it must stay
 // stable across daemon restarts (never ephemeral).
 const (
 	defaultPortBase = 17222
@@ -36,9 +36,9 @@ func ScanDefaultModel(fallback string) string {
 	return doc.Model
 }
 
-// ChoosePort picks a new daemon-backed vendor's loopback port: the explicit
+// ChoosePort picks a new daemon-backed provider's loopback port: the explicit
 // preference when usable, else the first usable port in the reserved range.
-// Usable = not already assigned to another vendor in vendors.toml AND (free to
+// Usable = not already assigned to another provider in providers.toml AND (free to
 // bind, or held by a live cc-fleet daemon — re-adding while the daemon runs must
 // not fail). Skipping assigned ports keeps two daemon-backed providers from
 // thrashing one port (daemons start lazily, so neither is bound at add time).
@@ -59,7 +59,7 @@ func ChoosePort(preferred int) (int, error) {
 }
 
 // assignedPorts is the set of loopback ports already bound to a daemon-backed
-// vendor in vendors.toml, so a new provider never reuses one. A config-load
+// provider in providers.toml, so a new provider never reuses one. A config-load
 // failure yields an empty set (the bind check below still guards live ports).
 func assignedPorts() map[int]bool {
 	used := map[int]bool{}
@@ -67,7 +67,7 @@ func assignedPorts() map[int]bool {
 	if err != nil {
 		return used
 	}
-	for _, v := range cfg.Vendors {
+	for _, v := range cfg.Providers {
 		if !v.DaemonBacked() {
 			continue
 		}

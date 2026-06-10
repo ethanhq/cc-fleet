@@ -20,7 +20,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/ids"
 	"github.com/ethanhq/cc-fleet/internal/leadsession"
 	"github.com/ethanhq/cc-fleet/internal/profile"
-	"github.com/ethanhq/cc-fleet/internal/vendorclass"
+	"github.com/ethanhq/cc-fleet/internal/providerclass"
 )
 
 // defaultTimeout caps an unset req.Timeout. 300s is deliberately > the ~178s a
@@ -88,10 +88,10 @@ func LoadFingerprint() (*fingerprint.Fingerprint, error) { return loadFP() }
 // without relying on the process tree they run under.
 var detectLeadSession = leadsession.Detect
 
-// ensureVendorProxy ensures the codex conversion daemon for a codex provider
-// (a no-op for every other vendor). A package var so tests can stub it without
+// ensureProviderProxy ensures the codex conversion daemon for a codex provider
+// (a no-op for every other provider). A package var so tests can stub it without
 // launching a real daemon process.
-var ensureVendorProxy = codexproxy.EnsureForVendor
+var ensureProviderProxy = codexproxy.EnsureForProvider
 
 // Run executes the full subagent pipeline and returns a structured Result. Like
 // Spawn it NEVER returns a Go error — every failure path produces a Result.
@@ -108,20 +108,20 @@ func Run(parent context.Context, req Request) Result {
 	}
 	dg := req.Diag
 
-	// 1. Load vendor config.
+	// 1. Load provider config.
 	cfg, err := config.Load()
 	if err != nil {
-		return fail(ErrCodeUnknownVendor, fmt.Sprintf("load vendors.toml: %v", err),
-			req.Vendor, suggestionFor(ErrCodeUnknownVendor))
+		return fail(ErrCodeUnknownProvider, fmt.Sprintf("load providers.toml: %v", err),
+			req.Provider, suggestionFor(ErrCodeUnknownProvider))
 	}
-	v, ok := cfg.Vendors[req.Vendor]
+	v, ok := cfg.Providers[req.Provider]
 	if !ok {
-		return fail(ErrCodeUnknownVendor, fmt.Sprintf("vendor %q not in vendors.toml", req.Vendor),
-			req.Vendor, suggestionFor(ErrCodeUnknownVendor))
+		return fail(ErrCodeUnknownProvider, fmt.Sprintf("provider %q not in providers.toml", req.Provider),
+			req.Provider, suggestionFor(ErrCodeUnknownProvider))
 	}
 	if !v.Enabled {
-		return fail(ErrCodeVendorDisabled, fmt.Sprintf("vendor %q is disabled in vendors.toml", req.Vendor),
-			req.Vendor, suggestionFor(ErrCodeVendorDisabled))
+		return fail(ErrCodeProviderDisabled, fmt.Sprintf("provider %q is disabled in providers.toml", req.Provider),
+			req.Provider, suggestionFor(ErrCodeProviderDisabled))
 	}
 
 	// 2. Resolve model (capability keyword default/strong/fast → slot id, else a
@@ -136,14 +136,14 @@ func Run(parent context.Context, req Request) Result {
 		// LoadOrBundled never returns ErrNotFound (it falls back to the bundled
 		// recipe); a non-nil error here means an existing cache is corrupt.
 		return fail(ErrCodeFingerprintMissing, fmt.Sprintf("load fingerprint: %v", err),
-			req.Vendor, suggestionFor(ErrCodeFingerprintMissing))
+			req.Provider, suggestionFor(ErrCodeFingerprintMissing))
 	}
 	// Resolve the binary path live (cached-if-exists, else ccver) so a CC
 	// upgrade that GC'd the recipe's pinned path doesn't strand us.
 	binPath, err := fingerprint.ResolveBinaryPath(fp)
 	if err != nil {
 		return fail(ErrCodeFingerprintStale, err.Error(),
-			req.Vendor, suggestionFor(ErrCodeFingerprintStale))
+			req.Provider, suggestionFor(ErrCodeFingerprintStale))
 	}
 	fp.BinaryPath = binPath
 	// Shared runtime gate — the same helper spawn.Spawn uses, so the two callers
@@ -152,40 +152,40 @@ func Run(parent context.Context, req Request) Result {
 	if err := fingerprint.ValidateForRuntime(fp); err != nil {
 		return fail(ErrCodeFingerprintStale,
 			err.Error(),
-			req.Vendor, suggestionFor(ErrCodeFingerprintStale))
+			req.Provider, suggestionFor(ErrCodeFingerprintStale))
 	}
 	dg.Logf("subagent: fingerprint gate ok (binary %s)", binPath)
 
 	// 3b. For a codex provider, ensure the conversion daemon is up — after the
 	//     fingerprint gate, before the profile write, so a daemon failure is
 	//     fail-before-mutation and leaves no profile behind.
-	if err := ensureVendorProxy(v, dg); err != nil {
-		return fail(ErrCodeProxyUnavailable, err.Error(), req.Vendor, suggestionFor(ErrCodeProxyUnavailable))
+	if err := ensureProviderProxy(v, dg); err != nil {
+		return fail(ErrCodeProxyUnavailable, err.Error(), req.Provider, suggestionFor(ErrCodeProxyUnavailable))
 	}
 
-	// 4. Ensure the per-vendor profile exists. Atomic temp+rename + idempotent,
+	// 4. Ensure the per-provider profile exists. Atomic temp+rename + idempotent,
 	//    so it's safe with no lock even under N concurrent subagents for one
-	//    vendor (the package's lock-free invariant).
+	//    provider (the package's lock-free invariant).
 	//
 	//    MUST run AFTER the fingerprint gate above, not before — fail-before-
 	//    side-effects, so a corrupt/missing fingerprint never leaves a profile
 	//    file behind. profilePath is only consumed later, so the move is safe.
-	profilePath, err := profile.WriteForVendor(v, "")
+	profilePath, err := profile.WriteForProvider(v, "")
 	if err != nil {
-		return fail(ErrCodeFailed, fmt.Sprintf("write profile for %s: %v", req.Vendor, err),
-			req.Vendor, "")
+		return fail(ErrCodeFailed, fmt.Sprintf("write profile for %s: %v", req.Provider, err),
+			req.Provider, "")
 	}
 	dg.Logf("subagent: profile written %s", profilePath)
 
 	// 5. Optional reachability probe (default OFF). Shares spawn's classifier;
 	//    on Block we abort, on Warn we note and proceed.
 	if req.Probe {
-		p := vendorclass.Reachability(v)
+		p := providerclass.Reachability(v)
 		if p.Warn != "" {
 			fmt.Fprint(os.Stderr, p.Warn)
 		}
 		if p.Block {
-			return fail(p.Code, p.Msg, req.Vendor, p.Suggestion)
+			return fail(p.Code, p.Msg, req.Provider, p.Suggestion)
 		}
 	}
 
@@ -227,7 +227,7 @@ func Run(parent context.Context, req Request) Result {
 
 	slim, slimErr := buildSlimArgv(effective, jobID, req, model)
 	if slimErr != nil {
-		res := fail(ErrCodeFailed, slimErr.Error(), req.Vendor, "")
+		res := fail(ErrCodeFailed, slimErr.Error(), req.Provider, "")
 		res.PromptProfile, res.SlimDowngrade = effective, downgrade
 		res.LeadSessionID = req.LeadSessionID
 		res.RunID, res.Phase, res.Label = req.RunID, req.Phase, req.Label
@@ -287,7 +287,7 @@ func Run(parent context.Context, req Request) Result {
 	// failure or a timeout — classify it ahead of everything else so the job
 	// finalizes "stopped" (the deferred finalizeSyncJob maps ErrCodeStopped).
 	if !timedOut && parent.Err() != nil {
-		res = fail(ErrCodeStopped, "run stopped while the leaf was executing", req.Vendor, "")
+		res = fail(ErrCodeStopped, "run stopped while the leaf was executing", req.Provider, "")
 		res.LeadSessionID = req.LeadSessionID
 		res.RunID, res.Phase, res.Label = req.RunID, req.Phase, req.Label
 		res.PromptProfile, res.SlimDowngrade = effective, downgrade
@@ -300,8 +300,8 @@ func Run(parent context.Context, req Request) Result {
 	// surfaces as SUBAGENT_OUTPUT_TOO_LARGE — never a misclassified truncation.
 	if !timedOut && errors.Is(runErr, errOutputTooLarge) {
 		res = fail(ErrCodeOutputTooLarge,
-			fmt.Sprintf("vendor %s child output exceeded %d bytes", req.Vendor, maxChildOutput),
-			req.Vendor, suggestionFor(ErrCodeOutputTooLarge))
+			fmt.Sprintf("provider %s child output exceeded %d bytes", req.Provider, maxChildOutput),
+			req.Provider, suggestionFor(ErrCodeOutputTooLarge))
 		res.LeadSessionID = req.LeadSessionID
 		res.RunID, res.Phase, res.Label = req.RunID, req.Phase, req.Label
 		res.PromptProfile, res.SlimDowngrade = effective, downgrade
@@ -339,7 +339,7 @@ func buildArgv(binaryPath, profilePath, model string, req Request, slim slimArgv
 	argv := []string{binaryPath}
 
 	// Permissions: default to --dangerously-skip-permissions (headless has no
-	// TTY to confirm prompts; this is the SAME risk surface as a vendor
+	// TTY to confirm prompts; this is the SAME risk surface as a provider
 	// teammate, not a new one). A caller wanting a sandbox passes
 	// --permission-mode plan|acceptEdits|default.
 	if req.PermissionMode != "" {

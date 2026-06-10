@@ -16,7 +16,7 @@ func TestRun_SyncRecordsBoardJobNoAnswerLeak(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", t.TempDir())
-	writeMinimalVendors(t, xdg)
+	writeMinimalProviders(t, xdg)
 
 	fakeClaude := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
 	orig := loadFP
@@ -26,7 +26,7 @@ func TestRun_SyncRecordsBoardJobNoAnswerLeak(t *testing.T) {
 	t.Cleanup(func() { loadFP = orig })
 
 	// A SYNCHRONOUS run (no Background). The caller still gets the answer inline.
-	res := Run(context.Background(), Request{Vendor: "glm", Prompt: "hi", JSON: true, LeadSessionID: "lead-run-1"})
+	res := Run(context.Background(), Request{Provider: "glm", Prompt: "hi", JSON: true, LeadSessionID: "lead-run-1"})
 	if !res.OK || res.Result != "SUBAGENT_SMOKE_OK=42" {
 		t.Fatalf("sync run should return the answer to the caller: %+v", res)
 	}
@@ -44,7 +44,7 @@ func TestRun_SyncRecordsBoardJobNoAnswerLeak(t *testing.T) {
 	if err != nil || len(jobs) != 1 {
 		t.Fatalf("ListJobs: err=%v n=%d", err, len(jobs))
 	}
-	if jobs[0].Status != "done" || jobs[0].Vendor != "glm" {
+	if jobs[0].Status != "done" || jobs[0].Provider != "glm" {
 		t.Fatalf("finished sync job wrong: %+v", jobs[0])
 	}
 	if jobs[0].LeadSessionID != "lead-run-1" {
@@ -68,7 +68,7 @@ func TestRun_SyncAutoDetectsLeadSession(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", t.TempDir())
-	writeMinimalVendors(t, xdg)
+	writeMinimalProviders(t, xdg)
 
 	fakeClaude := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
 	origFP := loadFP
@@ -81,7 +81,7 @@ func TestRun_SyncAutoDetectsLeadSession(t *testing.T) {
 	detectLeadSession = func() string { return "auto-lead-session" }
 	t.Cleanup(func() { detectLeadSession = origDetect })
 
-	res := Run(context.Background(), Request{Vendor: "glm", Prompt: "hi", JSON: true})
+	res := Run(context.Background(), Request{Provider: "glm", Prompt: "hi", JSON: true})
 	if !res.OK {
 		t.Fatalf("Run failed: %+v", res)
 	}
@@ -101,7 +101,7 @@ func TestRun_ExplicitLeadSessionOverridesAutoDetect(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", t.TempDir())
-	writeMinimalVendors(t, xdg)
+	writeMinimalProviders(t, xdg)
 
 	fakeClaude := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
 	origFP := loadFP
@@ -118,7 +118,7 @@ func TestRun_ExplicitLeadSessionOverridesAutoDetect(t *testing.T) {
 	}
 	t.Cleanup(func() { detectLeadSession = origDetect })
 
-	res := Run(context.Background(), Request{Vendor: "glm", Prompt: "hi", JSON: true, LeadSessionID: "explicit-lead"})
+	res := Run(context.Background(), Request{Provider: "glm", Prompt: "hi", JSON: true, LeadSessionID: "explicit-lead"})
 	if !res.OK {
 		t.Fatalf("Run failed: %+v", res)
 	}
@@ -139,7 +139,7 @@ func TestRun_SyncSlimRegistrationFailureLeavesNoOrphans(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", t.TempDir())
-	writeMinimalVendors(t, xdg)
+	writeMinimalProviders(t, xdg)
 
 	fakeClaude := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
 	origFP := loadFP
@@ -161,7 +161,7 @@ func TestRun_SyncSlimRegistrationFailureLeavesNoOrphans(t *testing.T) {
 	writeMetaFn = func(string, jobMeta) error { return os.ErrPermission }
 	t.Cleanup(func() { writeMetaFn = origWrite })
 
-	res := Run(context.Background(), Request{Vendor: "glm", Prompt: "hi", JSON: true, PromptProfile: ProfileSlim})
+	res := Run(context.Background(), Request{Provider: "glm", Prompt: "hi", JSON: true, PromptProfile: ProfileSlim})
 	if !res.OK || res.Result != "SUBAGENT_SMOKE_OK=42" {
 		t.Fatalf("a failed registration must not change the returned Result: %+v", res)
 	}

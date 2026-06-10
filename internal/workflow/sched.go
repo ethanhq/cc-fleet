@@ -16,12 +16,12 @@ const maxConcurrencyCap = 16
 
 // maxFanoutElements bounds a single parallel/pipeline list — far above the lifetime cap
 // so a large list (the native "excess queues" case) is accepted, but finite so a
-// pathological list can't OOM the results array. Live vendor execs stay ~pool size
+// pathological list can't OOM the results array. Live provider execs stay ~pool size
 // regardless (each leaf goroutine waits for a slot before its exec).
 const maxFanoutElements = 100_000
 
 // scheduler is a run's shared concurrency core: the bounded slot pool throttles
-// concurrent vendor execs (each leaf goroutine acquires a slot around its own exec —
+// concurrent provider execs (each leaf goroutine acquires a slot around its own exec —
 // never the loop, so a full pool queues leaves without stalling the script), and the
 // lifetime counter is the runaway backstop. Script execution itself is serialized by
 // the engine loop (loop.go).

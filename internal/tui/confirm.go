@@ -36,7 +36,7 @@ const (
 type confirmModal struct {
 	prompt    string
 	kind      string // one of the confirm* kind constants below
-	id        string // the action's target: a run / team / job / session id, a vendor name, or a key index
+	id        string // the action's target: a run / team / job / session id, a provider name, or a key index
 	arg       string // extra action input — the leaf journal key (restart-agent), the job id (stop-leaf / restart-leaf), or the targeted key's current value (delete-key / replace-key; identity only, never rendered)
 	cursor    int    // 0 = Cancel (default), 1 = Confirm
 	danger    bool   // a heavy/irreversible ask — the ask frame + prompt warn in red, not amber
@@ -61,7 +61,7 @@ const (
 	confirmRestart           = "restart"
 	confirmRestartAgent      = "restart-agent"
 	confirmSession           = "session"
-	confirmRemoveVendor      = "remove-vendor"
+	confirmRemoveProvider    = "remove-provider"
 	confirmDeleteKey         = "delete-key"
 	confirmReplaceKey        = "replace-key"
 	confirmSwitchDefault     = "switch-default" // change the pinned default to another provider
@@ -181,10 +181,10 @@ func (m Model) runConfirmed() (tea.Model, tea.Cmd) {
 	case confirmJob:
 		m.confirm = nil
 		return m, deleteJobCmd(c.id, m.boardEpoch)
-	case confirmRemoveVendor:
+	case confirmRemoveProvider:
 		m.confirm = nil
 		m.loading = true
-		return m, removeVendorCmd(c.id)
+		return m, removeProviderCmd(c.id)
 	case confirmSwitchDefault:
 		m.confirm = nil
 		m.loading = true

@@ -176,7 +176,7 @@ func codexCredentialReferenced(ref string) bool {
 	if err != nil {
 		return true
 	}
-	for _, v := range cfg.Vendors {
+	for _, v := range cfg.Providers {
 		if v.EffectiveProtocol() == config.ProtocolCodexOAuth && sameCredential(v.SecretRef, ref) {
 			return true
 		}

@@ -94,7 +94,7 @@ func validateID(s string) error {
 	}
 	// Reject whitespace: macOS recovers argv via space-joined `ps -o command=`,
 	// so a whitespace-bearing name would split into multiple tokens and the
-	// --agent-id reap/teardown/ps match would miss it, leaking the vendor process.
+	// --agent-id reap/teardown/ps match would miss it, leaking the provider process.
 	if strings.ContainsAny(s, " \t\r\n\v\f") {
 		return errors.New("must not contain whitespace")
 	}

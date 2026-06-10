@@ -1,5 +1,5 @@
-// Package spawn orchestrates the end-to-end "spawn a vendor teammate" flow:
-// vendor probe, profile install, fingerprint apply, team registration, and
+// Package spawn orchestrates the end-to-end "spawn a provider teammate" flow:
+// provider probe, profile install, fingerprint apply, team registration, and
 // tmux split-window. The public entry point is Spawn(Request) Result.
 //
 // This file defines the request / result / error-code surface used by
@@ -12,8 +12,8 @@ import "github.com/ethanhq/cc-fleet/internal/diag"
 // Request is the input to Spawn. Zero values for optional fields fall back to
 // the documented defaults.
 type Request struct {
-	// Vendor is the vendors.toml table name (e.g. "deepseek"). Required.
-	Vendor string
+	// Provider is the providers.toml table name (e.g. "deepseek"). Required.
+	Provider string
 
 	// AgentName is the teammate's short name (e.g. "worker-1"). Required.
 	// Used in --agent-id <name>@<team>, --agent-name <name>, and as the
@@ -24,8 +24,8 @@ type Request struct {
 	// Team is the team this teammate joins (e.g. "myproj"). Required.
 	Team string
 
-	// Model is the vendor model id (e.g. "deepseek-v4-flash"). Empty falls
-	// back to the vendor's default_model from vendors.toml.
+	// Model is the provider model id (e.g. "deepseek-v4-flash"). Empty falls
+	// back to the provider's default_model from providers.toml.
 	Model string
 
 	// Color is the teammate's pane color tag (e.g. "cyan"). Empty triggers
@@ -36,7 +36,7 @@ type Request struct {
 	// Empty triggers tmux.PickAttachedSession().
 	Target string
 
-	// Probe controls whether to ping the vendor's models endpoint before
+	// Probe controls whether to ping the provider's models endpoint before
 	// spawning. Default true; set false to skip (e.g. for offline tests).
 	Probe bool
 
@@ -74,7 +74,7 @@ type Request struct {
 
 // Result is the structured outcome of Spawn. On success ok=true and the
 // success-path fields are populated; on failure ok=false and the error_*
-// fields plus optional Vendor / Suggestion are populated.
+// fields plus optional Provider / Suggestion are populated.
 //
 // The JSON tags are part of the spawn contract. Empty fields are omitted to
 // keep the JSON envelope tight.
@@ -110,24 +110,24 @@ type Result struct {
 	// Failure-path fields.
 	ErrorCode  string `json:"error_code,omitempty"`
 	ErrorMsg   string `json:"error_msg,omitempty"`
-	Vendor     string `json:"vendor,omitempty"`
+	Provider   string `json:"provider,omitempty"`
 	Suggestion string `json:"suggestion,omitempty"`
 }
 
 // Error code enumeration. Match these via constants in callers — skills
 // switch on these strings without parsing prose.
 const (
-	ErrCodeVendorUnreachable  = "VENDOR_UNREACHABLE"
-	ErrCodeKeyInvalid         = "KEY_INVALID"
-	ErrCodeModelNotFound      = "MODEL_NOT_FOUND"
-	ErrCodeFingerprintMissing = "FINGERPRINT_MISSING"
-	ErrCodeFingerprintStale   = "FINGERPRINT_STALE"
-	ErrCodeProxyUnavailable   = "CODEX_PROXY_UNAVAILABLE"
-	ErrCodeNoLeadSession      = "NO_LEAD_SESSION"
-	ErrCodeTeamNotFound       = "TEAM_NOT_FOUND"
-	ErrCodePaneCreationFailed = "PANE_CREATION_FAILED"
-	ErrCodeUnknownVendor      = "UNKNOWN_VENDOR"
-	ErrCodeVendorDisabled     = "VENDOR_DISABLED"
+	ErrCodeProviderUnreachable = "PROVIDER_UNREACHABLE"
+	ErrCodeKeyInvalid          = "KEY_INVALID"
+	ErrCodeModelNotFound       = "MODEL_NOT_FOUND"
+	ErrCodeFingerprintMissing  = "FINGERPRINT_MISSING"
+	ErrCodeFingerprintStale    = "FINGERPRINT_STALE"
+	ErrCodeProxyUnavailable    = "CODEX_PROXY_UNAVAILABLE"
+	ErrCodeNoLeadSession       = "NO_LEAD_SESSION"
+	ErrCodeTeamNotFound        = "TEAM_NOT_FOUND"
+	ErrCodePaneCreationFailed  = "PANE_CREATION_FAILED"
+	ErrCodeUnknownProvider     = "UNKNOWN_PROVIDER"
+	ErrCodeProviderDisabled    = "PROVIDER_DISABLED"
 	// ErrCodeDuplicateName is returned when a spawn requests an AgentName that
 	// already has a member entry in the same team. Detection happens BEFORE
 	// SplitWindow, so the caller gets an explicit code (and no leaked pane) and
@@ -141,13 +141,13 @@ const (
 	ErrCodeSpawnDidNotSettle = "SPAWN_DID_NOT_SETTLE"
 )
 
-// fail builds a failure Result with vendor stamped for context.
-func fail(code, msg, vendor, suggestion string) Result {
+// fail builds a failure Result with provider stamped for context.
+func fail(code, msg, provider, suggestion string) Result {
 	return Result{
 		OK:         false,
 		ErrorCode:  code,
 		ErrorMsg:   msg,
-		Vendor:     vendor,
+		Provider:   provider,
 		Suggestion: suggestion,
 	}
 }

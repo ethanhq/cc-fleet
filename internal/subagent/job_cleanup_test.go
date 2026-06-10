@@ -18,7 +18,7 @@ import (
 
 // TestLaunchBackground_CleanupOnWriteMetaFailure: after cmd.Start succeeds, a
 // forced writeMeta failure MUST:
-//   - kill the process group (no leaked vendor child),
+//   - kill the process group (no leaked provider child),
 //   - remove the .out / .err files (no orphan job artifacts),
 //   - surface the failure to the caller (OK=false, ErrCodeFailed).
 //
@@ -28,7 +28,7 @@ func TestLaunchBackground_CleanupOnWriteMetaFailure(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", t.TempDir())
-	writeMinimalVendors(t, xdg)
+	writeMinimalProviders(t, xdg)
 
 	// A claude that "hangs" — sleep is long enough that without the cleanup
 	// we would still see the process alive when the test ends. We don't
@@ -58,7 +58,7 @@ func TestLaunchBackground_CleanupOnWriteMetaFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { killProcessGroup = origKill })
 
-	res := Run(context.Background(), Request{Vendor: "glm", Prompt: "hi", JSON: true, Background: true})
+	res := Run(context.Background(), Request{Provider: "glm", Prompt: "hi", JSON: true, Background: true})
 	if res.OK {
 		t.Fatalf("Run(background) should fail when writeMeta fails; got OK=true")
 	}
@@ -108,7 +108,7 @@ func TestLaunchBackground_ForcesInnerJSON(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", t.TempDir())
-	writeMinimalVendors(t, xdg)
+	writeMinimalProviders(t, xdg)
 
 	// fake claude that records its argv to a file then immediately writes a
 	// minimal success envelope to stdout and exits.
@@ -138,7 +138,7 @@ exit 0
 	// Caller deliberately requests text output — we MUST still force JSON
 	// internally.
 	res := Run(context.Background(), Request{
-		Vendor:       "glm",
+		Provider:     "glm",
 		Prompt:       "hi",
 		OutputFormat: "text",
 		Background:   true,
@@ -185,7 +185,7 @@ func TestLaunchBackground_OuterTextStatusEnvelopeAware(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", t.TempDir())
-	writeMinimalVendors(t, xdg)
+	writeMinimalProviders(t, xdg)
 
 	// An error envelope with HTTP 429 → classify must map this to
 	// ErrCodeRateLimited under the envelope-aware branch. In the text-mode
@@ -210,7 +210,7 @@ exit 1
 	// must classify the envelope and return failed, NOT treat the JSON-on-stdout
 	// as a text-mode success.
 	res := Run(context.Background(), Request{
-		Vendor:       "glm",
+		Provider:     "glm",
 		Prompt:       "hi",
 		OutputFormat: "text",
 		JSON:         false,

@@ -45,7 +45,7 @@ type jobMeta struct {
 	JobID         string `json:"job_id"`
 	PID           int    `json:"pid"`
 	PGID          int    `json:"pgid"`
-	Vendor        string `json:"vendor"`
+	Provider      string `json:"provider"`
 	Model         string `json:"model"`
 	StartedAt     string `json:"started_at"`
 	Status        string `json:"status"`
@@ -54,7 +54,7 @@ type jobMeta struct {
 	JSON          bool   `json:"json"`
 	LeadSessionID string `json:"lead_session_id,omitempty"`
 	// SettingsPath is the claude `--settings <profile>` for a BACKGROUND job: the
-	// per-vendor profile path, unique enough to bind meta.PID to its claude child
+	// per-provider profile path, unique enough to bind meta.PID to its claude child
 	// so processAlive can reject a recycled pid. A sync job leaves this empty —
 	// its PID is the cc-fleet process, not a claude child, so the reuse guard
 	// must NOT apply (processAlive degrades to a bare kill(0)).
@@ -117,14 +117,14 @@ var materializePromptFn = materializePromptReader
 //
 // Any failure between cmd.Start and the final Release triggers a process-group
 // SIGTERM (200ms grace) → SIGKILL → Wait → file cleanup so we never leak a
-// detached vendor child + orphan .out/.err files.
+// detached provider child + orphan .out/.err files.
 func launchBackground(req Request, binaryPath, profilePath, model, effective, downgrade string) Result {
 	dir, err := jobsDir()
 	if err != nil {
-		return fail(ErrCodeFailed, fmt.Sprintf("resolve jobs dir: %v", err), req.Vendor, "")
+		return fail(ErrCodeFailed, fmt.Sprintf("resolve jobs dir: %v", err), req.Provider, "")
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fail(ErrCodeFailed, fmt.Sprintf("mkdir jobs dir: %v", err), req.Vendor, "")
+		return fail(ErrCodeFailed, fmt.Sprintf("mkdir jobs dir: %v", err), req.Provider, "")
 	}
 
 	// Force inner JSON so StatusFor classifies via the envelope, not exitCode=0.
@@ -140,13 +140,13 @@ func launchBackground(req Request, binaryPath, profilePath, model, effective, do
 
 	outF, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
-		return fail(ErrCodeFailed, fmt.Sprintf("create job stdout: %v", err), req.Vendor, "")
+		return fail(ErrCodeFailed, fmt.Sprintf("create job stdout: %v", err), req.Provider, "")
 	}
 	defer outF.Close()
 	errF, err := os.OpenFile(errPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
 		_ = os.Remove(outPath)
-		return fail(ErrCodeFailed, fmt.Sprintf("create job stderr: %v", err), req.Vendor, "")
+		return fail(ErrCodeFailed, fmt.Sprintf("create job stderr: %v", err), req.Provider, "")
 	}
 	defer errF.Close()
 
@@ -155,7 +155,7 @@ func launchBackground(req Request, binaryPath, profilePath, model, effective, do
 	if slimErr != nil {
 		_ = os.Remove(outPath)
 		_ = os.Remove(errPath)
-		return fail(ErrCodeFailed, slimErr.Error(), req.Vendor, "")
+		return fail(ErrCodeFailed, slimErr.Error(), req.Provider, "")
 	}
 
 	// Board drill-in: persist the prompt side file before the start (every failure
@@ -200,7 +200,7 @@ func launchBackground(req Request, binaryPath, profilePath, model, effective, do
 				_ = os.Remove(pf)
 				_ = os.Remove(slimPath)
 				return fail(ErrCodeFailed,
-					fmt.Sprintf("materialize prompt: %v", merr), req.Vendor, "")
+					fmt.Sprintf("materialize prompt: %v", merr), req.Provider, "")
 			}
 			defer f.Close()
 			cmd.Stdin = f
@@ -212,7 +212,7 @@ func launchBackground(req Request, binaryPath, profilePath, model, effective, do
 		_ = os.Remove(errPath)
 		_ = os.Remove(filepath.Join(dir, jobID+".prompt"))
 		_ = os.Remove(slimPath)
-		return fail(ErrCodeFailed, fmt.Sprintf("start background subagent: %v", err), req.Vendor, "")
+		return fail(ErrCodeFailed, fmt.Sprintf("start background subagent: %v", err), req.Provider, "")
 	}
 	pid := cmd.Process.Pid
 	// Launch metadata only: the parent Releases the child below and never
@@ -223,7 +223,7 @@ func launchBackground(req Request, binaryPath, profilePath, model, effective, do
 		JobID:     jobID,
 		PID:       pid,
 		PGID:      pid, // Setpgid → the group id equals the leader pid
-		Vendor:    req.Vendor,
+		Provider:  req.Provider,
 		Model:     model,
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
 		Status:    "running",
@@ -249,7 +249,7 @@ func launchBackground(req Request, binaryPath, profilePath, model, effective, do
 		SlimDowngrade: downgrade,
 	}
 	if err := writeMetaFn(dir, meta); err != nil {
-		// meta write failed AFTER cmd.Start. Without cleanup the detached vendor
+		// meta write failed AFTER cmd.Start. Without cleanup the detached provider
 		// child + .out / .err would orphan. Process-group kill (SIGTERM → 200ms
 		// grace → SIGKILL) reaps the child (and any claude-forked grandchild);
 		// Wait() reclaims the zombie before Release. Then nuke the captured files.
@@ -259,7 +259,7 @@ func launchBackground(req Request, binaryPath, profilePath, model, effective, do
 		_ = os.Remove(errPath)
 		_ = os.Remove(filepath.Join(dir, jobID+".prompt"))
 		_ = os.Remove(slimPath)
-		return fail(ErrCodeFailed, fmt.Sprintf("write job meta: %v", err), req.Vendor, "")
+		return fail(ErrCodeFailed, fmt.Sprintf("write job meta: %v", err), req.Provider, "")
 	}
 
 	// Detach: stop tracking the child so the parent can exit cleanly.
@@ -272,7 +272,7 @@ func launchBackground(req Request, binaryPath, profilePath, model, effective, do
 		Status:        "running",
 		OutputFile:    outPath,
 		PID:           pid,
-		Vendor:        req.Vendor,
+		Provider:      req.Provider,
 		Model:         model,
 		StartedAt:     meta.StartedAt,
 		LeadSessionID: meta.LeadSessionID,
@@ -365,7 +365,7 @@ func ReapJob(jobID string) error {
 	if meta.PID > 0 {
 		reapJobTree(meta.PID)
 	}
-	finalizeSyncJob(jobID, fail(ErrCodeTimeout, "background leaf exceeded its timeout", meta.Vendor, ""))
+	finalizeSyncJob(jobID, fail(ErrCodeTimeout, "background leaf exceeded its timeout", meta.Provider, ""))
 	return nil
 }
 
@@ -424,7 +424,7 @@ func StatusFor(jobID string) Result {
 	if meta.Status == "held" {
 		return Result{
 			OK: true, JobID: jobID, Status: "held",
-			Vendor: meta.Vendor, Model: meta.Model, StartedAt: meta.StartedAt,
+			Provider: meta.Provider, Model: meta.Model, StartedAt: meta.StartedAt,
 			LeadSessionID: meta.LeadSessionID, RunID: meta.RunID, Phase: meta.Phase, Label: meta.Label,
 			JournalKey: meta.JournalKey, PromptProfile: meta.PromptProfile, SlimDowngrade: meta.SlimDowngrade,
 			Attempt: meta.Attempt,
@@ -437,7 +437,7 @@ func StatusFor(jobID string) Result {
 	if meta.PID <= 0 {
 		return Result{
 			OK: true, JobID: jobID, Status: "queued",
-			Vendor: meta.Vendor, Model: meta.Model, StartedAt: meta.StartedAt,
+			Provider: meta.Provider, Model: meta.Model, StartedAt: meta.StartedAt,
 			LeadSessionID: meta.LeadSessionID, RunID: meta.RunID, Phase: meta.Phase, Label: meta.Label,
 			JournalKey: meta.JournalKey, PromptProfile: meta.PromptProfile, SlimDowngrade: meta.SlimDowngrade,
 			Attempt: meta.Attempt,
@@ -449,7 +449,7 @@ func StatusFor(jobID string) Result {
 			OK:            true,
 			JobID:         jobID,
 			Status:        "running",
-			Vendor:        meta.Vendor,
+			Provider:      meta.Provider,
 			Model:         meta.Model,
 			StartedAt:     meta.StartedAt,
 			PID:           meta.PID,
@@ -484,9 +484,9 @@ func StatusFor(jobID string) Result {
 	if vanishedWithoutResult(stdout, innerJSON) {
 		// No envelope (json) / no answer (text) and no real exit code: the leaf ended without
 		// finishing. Fail honestly (keep any stderr clue) — never bless the synthetic exit as "done".
-		res = failVanished(meta.Vendor, stderr)
+		res = failVanished(meta.Provider, stderr)
 	} else {
-		req := Request{Vendor: meta.Vendor, Model: meta.Model, JSON: meta.JSON, OutputFormat: meta.OutputFormat}
+		req := Request{Provider: meta.Provider, Model: meta.Model, JSON: meta.JSON, OutputFormat: meta.OutputFormat}
 		res = classify(req, meta.Model, stdout, stderr, 0, false, innerJSON)
 	}
 	res.JobID = jobID
@@ -534,12 +534,12 @@ func vanishedWithoutResult(stdout []byte, innerJSON bool) bool {
 // failVanished is the honest terminal failure for a job that ended without a result and whose
 // exit status is unknowable (a detached child was Released). It keeps any stderr clue (key-safe
 // via stderrPreview) but never claims a clean "exited 0".
-func failVanished(vendor string, stderr []byte) Result {
+func failVanished(provider string, stderr []byte) Result {
 	msg := "subagent ended without a result (process gone; no exit status available)"
 	if prev := stderrPreview(stderr); prev != "" {
 		msg += ": " + prev
 	}
-	return fail(ErrCodeFailed, msg, vendor, suggestionFor(ErrCodeFailed))
+	return fail(ErrCodeFailed, msg, provider, suggestionFor(ErrCodeFailed))
 }
 
 // ListJobs scans the jobs dir and returns each background job's current Result
@@ -904,7 +904,7 @@ func processAlive(pid int, settingsPath string) bool {
 // subagent for this job: a claude binary (an arg whose path contains "/claude/"
 // or whose basename contains "claude" — versions paths have a hash basename, so
 // the path segment is the reliable marker) AND this job's --settings
-// <profilePath> value (per-vendor, unique enough to bind the pid). Matching
+// <profilePath> value (per-provider, unique enough to bind the pid). Matching
 // --settings alone is deliberate: --model is too loose (many jobs share a
 // model). If the cmdline can't be read (a just-exited pid / proc race) we trust
 // the kill(0) liveness and return true to avoid a flaky false-dead; the
@@ -1071,7 +1071,7 @@ func registerSyncJob(jobID string, req Request, model string, effective, downgra
 		JobID:         jobID,
 		PID:           os.Getpid(),
 		PGID:          os.Getpid(),
-		Vendor:        req.Vendor,
+		Provider:      req.Provider,
 		Model:         model,
 		StartedAt:     time.Now().UTC().Format(time.RFC3339),
 		Status:        "running",
@@ -1099,7 +1099,7 @@ func registerSyncJob(jobID string, req Request, model string, effective, downgra
 		return false
 	}
 	// Opt-in board drill-in: persist the prompt to a 0600 side file. Content-privacy,
-	// not key-safety (the vendor key never enters the prompt). Best-effort — a write
+	// not key-safety (the provider key never enters the prompt). Best-effort — a write
 	// hiccup just means no prompt in the detail card, never a failed run.
 	if req.PersistIO && req.IOPrompt != "" {
 		_ = os.WriteFile(filepath.Join(dir, jobID+".prompt"), []byte(req.IOPrompt), 0o600)
@@ -1126,7 +1126,7 @@ func MintQueuedLeaf(req Request, model string) string {
 	meta := jobMeta{
 		JobID:         jobID,
 		PID:           0, // no process yet — StatusFor reports queued until registerSyncJob flips it
-		Vendor:        req.Vendor,
+		Provider:      req.Provider,
 		Model:         model,
 		StartedAt:     time.Now().UTC().Format(time.RFC3339),
 		Status:        "queued",
@@ -1149,7 +1149,7 @@ func MintQueuedLeaf(req Request, model string) string {
 
 // FinalizeQueuedLeafFailed marks a leaf's (reused) job terminal-failed when the engine abandoned it
 // without a success: a queued placeholder cancelled before its slot or whose worktree failed, a
-// pre-flight vendor failure (subagent.Run returned before registering), or a schema-invalid leaf
+// pre-flight provider failure (subagent.Run returned before registering), or a schema-invalid leaf
 // whose exec cached "done". A res carrying a real error class is preserved (so the board keeps
 // e.g. INSUFFICIENT_BALANCE); otherwise a canonical SUBAGENT_FAILED is written. No-op for an empty id.
 func FinalizeQueuedLeafFailed(jobID string, res Result) {
@@ -1157,7 +1157,7 @@ func FinalizeQueuedLeafFailed(jobID string, res Result) {
 		return
 	}
 	if res.OK || res.ErrorCode == "" {
-		res = fail(ErrCodeFailed, "leaf did not complete", res.Vendor, "")
+		res = fail(ErrCodeFailed, "leaf did not complete", res.Provider, "")
 	}
 	finalizeSyncJob(jobID, res)
 }
@@ -1202,7 +1202,7 @@ func ReleaseHeldLeafStopped(jobID, msg string) {
 	}
 	meta.Status = "stopped"
 	_ = writeMetaFn(dir, meta)
-	finalizeSyncJob(jobID, fail(ErrCodeStopped, msg, meta.Vendor, ""))
+	finalizeSyncJob(jobID, fail(ErrCodeStopped, msg, meta.Provider, ""))
 }
 
 // NormalizeHeldLeaf clears a held pre-mark that lost its race: the directive landed
@@ -1294,16 +1294,16 @@ func NormalizeStaleHolds(runID string) {
 		}
 		meta.Status = "stopped" // ahead of the finalize so the suppression branch can't fire
 		_ = writeMetaFn(dir, meta)
-		finalizeSyncJob(jobID, fail(ErrCodeStopped, "run restarted while the leaf was held", meta.Vendor, ""))
+		finalizeSyncJob(jobID, fail(ErrCodeStopped, "run restarted while the leaf was held", meta.Provider, ""))
 	}
 }
 
 // finalizeSyncJob flips a sync job from running → done/failed by writing a
-// SANITIZED terminal result cache: status + vendor/model/started + the SAFE
+// SANITIZED terminal result cache: status + provider/model/started + the SAFE
 // metrics (Usage / cost / turns / duration — claude's own metering, which the
 // board's Workflows view needs to show a done leaf's tokens + "done · N turns"
 // outcome) + canonical error fields, with the answer text (res.Result) and Raw
-// STRIPPED so no vendor reply is ever persisted to disk for a sync run (the caller
+// STRIPPED so no provider reply is ever persisted to disk for a sync run (the caller
 // already got it on stdout). A subsequent StatusFor/ListJobs serves this cache.
 // jobID=="" (register failed) is a no-op; it is called from a defer so it runs on
 // the normal return path that produced res.
@@ -1315,7 +1315,7 @@ func finalizeSyncJob(jobID string, res Result) {
 	if err != nil {
 		return
 	}
-	meta, _ := readMeta(dir, jobID) // for the stable vendor/model/started columns
+	meta, _ := readMeta(dir, jobID) // for the stable provider/model/started columns
 	// Opt-in board drill-in: persist the answer to a 0600 side file, SEPARATE from the
 	// cache below (which stays answer-stripped so the board TABLE never shows a reply).
 	// Content-privacy, not key-safety. Best-effort; only a real answer (success) is kept.
@@ -1324,7 +1324,7 @@ func finalizeSyncJob(jobID string, res Result) {
 	}
 	cached := Result{
 		OK:        res.OK,
-		Vendor:    meta.Vendor,
+		Provider:  meta.Provider,
 		Model:     meta.Model,
 		JobID:     jobID,
 		StartedAt: meta.StartedAt,

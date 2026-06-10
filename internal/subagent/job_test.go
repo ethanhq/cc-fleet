@@ -21,7 +21,7 @@ func TestStatusFor_RunningJobStaysRunning(t *testing.T) {
 	jobID := "job-running"
 	// Use the test process's own pid as a guaranteed-alive process.
 	if err := writeMeta(dir, jobMeta{
-		JobID: jobID, PID: os.Getpid(), Vendor: "glm", Model: "glm-4.6",
+		JobID: jobID, PID: os.Getpid(), Provider: "glm", Model: "glm-4.6",
 		StartedAt: time.Now().UTC().Format(time.RFC3339), Status: "running", JSON: true,
 	}); err != nil {
 		t.Fatal(err)

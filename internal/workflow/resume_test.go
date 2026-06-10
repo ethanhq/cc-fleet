@@ -41,9 +41,9 @@ func TestResumeServesJournaledLeavesNoReexec(t *testing.T) {
 
 	const runID = "resume-1"
 	src := `return { r: [
-    await agent("a", {vendor: "v"}),
-    await agent("b", {vendor: "v"}),
-    await agent("c", {vendor: "v"}),
+    await agent("a", {provider: "v"}),
+    await agent("b", {provider: "v"}),
+    await agent("c", {provider: "v"}),
 ] };`
 
 	v1, err := newEngineFor(t, runID, 4).run("r.js", []byte(src), Options{})
@@ -82,9 +82,9 @@ func TestFreshRunDuplicateCallsBothExecute(t *testing.T) {
 
 	// Three identical serial calls in one fresh run.
 	v, err := newEngineFor(t, "dup-1", 1).run("d.js", []byte(`return { r: [
-    await agent("same", {vendor: "v"}),
-    await agent("same", {vendor: "v"}),
-    await agent("same", {vendor: "v"}),
+    await agent("same", {provider: "v"}),
+    await agent("same", {provider: "v"}),
+    await agent("same", {provider: "v"}),
 ] };`), Options{})
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -108,7 +108,7 @@ func TestResumeEditedLeafReruns(t *testing.T) {
 
 	const runID = "resume-2"
 	if _, err := newEngineFor(t, runID, 4).run("r.js", []byte(
-		`return { r: [await agent("a", {vendor: "v"}), await agent("b", {vendor: "v"})] };`), Options{}); err != nil {
+		`return { r: [await agent("a", {provider: "v"}), await agent("b", {provider: "v"})] };`), Options{}); err != nil {
 		t.Fatalf("pass1: %v", err)
 	}
 	if n := len(rec.prompts()); n != 2 {
@@ -116,7 +116,7 @@ func TestResumeEditedLeafReruns(t *testing.T) {
 	}
 	// Edit leaf b → b2; a is unchanged.
 	if _, err := newEngineFor(t, runID, 4).run("r.js", []byte(
-		`return { r: [await agent("a", {vendor: "v"}), await agent("b2", {vendor: "v"})] };`), Options{}); err != nil {
+		`return { r: [await agent("a", {provider: "v"}), await agent("b2", {provider: "v"})] };`), Options{}); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	if n := len(rec.prompts()); n != 3 {
@@ -146,9 +146,9 @@ func TestResumeDuplicateKeyCrashRecovery(t *testing.T) {
 	loadJournal(jp).append(journalKey("v", "", "same", "", "", "", nil, false, false), "ok:same") // 1 of 3 done before the kill
 
 	v, err := newEngineFor(t, runID, 1).run("d.js", []byte(`return { r: [
-    await agent("same", {vendor: "v", profile: "full"}),
-    await agent("same", {vendor: "v", profile: "full"}),
-    await agent("same", {vendor: "v", profile: "full"}),
+    await agent("same", {provider: "v", profile: "full"}),
+    await agent("same", {provider: "v", profile: "full"}),
+    await agent("same", {provider: "v", profile: "full"}),
 ] };`), Options{})
 	if err != nil {
 		t.Fatalf("resume: %v", err)
@@ -173,14 +173,14 @@ func TestResumeCrashRecoveryPartialJournal(t *testing.T) {
 	const runID = "resume-3"
 	jp, _ := subagent.RunJournalPath(runID)
 	// Seed the journal as if the run finished "a" then was killed (key MUST match the
-	// engine's: vendor "v", model "", prompt "a", no schema; the leaves are pinned
+	// engine's: provider "v", model "", prompt "a", no schema; the leaves are pinned
 	// profile "full" so the key carries no slim shape).
 	loadJournal(jp).append(journalKey("v", "", "a", "", "", "", nil, false, false), "ok:a")
 
 	v, err := newEngineFor(t, runID, 4).run("r.js", []byte(`return { r: [
-    await agent("a", {vendor: "v", profile: "full"}),
-    await agent("b", {vendor: "v", profile: "full"}),
-    await agent("c", {vendor: "v", profile: "full"}),
+    await agent("a", {provider: "v", profile: "full"}),
+    await agent("b", {provider: "v", profile: "full"}),
+    await agent("c", {provider: "v", profile: "full"}),
 ] };`), Options{})
 	if err != nil {
 		t.Fatalf("resume: %v", err)
@@ -222,7 +222,7 @@ func TestResumeFailedLeafNotCached(t *testing.T) {
 	t.Cleanup(func() { runLeaf = old })
 
 	const runID = "resume-4"
-	src := `return { r: await parallel([() => agent("flaky", {vendor: "v"})]) };` // failure → null, not journaled
+	src := `return { r: await parallel([() => agent("flaky", {provider: "v"})]) };` // failure → null, not journaled
 
 	v1, err := newEngineFor(t, runID, 2).run("r.js", []byte(src), Options{})
 	if err != nil {
@@ -257,7 +257,7 @@ func TestResumeSchemaCorruptCacheFallsThrough(t *testing.T) {
 	t.Cleanup(func() { runLeaf = old })
 
 	const runID = "resume-corrupt"
-	src := `const res = await agent("q", {vendor: "v", schema: {required: ["answer"]}});
+	src := `const res = await agent("q", {provider: "v", schema: {required: ["answer"]}});
 return { ans: res.answer };`
 
 	if _, err := newEngineFor(t, runID, 1).run("r.js", []byte(src), Options{}); err != nil {
@@ -316,7 +316,7 @@ func TestLaunchResumeWiring(t *testing.T) {
 
 	dir := t.TempDir()
 	script := filepath.Join(dir, "w.js")
-	if err := os.WriteFile(script, []byte("const meta = {name: \"n\", description: \"d\"};\nawait agent(\"a\", {vendor: \"v\"});\n"), 0o600); err != nil {
+	if err := os.WriteFile(script, []byte("const meta = {name: \"n\", description: \"d\"};\nawait agent(\"a\", {provider: \"v\"});\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -344,7 +344,7 @@ func TestLaunchResumeWiring(t *testing.T) {
 
 // TestResumeSchemaLeafReplaysWithoutExec: a schema leaf's cached payload (the journaled
 // structured output) is re-decoded + re-validated on resume (deterministic), serving the
-// validated value without a vendor exec.
+// validated value without a provider exec.
 func TestResumeSchemaLeafReplaysWithoutExec(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	rec := &recorder{}
@@ -356,7 +356,7 @@ func TestResumeSchemaLeafReplaysWithoutExec(t *testing.T) {
 	t.Cleanup(func() { runLeaf = old })
 
 	const runID = "resume-5"
-	src := `const res = await agent("q", {vendor: "v", schema: {required: ["answer"]}});
+	src := `const res = await agent("q", {provider: "v", schema: {required: ["answer"]}});
 return { ans: res.answer };`
 
 	v1, err := newEngineFor(t, runID, 2).run("r.js", []byte(src), Options{})
@@ -399,7 +399,7 @@ func TestResumeSchemaPreV2TextReplay(t *testing.T) {
 		"```json\n{\"answer\": 5}\n```")
 
 	v, err := newEngineFor(t, runID, 1).run("r.js", []byte(
-		`const res = await agent("q", {vendor: "v", profile: "full", schema: {required: ["answer"]}});
+		`const res = await agent("q", {provider: "v", profile: "full", schema: {required: ["answer"]}});
 return { ans: res.answer };`), Options{})
 	if err != nil {
 		t.Fatalf("resume: %v", err)

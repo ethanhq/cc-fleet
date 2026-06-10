@@ -13,7 +13,7 @@ import (
 // rotation is on). The proof case is `key_rotation = "typo"`.
 func TestLoadFromPath_RejectsTypoKeyRotation(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "vendors.toml")
+	path := filepath.Join(dir, "providers.toml")
 	body := `version = 1
 
 [deepseek]
@@ -43,7 +43,7 @@ key_rotation = "typo"
 // (by when the user may be partway through a spawn).
 func TestLoadFromPath_RejectsUnknownSecretBackend(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "vendors.toml")
+	path := filepath.Join(dir, "providers.toml")
 	body := `version = 1
 
 [weirdo]
@@ -67,11 +67,11 @@ added_at = 2026-05-24T05:00:00Z
 	}
 }
 
-// A codex-oauth vendor with a remote base_url must be rejected at load — the
+// A codex-oauth provider with a remote base_url must be rejected at load — the
 // loopback handshake secret must never be sent off-host.
 func TestLoadFromPath_RejectsRemoteCodexBaseURL(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "vendors.toml")
+	path := filepath.Join(dir, "providers.toml")
 	body := `version = 1
 
 [codex]
@@ -95,10 +95,10 @@ added_at = 2026-06-08T05:00:00Z
 	}
 }
 
-// A codex-oauth vendor with loopback endpoints loads cleanly.
+// A codex-oauth provider with loopback endpoints loads cleanly.
 func TestLoadFromPath_AcceptsLoopbackCodex(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "vendors.toml")
+	path := filepath.Join(dir, "providers.toml")
 	body := `version = 1
 
 [codex]
@@ -114,15 +114,15 @@ added_at = 2026-06-08T05:00:00Z
 		t.Fatalf("write: %v", err)
 	}
 	if _, err := LoadFromPath(path); err != nil {
-		t.Fatalf("loopback codex vendor must load, got %v", err)
+		t.Fatalf("loopback codex provider must load, got %v", err)
 	}
 }
 
-// TestLoadFromPath_RejectsEmptySecretRef: every vendor needs a secret_ref so
+// TestLoadFromPath_RejectsEmptySecretRef: every provider needs a secret_ref so
 // keyget knows what to fetch.
 func TestLoadFromPath_RejectsEmptySecretRef(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "vendors.toml")
+	path := filepath.Join(dir, "providers.toml")
 	body := `version = 1
 
 [deepseek]
@@ -150,7 +150,7 @@ added_at = 2026-05-24T05:00:00Z
 // hardest classes of bug to debug at runtime; surface it at Load.
 func TestLoadFromPath_RejectsWrongVersion(t *testing.T) {
 	dir := t.TempDir()
-	path := filepath.Join(dir, "vendors.toml")
+	path := filepath.Join(dir, "providers.toml")
 	body := `version = 99
 
 [deepseek]
@@ -174,9 +174,9 @@ added_at = 2026-05-24T05:00:00Z
 	}
 }
 
-// TestLoadFromPath_RejectsMaliciousTableName: a hand-edited vendors.toml table
+// TestLoadFromPath_RejectsMaliciousTableName: a hand-edited providers.toml table
 // name that's path-traversal ("../escape") or shell-injection ("bad;touch x")
-// shaped must be rejected at Load — the name becomes Vendor.Name and flows into
+// shaped must be rejected at Load — the name becomes Provider.Name and flows into
 // profile.ProfilePath (filepath.Join → traversal) and the apiKeyHelper command
 // (shell-evaluated → injection).
 func TestLoadFromPath_RejectsMaliciousTableName(t *testing.T) {
@@ -190,7 +190,7 @@ func TestLoadFromPath_RejectsMaliciousTableName(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			path := filepath.Join(dir, "vendors.toml")
+			path := filepath.Join(dir, "providers.toml")
 			body := `version = 1
 
 ["` + tc.table + `"]
@@ -209,15 +209,15 @@ added_at = 2026-05-24T05:00:00Z
 			if err == nil {
 				t.Fatalf("LoadFromPath: want error for malicious table name %q, got nil", tc.table)
 			}
-			if !strings.Contains(err.Error(), "vendor name") {
-				t.Fatalf("err %q should call out the invalid vendor name", err.Error())
+			if !strings.Contains(err.Error(), "provider name") {
+				t.Fatalf("err %q should call out the invalid provider name", err.Error())
 			}
 		})
 	}
 }
 
 // TestLoadFromPath_MissingFileStillReturnsEmpty: backward-compatible — a
-// non-existent vendors.toml still returns a fresh empty Config (every
+// non-existent providers.toml still returns a fresh empty Config (every
 // existing test relies on this for first-run scaffolding).
 func TestLoadFromPath_MissingFileStillReturnsEmpty(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "no-such.toml")
@@ -225,7 +225,7 @@ func TestLoadFromPath_MissingFileStillReturnsEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadFromPath(missing): %v", err)
 	}
-	if cfg == nil || cfg.Version != SchemaVersion || len(cfg.Vendors) != 0 {
+	if cfg == nil || cfg.Version != SchemaVersion || len(cfg.Providers) != 0 {
 		t.Fatalf("LoadFromPath(missing) = %+v, want empty Config", cfg)
 	}
 }

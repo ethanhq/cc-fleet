@@ -30,13 +30,13 @@ func newUninstallCmd() *cobra.Command {
 		Short: "Remove all cc-fleet config + cached state",
 		Long: `Remove every file cc-fleet manages on disk:
 
-  ~/.claude/profiles/<vendor>.json   (one per vendor)
-  ~/.config/cc-fleet/vendors.toml
+  ~/.claude/profiles/<provider>.json   (one per provider)
+  ~/.config/cc-fleet/providers.toml
   ~/.config/cc-fleet/fingerprint.json
   ~/.config/cc-fleet/models-cache.json
   ~/.config/cc-fleet/subagent-jobs/  (finished background subagent jobs)
 
-Per-vendor file-backend secrets in ~/.config/cc-fleet/secrets/ are
+Per-provider file-backend secrets in ~/.config/cc-fleet/secrets/ are
 preserved by default (--keep-secrets, the default). Pass --wipe-secrets to
 remove the entire secrets/ directory.
 

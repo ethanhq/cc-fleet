@@ -1,8 +1,8 @@
 package secrets
 
-// keyset.go implements the file-backend multi-key store: a vendor can hold
-// several API keys in <SecretsDir>/<vendor>.keys.json, each independently
-// enabled/disabled, with a per-worker rotation strategy chosen in vendors.toml.
+// keyset.go implements the file-backend multi-key store: a provider can hold
+// several API keys in <SecretsDir>/<provider>.keys.json, each independently
+// enabled/disabled, with a per-worker rotation strategy chosen in providers.toml.
 //
 // Key-safety: key bytes live only in keys.json (0600, gitignored), in process
 // memory, and on keyget's stdout. Nothing here logs a key, and parse errors
@@ -24,7 +24,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/fileutil"
 )
 
-// KeyEntry is one API key inside a vendor's multi-key store. The JSON tags are
+// KeyEntry is one API key inside a provider's multi-key store. The JSON tags are
 // the public on-disk schema: scripts/tests may hand-write keys.json.
 //
 // Label is a human-readable name shown in the TUI (empty renders as "keyN");
@@ -35,15 +35,15 @@ type KeyEntry struct {
 	Enabled bool   `json:"enabled"`
 }
 
-// safeVendorName rejects a vendor name that could escape SecretsDir when used to
-// build a per-vendor file path. Registered vendors are regex-validated at Add
-// time (userops.ValidateVendorName); this is defense-in-depth so any direct
+// safeProviderName rejects a provider name that could escape SecretsDir when used to
+// build a per-provider file path. Registered providers are regex-validated at Add
+// time (userops.ValidateProviderName); this is defense-in-depth so any direct
 // caller of the keyset API can never turn a name like "../../x" into a read
-// outside the secrets dir. The error names only the vendor (never a key).
-func safeVendorName(vendor string) error {
-	if vendor == "" || vendor == "." || vendor == ".." ||
-		strings.ContainsAny(vendor, `/\`) || strings.Contains(vendor, "..") {
-		return fmt.Errorf("keyset: invalid vendor name %q", vendor)
+// outside the secrets dir. The error names only the provider (never a key).
+func safeProviderName(provider string) error {
+	if provider == "" || provider == "." || provider == ".." ||
+		strings.ContainsAny(provider, `/\`) || strings.Contains(provider, "..") {
+		return fmt.Errorf("keyset: invalid provider name %q", provider)
 	}
 	return nil
 }
@@ -51,10 +51,10 @@ func safeVendorName(vendor string) error {
 // SafeRef rejects a file-backend secret_ref that could escape SecretsDir when
 // joined onto it. A file-backend ref must name a single flat file *inside* the
 // secrets dir, so a path separator, a ".."/"." component, or an absolute path
-// is refused. It is the secret_ref analogue of safeVendorName and is enforced
+// is refused. It is the secret_ref analogue of safeProviderName and is enforced
 // on every file-backend read/write path (userops.writeFileSecret /
 // removeFileSecret / Add / Edit and loadLegacyKeySet below) so a hand-edited
-// vendors.toml can never turn a ref like "../../etc/shadow" into a read or
+// providers.toml can never turn a ref like "../../etc/shadow" into a read or
 // write outside the secrets dir.
 //
 // It applies ONLY to the file backend: pass / 1password / vault / keyring refs
@@ -70,43 +70,43 @@ func SafeRef(ref string) error {
 	return nil
 }
 
-// keysJSONPath returns <SecretsDir>/<vendor>.keys.json. The name is derived
-// from the vendor (not its secret_ref) so the TUI/keyget always know it.
-func keysJSONPath(vendor string) (string, error) {
-	if err := safeVendorName(vendor); err != nil {
+// keysJSONPath returns <SecretsDir>/<provider>.keys.json. The name is derived
+// from the provider (not its secret_ref) so the TUI/keyget always know it.
+func keysJSONPath(provider string) (string, error) {
+	if err := safeProviderName(provider); err != nil {
 		return "", err
 	}
 	dir, err := config.SecretsDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, vendor+".keys.json"), nil
+	return filepath.Join(dir, provider+".keys.json"), nil
 }
 
-// rotationPath returns <SecretsDir>/<vendor>.rotation — the round-robin
+// rotationPath returns <SecretsDir>/<provider>.rotation — the round-robin
 // counter file. Its content is a single decimal integer (NOT a secret).
-func rotationPath(vendor string) (string, error) {
-	if err := safeVendorName(vendor); err != nil {
+func rotationPath(provider string) (string, error) {
+	if err := safeProviderName(provider); err != nil {
 		return "", err
 	}
 	dir, err := config.SecretsDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, vendor+".rotation"), nil
+	return filepath.Join(dir, provider+".rotation"), nil
 }
 
-// LoadKeySet resolves a vendor's key set by priority:
+// LoadKeySet resolves a provider's key set by priority:
 //
-//  1. <vendor>.keys.json exists  -> parse it (multi-key mode; authoritative).
+//  1. <provider>.keys.json exists  -> parse it (multi-key mode; authoritative).
 //  2. else the legacy secret_ref file exists -> one enabled entry from it.
 //  3. else -> empty set (keyget then reports "no enabled API key").
 //
 // A keys.json that fails to parse is a hard error (we do NOT silently fall back
 // to the legacy file — that could hand out the wrong key). The error wraps ONLY
 // the json error, never the file bytes or any KeyEntry (key-safety).
-func LoadKeySet(vendor string) ([]KeyEntry, error) {
-	kp, err := keysJSONPath(vendor)
+func LoadKeySet(provider string) ([]KeyEntry, error) {
+	kp, err := keysJSONPath(provider)
 	if err != nil {
 		return nil, err
 	}
@@ -116,7 +116,7 @@ func LoadKeySet(vendor string) ([]KeyEntry, error) {
 		var ks []KeyEntry
 		if jErr := json.Unmarshal(data, &ks); jErr != nil {
 			// Wrap only the json error; do NOT include data or any entry.
-			return nil, fmt.Errorf("keyset %s: parse %s: %w", vendor, kp, jErr)
+			return nil, fmt.Errorf("keyset %s: parse %s: %w", provider, kp, jErr)
 		}
 		if ks == nil {
 			ks = []KeyEntry{}
@@ -125,30 +125,30 @@ func LoadKeySet(vendor string) ([]KeyEntry, error) {
 	case errors.Is(err, os.ErrNotExist):
 		// fall through to the legacy single-key path
 	default:
-		return nil, fmt.Errorf("keyset %s: read %s: %w", vendor, kp, err)
+		return nil, fmt.Errorf("keyset %s: read %s: %w", provider, kp, err)
 	}
 
-	return loadLegacyKeySet(vendor)
+	return loadLegacyKeySet(provider)
 }
 
-// loadLegacyKeySet synthesizes a one-entry key set from the vendor's legacy
+// loadLegacyKeySet synthesizes a one-entry key set from the provider's legacy
 // secret_ref file (the pre-multi-key layout). A missing file yields an empty
-// set rather than an error so a freshly-added vendor with no key on disk still
+// set rather than an error so a freshly-added provider with no key on disk still
 // surfaces as "no enabled key" at selection time.
-func loadLegacyKeySet(vendor string) ([]KeyEntry, error) {
+func loadLegacyKeySet(provider string) ([]KeyEntry, error) {
 	cfg, err := config.Load()
 	if err != nil {
-		return nil, fmt.Errorf("keyset %s: load config: %w", vendor, err)
+		return nil, fmt.Errorf("keyset %s: load config: %w", provider, err)
 	}
-	v, ok := cfg.Vendors[vendor]
+	v, ok := cfg.Providers[provider]
 	if !ok {
-		return nil, fmt.Errorf("keyset %s: unknown vendor (not in vendors.toml)", vendor)
+		return nil, fmt.Errorf("keyset %s: unknown provider (not in providers.toml)", provider)
 	}
 	if v.SecretRef == "" {
 		return []KeyEntry{}, nil
 	}
 	if err := SafeRef(v.SecretRef); err != nil {
-		return nil, fmt.Errorf("keyset %s: %w", vendor, err)
+		return nil, fmt.Errorf("keyset %s: %w", provider, err)
 	}
 	dir, err := config.SecretsDir()
 	if err != nil {
@@ -159,19 +159,19 @@ func loadLegacyKeySet(vendor string) ([]KeyEntry, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return []KeyEntry{}, nil
 		}
-		return nil, fmt.Errorf("keyset %s: read legacy secret: %w", vendor, err)
+		return nil, fmt.Errorf("keyset %s: read legacy secret: %w", provider, err)
 	}
 	// Trim trailing CR/LF, matching the file-backend read.
 	return []KeyEntry{{Label: "key1", Key: string(bytes.TrimRight(data, "\r\n")), Enabled: true}}, nil
 }
 
-// SaveKeySet atomically writes ks to <vendor>.keys.json (0600, secrets dir
-// 0700). Writing here is what migrates a vendor from legacy single-key to
+// SaveKeySet atomically writes ks to <provider>.keys.json (0600, secrets dir
+// 0700). Writing here is what migrates a provider from legacy single-key to
 // multi-key mode: the caller seeds ks[0] from LoadKeySet (which returns the
 // legacy key) and appends the new entries before saving.
 //
 // A nil/empty ks is persisted as "[]" (an explicit empty store), never "null".
-func SaveKeySet(vendor string, ks []KeyEntry) error {
+func SaveKeySet(provider string, ks []KeyEntry) error {
 	if ks == nil {
 		ks = []KeyEntry{}
 	}
@@ -180,25 +180,25 @@ func SaveKeySet(vendor string, ks []KeyEntry) error {
 		return err
 	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("keyset %s: mkdir %s: %w", vendor, dir, err)
+		return fmt.Errorf("keyset %s: mkdir %s: %w", provider, dir, err)
 	}
-	kp, err := keysJSONPath(vendor)
+	kp, err := keysJSONPath(provider)
 	if err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(ks, "", "  ")
 	if err != nil {
-		return fmt.Errorf("keyset %s: marshal: %w", vendor, err)
+		return fmt.Errorf("keyset %s: marshal: %w", provider, err)
 	}
 	data = append(data, '\n')
 	return fileutil.AtomicWrite(kp, data, 0o600)
 }
 
-// IsMultiKey reports whether vendor is in multi-key mode (a <vendor>.keys.json
+// IsMultiKey reports whether provider is in multi-key mode (a <provider>.keys.json
 // exists). Used to guard the CLI `edit --api-key` path, which only manages the
 // legacy single key.
-func IsMultiKey(vendor string) (bool, error) {
-	kp, err := keysJSONPath(vendor)
+func IsMultiKey(provider string) (bool, error) {
+	kp, err := keysJSONPath(provider)
 	if err != nil {
 		return false, err
 	}
@@ -212,16 +212,16 @@ func IsMultiKey(vendor string) (bool, error) {
 	}
 }
 
-// RemoveKeySet best-effort deletes a vendor's multi-key store and rotation
-// counter (<vendor>.keys.json + <vendor>.rotation). A missing file is not an
+// RemoveKeySet best-effort deletes a provider's multi-key store and rotation
+// counter (<provider>.keys.json + <provider>.rotation). A missing file is not an
 // error — this is idempotent cleanup invoked from userops.Remove. It returns a
 // non-nil error only on a real removal failure (e.g. permissions).
-func RemoveKeySet(vendor string) error {
-	kp, err := keysJSONPath(vendor)
+func RemoveKeySet(provider string) error {
+	kp, err := keysJSONPath(provider)
 	if err != nil {
 		return err
 	}
-	rp, err := rotationPath(vendor)
+	rp, err := rotationPath(provider)
 	if err != nil {
 		return err
 	}
@@ -252,12 +252,12 @@ func MaskKey(key string) string {
 // nextRoundRobinIndex returns the next index in [0,n) for round-robin selection
 // and atomically advances the persistent counter. n must be > 0.
 //
-// The counter lives in <vendor>.rotation and is guarded by a blocking exclusive
+// The counter lives in <provider>.rotation and is guarded by a blocking exclusive
 // flock (LOCK_EX) so concurrent cc-fleet processes (each a separate spawn) take
 // turns rather than racing. A missing or corrupt counter self-heals to 0.
-func nextRoundRobinIndex(vendor string, n int) (int, error) {
+func nextRoundRobinIndex(provider string, n int) (int, error) {
 	if n <= 0 {
-		return 0, fmt.Errorf("rotation %s: n must be > 0, got %d", vendor, n)
+		return 0, fmt.Errorf("rotation %s: n must be > 0, got %d", provider, n)
 	}
 	dir, err := config.SecretsDir()
 	if err != nil {
@@ -265,30 +265,30 @@ func nextRoundRobinIndex(vendor string, n int) (int, error) {
 	}
 	// Create the secrets dir (0700) so a fresh HOME can still rotate.
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return 0, fmt.Errorf("rotation %s: mkdir %s: %w", vendor, dir, err)
+		return 0, fmt.Errorf("rotation %s: mkdir %s: %w", provider, dir, err)
 	}
-	path, err := rotationPath(vendor)
+	path, err := rotationPath(provider)
 	if err != nil {
 		return 0, err
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
-		return 0, fmt.Errorf("rotation %s: open %s: %w", vendor, path, err)
+		return 0, fmt.Errorf("rotation %s: open %s: %w", provider, path, err)
 	}
 	defer f.Close()
 	if err := rotLockEx(f); err != nil {
-		return 0, fmt.Errorf("rotation %s: flock %s: %w", vendor, path, err)
+		return 0, fmt.Errorf("rotation %s: flock %s: %w", provider, path, err)
 	}
 	defer func() { rotUnlock(f) }()
 
 	data, err := io.ReadAll(f)
 	if err != nil {
-		return 0, fmt.Errorf("rotation %s: read %s: %w", vendor, path, err)
+		return 0, fmt.Errorf("rotation %s: read %s: %w", provider, path, err)
 	}
 	c := parseCounter(data)
 	idx := c % n
 	if err := writeCounter(f, c+1); err != nil {
-		return 0, fmt.Errorf("rotation %s: %w", vendor, err)
+		return 0, fmt.Errorf("rotation %s: %w", provider, err)
 	}
 	return idx, nil
 }

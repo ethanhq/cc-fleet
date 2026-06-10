@@ -73,7 +73,7 @@ func (e *engine) budgetExceededErr() error {
 }
 
 // leafTokens is a completed leaf's token spend: input + output (the growing context plus the
-// generated text), EXCLUDING cache-read — the exact, vendor-neutral unit --budget-tokens caps.
+// generated text), EXCLUDING cache-read — the exact, provider-neutral unit --budget-tokens caps.
 func leafTokens(res subagent.Result) int64 {
 	if res.Usage == nil {
 		return 0
@@ -85,9 +85,9 @@ func leafTokens(res subagent.Result) int64 {
 // spent() / remaining() report the USD cap (null when uncapped; remaining → +Inf) and
 // tokens_total / tokens_spent() / tokens_remaining() the token cap (null / MaxInt64 when
 // uncapped, so a `while remaining() > N` loop stays unbounded). The USD figure is an
-// Anthropic LIST-PRICE estimate (claude's own metering, not the third-party vendor's
+// Anthropic LIST-PRICE estimate (claude's own metering, not the third-party provider's
 // actual charge); the token figure (input+output, cache-read excluded) is the exact
-// vendor-neutral count. Every function executes on the engine loop — the only place JS
+// provider-neutral count. Every function executes on the engine loop — the only place JS
 // runs — so reads are consistent with the gates. Properties are non-writable so a
 // script can't clobber the accounting view.
 func newBudgetObject(vm *goja.Runtime, e *engine) *goja.Object {

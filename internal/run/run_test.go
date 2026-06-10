@@ -33,8 +33,8 @@ func stubSeams(t *testing.T, binPath string, binErr error) *launch {
 	return got
 }
 
-// seedVendor writes one vendor into a fresh temp-HOME vendors.toml.
-func seedVendor(t *testing.T, name string, enabled bool, defaultModel string) {
+// seedProvider writes one provider into a fresh temp-HOME providers.toml.
+func seedProvider(t *testing.T, name string, enabled bool, defaultModel string) {
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", "")
@@ -42,7 +42,7 @@ func seedVendor(t *testing.T, name string, enabled bool, defaultModel string) {
 	if err != nil {
 		t.Fatalf("config.Load: %v", err)
 	}
-	cfg.Vendors[name] = &config.Vendor{
+	cfg.Providers[name] = &config.Provider{
 		Name:           name,
 		BaseURL:        "https://api." + name + ".example/anthropic",
 		ModelsEndpoint: "https://api." + name + ".example/v1/models",
@@ -58,12 +58,12 @@ func seedVendor(t *testing.T, name string, enabled bool, defaultModel string) {
 }
 
 func TestRun_ExecsWithProfileAndModel(t *testing.T) {
-	seedVendor(t, "deepseek", true, "deepseek-chat")
+	seedProvider(t, "deepseek", true, "deepseek-chat")
 	t.Setenv("ANTHROPIC_API_KEY", "sk-must-not-leak")
 	t.Setenv("CLAUDECODE", "1")
 	got := stubSeams(t, "/fake/claude", nil)
 
-	if err := Run(Request{Vendor: "deepseek"}); err != nil {
+	if err := Run(Request{Provider: "deepseek"}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if !got.called {
@@ -92,10 +92,10 @@ func TestRun_ExecsWithProfileAndModel(t *testing.T) {
 }
 
 func TestRun_ModelOverrideAndPassthrough(t *testing.T) {
-	seedVendor(t, "deepseek", true, "deepseek-chat")
+	seedProvider(t, "deepseek", true, "deepseek-chat")
 	got := stubSeams(t, "/fake/claude", nil)
 
-	if err := Run(Request{Vendor: "deepseek", Model: "deepseek-reasoner", ExtraArgs: []string{"--resume", "abc"}}); err != nil {
+	if err := Run(Request{Provider: "deepseek", Model: "deepseek-reasoner", ExtraArgs: []string{"--resume", "abc"}}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	// managed flags first (--settings/--model), then passthrough last.
@@ -106,14 +106,14 @@ func TestRun_ModelOverrideAndPassthrough(t *testing.T) {
 }
 
 func TestRun_RejectsReservedPassthrough(t *testing.T) {
-	seedVendor(t, "deepseek", true, "deepseek-chat")
+	seedProvider(t, "deepseek", true, "deepseek-chat")
 	for _, bad := range [][]string{
 		{"--model", "x"}, {"--settings=/tmp/x"},
 		{"--permission-mode", "plan"}, {"--permission-mode=plan"},
 		{"--dangerously-skip-permissions"}, {"--dangerously-skip-permissions=true"},
 	} {
 		got := stubSeams(t, "/fake/claude", nil)
-		err := Run(Request{Vendor: "deepseek", ExtraArgs: bad})
+		err := Run(Request{Provider: "deepseek", ExtraArgs: bad})
 		if err == nil || !strings.Contains(err.Error(), "managed by cc-fleet") {
 			t.Fatalf("passthrough %v: err = %v, want a managed-by-cc-fleet rejection", bad, err)
 		}
@@ -124,7 +124,7 @@ func TestRun_RejectsReservedPassthrough(t *testing.T) {
 }
 
 func TestRun_PermissionModeReachesArgv(t *testing.T) {
-	seedVendor(t, "deepseek", true, "deepseek-chat")
+	seedProvider(t, "deepseek", true, "deepseek-chat")
 	for mode, wantTail := range map[string]string{
 		"bypassPermissions": "--dangerously-skip-permissions",
 		"acceptEdits":       "--permission-mode acceptEdits",
@@ -132,7 +132,7 @@ func TestRun_PermissionModeReachesArgv(t *testing.T) {
 		"plan":              "--permission-mode plan", // forwarded faithfully (not collapsed)
 	} {
 		got := stubSeams(t, "/fake/claude", nil)
-		if err := Run(Request{Vendor: "deepseek", PermissionMode: mode}); err != nil {
+		if err := Run(Request{Provider: "deepseek", PermissionMode: mode}); err != nil {
 			t.Fatalf("Run(%q): %v", mode, err)
 		}
 		if !strings.HasSuffix(strings.Join(got.argv, " "), wantTail) {
@@ -150,14 +150,14 @@ func TestRun_GatesFailBeforeExec(t *testing.T) {
 		wantErrSubstr  string
 		wantStaleErrIs bool
 	}{
-		{"invalid vendor name", func(t *testing.T) { seedVendor(t, "deepseek", true, "deepseek-chat") },
-			Request{Vendor: "%bad"}, nil, "vendor", false},
-		{"unknown vendor", func(t *testing.T) { seedVendor(t, "deepseek", true, "deepseek-chat") },
-			Request{Vendor: "ghost"}, nil, "not configured", false},
-		{"disabled vendor", func(t *testing.T) { seedVendor(t, "deepseek", false, "deepseek-chat") },
-			Request{Vendor: "deepseek"}, nil, "disabled", false},
-		{"no claude binary", func(t *testing.T) { seedVendor(t, "deepseek", true, "deepseek-chat") },
-			Request{Vendor: "deepseek"}, fingerprint.ErrFingerprintStale, "", true},
+		{"invalid provider name", func(t *testing.T) { seedProvider(t, "deepseek", true, "deepseek-chat") },
+			Request{Provider: "%bad"}, nil, "provider", false},
+		{"unknown provider", func(t *testing.T) { seedProvider(t, "deepseek", true, "deepseek-chat") },
+			Request{Provider: "ghost"}, nil, "not configured", false},
+		{"disabled provider", func(t *testing.T) { seedProvider(t, "deepseek", false, "deepseek-chat") },
+			Request{Provider: "deepseek"}, nil, "disabled", false},
+		{"no claude binary", func(t *testing.T) { seedProvider(t, "deepseek", true, "deepseek-chat") },
+			Request{Provider: "deepseek"}, fingerprint.ErrFingerprintStale, "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

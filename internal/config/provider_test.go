@@ -9,10 +9,10 @@ import (
 	"time"
 )
 
-// validVendor returns a Vendor that should pass Validate. Tests mutate copies
+// validProvider returns a Provider that should pass Validate. Tests mutate copies
 // of this to exercise individual failure modes.
-func validVendor(name string) *Vendor {
-	return &Vendor{
+func validProvider(name string) *Provider {
+	return &Provider{
 		Name:           name,
 		BaseURL:        "https://api." + name + ".com/anthropic",
 		DefaultModel:   name + "-flash",
@@ -27,8 +27,8 @@ func validVendor(name string) *Vendor {
 func TestRoundTrip(t *testing.T) {
 	cfg := &Config{
 		Version: SchemaVersion,
-		Vendors: map[string]*Vendor{
-			"deepseek": validVendor("deepseek"),
+		Providers: map[string]*Provider{
+			"deepseek": validProvider("deepseek"),
 			"kimi": {
 				Name:           "kimi",
 				BaseURL:        "https://api.moonshot.cn/anthropic",
@@ -52,7 +52,7 @@ func TestRoundTrip(t *testing.T) {
 		},
 	}
 
-	path := filepath.Join(t.TempDir(), "vendors.toml")
+	path := filepath.Join(t.TempDir(), "providers.toml")
 	if err := SaveToPath(cfg, path); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -64,13 +64,13 @@ func TestRoundTrip(t *testing.T) {
 	if got.Version != cfg.Version {
 		t.Fatalf("version mismatch: got %d want %d", got.Version, cfg.Version)
 	}
-	if len(got.Vendors) != len(cfg.Vendors) {
-		t.Fatalf("vendor count: got %d want %d", len(got.Vendors), len(cfg.Vendors))
+	if len(got.Providers) != len(cfg.Providers) {
+		t.Fatalf("provider count: got %d want %d", len(got.Providers), len(cfg.Providers))
 	}
-	for name, want := range cfg.Vendors {
-		gv, ok := got.Vendors[name]
+	for name, want := range cfg.Providers {
+		gv, ok := got.Providers[name]
 		if !ok {
-			t.Fatalf("missing vendor %q after round-trip", name)
+			t.Fatalf("missing provider %q after round-trip", name)
 		}
 		if gv.Name != want.Name {
 			t.Errorf("%s: Name = %q, want %q", name, gv.Name, want.Name)
@@ -100,23 +100,23 @@ func TestRoundTrip(t *testing.T) {
 }
 
 func TestValidate_Missing(t *testing.T) {
-	// Each sub-case zeroes one required field on an otherwise valid vendor.
+	// Each sub-case zeroes one required field on an otherwise valid provider.
 	cases := []struct {
 		name    string
-		mutate  func(*Vendor)
+		mutate  func(*Provider)
 		wantSub string // substring expected in the error
 	}{
-		{"BaseURL", func(v *Vendor) { v.BaseURL = "" }, "base_url is required"},
-		{"DefaultModel", func(v *Vendor) { v.DefaultModel = "" }, "default_model is required"},
-		{"ModelsEndpoint", func(v *Vendor) { v.ModelsEndpoint = "" }, "models_endpoint is required"},
-		{"SecretRef", func(v *Vendor) { v.SecretRef = "" }, "secret_ref is required"},
-		{"SecretBackend", func(v *Vendor) { v.SecretBackend = "" }, "secret_backend is required"},
+		{"BaseURL", func(v *Provider) { v.BaseURL = "" }, "base_url is required"},
+		{"DefaultModel", func(v *Provider) { v.DefaultModel = "" }, "default_model is required"},
+		{"ModelsEndpoint", func(v *Provider) { v.ModelsEndpoint = "" }, "models_endpoint is required"},
+		{"SecretRef", func(v *Provider) { v.SecretRef = "" }, "secret_ref is required"},
+		{"SecretBackend", func(v *Provider) { v.SecretBackend = "" }, "secret_backend is required"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			v := validVendor("deepseek")
+			v := validProvider("deepseek")
 			tc.mutate(v)
-			cfg := &Config{Version: SchemaVersion, Vendors: map[string]*Vendor{"deepseek": v}}
+			cfg := &Config{Version: SchemaVersion, Providers: map[string]*Provider{"deepseek": v}}
 			err := cfg.Validate()
 			if err == nil {
 				t.Fatalf("Validate: want error, got nil")
@@ -129,9 +129,9 @@ func TestValidate_Missing(t *testing.T) {
 }
 
 func TestValidate_BadEnum(t *testing.T) {
-	v := validVendor("deepseek")
+	v := validProvider("deepseek")
 	v.SecretBackend = "wat"
-	cfg := &Config{Version: SchemaVersion, Vendors: map[string]*Vendor{"deepseek": v}}
+	cfg := &Config{Version: SchemaVersion, Providers: map[string]*Provider{"deepseek": v}}
 	err := cfg.Validate()
 	if err == nil {
 		t.Fatalf("Validate: want error, got nil")
@@ -144,19 +144,19 @@ func TestValidate_BadEnum(t *testing.T) {
 func TestValidate_BadURL(t *testing.T) {
 	cases := []struct {
 		name    string
-		mutate  func(*Vendor)
+		mutate  func(*Provider)
 		wantSub string
 	}{
-		{"unparseable_base_url", func(v *Vendor) { v.BaseURL = "://nope" }, "base_url"},
-		{"non_http_scheme", func(v *Vendor) { v.BaseURL = "ftp://x.com" }, "base_url"},
-		{"missing_host", func(v *Vendor) { v.BaseURL = "https://" }, "base_url"},
-		{"bad_models_endpoint", func(v *Vendor) { v.ModelsEndpoint = "ftp://x.com" }, "models_endpoint"},
+		{"unparseable_base_url", func(v *Provider) { v.BaseURL = "://nope" }, "base_url"},
+		{"non_http_scheme", func(v *Provider) { v.BaseURL = "ftp://x.com" }, "base_url"},
+		{"missing_host", func(v *Provider) { v.BaseURL = "https://" }, "base_url"},
+		{"bad_models_endpoint", func(v *Provider) { v.ModelsEndpoint = "ftp://x.com" }, "models_endpoint"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			v := validVendor("deepseek")
+			v := validProvider("deepseek")
 			tc.mutate(v)
-			cfg := &Config{Version: SchemaVersion, Vendors: map[string]*Vendor{"deepseek": v}}
+			cfg := &Config{Version: SchemaVersion, Providers: map[string]*Provider{"deepseek": v}}
 			err := cfg.Validate()
 			if err == nil {
 				t.Fatalf("Validate: want error, got nil")
@@ -170,7 +170,7 @@ func TestValidate_BadURL(t *testing.T) {
 
 func TestValidate_BadVersion(t *testing.T) {
 	// Bonus: version != 1 must error so future migrations have a hook.
-	cfg := &Config{Version: 2, Vendors: map[string]*Vendor{}}
+	cfg := &Config{Version: 2, Providers: map[string]*Provider{}}
 	if err := cfg.Validate(); err == nil {
 		t.Fatalf("Validate: want error for version=2, got nil")
 	}
@@ -178,17 +178,17 @@ func TestValidate_BadVersion(t *testing.T) {
 
 func TestValidate_KeyRotation(t *testing.T) {
 	for _, ok := range []string{"", "off", "round_robin", "random"} {
-		v := validVendor("deepseek")
+		v := validProvider("deepseek")
 		v.KeyRotation = ok
-		cfg := &Config{Version: SchemaVersion, Vendors: map[string]*Vendor{"deepseek": v}}
+		cfg := &Config{Version: SchemaVersion, Providers: map[string]*Provider{"deepseek": v}}
 		if err := cfg.Validate(); err != nil {
 			t.Fatalf("Validate(key_rotation=%q) = %v, want nil", ok, err)
 		}
 	}
 	for _, bad := range []string{"rotate", "Random", "robin", "ROUND_ROBIN"} {
-		v := validVendor("deepseek")
+		v := validProvider("deepseek")
 		v.KeyRotation = bad
-		cfg := &Config{Version: SchemaVersion, Vendors: map[string]*Vendor{"deepseek": v}}
+		cfg := &Config{Version: SchemaVersion, Providers: map[string]*Provider{"deepseek": v}}
 		err := cfg.Validate()
 		if err == nil {
 			t.Fatalf("Validate(key_rotation=%q): want error, got nil", bad)
@@ -203,7 +203,7 @@ func TestKeyRotation_OmitemptyAndOldFileParse(t *testing.T) {
 	// off (empty) must NOT write a key_rotation line — single-key users' files
 	// stay byte-identical to the pre-multi-key layout.
 	offPath := filepath.Join(t.TempDir(), "off.toml")
-	offCfg := &Config{Version: SchemaVersion, Vendors: map[string]*Vendor{"deepseek": validVendor("deepseek")}}
+	offCfg := &Config{Version: SchemaVersion, Providers: map[string]*Provider{"deepseek": validProvider("deepseek")}}
 	if err := SaveToPath(offCfg, offPath); err != nil {
 		t.Fatalf("SaveToPath(off): %v", err)
 	}
@@ -212,30 +212,30 @@ func TestKeyRotation_OmitemptyAndOldFileParse(t *testing.T) {
 		t.Fatalf("read off.toml: %v", err)
 	}
 	if strings.Contains(string(body), "key_rotation") {
-		t.Fatalf("off vendor wrote a key_rotation line:\n%s", body)
+		t.Fatalf("off provider wrote a key_rotation line:\n%s", body)
 	}
 
 	// A non-off strategy round-trips through the file.
 	rrPath := filepath.Join(t.TempDir(), "rr.toml")
-	rrVendor := validVendor("deepseek")
-	rrVendor.KeyRotation = "round_robin"
-	rrCfg := &Config{Version: SchemaVersion, Vendors: map[string]*Vendor{"deepseek": rrVendor}}
+	rrProvider := validProvider("deepseek")
+	rrProvider.KeyRotation = "round_robin"
+	rrCfg := &Config{Version: SchemaVersion, Providers: map[string]*Provider{"deepseek": rrProvider}}
 	if err := SaveToPath(rrCfg, rrPath); err != nil {
 		t.Fatalf("SaveToPath(rr): %v", err)
 	}
 	rrBody, _ := os.ReadFile(rrPath)
 	if !strings.Contains(string(rrBody), "key_rotation = \"round_robin\"") {
-		t.Fatalf("round_robin vendor missing key_rotation line:\n%s", rrBody)
+		t.Fatalf("round_robin provider missing key_rotation line:\n%s", rrBody)
 	}
 	got, err := LoadFromPath(rrPath)
 	if err != nil {
 		t.Fatalf("reload rr: %v", err)
 	}
-	if got.Vendors["deepseek"].KeyRotation != "round_robin" {
-		t.Fatalf("reloaded key_rotation = %q, want round_robin", got.Vendors["deepseek"].KeyRotation)
+	if got.Providers["deepseek"].KeyRotation != "round_robin" {
+		t.Fatalf("reloaded key_rotation = %q, want round_robin", got.Providers["deepseek"].KeyRotation)
 	}
 
-	// An OLD vendors.toml that predates key_rotation parses fine and defaults
+	// An OLD providers.toml that predates key_rotation parses fine and defaults
 	// to off (empty) — backward compatibility, SchemaVersion unchanged.
 	oldBody := `version = 1
 
@@ -256,7 +256,7 @@ added_at = 2026-05-24T05:00:00Z
 	if err != nil {
 		t.Fatalf("LoadFromPath(old): %v", err)
 	}
-	if v := oldCfg.Vendors["deepseek"]; v == nil || v.KeyRotation != "" {
+	if v := oldCfg.Providers["deepseek"]; v == nil || v.KeyRotation != "" {
 		t.Fatalf("old file key_rotation = %q, want \"\" (off)", v.KeyRotation)
 	}
 }
@@ -273,8 +273,8 @@ func TestLoad_MissingFile(t *testing.T) {
 	if cfg.Version != SchemaVersion {
 		t.Fatalf("Version = %d, want %d", cfg.Version, SchemaVersion)
 	}
-	if cfg.Vendors == nil || len(cfg.Vendors) != 0 {
-		t.Fatalf("Vendors = %v, want empty map", cfg.Vendors)
+	if cfg.Providers == nil || len(cfg.Providers) != 0 {
+		t.Fatalf("Providers = %v, want empty map", cfg.Providers)
 	}
 }
 
@@ -283,10 +283,10 @@ func TestSave_Perm(t *testing.T) {
 		t.Skip("POSIX permission bits not meaningful on Windows")
 	}
 	cfg := &Config{
-		Version: SchemaVersion,
-		Vendors: map[string]*Vendor{"deepseek": validVendor("deepseek")},
+		Version:   SchemaVersion,
+		Providers: map[string]*Provider{"deepseek": validProvider("deepseek")},
 	}
-	path := filepath.Join(t.TempDir(), "vendors.toml")
+	path := filepath.Join(t.TempDir(), "providers.toml")
 	if err := SaveToPath(cfg, path); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -304,10 +304,10 @@ func TestSave_RejectsInvalid(t *testing.T) {
 	// Save must validate before writing — a half-built Config should never
 	// land on disk.
 	bad := &Config{
-		Version: SchemaVersion,
-		Vendors: map[string]*Vendor{"x": {Name: "x"}}, // all required fields empty
+		Version:   SchemaVersion,
+		Providers: map[string]*Provider{"x": {Name: "x"}}, // all required fields empty
 	}
-	path := filepath.Join(t.TempDir(), "vendors.toml")
+	path := filepath.Join(t.TempDir(), "providers.toml")
 	if err := SaveToPath(bad, path); err == nil {
 		t.Fatalf("SaveToPath: want validation error, got nil")
 	}
@@ -317,13 +317,13 @@ func TestSave_RejectsInvalid(t *testing.T) {
 }
 
 func TestSave_Atomic_NoTempLeft(t *testing.T) {
-	// After a successful Save, only vendors.toml should remain — no .tmp files.
+	// After a successful Save, only providers.toml should remain — no .tmp files.
 	cfg := &Config{
-		Version: SchemaVersion,
-		Vendors: map[string]*Vendor{"deepseek": validVendor("deepseek")},
+		Version:   SchemaVersion,
+		Providers: map[string]*Provider{"deepseek": validProvider("deepseek")},
 	}
 	dir := t.TempDir()
-	path := filepath.Join(dir, "vendors.toml")
+	path := filepath.Join(dir, "providers.toml")
 	if err := SaveToPath(cfg, path); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -366,15 +366,15 @@ func TestLocations_XDG(t *testing.T) {
 	}
 }
 
-func TestLocations_VendorsAndSecretsPaths(t *testing.T) {
+func TestLocations_ProvidersAndSecretsPaths(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", "/tmp/xdg-test")
 	t.Setenv("HOME", "/home/user")
-	vp, err := VendorsPath()
+	vp, err := ProvidersPath()
 	if err != nil {
-		t.Fatalf("VendorsPath: %v", err)
+		t.Fatalf("ProvidersPath: %v", err)
 	}
-	if want := filepath.Join("/tmp/xdg-test", "cc-fleet", "vendors.toml"); vp != want {
-		t.Fatalf("VendorsPath = %q, want %q", vp, want)
+	if want := filepath.Join("/tmp/xdg-test", "cc-fleet", "providers.toml"); vp != want {
+		t.Fatalf("ProvidersPath = %q, want %q", vp, want)
 	}
 	sd, err := SecretsDir()
 	if err != nil {

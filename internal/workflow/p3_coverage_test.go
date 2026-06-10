@@ -21,7 +21,7 @@ func TestBackgroundTimeout(t *testing.T) {
 		return subagent.Result{OK: false, ErrorCode: "SUBAGENT_TIMEOUT", ErrorMsg: "timed out"}
 	})
 	_, err := runScript(t, "bgt", 2, leaf, `
-const p = agent("a", {vendor: "v", timeout: 0.3});
+const p = agent("a", {provider: "v", timeout: 0.3});
 return await p;
 `)
 	if err == nil || !strings.Contains(err.Error(), "timed out") {
@@ -47,7 +47,7 @@ func TestEffectiveModelJournalKey(t *testing.T) {
 	script := filepath.Join(dir, "m.js")
 	write := func(model string) {
 		src := `const meta = {name: "n", description: "d", model: "` + model + `"};
-await agent("q", {vendor: "v"});
+await agent("q", {provider: "v"});
 `
 		if err := os.WriteFile(script, []byte(src), 0o600); err != nil {
 			t.Fatal(err)
@@ -89,7 +89,7 @@ func TestBackgroundResume(t *testing.T) {
 	t.Cleanup(func() { runLeaf = old })
 
 	const runID = "bgr"
-	src := `const p = agent("a", {vendor: "v"});
+	src := `const p = agent("a", {provider: "v"});
 return await p;`
 	if _, err := newEngineFor(t, runID, 2).run("bgr.js", []byte(src), Options{}); err != nil {
 		t.Fatalf("run1: %v", err)
@@ -116,7 +116,7 @@ func TestBudgetCountsFailedSchemaLeaf(t *testing.T) {
 	eng := budgetEngine(t, "brt", 1, leaf)
 	eng.budgetTotal = 100
 	v, err := eng.run("brt.js", []byte(`
-const r = await parallel([() => agent("q", {vendor: "v", schema: {required: ["a"]}})]);
+const r = await parallel([() => agent("q", {provider: "v", schema: {required: ["a"]}})]);
 return { failed: r[0] === null, sp: budget.spent() };
 `), Options{})
 	if err != nil {
@@ -145,7 +145,7 @@ func TestWorktreeCleanupOnLeafFailure(t *testing.T) {
 	oldW := createWorktreeFn
 	createWorktreeFn = func(string) (string, func(), error) { return "/tmp/wt", func() { cleaned = true }, nil }
 	t.Cleanup(func() { createWorktreeFn = oldW })
-	if _, err := runScript(t, "wtf", 1, failing, `return await agent("edit", {vendor: "v", isolation: "worktree"});`); err == nil {
+	if _, err := runScript(t, "wtf", 1, failing, `return await agent("edit", {provider: "v", isolation: "worktree"});`); err == nil {
 		t.Error("a failing worktree leaf should surface an error")
 	}
 	if !cleaned {
@@ -153,7 +153,7 @@ func TestWorktreeCleanupOnLeafFailure(t *testing.T) {
 	}
 
 	createWorktreeFn = func(string) (string, func(), error) { return "", nil, context.DeadlineExceeded }
-	if _, err := runScript(t, "wtc", 1, failing, `return await agent("edit", {vendor: "v", isolation: "worktree"});`); err == nil {
+	if _, err := runScript(t, "wtc", 1, failing, `return await agent("edit", {provider: "v", isolation: "worktree"});`); err == nil {
 		t.Error("a worktree-create failure must surface as an agent error")
 	}
 }

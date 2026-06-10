@@ -9,19 +9,19 @@ import (
 // fullKey is the journal key for a full-profile leaf (the slim fields don't fold), used
 // as the back-compat baseline below. "full" and "" are interchangeable here (the fold
 // guard treats both as full).
-func fullKey(vendor, model, prompt, schema, isolation string) string {
-	return journalKey(vendor, model, prompt, schema, isolation, "full", nil, false, false)
+func fullKey(provider, model, prompt, schema, isolation string) string {
+	return journalKey(provider, model, prompt, schema, isolation, "full", nil, false, false)
 }
 
 // TestJournalKeyFullByteIdentical pins the full-profile key for a fixed input to the
 // value today's 5-field scheme produces — a golden so a slim-folding change can never
 // silently shift an existing saved-run key (which would invalidate every cached leaf on
-// resume). The hex is the v1 + length-prefixed (vendor,model,prompt,schema,isolation)
+// resume). The hex is the v1 + length-prefixed (provider,model,prompt,schema,isolation)
 // preimage; "" and "full" effective profiles must both reproduce it, and the slim fields
 // must not fold for them.
 func TestJournalKeyFullByteIdentical(t *testing.T) {
 	const golden = "910fc45a500548544dff296be054eedbd17c82de49a3f92baadb550623163cce"
-	vendor, model := "deepseek", "deepseek-chat"
+	provider, model := "deepseek", "deepseek-chat"
 	prompt, schema := "do the thing", `{"required":["answer"]}`
 	// "" and "full" effective profiles, and every slim-field combination under them, must
 	// all reproduce the golden — full keys are byte-identical to today regardless.
@@ -29,7 +29,7 @@ func TestJournalKeyFullByteIdentical(t *testing.T) {
 		for _, tools := range [][]string{nil, {"Read"}, {"Bash", "Grep"}} {
 			for _, noSkills := range []bool{false, true} {
 				for _, mcp := range []bool{false, true} {
-					got := journalKey(vendor, model, prompt, schema, "", eff, tools, noSkills, mcp)
+					got := journalKey(provider, model, prompt, schema, "", eff, tools, noSkills, mcp)
 					if got != golden {
 						t.Fatalf("full key drifted: profile=%q tools=%v noSkills=%v mcp=%v → %s, want golden %s",
 							eff, tools, noSkills, mcp, got, golden)

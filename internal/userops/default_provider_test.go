@@ -11,8 +11,8 @@ import (
 // on to only ever FILL a blank default — a second set without --force fails.
 func TestSetDefaultProvider_RefusesOverwriteWithoutForce(t *testing.T) {
 	setupHome(t)
-	seedVendor(t, "glm")
-	seedVendor(t, "kimi")
+	seedProvider(t, "glm")
+	seedProvider(t, "kimi")
 
 	if _, err := SetDefaultProvider("glm", false); err != nil {
 		t.Fatalf("first set: %v", err)
@@ -39,18 +39,18 @@ func TestSetDefaultProvider_RefusesOverwriteWithoutForce(t *testing.T) {
 // fails (the value must exist; disabled is allowed).
 func TestSetDefaultProvider_UnknownRejected(t *testing.T) {
 	setupHome(t)
-	seedVendor(t, "glm")
+	seedProvider(t, "glm")
 	_, err := SetDefaultProvider("nope", false)
 	var op *Op
-	if !errors.As(err, &op) || op.Code != CodeVendorUnknown {
-		t.Fatalf("err = %v, want VENDOR_UNKNOWN", err)
+	if !errors.As(err, &op) || op.Code != CodeProviderUnknown {
+		t.Fatalf("err = %v, want PROVIDER_UNKNOWN", err)
 	}
 }
 
 // TestUnsetDefaultProvider clears the pin; show then reports the sole-enabled auto.
 func TestUnsetDefaultProvider(t *testing.T) {
 	setupHome(t)
-	seedVendor(t, "glm")
+	seedProvider(t, "glm")
 	if _, err := SetDefaultProvider("glm", false); err != nil {
 		t.Fatalf("set: %v", err)
 	}
@@ -68,8 +68,8 @@ func TestUnsetDefaultProvider(t *testing.T) {
 // so the on-disk config never carries a dangling pointer.
 func TestRemove_ScrubsDefault(t *testing.T) {
 	setupHome(t)
-	seedVendor(t, "glm")
-	seedVendor(t, "kimi")
+	seedProvider(t, "glm")
+	seedProvider(t, "kimi")
 	if _, err := SetDefaultProvider("glm", false); err != nil {
 		t.Fatalf("set: %v", err)
 	}
@@ -93,8 +93,8 @@ func TestRemove_ScrubsDefault(t *testing.T) {
 // per-row Default flag on the effective default.
 func TestList_ExposesDefault(t *testing.T) {
 	setupHome(t)
-	seedVendor(t, "glm")
-	seedVendor(t, "kimi")
+	seedProvider(t, "glm")
+	seedProvider(t, "kimi")
 	if _, err := SetDefaultProvider("kimi", false); err != nil {
 		t.Fatalf("set: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestList_ExposesDefault(t *testing.T) {
 	if res.DefaultProvider != "kimi" {
 		t.Fatalf("ListResult.DefaultProvider = %q, want kimi", res.DefaultProvider)
 	}
-	for _, v := range res.Vendors {
+	for _, v := range res.Providers {
 		want := v.Name == "kimi"
 		if v.Default != want {
 			t.Fatalf("row %q Default = %v, want %v", v.Name, v.Default, want)

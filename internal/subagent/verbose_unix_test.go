@@ -21,9 +21,9 @@ func TestRun_VerboseTraceAllowlist(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", t.TempDir())
-	writeMinimalVendors(t, xdg)
+	writeMinimalProviders(t, xdg)
 
-	// A non-pattern canary secret on disk where the vendor's secret_ref points.
+	// A non-pattern canary secret on disk where the provider's secret_ref points.
 	const canaryKey = "TOPSECRET-nonpattern-9f7e2b"
 	secretsDir := filepath.Join(xdg, "cc-fleet", "secrets")
 	if err := os.MkdirAll(secretsDir, 0o700); err != nil {
@@ -43,7 +43,7 @@ func TestRun_VerboseTraceAllowlist(t *testing.T) {
 	const promptCanary = "prompt-text-canary-31c8"
 	var buf bytes.Buffer
 	res := Run(context.Background(), Request{
-		Vendor: "glm", Prompt: promptCanary, JSON: true, Diag: diag.New(&buf),
+		Provider: "glm", Prompt: promptCanary, JSON: true, Diag: diag.New(&buf),
 	})
 	if !res.OK {
 		t.Fatalf("sync run failed: %+v", res)
@@ -72,7 +72,7 @@ func TestRun_NilDiagIsNoOp(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", t.TempDir())
-	writeMinimalVendors(t, xdg)
+	writeMinimalProviders(t, xdg)
 
 	fakeClaude := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
 	orig := loadFP
@@ -81,7 +81,7 @@ func TestRun_NilDiagIsNoOp(t *testing.T) {
 	}
 	t.Cleanup(func() { loadFP = orig })
 
-	if res := Run(context.Background(), Request{Vendor: "glm", Prompt: "hi", JSON: true}); !res.OK {
+	if res := Run(context.Background(), Request{Provider: "glm", Prompt: "hi", JSON: true}); !res.OK {
 		t.Fatalf("nil-diag run failed: %+v", res)
 	}
 }
@@ -92,7 +92,7 @@ func TestLaunchBackground_VerboseLaunchMetadata(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", t.TempDir())
-	writeMinimalVendors(t, xdg)
+	writeMinimalProviders(t, xdg)
 
 	fakeClaude := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
 	orig := loadFP
@@ -103,7 +103,7 @@ func TestLaunchBackground_VerboseLaunchMetadata(t *testing.T) {
 
 	var buf bytes.Buffer
 	res := Run(context.Background(), Request{
-		Vendor: "glm", Prompt: "hi", JSON: true, Background: true, Diag: diag.New(&buf),
+		Provider: "glm", Prompt: "hi", JSON: true, Background: true, Diag: diag.New(&buf),
 	})
 	if !res.OK || res.JobID == "" {
 		t.Fatalf("background launch failed: %+v", res)

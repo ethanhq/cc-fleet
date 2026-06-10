@@ -19,7 +19,7 @@ import (
 // unsuffixed legacy filenames so a shipped pre-multi login keeps working.
 func isDefaultCredential(ref string) bool { return ref == "" || ref == SecretRef }
 
-// IsDefaultCredentialRef is the exported classifier: whether a vendor's secret_ref
+// IsDefaultCredentialRef is the exported classifier: whether a provider's secret_ref
 // claims the default credential (the cli-ride-capable one). The TUI uses it to route
 // the first codex onto the default credential and additional ones onto their own.
 func IsDefaultCredentialRef(ref string) bool { return isDefaultCredential(ref) }
@@ -32,7 +32,7 @@ func validateRef(ref string) error {
 	if isDefaultCredential(ref) {
 		return nil
 	}
-	return ids.ValidateVendorName(ref)
+	return ids.ValidateProviderName(ref)
 }
 
 // sameCredential reports whether two refs name the same credential, treating every

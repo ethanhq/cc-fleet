@@ -1,4 +1,4 @@
-// Command cc-fleet is the CLI entry point for the cc-fleet vendor-profile manager.
+// Command cc-fleet is the CLI entry point for the cc-fleet provider-profile manager.
 package main
 
 import (
@@ -27,10 +27,10 @@ func diagLogger(cmd *cobra.Command) *diag.Logger {
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "cc-fleet",
-		Short: "Manage Claude Code vendor profiles, secrets, and tmux-spawned teammates",
-		Long: `cc-fleet is a tool for managing third-party LLM vendor profiles for Claude Code.
+		Short: "Manage Claude Code provider profiles, secrets, and tmux-spawned teammates",
+		Long: `cc-fleet is a tool for managing third-party LLM provider profiles for Claude Code.
 
-It generates ~/.claude/profiles/<vendor>.json files, dispatches API keys via
+It generates ~/.claude/profiles/<provider>.json files, dispatches API keys via
 pluggable secret backends, captures Claude Code settings fingerprints, and spawns
 teammate Claude Code sessions inside tmux windows.`,
 		Version:       version.Resolve(),

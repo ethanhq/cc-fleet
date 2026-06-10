@@ -105,7 +105,7 @@ func newTextInput(value, placeholder string, password bool) textinput.Model {
 	return ti
 }
 
-// newAddForm builds the add wizard, prefilled from a vendor template. A zero
+// newAddForm builds the add wizard, prefilled from a provider template. A zero
 // Template (the "Custom" choice) yields blank fields the user fills entirely.
 // Field order: name → base_url → models_endpoint → api_key → the model-config rows
 // (default/strong/fast + 1M toggles, effort, default permission).
@@ -188,13 +188,13 @@ func modelConfigFields(defModel, strong, fast, effort, perm string) []formField 
 	}
 }
 
-// newEditForm builds the edit wizard, prefilled from the vendor's current row.
-// The editable endpoint depends on the class: an Anthropic-native vendor edits its
-// real base_url; an openai-* vendor edits its real upstream_url (base_url is the
+// newEditForm builds the edit wizard, prefilled from the provider's current row.
+// The editable endpoint depends on the class: an Anthropic-native provider edits its
+// real base_url; an openai-* provider edits its real upstream_url (base_url is the
 // internal loopback daemon); codex has neither (its endpoints are loopback + the
 // upstream is the fixed ChatGPT backend). codex authenticates via OAuth, so it has
 // no API key set to rotate and the key manager is omitted.
-func newEditForm(v userops.VendorView) form {
+func newEditForm(v userops.ProviderView) form {
 	var fields []formField
 	switch v.Protocol {
 	case config.ProtocolOpenAIChat, config.ProtocolOpenAIResponses:

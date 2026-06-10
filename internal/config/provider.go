@@ -1,6 +1,6 @@
-// Package config reads, writes, and validates ~/.config/cc-fleet/vendors.toml.
+// Package config reads, writes, and validates ~/.config/cc-fleet/providers.toml.
 //
-// vendors.toml is the single source of truth users edit by hand. This package
+// providers.toml is the single source of truth users edit by hand. This package
 // only deals with the on-disk format and schema validation — it does not know
 // about secrets backends, profile generation, or spawn fingerprints.
 package config
@@ -24,22 +24,22 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/permmode"
 )
 
-// SchemaVersion is the only supported vendors.toml schema version.
+// SchemaVersion is the only supported providers.toml schema version.
 const SchemaVersion = 1
 
 // CodexOAuthBackend is the secret_backend value for a codex (ChatGPT
 // subscription) provider. Its keyget hands back a loopback handshake secret —
 // the upstream OAuth bearer lives only in the codex proxy daemon — so its
 // base_url and models_endpoint MUST be loopback http (enforced at validate, so a
-// hand-edited or `cc-fleet edit` vendor can never send that secret off-host).
+// hand-edited or `cc-fleet edit` provider can never send that secret off-host).
 const CodexOAuthBackend = "codex-oauth"
 
 // validSecretBackends is the closed set of supported secret_backend values.
 // Order is the canonical order used in error messages.
 var validSecretBackends = []string{"file", "pass", "1password", "vault", "keyring", CodexOAuthBackend}
 
-// Wire protocol values for Vendor.protocol — orthogonal to secret_backend. "" is
-// Anthropic-native (the vendor speaks the Anthropic Messages API directly, no
+// Wire protocol values for Provider.protocol — orthogonal to secret_backend. "" is
+// Anthropic-native (the provider speaks the Anthropic Messages API directly, no
 // daemon). The others ride the loopback conversion daemon: openai-chat and
 // openai-responses speak the OpenAI API with a real key; codex-oauth reuses a
 // ChatGPT subscription over OAuth.
@@ -53,14 +53,14 @@ const (
 // default included), rejected at Load like every other enum.
 var validProtocols = []string{"", ProtocolOpenAIChat, ProtocolOpenAIResponses, ProtocolCodexOAuth}
 
-// Config is the parsed contents of vendors.toml.
+// Config is the parsed contents of providers.toml.
 //
-// Vendors is keyed by vendor name (the TOML table header, e.g. "deepseek").
-// Each *Vendor.Name mirrors that key for convenience.
+// Providers is keyed by provider name (the TOML table header, e.g. "deepseek").
+// Each *Provider.Name mirrors that key for convenience.
 type Config struct {
-	Version int                `toml:"version"`
-	Vendors map[string]*Vendor `toml:"-"`
-	// DefaultProvider is the global default provider name a vendor-less invocation
+	Version   int                  `toml:"version"`
+	Providers map[string]*Provider `toml:"-"`
+	// DefaultProvider is the global default provider name a provider-less invocation
 	// resolves to (subagent / spawn / run / workflow agent()). "" = unset (then a
 	// sole enabled provider serves implicitly, else the caller errors). Existence
 	// is NOT validated at Load — a use-time error keeps a config with a since-removed
@@ -68,11 +68,11 @@ type Config struct {
 	DefaultProvider string `toml:"-"`
 }
 
-// Vendor is one [vendor] table inside vendors.toml.
+// Provider is one [provider] table inside providers.toml.
 //
 // Field names and TOML tags are part of the public schema — do not rename
 // without bumping SchemaVersion.
-type Vendor struct {
+type Provider struct {
 	Name           string    `toml:"-"`
 	BaseURL        string    `toml:"base_url"`
 	DefaultModel   string    `toml:"default_model"`
@@ -83,11 +83,11 @@ type Vendor struct {
 	AddedAt        time.Time `toml:"added_at"`
 	// KeyRotation selects the per-worker file-backend multi-key rotation
 	// strategy: "" (= "off") | "off" | "round_robin" | "random". omitempty keeps
-	// off/single-key vendors' files byte-identical (no key_rotation line); an
+	// off/single-key providers' files byte-identical (no key_rotation line); an
 	// absent field parses as off.
 	KeyRotation string `toml:"key_rotation,omitempty"`
 	// Protocol is the wire class (one of validProtocols). "" = Anthropic-native;
-	// omitempty keeps every existing vendors.toml byte-identical. A codex-oauth
+	// omitempty keeps every existing providers.toml byte-identical. A codex-oauth
 	// secret_backend with no protocol is treated as the codex protocol — see
 	// EffectiveProtocol.
 	Protocol string `toml:"protocol,omitempty"`
@@ -157,27 +157,27 @@ func EffortLevels() []string {
 
 // StrongModelOrDefault / FastModelOrDefault resolve a capability slot to a
 // concrete model id, falling back to DefaultModel when the slot is blank.
-func (v *Vendor) StrongModelOrDefault() string {
+func (v *Provider) StrongModelOrDefault() string {
 	if v.StrongModel != "" {
 		return v.StrongModel
 	}
 	return v.DefaultModel
 }
 
-func (v *Vendor) FastModelOrDefault() string {
+func (v *Provider) FastModelOrDefault() string {
 	if v.FastModel != "" {
 		return v.FastModel
 	}
 	return v.DefaultModel
 }
 
-// ResolveModel maps a requested model to a concrete vendor model id: the reserved
+// ResolveModel maps a requested model to a concrete provider model id: the reserved
 // keywords default/strong/fast name the matching slot, any other value is a
 // literal id passed through, and "" is DefaultModel. Keyword-first — the three
 // reserved words always name a slot (a real model id is never one of these bare
 // words). One resolver for every launcher (spawn / subagent / run, and the
 // workflow leaf via subagent.Run) so the keyword semantics can't drift.
-func (v *Vendor) ResolveModel(requested string) string {
+func (v *Provider) ResolveModel(requested string) string {
 	switch requested {
 	case "", ModelSlotDefault:
 		return v.DefaultModel
@@ -190,7 +190,7 @@ func (v *Vendor) ResolveModel(requested string) string {
 	}
 }
 
-// Provider-resolution sentinels. A vendor-less lane invocation maps an empty
+// Provider-resolution sentinels. A provider-less lane invocation maps an empty
 // request through ResolveProvider; these classify the no-result outcomes so a CLI
 // can emit a stable error_code and the skill can dispatch on it.
 var (
@@ -199,7 +199,7 @@ var (
 	// message lists the enabled candidates.
 	ErrNoDefaultProvider = errors.New("no default provider")
 	// ErrDefaultProviderDisabled: default_provider names a provider that exists but
-	// is disabled. Never falls through to another provider (no surprise vendor).
+	// is disabled. Never falls through to another provider (no surprise provider).
 	ErrDefaultProviderDisabled = errors.New("default provider is disabled")
 	// ErrDefaultProviderUnknown: default_provider names a provider that no longer
 	// exists (a dangling pointer; remove scrubs the default, so this is the
@@ -225,8 +225,8 @@ func ProviderErrorCode(err error) string {
 
 // EnabledProviders returns the enabled provider names in sorted order.
 func (c *Config) EnabledProviders() []string {
-	out := make([]string, 0, len(c.Vendors))
-	for name, v := range c.Vendors {
+	out := make([]string, 0, len(c.Providers))
+	for name, v := range c.Providers {
 		if v != nil && v.Enabled {
 			out = append(out, name)
 		}
@@ -246,7 +246,7 @@ func (c *Config) ResolveProvider(requested string) (name, source string, err err
 		return requested, "explicit", nil
 	}
 	if c.DefaultProvider != "" {
-		v, ok := c.Vendors[c.DefaultProvider]
+		v, ok := c.Providers[c.DefaultProvider]
 		if !ok || v == nil {
 			return "", "", fmt.Errorf("%w: %q", ErrDefaultProviderUnknown, c.DefaultProvider)
 		}
@@ -280,23 +280,23 @@ func Has1M(id string) bool { return strings.HasSuffix(id, contextMarker1M) }
 // EffectiveProtocol resolves the wire protocol, applying the backward-compat rule
 // that a codex-oauth secret_backend with no explicit protocol means the codex
 // protocol — the codex providers shipped before the protocol field existed.
-func (v *Vendor) EffectiveProtocol() string {
+func (v *Provider) EffectiveProtocol() string {
 	if v.Protocol == "" && v.SecretBackend == CodexOAuthBackend {
 		return ProtocolCodexOAuth
 	}
 	return v.Protocol
 }
 
-// DaemonBacked reports whether the vendor's traffic rides the loopback conversion
+// DaemonBacked reports whether the provider's traffic rides the loopback conversion
 // daemon (any non-Anthropic-native protocol).
-func (v *Vendor) DaemonBacked() bool { return v.EffectiveProtocol() != "" }
+func (v *Provider) DaemonBacked() bool { return v.EffectiveProtocol() != "" }
 
-// Load reads, parses, and returns the contents of the default vendors.toml.
+// Load reads, parses, and returns the contents of the default providers.toml.
 //
-// A missing file is NOT an error: an empty Config (version=1, no vendors) is
+// A missing file is NOT an error: an empty Config (version=1, no providers) is
 // returned so first-run callers can Save() it back without special-casing.
 func Load() (*Config, error) {
-	path, err := VendorsPath()
+	path, err := ProvidersPath()
 	if err != nil {
 		return nil, err
 	}
@@ -312,7 +312,7 @@ func LoadFromPath(path string) (*Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return &Config{Version: SchemaVersion, Vendors: map[string]*Vendor{}}, nil
+			return &Config{Version: SchemaVersion, Providers: map[string]*Provider{}}, nil
 		}
 		return nil, fmt.Errorf("config: read %s: %w", path, err)
 	}
@@ -327,17 +327,17 @@ func LoadFromPath(path string) (*Config, error) {
 }
 
 // parse decodes raw TOML bytes into a Config. Each non-"version" top-level
-// table is treated as a vendor; we unmarshal it into a *Vendor and stamp its
+// table is treated as a provider; we unmarshal it into a *Provider and stamp its
 // Name from the table key.
 func parse(data []byte) (*Config, error) {
-	// Decode into a generic map so we can discover vendor table names without
+	// Decode into a generic map so we can discover provider table names without
 	// hard-coding them.
 	var raw map[string]any
 	if _, err := toml.Decode(string(data), &raw); err != nil {
 		return nil, fmt.Errorf("config: parse toml: %w", err)
 	}
 
-	cfg := &Config{Version: 0, Vendors: map[string]*Vendor{}}
+	cfg := &Config{Version: 0, Providers: map[string]*Provider{}}
 
 	if v, ok := raw["version"]; ok {
 		// TOML integers decode as int64.
@@ -352,7 +352,7 @@ func parse(data []byte) (*Config, error) {
 	}
 
 	// default_provider as a STRING is the scalar default-provider key; as a TABLE it
-	// is a (hand-named) vendor called "default_provider" — fall through to the vendor
+	// is a (hand-named) provider called "default_provider" — fall through to the provider
 	// loop so such a config still loads instead of bricking on the type mismatch.
 	defaultProviderIsScalar := false
 	if v, ok := raw["default_provider"]; ok {
@@ -362,7 +362,7 @@ func parse(data []byte) (*Config, error) {
 		}
 	}
 
-	// Re-decode each vendor table individually into a typed *Vendor. We use
+	// Re-decode each provider table individually into a typed *Provider. We use
 	// toml.Marshal on the sub-map and Unmarshal into the struct so we get the
 	// standard struct-tag handling (including time.Time parsing).
 	for key, val := range raw {
@@ -378,22 +378,22 @@ func parse(data []byte) (*Config, error) {
 		}
 		var buf bytes.Buffer
 		if err := toml.NewEncoder(&buf).Encode(sub); err != nil {
-			return nil, fmt.Errorf("config: re-encode vendor %q: %w", key, err)
+			return nil, fmt.Errorf("config: re-encode provider %q: %w", key, err)
 		}
-		v := &Vendor{}
+		v := &Provider{}
 		if _, err := toml.Decode(buf.String(), v); err != nil {
-			return nil, fmt.Errorf("config: decode vendor %q: %w", key, err)
+			return nil, fmt.Errorf("config: decode provider %q: %w", key, err)
 		}
 		v.Name = key
-		cfg.Vendors[key] = v
+		cfg.Providers[key] = v
 	}
 
 	return cfg, nil
 }
 
-// Save writes c to the default vendors.toml path atomically with mode 0600.
+// Save writes c to the default providers.toml path atomically with mode 0600.
 func Save(c *Config) error {
-	path, err := VendorsPath()
+	path, err := ProvidersPath()
 	if err != nil {
 		return err
 	}
@@ -408,27 +408,27 @@ func SaveToPath(c *Config, path string) error {
 	}
 
 	// Build TOML body. We hand-write the top-level structure (version + one
-	// table per vendor in sorted order) so the file is stable and diff-friendly.
+	// table per provider in sorted order) so the file is stable and diff-friendly.
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "version = %d\n", c.Version)
 	if c.DefaultProvider != "" {
 		fmt.Fprintf(&buf, "default_provider = %q\n", c.DefaultProvider)
 	}
 
-	names := make([]string, 0, len(c.Vendors))
-	for name := range c.Vendors {
+	names := make([]string, 0, len(c.Providers))
+	for name := range c.Providers {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
 	enc := toml.NewEncoder(&buf)
 	for _, name := range names {
-		v := c.Vendors[name]
+		v := c.Providers[name]
 		buf.WriteString("\n[")
 		buf.WriteString(name)
 		buf.WriteString("]\n")
 		if err := enc.Encode(v); err != nil {
-			return fmt.Errorf("config: encode vendor %q: %w", name, err)
+			return fmt.Errorf("config: encode provider %q: %w", name, err)
 		}
 	}
 
@@ -444,7 +444,7 @@ func SaveToPath(c *Config, path string) error {
 }
 
 // Validate enforces the schema. It returns nil iff Save would produce a
-// well-formed vendors.toml.
+// well-formed providers.toml.
 func (c *Config) Validate() error {
 	if c == nil {
 		return errors.New("config: nil Config")
@@ -452,25 +452,25 @@ func (c *Config) Validate() error {
 	if c.Version != SchemaVersion {
 		return fmt.Errorf("config: unsupported version %d (want %d)", c.Version, SchemaVersion)
 	}
-	// A scalar default_provider key and a vendor TABLE named "default_provider" can't
+	// A scalar default_provider key and a provider TABLE named "default_provider" can't
 	// coexist — Save would emit both and the next parse would hit a TOML key/table
 	// collision. Reject the combination so it can never be written (a legacy
-	// default_provider-named vendor with NO scalar default still loads + saves fine).
+	// default_provider-named provider with NO scalar default still loads + saves fine).
 	if c.DefaultProvider != "" {
-		if _, clash := c.Vendors["default_provider"]; clash {
+		if _, clash := c.Providers["default_provider"]; clash {
 			return errors.New(`config: a provider named "default_provider" conflicts with the default_provider key — rename the provider or clear the default`)
 		}
 	}
 	// Stable iteration order for predictable error messages in tests.
-	names := make([]string, 0, len(c.Vendors))
-	for name := range c.Vendors {
+	names := make([]string, 0, len(c.Providers))
+	for name := range c.Providers {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		v := c.Vendors[name]
+		v := c.Providers[name]
 		if v == nil {
-			return fmt.Errorf("config: vendor %q is nil", name)
+			return fmt.Errorf("config: provider %q is nil", name)
 		}
 		if err := v.validate(name); err != nil {
 			return err
@@ -479,10 +479,10 @@ func (c *Config) Validate() error {
 	// Each codex provider owns a distinct login credential: the single cli-ride-capable
 	// default (empty / the "codex-oauth" sentinel) plus one named credential per
 	// secret_ref. Two codex rows resolving to the same credential would clobber one
-	// login, so reject that here (the per-vendor pass cannot see across rows).
+	// login, so reject that here (the per-provider pass cannot see across rows).
 	seenCred := make(map[string]string, len(names))
 	for _, name := range names {
-		v := c.Vendors[name]
+		v := c.Providers[name]
 		if v.EffectiveProtocol() != ProtocolCodexOAuth {
 			continue
 		}
@@ -498,66 +498,66 @@ func (c *Config) Validate() error {
 	return nil
 }
 
-// validate checks one Vendor. mapKey is the vendors.toml table name; we treat
+// validate checks one Provider. mapKey is the providers.toml table name; we treat
 // it as authoritative when v.Name is empty (e.g. freshly Loaded).
-func (v *Vendor) validate(mapKey string) error {
+func (v *Provider) validate(mapKey string) error {
 	name := v.Name
 	if name == "" {
 		name = mapKey
 	}
 	if name == "" {
-		return errors.New("config: vendor has empty name")
+		return errors.New("config: provider has empty name")
 	}
 	// Reject a hand-edited table name whose grammar isn't path/shell-safe: it
 	// becomes v.Name and flows into profile.ProfilePath (filepath.Join →
 	// traversal) and the apiKeyHelper "<bin> keyget <name>" (shell-evaluated →
 	// injection). Validating at Load stops it first. Grammar lives in internal/ids
 	// to avoid a userops import cycle.
-	if err := ids.ValidateVendorName(name); err != nil {
-		return fmt.Errorf("config: vendor %q: %w", name, err)
+	if err := ids.ValidateProviderName(name); err != nil {
+		return fmt.Errorf("config: provider %q: %w", name, err)
 	}
 	if v.BaseURL == "" {
-		return fmt.Errorf("config: vendor %q: base_url is required", name)
+		return fmt.Errorf("config: provider %q: base_url is required", name)
 	}
 	if err := validateHTTPURL("base_url", v.BaseURL); err != nil {
-		return fmt.Errorf("config: vendor %q: %w", name, err)
+		return fmt.Errorf("config: provider %q: %w", name, err)
 	}
 	if v.DefaultModel == "" {
-		return fmt.Errorf("config: vendor %q: default_model is required", name)
+		return fmt.Errorf("config: provider %q: default_model is required", name)
 	}
 	if v.ModelsEndpoint == "" {
-		return fmt.Errorf("config: vendor %q: models_endpoint is required", name)
+		return fmt.Errorf("config: provider %q: models_endpoint is required", name)
 	}
 	if err := validateHTTPURL("models_endpoint", v.ModelsEndpoint); err != nil {
-		return fmt.Errorf("config: vendor %q: %w", name, err)
+		return fmt.Errorf("config: provider %q: %w", name, err)
 	}
 	if v.SecretBackend == "" {
-		return fmt.Errorf("config: vendor %q: secret_backend is required", name)
+		return fmt.Errorf("config: provider %q: secret_backend is required", name)
 	}
 	if !isValidSecretBackend(v.SecretBackend) {
-		return fmt.Errorf("config: vendor %q: secret_backend %q invalid (want one of %v)",
+		return fmt.Errorf("config: provider %q: secret_backend %q invalid (want one of %v)",
 			name, v.SecretBackend, validSecretBackends)
 	}
 	if v.SecretRef == "" {
-		return fmt.Errorf("config: vendor %q: secret_ref is required", name)
+		return fmt.Errorf("config: provider %q: secret_ref is required", name)
 	}
 	if !isValidProtocol(v.Protocol) {
-		return fmt.Errorf("config: vendor %q: protocol %q invalid (want one of %v)",
+		return fmt.Errorf("config: provider %q: protocol %q invalid (want one of %v)",
 			name, v.Protocol, validProtocols)
 	}
 	if err := v.validateWire(name); err != nil {
 		return err
 	}
 	if !isValidKeyRotation(v.KeyRotation) {
-		return fmt.Errorf("config: vendor %q: key_rotation %q invalid (want one of %v)",
+		return fmt.Errorf("config: provider %q: key_rotation %q invalid (want one of %v)",
 			name, v.KeyRotation, ValidKeyRotations())
 	}
 	if !isValidEffort(v.Effort) {
-		return fmt.Errorf("config: vendor %q: effort %q invalid (want one of %v)",
+		return fmt.Errorf("config: provider %q: effort %q invalid (want one of %v)",
 			name, v.Effort, validEfforts)
 	}
 	if v.DefaultPermission != "" && !permmode.IsValid(v.DefaultPermission) {
-		return fmt.Errorf("config: vendor %q: default_permission %q invalid (want one of %v)",
+		return fmt.Errorf("config: provider %q: default_permission %q invalid (want one of %v)",
 			name, v.DefaultPermission, permmode.Modes)
 	}
 	return nil
@@ -583,48 +583,48 @@ func isValidProtocol(p string) bool {
 
 // validateWire enforces the protocol/secret_backend/upstream_url/loopback
 // cross-checks for the resolved (compat-normalized) wire protocol.
-func (v *Vendor) validateWire(name string) error {
+func (v *Provider) validateWire(name string) error {
 	switch v.EffectiveProtocol() {
 	case ProtocolCodexOAuth:
 		if v.SecretBackend != CodexOAuthBackend {
-			return fmt.Errorf("config: vendor %q: codex-oauth protocol requires secret_backend %q", name, CodexOAuthBackend)
+			return fmt.Errorf("config: provider %q: codex-oauth protocol requires secret_backend %q", name, CodexOAuthBackend)
 		}
 		// secret_ref is the per-provider credential id; it becomes a token-file and
 		// flock name component, so it must be a path-safe identifier (the legacy
 		// "codex-oauth" sentinel and any provider-name-derived ref both qualify).
-		if err := ids.ValidateVendorName(v.SecretRef); err != nil {
-			return fmt.Errorf("config: vendor %q: codex secret_ref %w", name, err)
+		if err := ids.ValidateProviderName(v.SecretRef); err != nil {
+			return fmt.Errorf("config: provider %q: codex secret_ref %w", name, err)
 		}
 		if v.UpstreamURL != "" {
-			return fmt.Errorf("config: vendor %q: codex-oauth must not set upstream_url", name)
+			return fmt.Errorf("config: provider %q: codex-oauth must not set upstream_url", name)
 		}
 		// keyget hands the launched claude only a handshake secret it presents on
 		// base_url, and a probe sends it to models_endpoint — both must be loopback
 		// http so that secret can never leave the host.
 		if _, err := ParseLoopbackURL(v.BaseURL); err != nil {
-			return fmt.Errorf("config: vendor %q: codex base_url %w", name, err)
+			return fmt.Errorf("config: provider %q: codex base_url %w", name, err)
 		}
 		if _, err := ParseLoopbackURL(v.ModelsEndpoint); err != nil {
-			return fmt.Errorf("config: vendor %q: codex models_endpoint %w", name, err)
+			return fmt.Errorf("config: provider %q: codex models_endpoint %w", name, err)
 		}
 	case ProtocolOpenAIChat, ProtocolOpenAIResponses:
 		if v.SecretBackend == CodexOAuthBackend {
-			return fmt.Errorf("config: vendor %q: %s protocol carries a real key, not the codex-oauth backend", name, v.EffectiveProtocol())
+			return fmt.Errorf("config: provider %q: %s protocol carries a real key, not the codex-oauth backend", name, v.EffectiveProtocol())
 		}
 		if v.UpstreamURL == "" {
-			return fmt.Errorf("config: vendor %q: %s protocol requires upstream_url", name, v.EffectiveProtocol())
+			return fmt.Errorf("config: provider %q: %s protocol requires upstream_url", name, v.EffectiveProtocol())
 		}
 		if err := ValidateUpstreamURL(v.UpstreamURL); err != nil {
-			return fmt.Errorf("config: vendor %q: upstream_url %w", name, err)
+			return fmt.Errorf("config: provider %q: upstream_url %w", name, err)
 		}
 		// claude talks to the loopback conversion daemon on base_url; the real
 		// upstream lives in upstream_url.
 		if _, err := ParseLoopbackURL(v.BaseURL); err != nil {
-			return fmt.Errorf("config: vendor %q: openai base_url %w", name, err)
+			return fmt.Errorf("config: provider %q: openai base_url %w", name, err)
 		}
-	default: // "" Anthropic-native — claude talks to the vendor directly.
+	default: // "" Anthropic-native — claude talks to the provider directly.
 		if v.UpstreamURL != "" {
-			return fmt.Errorf("config: vendor %q: upstream_url is only valid for an openai-* protocol", name)
+			return fmt.Errorf("config: provider %q: upstream_url is only valid for an openai-* protocol", name)
 		}
 	}
 	return nil

@@ -49,16 +49,16 @@ secret_ref      = "codex-oauth"
 enabled         = true
 added_at        = 2026-06-08T05:00:00Z
 `
-	if err := os.WriteFile(filepath.Join(dir, "vendors.toml"), []byte(toml), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "providers.toml"), []byte(toml), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	ensureVendorProxy = func(*config.Vendor, *diag.Logger) error {
+	ensureProviderProxy = func(*config.Provider, *diag.Logger) error {
 		return errors.New("codex proxy did not become ready on port 17222")
 	}
-	t.Cleanup(func() { ensureVendorProxy = codexproxy.EnsureForVendor })
+	t.Cleanup(func() { ensureProviderProxy = codexproxy.EnsureForProvider })
 
-	res := Run(context.Background(), Request{Vendor: "codex", Prompt: "hi", JSON: true})
+	res := Run(context.Background(), Request{Provider: "codex", Prompt: "hi", JSON: true})
 	if res.OK || res.ErrorCode != ErrCodeProxyUnavailable {
 		t.Fatalf("want CODEX_PROXY_UNAVAILABLE, got ok=%v code=%s msg=%s", res.OK, res.ErrorCode, res.ErrorMsg)
 	}

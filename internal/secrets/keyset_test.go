@@ -17,12 +17,12 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/config"
 )
 
-// rotVendor returns a single-vendor Config using the file backend with the
-// given key_rotation strategy. (fileVendor in dispatch_test.go covers off.)
-func rotVendor(name, ref, rotation string) *config.Config {
+// rotProvider returns a single-provider Config using the file backend with the
+// given key_rotation strategy. (fileProvider in dispatch_test.go covers off.)
+func rotProvider(name, ref, rotation string) *config.Config {
 	return &config.Config{
 		Version: config.SchemaVersion,
-		Vendors: map[string]*config.Vendor{
+		Providers: map[string]*config.Provider{
 			name: {
 				Name:           name,
 				BaseURL:        "https://api." + name + ".com/anthropic",
@@ -38,8 +38,8 @@ func rotVendor(name, ref, rotation string) *config.Config {
 	}
 }
 
-// writeKeysJSON writes a well-formed <vendor>.keys.json into the secrets dir.
-func writeKeysJSON(t *testing.T, vendor string, ks []KeyEntry) {
+// writeKeysJSON writes a well-formed <provider>.keys.json into the secrets dir.
+func writeKeysJSON(t *testing.T, provider string, ks []KeyEntry) {
 	t.Helper()
 	dir, err := config.SecretsDir()
 	if err != nil {
@@ -52,14 +52,14 @@ func writeKeysJSON(t *testing.T, vendor string, ks []KeyEntry) {
 	if err != nil {
 		t.Fatalf("marshal keys.json: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, vendor+".keys.json"), data, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, provider+".keys.json"), data, 0o600); err != nil {
 		t.Fatalf("write keys.json: %v", err)
 	}
 }
 
-// writeRawKeysJSON writes arbitrary (possibly malformed) bytes as a vendor's
+// writeRawKeysJSON writes arbitrary (possibly malformed) bytes as a provider's
 // keys.json — used by the corrupt-parse / leak-sentinel tests.
-func writeRawKeysJSON(t *testing.T, vendor, body string) {
+func writeRawKeysJSON(t *testing.T, provider, body string) {
 	t.Helper()
 	dir, err := config.SecretsDir()
 	if err != nil {
@@ -68,7 +68,7 @@ func writeRawKeysJSON(t *testing.T, vendor, body string) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir secrets dir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, vendor+".keys.json"), []byte(body), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, provider+".keys.json"), []byte(body), 0o600); err != nil {
 		t.Fatalf("write raw keys.json: %v", err)
 	}
 }
@@ -78,7 +78,7 @@ func writeRawKeysJSON(t *testing.T, vendor, body string) {
 // ---------------------------------------------------------------------------
 
 func TestLoadKeySet_LegacySingle(t *testing.T) {
-	setupConfig(t, fileVendor("deepseek", "deepseek.key"))
+	setupConfig(t, fileProvider("deepseek", "deepseek.key"))
 	writeSecretFile(t, "deepseek.key", []byte("sk-legacy-123\n"))
 
 	ks, err := LoadKeySet("deepseek")
@@ -94,7 +94,7 @@ func TestLoadKeySet_LegacySingle(t *testing.T) {
 }
 
 func TestLoadKeySet_MultiAuthoritativeOverLegacy(t *testing.T) {
-	setupConfig(t, fileVendor("deepseek", "deepseek.key"))
+	setupConfig(t, fileProvider("deepseek", "deepseek.key"))
 	// A legacy file ALSO exists — keys.json must win and the legacy file ignored.
 	writeSecretFile(t, "deepseek.key", []byte("sk-legacy-should-be-ignored"))
 	writeKeysJSON(t, "deepseek", []KeyEntry{
@@ -115,7 +115,7 @@ func TestLoadKeySet_MultiAuthoritativeOverLegacy(t *testing.T) {
 }
 
 func TestLoadKeySet_MissingYieldsEmpty(t *testing.T) {
-	setupConfig(t, fileVendor("deepseek", "deepseek.key"))
+	setupConfig(t, fileProvider("deepseek", "deepseek.key"))
 	// No legacy file, no keys.json.
 	ks, err := LoadKeySet("deepseek")
 	if err != nil {
@@ -129,7 +129,7 @@ func TestLoadKeySet_MissingYieldsEmpty(t *testing.T) {
 // TestLoadKeySet_CorruptJSONNoKeyLeak: a keys.json that fails to parse must
 // error WITHOUT echoing any key bytes into the message.
 func TestLoadKeySet_CorruptJSONNoKeyLeak(t *testing.T) {
-	setupConfig(t, fileVendor("deepseek", "deepseek.key"))
+	setupConfig(t, fileProvider("deepseek", "deepseek.key"))
 	const sentinel = "sk-SENTINEL-PLAINTEXT-must-never-leak-9999"
 	// Valid-looking entry but missing the closing bracket -> parse failure.
 	writeRawKeysJSON(t, "deepseek", `[{"label":"a","key":"`+sentinel+`","enabled":true}`)
@@ -148,7 +148,7 @@ func TestLoadKeySet_CorruptJSONNoKeyLeak(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestSaveKeySet_MigratesLegacyAndIsAtomic0600(t *testing.T) {
-	setupConfig(t, fileVendor("deepseek", "deepseek.key"))
+	setupConfig(t, fileProvider("deepseek", "deepseek.key"))
 	writeSecretFile(t, "deepseek.key", []byte("sk-legacy-seed"))
 
 	// Migration flow: load legacy (seeds entry[0]) -> append -> save.
@@ -187,7 +187,7 @@ func TestSaveKeySet_MigratesLegacyAndIsAtomic0600(t *testing.T) {
 }
 
 func TestSaveKeySet_EmptyWritesArrayNotNull(t *testing.T) {
-	setupConfig(t, fileVendor("deepseek", "deepseek.key"))
+	setupConfig(t, fileProvider("deepseek", "deepseek.key"))
 	if err := SaveKeySet("deepseek", nil); err != nil {
 		t.Fatalf("SaveKeySet(nil): %v", err)
 	}
@@ -246,7 +246,7 @@ func TestMaskKey_NeverRevealsMiddle(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestNextRoundRobinIndex_CyclesAndWraps(t *testing.T) {
-	setupConfig(t, fileVendor("rr", "rr.key"))
+	setupConfig(t, fileProvider("rr", "rr.key"))
 	var got []int
 	for i := 0; i < 7; i++ {
 		idx, err := nextRoundRobinIndex("rr", 3)
@@ -264,7 +264,7 @@ func TestNextRoundRobinIndex_CyclesAndWraps(t *testing.T) {
 }
 
 func TestNextRoundRobinIndex_CorruptCounterSelfHeals(t *testing.T) {
-	setupConfig(t, fileVendor("rr", "rr.key"))
+	setupConfig(t, fileProvider("rr", "rr.key"))
 	dir, _ := config.SecretsDir()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -282,7 +282,7 @@ func TestNextRoundRobinIndex_CorruptCounterSelfHeals(t *testing.T) {
 }
 
 func TestNextRoundRobinIndex_AdaptsWhenSetShrinks(t *testing.T) {
-	setupConfig(t, fileVendor("rr", "rr.key"))
+	setupConfig(t, fileProvider("rr", "rr.key"))
 	// Advance the monotonic counter to 3 with n=4 (idx 0,1,2,3 -> counter now 4).
 	for i := 0; i < 4; i++ {
 		if _, err := nextRoundRobinIndex("rr", 4); err != nil {
@@ -300,24 +300,24 @@ func TestNextRoundRobinIndex_AdaptsWhenSetShrinks(t *testing.T) {
 }
 
 // TestNextRoundRobinIndex_ConcurrentProcesses is the cross-process stress test:
-// N separate OS processes each advance the same vendor's rotation counter once.
+// N separate OS processes each advance the same provider's rotation counter once.
 // The flock in nextRoundRobinIndex must serialize every read-modify-write so the
 // counter lands at exactly N — a lost increment (no lock / torn write) would
 // leave it < N (real concurrent processes, not goroutines).
 //
 // The env-gated child branch performs one rotation step and exits, inheriting
-// the parent's XDG_CONFIG_HOME so it targets the same <vendor>.rotation file.
+// the parent's XDG_CONFIG_HOME so it targets the same <provider>.rotation file.
 func TestNextRoundRobinIndex_ConcurrentProcesses(t *testing.T) {
 	if os.Getenv("CCF_RR_CHILD") == "1" {
 		n, _ := strconv.Atoi(os.Getenv("CCF_RR_N"))
-		if _, err := nextRoundRobinIndex(os.Getenv("CCF_RR_VENDOR"), n); err != nil {
+		if _, err := nextRoundRobinIndex(os.Getenv("CCF_RR_PROVIDER"), n); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
 		os.Exit(0)
 	}
 
-	setupConfig(t, fileVendor("conc", "conc.key"))
+	setupConfig(t, fileProvider("conc", "conc.key"))
 	dir, err := config.SecretsDir()
 	if err != nil {
 		t.Fatalf("SecretsDir: %v", err)
@@ -331,7 +331,7 @@ func TestNextRoundRobinIndex_ConcurrentProcesses(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			cmd := exec.Command(os.Args[0], "-test.run=^TestNextRoundRobinIndex_ConcurrentProcesses$")
-			cmd.Env = append(os.Environ(), "CCF_RR_CHILD=1", "CCF_RR_VENDOR=conc", "CCF_RR_N=4")
+			cmd.Env = append(os.Environ(), "CCF_RR_CHILD=1", "CCF_RR_PROVIDER=conc", "CCF_RR_N=4")
 			if out, err := cmd.CombinedOutput(); err != nil {
 				errCh <- fmt.Errorf("child rotate failed: %v\n%s", err, out)
 			}
@@ -380,7 +380,7 @@ func TestSelectKey_ZeroEnabledErrorsNoBytes(t *testing.T) {
 }
 
 func TestSelectKey_SingleEnabledIgnoresStrategy(t *testing.T) {
-	setupConfig(t, fileVendor("solo", "solo.key")) // for the round_robin path's dir
+	setupConfig(t, fileProvider("solo", "solo.key")) // for the round_robin path's dir
 	enabled := []KeyEntry{{Key: "only-key", Enabled: true}}
 	for _, rot := range []string{"off", "round_robin", "random"} {
 		got, err := selectKey("solo", rot, enabled)
@@ -399,7 +399,7 @@ func TestSelectKey_SingleEnabledIgnoresStrategy(t *testing.T) {
 }
 
 func TestSelectKey_RoundRobinCycles(t *testing.T) {
-	setupConfig(t, fileVendor("rr", "rr.key"))
+	setupConfig(t, fileProvider("rr", "rr.key"))
 	enabled := []KeyEntry{
 		{Key: "key-a"}, {Key: "key-b"}, {Key: "key-c"},
 	}
@@ -437,7 +437,7 @@ func TestSelectKey_RandomStaysInSet(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestIsMultiKey(t *testing.T) {
-	setupConfig(t, fileVendor("dv", "dv.key"))
+	setupConfig(t, fileProvider("dv", "dv.key"))
 	if multi, err := IsMultiKey("dv"); err != nil || multi {
 		t.Fatalf("IsMultiKey before keys.json = (%v,%v), want (false,nil)", multi, err)
 	}
@@ -448,7 +448,7 @@ func TestIsMultiKey(t *testing.T) {
 }
 
 func TestRemoveKeySet_DeletesBothAndIdempotent(t *testing.T) {
-	setupConfig(t, fileVendor("dv", "dv.key"))
+	setupConfig(t, fileProvider("dv", "dv.key"))
 	writeKeysJSON(t, "dv", []KeyEntry{{Key: "k", Enabled: true}})
 	if _, err := nextRoundRobinIndex("dv", 2); err != nil { // create the counter
 		t.Fatalf("seed counter: %v", err)
@@ -476,7 +476,7 @@ func TestRemoveKeySet_DeletesBothAndIdempotent(t *testing.T) {
 // ---------------------------------------------------------------------------
 
 func TestKeyget_MultiKey_DisabledSkipped(t *testing.T) {
-	setupConfig(t, fileVendor("ds", "ds.key"))
+	setupConfig(t, fileProvider("ds", "ds.key"))
 	writeKeysJSON(t, "ds", []KeyEntry{
 		{Label: "dead", Key: "DISABLED-FIRST", Enabled: false},
 		{Label: "live", Key: "LIVE-SECOND", Enabled: true},
@@ -493,7 +493,7 @@ func TestKeyget_MultiKey_DisabledSkipped(t *testing.T) {
 }
 
 func TestKeyget_MultiKey_AllDisabledNoKey(t *testing.T) {
-	setupConfig(t, fileVendor("ad", "ad.key"))
+	setupConfig(t, fileProvider("ad", "ad.key"))
 	writeKeysJSON(t, "ad", []KeyEntry{{Label: "x", Key: "NEVER", Enabled: false}})
 	got, err := Keyget("ad")
 	if !errors.Is(err, ErrNoEnabledKey) {
@@ -505,7 +505,7 @@ func TestKeyget_MultiKey_AllDisabledNoKey(t *testing.T) {
 }
 
 func TestKeyget_MultiKey_RoundRobin(t *testing.T) {
-	setupConfig(t, rotVendor("rr", "rr.key", "round_robin"))
+	setupConfig(t, rotProvider("rr", "rr.key", "round_robin"))
 	writeKeysJSON(t, "rr", []KeyEntry{
 		{Key: "RR-K0", Enabled: true},
 		{Key: "RR-K1", Enabled: true},
@@ -523,7 +523,7 @@ func TestKeyget_MultiKey_RoundRobin(t *testing.T) {
 }
 
 func TestKeyget_MultiKey_CorruptNoLeak(t *testing.T) {
-	setupConfig(t, fileVendor("cz", "cz.key"))
+	setupConfig(t, fileProvider("cz", "cz.key"))
 	const sentinel = "sk-LEAK-CANARY-plaintext-0000"
 	writeRawKeysJSON(t, "cz", `[{"label":"a","key":"`+sentinel+`","enabled":true}`)
 
@@ -540,17 +540,17 @@ func TestKeyget_MultiKey_CorruptNoLeak(t *testing.T) {
 }
 
 // TestLoadKeySet_RejectsPathTraversal guards the keyset path builders against a
-// vendor name that would escape SecretsDir (defense-in-depth). Real callers
+// provider name that would escape SecretsDir (defense-in-depth). Real callers
 // pass regex-validated registered names; this proves a direct caller
 // can't turn "../x" into a read outside the secrets dir.
 func TestLoadKeySet_RejectsPathTraversal(t *testing.T) {
-	setupConfig(t, fileVendor("ok", "ok.key"))
+	setupConfig(t, fileProvider("ok", "ok.key"))
 	for _, bad := range []string{"", ".", "..", "../../etc/passwd", "a/b", `a\b`, "foo/.."} {
 		if _, err := LoadKeySet(bad); err == nil {
-			t.Errorf("LoadKeySet(%q): want error for unsafe vendor name, got nil", bad)
+			t.Errorf("LoadKeySet(%q): want error for unsafe provider name, got nil", bad)
 		}
 		if err := SaveKeySet(bad, []KeyEntry{{Key: "x", Enabled: true}}); err == nil {
-			t.Errorf("SaveKeySet(%q): want error for unsafe vendor name, got nil", bad)
+			t.Errorf("SaveKeySet(%q): want error for unsafe provider name, got nil", bad)
 		}
 	}
 }
@@ -564,7 +564,7 @@ func TestSafeRef(t *testing.T) {
 			t.Errorf("SafeRef(%q): want error, got nil", bad)
 		}
 	}
-	for _, ok := range []string{"deepseek.key", "glm.keys.json", "vendor.rotation", "a.b.c"} {
+	for _, ok := range []string{"deepseek.key", "glm.keys.json", "provider.rotation", "a.b.c"} {
 		if err := SafeRef(ok); err != nil {
 			t.Errorf("SafeRef(%q): want nil, got %v", ok, err)
 		}
@@ -574,13 +574,13 @@ func TestSafeRef(t *testing.T) {
 	}
 }
 
-// TestLoadKeySet_RejectsUnsafeRef: a hand-edited vendors.toml could point a
+// TestLoadKeySet_RejectsUnsafeRef: a hand-edited providers.toml could point a
 // file-backend secret_ref outside SecretsDir; LoadKeySet's legacy path must
 // refuse it instead of reading through
 // filepath.Join. (config.Validate only presence-checks secret_ref, so the bad
 // ref does persist — this is the last line of defense.)
 func TestLoadKeySet_RejectsUnsafeRef(t *testing.T) {
-	setupConfig(t, fileVendor("v", "../../etc/shadow"))
+	setupConfig(t, fileProvider("v", "../../etc/shadow"))
 	if _, err := LoadKeySet("v"); err == nil {
 		t.Fatal("LoadKeySet with traversal secret_ref: want error, got nil")
 	}

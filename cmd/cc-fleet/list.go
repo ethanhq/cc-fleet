@@ -10,13 +10,13 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/userops"
 )
 
-// listJSONEnvelope is the JSON shape `cc-fleet list --json` emits. Vendors
+// listJSONEnvelope is the JSON shape `cc-fleet list --json` emits. Providers
 // is always non-nil even when empty so jq dispatch in the skill doesn't have
 // to special-case nil.
 type listJSONEnvelope struct {
-	OK              bool                 `json:"ok"`
-	Vendors         []userops.VendorView `json:"vendors"`
-	DefaultProvider string               `json:"default_provider"`
+	OK              bool                   `json:"ok"`
+	Providers       []userops.ProviderView `json:"providers"`
+	DefaultProvider string                 `json:"default_provider"`
 }
 
 func newListCmd() *cobra.Command {
@@ -24,14 +24,14 @@ func newListCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "list",
-		Short: "List configured vendors with status and cache info",
-		Long: `List every vendor configured in vendors.toml in alphabetical order.
+		Short: "List configured providers with status and cache info",
+		Long: `List every provider configured in providers.toml in alphabetical order.
 
-Each row shows the vendor name, current default model, enabled flag, secret
+Each row shows the provider name, current default model, enabled flag, secret
 backend, the number of cached models, and a (stale) marker when the models
 cache is older than 7 days (or missing entirely).
 
---json emits ` + "`{\"ok\":true,\"vendors\":[...]}`" + ` with one entry per vendor.
+--json emits ` + "`{\"ok\":true,\"providers\":[...]}`" + ` with one entry per provider.
 The list is always present (empty array for fresh installs) so the skill
 can iterate without a presence check.`,
 		Args:          cobra.NoArgs,
@@ -44,16 +44,16 @@ can iterate without a presence check.`,
 				return err
 			}
 			if asJSON {
-				emitJSON(listJSONEnvelope{OK: true, Vendors: res.Vendors, DefaultProvider: res.DefaultProvider})
+				emitJSON(listJSONEnvelope{OK: true, Providers: res.Providers, DefaultProvider: res.DefaultProvider})
 				return nil
 			}
-			if len(res.Vendors) == 0 {
-				fmt.Println("no vendors configured (run: cc-fleet add <vendor> ...)")
+			if len(res.Providers) == 0 {
+				fmt.Println("no providers configured (run: cc-fleet add <provider> ...)")
 				return nil
 			}
 			w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 			fmt.Fprintln(w, "NAME\tDEFAULT_MODEL\tSTATUS\tSECRET_BACKEND\tMODELS")
-			for _, vv := range res.Vendors {
+			for _, vv := range res.Providers {
 				status := "enabled"
 				if !vv.Enabled {
 					status = "disabled"

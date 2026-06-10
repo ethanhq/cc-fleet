@@ -12,9 +12,9 @@ import (
 // only, which is what skills consume.
 func TestFailWithPreview_MasksKeyLikeInJSON(t *testing.T) {
 	const sentinel = "sk-SENTINEL01234567890"
-	stderr := []byte("vendor logged: " + sentinel + " was rejected")
+	stderr := []byte("provider logged: " + sentinel + " was rejected")
 
-	res := failWithPreview(Request{Vendor: "glm", JSON: true}, stderr, 1)
+	res := failWithPreview(Request{Provider: "glm", JSON: true}, stderr, 1)
 	if res.OK {
 		t.Fatal("failWithPreview should produce a failure Result")
 	}
@@ -37,7 +37,7 @@ func TestClassify_MasksKeyLikeOnNoEnvelopePath(t *testing.T) {
 	// innerJSON=true but stdout is empty / garbage → parseInner returns false
 	// → failWithPreview path. Stderr carries the sentinel.
 	stderr := []byte("Authorization: Bearer " + sentinel + " failed")
-	res := classify(Request{Vendor: "glm", JSON: true}, "glm-4.6", nil, stderr, 1, false, true)
+	res := classify(Request{Provider: "glm", JSON: true}, "glm-4.6", nil, stderr, 1, false, true)
 	if res.OK {
 		t.Fatalf("classify should report failure on no-envelope path")
 	}
@@ -50,7 +50,7 @@ func TestClassify_MasksKeyLikeOnNoEnvelopePath(t *testing.T) {
 // stdout but did write to stderr must NOT be reported as success.
 func TestClassify_TextModeDeadJobIsFailed(t *testing.T) {
 	stderr := []byte("something went wrong before any output")
-	res := classify(Request{Vendor: "glm"}, "glm-4.6", nil, stderr, 0, false, false)
+	res := classify(Request{Provider: "glm"}, "glm-4.6", nil, stderr, 0, false, false)
 	if res.OK {
 		t.Fatalf("text-mode dead job (empty stdout + stderr) must classify as failure, got OK=true")
 	}
@@ -62,7 +62,7 @@ func TestClassify_TextModeDeadJobIsFailed(t *testing.T) {
 // TestClassify_TextModeSuccessStillSucceeds: control — the normal text-mode
 // success path (exit 0, non-empty stdout) must keep working.
 func TestClassify_TextModeSuccessStillSucceeds(t *testing.T) {
-	res := classify(Request{Vendor: "glm"}, "glm-4.6", []byte("hello"), nil, 0, false, false)
+	res := classify(Request{Provider: "glm"}, "glm-4.6", []byte("hello"), nil, 0, false, false)
 	if !res.OK {
 		t.Fatalf("text-mode success path regressed: OK=false code=%s", res.ErrorCode)
 	}

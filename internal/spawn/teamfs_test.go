@@ -151,10 +151,10 @@ func TestWriteTeamConfig_AppendDoesNotStripExistingMembers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadTeamConfig: %v", err)
 	}
-	// Append a vendor member shaped the way spawn.go builds one (Raw nil).
+	// Append a provider member shaped the way spawn.go builds one (Raw nil).
 	tc.Members = append(tc.Members, Member{
-		AgentID:       "vendor@demo",
-		Name:          "vendor",
+		AgentID:       "provider@demo",
+		Name:          "provider",
 		Color:         "green",
 		AgentType:     "general-purpose",
 		Model:         "deepseek-v4-flash",
@@ -182,15 +182,15 @@ func TestWriteTeamConfig_AppendDoesNotStripExistingMembers(t *testing.T) {
 		t.Errorf("existing worker lost unmodelled field on append")
 	}
 
-	// The new vendor member carries the fields the main session renders.
-	v := members["vendor"]
+	// The new provider member carries the fields the main session renders.
+	v := members["provider"]
 	if v["color"] != "green" || v["backendType"] != "tmux" || v["isActive"] != true {
-		t.Errorf("new vendor member missing UI fields: %+v", v)
+		t.Errorf("new provider member missing UI fields: %+v", v)
 	}
 	// ...and omits the fields cc-fleet never sets (omitempty).
 	for _, k := range []string{"prompt", "planModeRequired"} {
 		if val, ok := v[k]; ok {
-			t.Errorf("new vendor member should omit %q, got %v", k, val)
+			t.Errorf("new provider member should omit %q, got %v", k, val)
 		}
 	}
 }

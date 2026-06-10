@@ -8,7 +8,7 @@ import (
 )
 
 // TestProfilePath_RejectsMaliciousName is the defense-in-depth check: even if a
-// malformed vendor name reached ProfilePath (bypassing the config Load gate),
+// malformed provider name reached ProfilePath (bypassing the config Load gate),
 // the constructed path must never escape ~/.claude/profiles/. ProfilePath
 // validates the grammar AND under-root-checks the joined path.
 func TestProfilePath_RejectsMaliciousName(t *testing.T) {
@@ -20,7 +20,7 @@ func TestProfilePath_RejectsMaliciousName(t *testing.T) {
 	}
 }
 
-// TestProfilePath_HappyPathStaysUnderRoot: a normal vendor name resolves to a
+// TestProfilePath_HappyPathStaysUnderRoot: a normal provider name resolves to a
 // path inside ProfilesDir.
 func TestProfilePath_HappyPathStaysUnderRoot(t *testing.T) {
 	isolateHome(t)
@@ -37,15 +37,15 @@ func TestProfilePath_HappyPathStaysUnderRoot(t *testing.T) {
 	}
 }
 
-// TestGenerateForVendor_RejectsMaliciousName: the apiKeyHelper command
-// concatenates the vendor name; a shell-injection name must be refused so it
+// TestGenerateForProvider_RejectsMaliciousName: the apiKeyHelper command
+// concatenates the provider name; a shell-injection name must be refused so it
 // can never reach the shell Claude Code hands the helper to.
-func TestGenerateForVendor_RejectsMaliciousName(t *testing.T) {
-	v := &config.Vendor{
+func TestGenerateForProvider_RejectsMaliciousName(t *testing.T) {
+	v := &config.Provider{
 		Name:    "x; rm -rf /",
 		BaseURL: "https://api.example.com/anthropic",
 	}
-	if _, err := GenerateForVendor(v, "/usr/local/bin/cc-fleet"); err == nil {
-		t.Fatal("GenerateForVendor: want error for shell-injection vendor name, got nil")
+	if _, err := GenerateForProvider(v, "/usr/local/bin/cc-fleet"); err == nil {
+		t.Fatal("GenerateForProvider: want error for shell-injection provider name, got nil")
 	}
 }

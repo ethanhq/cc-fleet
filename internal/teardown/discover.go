@@ -23,7 +23,7 @@ type Teammate struct {
 	Name          string `json:"name"`
 	Team          string `json:"team"`
 	PaneID        string `json:"pane_id"`
-	Vendor        string `json:"vendor"`
+	Provider      string `json:"provider"`
 	Model         string `json:"model"`
 	PID           int    `json:"pid"`
 	LeadSessionID string `json:"lead_session_id,omitempty"`
@@ -56,7 +56,7 @@ type Teammate struct {
 //  1. tmux list-panes -a -F "#{pane_id} #{pane_pid}"  → pane_id ↔ shell pid
 //  2. For each shell pid, walk its process subtree looking for a claude
 //     process whose cmdline contains --agent-id.
-//  3. Parse that cmdline for name / team / vendor / model.
+//  3. Parse that cmdline for name / team / provider / model.
 //
 // Teammates outside tmux (e.g. ones a user started manually for testing)
 // are intentionally skipped — cc-fleet only owns the ones it spawned, and
@@ -347,7 +347,7 @@ func discoverTeamAgentIDs(team string) []string {
 //
 // Takes argv []string (NUL-separated kernel layout) so arguments containing
 // spaces — most notably `--settings /tmp/home with space/.../glm.json` — aren't
-// shredded into multiple tokens (which would feed vendorFromProfilePath the
+// shredded into multiple tokens (which would feed providerFromProfilePath the
 // wrong fragment).
 //
 // Returns ok=false when --agent-id has no value following it (i.e. the
@@ -390,7 +390,7 @@ func parseTeammateCmdline(argv []string) (Teammate, bool) {
 			}
 		case "--settings":
 			if i+1 < len(argv) {
-				t.Vendor = vendorFromProfilePath(argv[i+1])
+				t.Provider = providerFromProfilePath(argv[i+1])
 				i++
 			}
 		case "--model":
@@ -407,10 +407,10 @@ func parseTeammateCmdline(argv []string) (Teammate, bool) {
 	return t, true
 }
 
-// vendorFromProfilePath strips the directory and ".json" suffix off a
+// providerFromProfilePath strips the directory and ".json" suffix off a
 // profile path. /root/.claude/profiles/glm.json → "glm". Returns "" for
 // inputs that don't end in .json.
-func vendorFromProfilePath(p string) string {
+func providerFromProfilePath(p string) string {
 	base := filepath.Base(p)
 	if !strings.HasSuffix(base, ".json") {
 		return ""

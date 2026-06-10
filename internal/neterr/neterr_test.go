@@ -33,9 +33,9 @@ func TestIsTransport(t *testing.T) {
 		{"dns error wrapped", fmt.Errorf("lookup: %w", &net.DNSError{Err: "no such host", Name: "x.example"}), true},
 		{"op error dial refused", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}, true},
 		{"op error wrapped", fmt.Errorf("connect: %w", &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}), true},
-		{"plain error", errors.New("vendor returned HTTP 500"), false},
+		{"plain error", errors.New("provider returned HTTP 500"), false},
 		// An *url.Error that did NOT time out (e.g. a redirect failure) is the
-		// vendor being reachable-but-unhappy, not a transport failure.
+		// provider being reachable-but-unhappy, not a transport failure.
 		{"url non-timeout", &url.Error{Op: "Get", URL: "https://x.example", Err: errors.New("stopped after 10 redirects")}, false},
 	}
 	for _, tc := range tests {

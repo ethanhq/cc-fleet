@@ -29,8 +29,8 @@ var dropList = buildDropList()
 
 func buildDropList() map[string]bool {
 	d := map[string]bool{
-		// Key-safety: never let the lead's subscription creds reach the vendor call;
-		// vendor auth must come solely from the profile's apiKeyHelper.
+		// Key-safety: never let the lead's subscription creds reach the provider call;
+		// provider auth must come solely from the profile's apiKeyHelper.
 		"ANTHROPIC_API_KEY":    true,
 		"ANTHROPIC_AUTH_TOKEN": true,
 		// Nested-CC / teams markers. A child launched from inside the lead's session

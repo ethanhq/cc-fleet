@@ -54,7 +54,7 @@ func TestKeyRotation_NextCycle(t *testing.T) {
 	}
 }
 
-// TestKeyRotation_NextUnknownGoesOff: a hand-corrupted vendors.toml that
+// TestKeyRotation_NextUnknownGoesOff: a hand-corrupted providers.toml that
 // somehow gets past Validate must not wedge the TUI rotation cycle.
 func TestKeyRotation_NextUnknownGoesOff(t *testing.T) {
 	bogus := KeyRotation("not-a-real-strategy")

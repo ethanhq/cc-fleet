@@ -31,7 +31,7 @@ func TestStatusForNoProcessReportsQueuedNotDone(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := jobMeta{JobID: "joba", PID: 0, Status: "running", JSON: false,
-		Vendor: "v", Model: "mm", StartedAt: time.Now().UTC().Format(time.RFC3339)}
+		Provider: "v", Model: "mm", StartedAt: time.Now().UTC().Format(time.RFC3339)}
 	if err := writeMeta(dir, m); err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +53,7 @@ func TestStatusForVanishedLeafHonestFailure(t *testing.T) {
 	statusConfirmDelay = 0 // no re-read wait for a genuinely-empty capture
 	pid := deadPID(t)
 	m := jobMeta{JobID: "jobb", PID: pid, PGID: pid, Status: "running", JSON: true,
-		SettingsPath: "/no/such/profile", Vendor: "v", Model: "mm",
+		SettingsPath: "/no/such/profile", Provider: "v", Model: "mm",
 		StartedAt: time.Now().UTC().Format(time.RFC3339)}
 	if err := writeMeta(dir, m); err != nil {
 		t.Fatal(err)
@@ -80,7 +80,7 @@ func TestFinalizeRunLeavesMarksStopped(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := jobMeta{JobID: "s1", PID: os.Getpid(), Status: "running", RunID: "runX",
-		Vendor: "v", StartedAt: time.Now().UTC().Format(time.RFC3339)}
+		Provider: "v", StartedAt: time.Now().UTC().Format(time.RFC3339)}
 	if err := writeMeta(dir, m); err != nil {
 		t.Fatal(err)
 	}
@@ -108,7 +108,7 @@ func TestStatusForConfirmDelayRecoversLateEnvelope(t *testing.T) {
 	statusConfirmDelay = 100 * time.Millisecond
 	pid := deadPID(t)
 	m := jobMeta{JobID: "jobc", PID: pid, PGID: pid, Status: "running", JSON: true,
-		SettingsPath: "/no/such/profile", Vendor: "v", Model: "mm",
+		SettingsPath: "/no/such/profile", Provider: "v", Model: "mm",
 		StartedAt: time.Now().UTC().Format(time.RFC3339)}
 	if err := writeMeta(dir, m); err != nil {
 		t.Fatal(err)

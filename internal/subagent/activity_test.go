@@ -41,7 +41,7 @@ func TestExtractResultLine_StructuredOutputLift(t *testing.T) {
 		`{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}`,
 		`{"type":"result","subtype":"success","is_error":false,"result":"prose","structured_output":{"answer":5}}`,
 	}, "\n") + "\n"
-	req := Request{Vendor: "v", StreamActivity: true}
+	req := Request{Provider: "v", StreamActivity: true}
 	res := classify(req, "m", extractResultLine([]byte(stream)), nil, 0, false, true)
 	if !res.OK || res.Result != "prose" {
 		t.Fatalf("want OK + prose result, got OK=%v result=%q (%s)", res.OK, res.Result, res.ErrorCode)
@@ -116,7 +116,7 @@ func TestActivitySink_CapOverflowStillFires(t *testing.T) {
 // (the board needs them) but never the answer text.
 func TestFinalizeSyncJob_KeepsSafeMetricsStripsAnswer(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	jobID := regSyncJob(Request{Vendor: "glm", PersistIO: true}, "glm-4.6")
+	jobID := regSyncJob(Request{Provider: "glm", PersistIO: true}, "glm-4.6")
 	if jobID == "" {
 		t.Fatal("registerSyncJob returned empty id")
 	}
@@ -156,7 +156,7 @@ func readActivity(t *testing.T, path string) []activityRecord {
 }
 
 // TestParseStreamLine_EstimatesOutput: when an assistant message streams text but NO usage (the
-// vendor case), parseStreamLine emits a live OUTPUT estimate (~runes/3) so the board count climbs.
+// provider case), parseStreamLine emits a live OUTPUT estimate (~runes/3) so the board count climbs.
 func TestParseStreamLine_EstimatesOutput(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "x.activity")

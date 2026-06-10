@@ -15,7 +15,7 @@ func TestNestedWorkflowRunsAndReturnsResult(t *testing.T) {
 	dir := t.TempDir()
 	child := filepath.Join(dir, "child.js")
 	if err := os.WriteFile(child, []byte(`const meta = {name: "c", description: "d"};
-return await agent("child-task:" + args.topic, {vendor: "v"});
+return await agent("child-task:" + args.topic, {provider: "v"});
 `), 0o600); err != nil {
 		t.Fatal(err)
 	}

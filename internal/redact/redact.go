@@ -13,10 +13,10 @@ import (
 // keyPatterns matches the common shapes a leaked key takes in the wild:
 //   - "sk-..." plus 8+ alphanumeric/underscore/hyphen bytes (covers Anthropic,
 //     OpenAI, DeepSeek, GLM, and most OpenAI-compat shims — including the
-//     uppercase-prefix variants some vendors use).
+//     uppercase-prefix variants some providers use).
 //   - "Bearer <token>" / "bearer <token>" — when a header is echoed back, the
 //     prefix itself is usually present.
-//   - "x-api-key: <token>" / "x-api-key=<token>" — verbose vendor error logs
+//   - "x-api-key: <token>" / "x-api-key=<token>" — verbose provider error logs
 //     occasionally include the response header dump.
 //
 // Each pattern is wrapped with non-capturing groups so the replacement uses the

@@ -22,7 +22,7 @@ func TestRegisterAndFinalizeSyncJob(t *testing.T) {
 
 	// Register a sync job. PID is THIS (alive) process; SettingsPath empty so the
 	// board's StatusFor uses a bare liveness probe and sees it running.
-	jobID := regSyncJob(Request{Vendor: "glm", JSON: true, LeadSessionID: "lead-sync-1"}, "glm-4.6")
+	jobID := regSyncJob(Request{Provider: "glm", JSON: true, LeadSessionID: "lead-sync-1"}, "glm-4.6")
 	if jobID == "" {
 		t.Fatal("registerSyncJob returned an empty job id")
 	}
@@ -43,7 +43,7 @@ func TestRegisterAndFinalizeSyncJob(t *testing.T) {
 	const answer = "SECRET-SYNC-ANSWER-42"
 	const structuredPayload = "SECRET-STRUCTURED-PAYLOAD-7"
 	finalizeSyncJob(jobID, Result{
-		OK: true, Vendor: "glm", Model: "glm-4.6", Result: answer,
+		OK: true, Provider: "glm", Model: "glm-4.6", Result: answer,
 		StructuredOutput: json.RawMessage(`{"secret":"` + structuredPayload + `"}`),
 	})
 
@@ -54,8 +54,8 @@ func TestRegisterAndFinalizeSyncJob(t *testing.T) {
 	if jobs[0].Result != "" {
 		t.Fatalf("sync result cache must not carry the answer text: %q", jobs[0].Result)
 	}
-	if jobs[0].Vendor != "glm" || jobs[0].StartedAt == "" {
-		t.Fatalf("finalize should carry vendor/started from meta: %+v", jobs[0])
+	if jobs[0].Provider != "glm" || jobs[0].StartedAt == "" {
+		t.Fatalf("finalize should carry provider/started from meta: %+v", jobs[0])
 	}
 	if jobs[0].LeadSessionID != "lead-sync-1" {
 		t.Fatalf("finalized sync job should retain lead_session_id: %+v", jobs[0])

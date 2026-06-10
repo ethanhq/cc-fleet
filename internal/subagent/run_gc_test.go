@@ -45,7 +45,7 @@ func planFinishedRunMember(t *testing.T, dir, jobID, runID string, started time.
 	t.Helper()
 	meta := jobMeta{
 		JobID: jobID, PID: os.Getpid(), PGID: os.Getpid(),
-		Vendor: "glm", Model: "glm-4.6",
+		Provider: "glm", Model: "glm-4.6",
 		StartedAt: started.Format(time.RFC3339), Status: "done",
 		RunID: runID, Phase: "build", Label: "w1",
 	}
@@ -158,7 +158,7 @@ func TestGC_RunningMemberKeepsManifestEvenAtZero(t *testing.T) {
 	// A live member: our own pid, NO result cache, empty SettingsPath → processAlive true.
 	meta := jobMeta{
 		JobID: "job-live", PID: os.Getpid(), PGID: os.Getpid(),
-		Vendor: "glm", StartedAt: time.Now().Add(-72 * time.Hour).Format(time.RFC3339),
+		Provider: "glm", StartedAt: time.Now().Add(-72 * time.Hour).Format(time.RFC3339),
 		Status: "running", RunID: "run-live",
 	}
 	data, err := json.Marshal(meta)

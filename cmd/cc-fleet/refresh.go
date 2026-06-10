@@ -19,7 +19,7 @@ import (
 // refreshSuccess is the JSON shape emitted on success.
 type refreshSuccess struct {
 	OK         bool      `json:"ok"`
-	Vendor     string    `json:"vendor"`
+	Provider   string    `json:"provider"`
 	ModelCount int       `json:"model_count"`
 	FetchedAt  time.Time `json:"fetched_at"`
 }
@@ -28,23 +28,23 @@ type refreshSuccess struct {
 // let the skill dispatch without parsing prose.
 type refreshError struct {
 	OK        bool   `json:"ok"`
-	Vendor    string `json:"vendor"`
+	Provider  string `json:"provider"`
 	Error     string `json:"error"`
 	ErrorCode string `json:"error_code"`
 }
 
-// Error codes for `cc-fleet refresh <vendor>` — kept stable for skill dispatch.
+// Error codes for `cc-fleet refresh <provider>` — kept stable for skill dispatch.
 const (
-	codeRefreshVendorUnknown     = "VENDOR_UNKNOWN"
-	codeRefreshConfigLoadFailed  = "CONFIG_LOAD_FAILED"
-	codeRefreshKeyInvalid        = "KEY_INVALID"
-	codeRefreshVendorUnreachable = "VENDOR_UNREACHABLE"
-	codeRefreshFailed            = "REFRESH_FAILED"
-	codeRefreshSaveFailed        = "SAVE_FAILED"
+	codeRefreshProviderUnknown     = "PROVIDER_UNKNOWN"
+	codeRefreshConfigLoadFailed    = "CONFIG_LOAD_FAILED"
+	codeRefreshKeyInvalid          = "KEY_INVALID"
+	codeRefreshProviderUnreachable = "PROVIDER_UNREACHABLE"
+	codeRefreshFailed              = "REFRESH_FAILED"
+	codeRefreshSaveFailed          = "SAVE_FAILED"
 )
 
 // refreshTimeout caps the whole refresh including HTTP. We use ctx-level
-// deadline so a hung vendor surfaces as VENDOR_UNREACHABLE rather than
+// deadline so a hung provider surfaces as PROVIDER_UNREACHABLE rather than
 // dragging the cmd into an unbounded wait.
 const refreshTimeout = 15 * time.Second
 
@@ -52,17 +52,17 @@ func newRefreshCmd() *cobra.Command {
 	var asJSON bool
 
 	cmd := &cobra.Command{
-		Use:   "refresh <vendor>",
-		Short: "Re-query a vendor's /v1/models endpoint and update the cache",
-		Long: `Force-refresh the local model cache for <vendor>.
+		Use:   "refresh <provider>",
+		Short: "Re-query a provider's /v1/models endpoint and update the cache",
+		Long: `Force-refresh the local model cache for <provider>.
 
-Looks up the vendor in vendors.toml, calls its models_endpoint with the
+Looks up the provider in providers.toml, calls its models_endpoint with the
 configured secret_backend's API key, and updates
 ~/.config/cc-fleet/models-cache.json. Use --json for skill consumption.
 
 Errors map to these error codes:
-  KEY_INVALID         vendor returned HTTP 401
-  VENDOR_UNREACHABLE  DNS / connect / HTTP timeout
+  KEY_INVALID         provider returned HTTP 401
+  PROVIDER_UNREACHABLE  DNS / connect / HTTP timeout
   REFRESH_FAILED      anything else (parse, non-401 4xx/5xx)`,
 		Args:          cobra.ExactArgs(1),
 		SilenceErrors: true,
@@ -78,16 +78,16 @@ Errors map to these error codes:
 	return cmd
 }
 
-func runRefresh(vendor string, asJSON bool) error {
+func runRefresh(provider string, asJSON bool) error {
 	cfg, err := config.Load()
 	if err != nil {
-		return reportRefreshErr(asJSON, vendor, codeRefreshConfigLoadFailed,
-			fmt.Errorf("load vendors.toml: %w", err))
+		return reportRefreshErr(asJSON, provider, codeRefreshConfigLoadFailed,
+			fmt.Errorf("load providers.toml: %w", err))
 	}
-	v, ok := cfg.Vendors[vendor]
+	v, ok := cfg.Providers[provider]
 	if !ok {
-		return reportRefreshErr(asJSON, vendor, codeRefreshVendorUnknown,
-			fmt.Errorf("vendor %q not in vendors.toml", vendor))
+		return reportRefreshErr(asJSON, provider, codeRefreshProviderUnknown,
+			fmt.Errorf("provider %q not in providers.toml", provider))
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), refreshTimeout)
@@ -95,30 +95,30 @@ func runRefresh(vendor string, asJSON bool) error {
 
 	fetched, err := models.Fetch(ctx, v)
 	if err != nil {
-		return reportRefreshErr(asJSON, vendor, classifyFetchErr(err), err)
+		return reportRefreshErr(asJSON, provider, classifyFetchErr(err), err)
 	}
 
 	cache, err := models.Load()
 	if err != nil {
-		return reportRefreshErr(asJSON, vendor, codeRefreshSaveFailed,
+		return reportRefreshErr(asJSON, provider, codeRefreshSaveFailed,
 			fmt.Errorf("load cache: %w", err))
 	}
-	if cache.Vendors == nil {
-		cache.Vendors = map[string]*models.VendorCache{}
+	if cache.Providers == nil {
+		cache.Providers = map[string]*models.ProviderCache{}
 	}
 	now := time.Now().UTC()
-	cache.Vendors[vendor] = &models.VendorCache{
-		Vendor:    vendor,
+	cache.Providers[provider] = &models.ProviderCache{
+		Provider:  provider,
 		Endpoint:  v.ModelsEndpoint,
 		FetchedAt: now,
 		Models:    fetched,
 	}
 	if err := models.Save(cache); err != nil {
-		return reportRefreshErr(asJSON, vendor, codeRefreshSaveFailed,
+		return reportRefreshErr(asJSON, provider, codeRefreshSaveFailed,
 			fmt.Errorf("save cache: %w", err))
 	}
 
-	return reportRefreshOK(asJSON, vendor, len(fetched), now)
+	return reportRefreshOK(asJSON, provider, len(fetched), now)
 }
 
 // classifyFetchErr maps a models.Fetch error onto one of the refresh error
@@ -129,16 +129,16 @@ func classifyFetchErr(err error) string {
 		return codeRefreshKeyInvalid
 	}
 	if neterr.IsTransport(err) {
-		return codeRefreshVendorUnreachable
+		return codeRefreshProviderUnreachable
 	}
 	return codeRefreshFailed
 }
 
-func reportRefreshOK(asJSON bool, vendor string, count int, fetchedAt time.Time) error {
+func reportRefreshOK(asJSON bool, provider string, count int, fetchedAt time.Time) error {
 	if asJSON {
 		out := refreshSuccess{
 			OK:         true,
-			Vendor:     vendor,
+			Provider:   provider,
 			ModelCount: count,
 			FetchedAt:  fetchedAt,
 		}
@@ -151,11 +151,11 @@ func reportRefreshOK(asJSON bool, vendor string, count int, fetchedAt time.Time)
 		return nil
 	}
 	fmt.Printf("refreshed %s: %d model(s) at %s\n",
-		vendor, count, fetchedAt.Format(time.RFC3339))
+		provider, count, fetchedAt.Format(time.RFC3339))
 	return nil
 }
 
-func reportRefreshErr(asJSON bool, vendor, code string, err error) error {
+func reportRefreshErr(asJSON bool, provider, code string, err error) error {
 	// Defense-in-depth: pipe the final error string through redact.MaskKeyLike
 	// before it reaches the JSON envelope or stderr, so any future code path that
 	// accidentally includes a key fragment is still scrubbed at the surface.
@@ -163,7 +163,7 @@ func reportRefreshErr(asJSON bool, vendor, code string, err error) error {
 	if asJSON {
 		out := refreshError{
 			OK:        false,
-			Vendor:    vendor,
+			Provider:  provider,
 			Error:     safeMsg,
 			ErrorCode: code,
 		}

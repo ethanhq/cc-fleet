@@ -23,7 +23,7 @@ func TestPurgeJobs_KeepsManifestWithRunningMember(t *testing.T) {
 	// Live member: our pid, no result cache, empty SettingsPath.
 	meta := jobMeta{
 		JobID: "live", PID: os.Getpid(), PGID: os.Getpid(),
-		Vendor: "glm", StartedAt: time.Now().Format(time.RFC3339),
+		Provider: "glm", StartedAt: time.Now().Format(time.RFC3339),
 		Status: "running", RunID: "run-keep",
 	}
 	data, _ := json.Marshal(meta)

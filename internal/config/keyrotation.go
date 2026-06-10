@@ -8,9 +8,9 @@ import "fmt"
 
 // KeyRotation is the per-worker file-backend multi-key rotation strategy.
 //
-// Persisted on disk as the underlying string (vendors.toml's key_rotation
+// Persisted on disk as the underlying string (providers.toml's key_rotation
 // field) — the constants below mirror that schema. "" is accepted as an alias
-// for RotationOff: older vendors.toml files without the key parse into "" and
+// for RotationOff: older providers.toml files without the key parse into "" and
 // must continue to behave like off.
 type KeyRotation string
 
@@ -20,14 +20,14 @@ const (
 	RotationOff KeyRotation = "off"
 
 	// RotationRoundRobin: cycle via the persistent flock-guarded counter
-	// (<vendor>.rotation in SecretsDir).
+	// (<provider>.rotation in SecretsDir).
 	RotationRoundRobin KeyRotation = "round_robin"
 
 	// RotationRandom: uniformly random enabled key per call (load spreading).
 	RotationRandom KeyRotation = "random"
 )
 
-// ValidKeyRotations returns the canonical valid values for vendors.toml's
+// ValidKeyRotations returns the canonical valid values for providers.toml's
 // key_rotation field, in the order Validate uses for error messages. The
 // leading "" is the legacy "unset" form (treated as an alias for "off") so
 // pre-field configs still validate; UI callers wanting only user-facing labels
@@ -36,7 +36,7 @@ func ValidKeyRotations() []string {
 	return []string{"", "off", "round_robin", "random"}
 }
 
-// ParseKeyRotation parses a vendors.toml key_rotation value into a typed
+// ParseKeyRotation parses a providers.toml key_rotation value into a typed
 // KeyRotation. The empty string is normalized to RotationOff. Any other value
 // is an error — the caller cannot fall back to a default (which would
 // reintroduce the typo-silently-accepted bug).
@@ -74,7 +74,7 @@ func (r KeyRotation) Next() KeyRotation {
 		return RotationOff
 	default:
 		// Defense-in-depth: an unknown stored value cycles back to Off so a
-		// hand-corrupted vendors.toml doesn't wedge the TUI rotation key.
+		// hand-corrupted providers.toml doesn't wedge the TUI rotation key.
 		return RotationOff
 	}
 }

@@ -48,7 +48,7 @@ func TestResumeBudgetInheritAndUncap(t *testing.T) {
 
 	dir := t.TempDir()
 	script := filepath.Join(dir, "w.js")
-	src := "const meta = {name: \"n\", description: \"d\"};\nawait agent(\"a\", {vendor: \"v\"});\n"
+	src := "const meta = {name: \"n\", description: \"d\"};\nawait agent(\"a\", {provider: \"v\"});\n"
 	if err := os.WriteFile(script, []byte(src), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +126,7 @@ func TestTokenBudgetCapsRun(t *testing.T) {
 	eng.budgetTokensTotal = 100_000
 	_, err := eng.run("b.js", []byte(`
 for (let i = 0; i < 10; i++) {
-    await agent("x" + i, {vendor: "v"});
+    await agent("x" + i, {provider: "v"});
 }
 return {};
 `), Options{})
@@ -146,8 +146,8 @@ func TestBudgetTokenObject(t *testing.T) {
 	eng := budgetEngine(t, "tbud2", 1, tokenLeaf(rec, 40_000, 10_000)) // 50k tokens/leaf
 	eng.budgetTokensTotal = 1_000_000
 	v, err := eng.run("b.js", []byte(`
-await agent("a", {vendor: "v"});
-await agent("b", {vendor: "v"});
+await agent("a", {provider: "v"});
+await agent("b", {provider: "v"});
 return {
     ts: budget.tokens_spent(),
     tr: budget.tokens_remaining(),
@@ -183,7 +183,7 @@ func TestBudgetCapsRun(t *testing.T) {
 	eng.budgetTotal = 2.0
 	_, err := eng.run("b.js", []byte(`
 for (let i = 0; i < 10; i++) {
-    await agent("x" + i, {vendor: "v"});
+    await agent("x" + i, {provider: "v"});
 }
 return {};
 `), Options{})
@@ -208,7 +208,7 @@ func TestBudgetReservationBoundsConcurrentOvershoot(t *testing.T) {
 const thunks = [];
 for (let i = 0; i < 20; i++) {
     const j = i;
-    thunks.push(() => agent("x" + j, {vendor: "v"}));
+    thunks.push(() => agent("x" + j, {provider: "v"}));
 }
 await parallel(thunks);
 return {};
@@ -229,8 +229,8 @@ func TestBudgetSpentRemainingTotal(t *testing.T) {
 	eng := budgetEngine(t, "bud2", 1, costLeaf(rec, 0.25))
 	eng.budgetTotal = 2.0
 	v, err := eng.run("b.js", []byte(`
-await agent("a", {vendor: "v"});
-await agent("b", {vendor: "v"});
+await agent("a", {provider: "v"});
+await agent("b", {provider: "v"});
 return { sp: budget.spent(), rem: budget.remaining(), tot: budget.total };
 `), Options{})
 	if err != nil {
@@ -254,7 +254,7 @@ func TestBudgetUncapped(t *testing.T) {
 	rec := &recorder{}
 	eng := budgetEngine(t, "bud3", 1, costLeaf(rec, 0.1)) // budgetTotal 0 = uncapped
 	v, err := eng.run("b.js", []byte(`
-await agent("a", {vendor: "v"});
+await agent("a", {provider: "v"});
 return { tot: budget.total, rem: budget.remaining() };
 `), Options{})
 	if err != nil {

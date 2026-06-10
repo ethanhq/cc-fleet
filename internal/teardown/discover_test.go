@@ -34,10 +34,10 @@ func TestParseTeammateCmdline_Full(t *testing.T) {
 		t.Fatal("parseTeammateCmdline: ok=false, want true")
 	}
 	want := Teammate{
-		Name:   "alice",
-		Team:   "alpha",
-		Vendor: "glm",
-		Model:  "glm-4-flash",
+		Name:     "alice",
+		Team:     "alpha",
+		Provider: "glm",
+		Model:    "glm-4-flash",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parse mismatch:\n got: %+v\nwant: %+v", got, want)
@@ -90,7 +90,7 @@ func TestParseTeammateCmdline_AgentNameFallback(t *testing.T) {
 // TestParseTeammateCmdline_SettingsPathWithSpaces: a --settings path containing
 // spaces (e.g. a HOME under "/tmp/home with space") must not be shredded.
 // Routed through the argv-slice API the path arrives intact and
-// vendorFromProfilePath returns the vendor basename.
+// providerFromProfilePath returns the provider basename.
 func TestParseTeammateCmdline_SettingsPathWithSpaces(t *testing.T) {
 	argv := []string{
 		"/usr/bin/claude",
@@ -103,16 +103,16 @@ func TestParseTeammateCmdline_SettingsPathWithSpaces(t *testing.T) {
 		t.Fatal("parseTeammateCmdline: ok=false")
 	}
 	// A space-containing --settings must not bleed into the agent-id split: the
-	// whole Teammate (name/team from --agent-id, vendor from the settings
+	// whole Teammate (name/team from --agent-id, provider from the settings
 	// basename, model) must parse intact.
-	want := Teammate{Name: "alice", Team: "alpha", Vendor: "glm", Model: "glm-4-flash"}
+	want := Teammate{Name: "alice", Team: "alpha", Provider: "glm", Model: "glm-4-flash"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parse mismatch (path with spaces must not shred):\n got: %+v\nwant: %+v",
 			got, want)
 	}
 }
 
-func TestVendorFromProfilePath(t *testing.T) {
+func TestProviderFromProfilePath(t *testing.T) {
 	cases := []struct {
 		in, want string
 	}{
@@ -125,8 +125,8 @@ func TestVendorFromProfilePath(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.in, func(t *testing.T) {
-			if got := vendorFromProfilePath(tc.in); got != tc.want {
-				t.Fatalf("vendorFromProfilePath(%q) = %q, want %q",
+			if got := providerFromProfilePath(tc.in); got != tc.want {
+				t.Fatalf("providerFromProfilePath(%q) = %q, want %q",
 					tc.in, got, tc.want)
 			}
 		})

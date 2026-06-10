@@ -11,7 +11,7 @@ import (
 // carries its run grouping. registerSyncJob flips the SAME id to running; finalize makes it done.
 func TestMintQueuedLeafThenStatusForQueued(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	req := Request{Vendor: "v", Model: "m", RunID: "r1", Phase: "map", Label: "leaf-a", JournalKey: "k1"}
+	req := Request{Provider: "v", Model: "m", RunID: "r1", Phase: "map", Label: "leaf-a", JournalKey: "k1"}
 	jobID := MintQueuedLeaf(req, "m")
 	if jobID == "" {
 		t.Fatal("MintQueuedLeaf returned empty id")
@@ -42,7 +42,7 @@ func TestMintQueuedLeafThenStatusForQueued(t *testing.T) {
 // done; the carried Attempt updates.
 func TestRegisterSyncJobClearsStaleCacheOnReuse(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	req := Request{Vendor: "v", RunID: "r", Phase: "p", Label: "l", PersistIO: true, IOPrompt: "hi", Attempt: 1}
+	req := Request{Provider: "v", RunID: "r", Phase: "p", Label: "l", PersistIO: true, IOPrompt: "hi", Attempt: 1}
 	jobID := MintQueuedLeaf(req, "m")
 	registerSyncJob(jobID, req, "m", "", "")
 	finalizeSyncJob(jobID, Result{OK: true, Result: "first-answer", NumTurns: 1}) // attempt 1 → done cache + .answer
@@ -68,21 +68,21 @@ func TestRegisterSyncJobClearsStaleCacheOnReuse(t *testing.T) {
 // (no phantom queued ◌ row); a real error class on the passed Result is preserved, else canonical.
 func TestFinalizeQueuedLeafFailed(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	jobID := MintQueuedLeaf(Request{Vendor: "v", RunID: "r", Phase: "p", Label: "l"}, "m")
+	jobID := MintQueuedLeaf(Request{Provider: "v", RunID: "r", Phase: "p", Label: "l"}, "m")
 	if StatusFor(jobID).Status != "queued" {
 		t.Fatal("placeholder should start queued")
 	}
-	// A pre-flight vendor failure keeps its real error class.
-	FinalizeQueuedLeafFailed(jobID, Result{OK: false, ErrorCode: ErrCodeUnknownVendor, Vendor: "v"})
+	// A pre-flight provider failure keeps its real error class.
+	FinalizeQueuedLeafFailed(jobID, Result{OK: false, ErrorCode: ErrCodeUnknownProvider, Provider: "v"})
 	st := StatusFor(jobID)
 	if st.Status != "failed" {
 		t.Fatalf("after finalize, status = %q, want failed (no phantom queued)", st.Status)
 	}
-	if st.ErrorCode != ErrCodeUnknownVendor {
-		t.Errorf("real error class lost: ErrorCode = %q, want %q", st.ErrorCode, ErrCodeUnknownVendor)
+	if st.ErrorCode != ErrCodeUnknownProvider {
+		t.Errorf("real error class lost: ErrorCode = %q, want %q", st.ErrorCode, ErrCodeUnknownProvider)
 	}
 	// An empty/OK Result falls back to a canonical SUBAGENT_FAILED.
-	j2 := MintQueuedLeaf(Request{Vendor: "v", RunID: "r", Phase: "p", Label: "l2"}, "m")
+	j2 := MintQueuedLeaf(Request{Provider: "v", RunID: "r", Phase: "p", Label: "l2"}, "m")
 	FinalizeQueuedLeafFailed(j2, Result{})
 	if st := StatusFor(j2); st.Status != "failed" || st.ErrorCode != ErrCodeFailed {
 		t.Errorf("canonical fallback: status=%q code=%q, want failed/%s", st.Status, st.ErrorCode, ErrCodeFailed)
@@ -158,7 +158,7 @@ func TestPruneRunsSparesLiveDeletesDead(t *testing.T) {
 func TestGCKeepsQueuedPlaceholderUntilTerminal(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
-	jobID := MintQueuedLeaf(Request{Vendor: "v", RunID: "r", Phase: "p", Label: "l"}, "m")
+	jobID := MintQueuedLeaf(Request{Provider: "v", RunID: "r", Phase: "p", Label: "l"}, "m")
 	GC(0) // no age limit
 	if st := StatusFor(jobID); st.Status != "queued" {
 		t.Fatalf("GC removed an active queued placeholder: status = %q, want queued", st.Status)
@@ -183,7 +183,7 @@ func TestStatusForDeadBackgroundWritesAnswer(t *testing.T) {
 		t.Fatal(err)
 	}
 	const jobID = "deadbg00-0000-0000-0000-000000000000"
-	meta := jobMeta{JobID: jobID, PID: 1 << 30, PGID: 1 << 30, Vendor: "v", Model: "m",
+	meta := jobMeta{JobID: jobID, PID: 1 << 30, PGID: 1 << 30, Provider: "v", Model: "m",
 		StartedAt: "2026-06-01T00:00:00Z", Status: "running", JSON: true, PersistIO: true}
 	if err := writeMetaFn(dir, meta); err != nil {
 		t.Fatal(err)

@@ -9,7 +9,7 @@ import (
 )
 
 // Shared cross-platform test fixtures and assertion helpers. The unix-only
-// process/exec helpers (writeFakeBin, writeMinimalVendors, deadReapedPID,
+// process/exec helpers (writeFakeBin, writeMinimalProviders, deadReapedPID,
 // readPID, waitGone) live in helpers_unix_test.go.
 
 // Real inner envelopes captured from a smoke run.

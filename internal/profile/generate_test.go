@@ -11,9 +11,9 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/config"
 )
 
-// sampleVendor returns a representative *config.Vendor used across tests.
-func sampleVendor() *config.Vendor {
-	return &config.Vendor{
+// sampleProvider returns a representative *config.Provider used across tests.
+func sampleProvider() *config.Provider {
+	return &config.Provider{
 		Name:           "deepseek",
 		BaseURL:        "https://api.deepseek.com/anthropic",
 		DefaultModel:   "deepseek-v4-flash",
@@ -33,11 +33,11 @@ func isolateHome(t *testing.T) string {
 	return home
 }
 
-func TestGenerateForVendor_Snapshot(t *testing.T) {
-	v := sampleVendor()
+func TestGenerateForProvider_Snapshot(t *testing.T) {
+	v := sampleProvider()
 	const helper = "/usr/local/bin/cc-fleet"
 	// A single-model provider (no strong/fast/effort): every Claude Code model tier
-	// is pinned to the default so no built-in claude-* id can escape to the vendor.
+	// is pinned to the default so no built-in claude-* id can escape to the provider.
 	const want = `{
   "apiKeyHelper": "/usr/local/bin/cc-fleet keyget deepseek",
   "env": {
@@ -49,9 +49,9 @@ func TestGenerateForVendor_Snapshot(t *testing.T) {
   }
 }`
 
-	got, err := GenerateForVendor(v, helper)
+	got, err := GenerateForProvider(v, helper)
 	if err != nil {
-		t.Fatalf("GenerateForVendor: %v", err)
+		t.Fatalf("GenerateForProvider: %v", err)
 	}
 	if strings.TrimSpace(string(got)) != strings.TrimSpace(want) {
 		t.Fatalf("snapshot mismatch:\n--- got ---\n%s\n--- want ---\n%s\n", got, want)
@@ -74,13 +74,13 @@ func TestGenerateForVendor_Snapshot(t *testing.T) {
 	}
 }
 
-// TestGenerateForVendor_TiersEffortAndStrip1M covers a provider that sets a strong
+// TestGenerateForProvider_TiersEffortAndStrip1M covers a provider that sets a strong
 // and fast slot, a 1M-marked default model, and a non-max effort: the tier env
 // must map opus→strong, sonnet→default, haiku/subagent→fast with the [1m] marker
 // STRIPPED from every tier value, and a non-max effort must ride the settings
 // effortLevel field (not the env).
-func TestGenerateForVendor_TiersEffortAndStrip1M(t *testing.T) {
-	v := &config.Vendor{
+func TestGenerateForProvider_TiersEffortAndStrip1M(t *testing.T) {
+	v := &config.Provider{
 		Name:           "deepseek",
 		BaseURL:        "https://api.deepseek.com/anthropic",
 		DefaultModel:   "deepseek-v4-pro[1m]",
@@ -92,9 +92,9 @@ func TestGenerateForVendor_TiersEffortAndStrip1M(t *testing.T) {
 		SecretRef:      "deepseek.key",
 		Enabled:        true,
 	}
-	got, err := GenerateForVendor(v, "/usr/local/bin/cc-fleet")
+	got, err := GenerateForProvider(v, "/usr/local/bin/cc-fleet")
 	if err != nil {
-		t.Fatalf("GenerateForVendor: %v", err)
+		t.Fatalf("GenerateForProvider: %v", err)
 	}
 	var back struct {
 		Env         map[string]string `json:"env"`
@@ -122,14 +122,14 @@ func TestGenerateForVendor_TiersEffortAndStrip1M(t *testing.T) {
 	}
 }
 
-// TestGenerateForVendor_MaxEffortRidesEnv covers effort=max: it must ride the env
+// TestGenerateForProvider_MaxEffortRidesEnv covers effort=max: it must ride the env
 // (the only knob that expresses max) and NOT the settings effortLevel field.
-func TestGenerateForVendor_MaxEffortRidesEnv(t *testing.T) {
-	v := sampleVendor()
+func TestGenerateForProvider_MaxEffortRidesEnv(t *testing.T) {
+	v := sampleProvider()
 	v.Effort = "max"
-	got, err := GenerateForVendor(v, "/usr/local/bin/cc-fleet")
+	got, err := GenerateForProvider(v, "/usr/local/bin/cc-fleet")
 	if err != nil {
-		t.Fatalf("GenerateForVendor: %v", err)
+		t.Fatalf("GenerateForProvider: %v", err)
 	}
 	var back struct {
 		Env         map[string]string `json:"env"`
@@ -146,34 +146,34 @@ func TestGenerateForVendor_MaxEffortRidesEnv(t *testing.T) {
 	}
 }
 
-func TestGenerateForVendor_RejectsBadInputs(t *testing.T) {
+func TestGenerateForProvider_RejectsBadInputs(t *testing.T) {
 	cases := []struct {
 		name   string
-		v      *config.Vendor
+		v      *config.Provider
 		helper string
 	}{
-		{"nil vendor", nil, "/abs/cc-fleet"},
-		{"empty name", &config.Vendor{BaseURL: "https://x"}, "/abs/cc-fleet"},
-		{"empty base_url", &config.Vendor{Name: "x"}, "/abs/cc-fleet"},
-		{"empty helper", sampleVendor(), ""},
-		{"relative helper", sampleVendor(), "cc-fleet"},
+		{"nil provider", nil, "/abs/cc-fleet"},
+		{"empty name", &config.Provider{BaseURL: "https://x"}, "/abs/cc-fleet"},
+		{"empty base_url", &config.Provider{Name: "x"}, "/abs/cc-fleet"},
+		{"empty helper", sampleProvider(), ""},
+		{"relative helper", sampleProvider(), "cc-fleet"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := GenerateForVendor(tc.v, tc.helper); err == nil {
-				t.Fatalf("GenerateForVendor(%+v, %q): want error, got nil", tc.v, tc.helper)
+			if _, err := GenerateForProvider(tc.v, tc.helper); err == nil {
+				t.Fatalf("GenerateForProvider(%+v, %q): want error, got nil", tc.v, tc.helper)
 			}
 		})
 	}
 }
 
-func TestWriteForVendor_FilePerm(t *testing.T) {
+func TestWriteForProvider_FilePerm(t *testing.T) {
 	isolateHome(t)
-	v := sampleVendor()
+	v := sampleProvider()
 
-	path, err := WriteForVendor(v, "/usr/local/bin/cc-fleet")
+	path, err := WriteForProvider(v, "/usr/local/bin/cc-fleet")
 	if err != nil {
-		t.Fatalf("WriteForVendor: %v", err)
+		t.Fatalf("WriteForProvider: %v", err)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -183,14 +183,14 @@ func TestWriteForVendor_FilePerm(t *testing.T) {
 		t.Fatalf("profile mode = %o, want 0600", got)
 	}
 
-	// Content sanity: matches GenerateForVendor output byte-for-byte.
+	// Content sanity: matches GenerateForProvider output byte-for-byte.
 	gotBytes, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	wantBytes, err := GenerateForVendor(v, "/usr/local/bin/cc-fleet")
+	wantBytes, err := GenerateForProvider(v, "/usr/local/bin/cc-fleet")
 	if err != nil {
-		t.Fatalf("GenerateForVendor: %v", err)
+		t.Fatalf("GenerateForProvider: %v", err)
 	}
 	if string(gotBytes) != string(wantBytes) {
 		t.Fatalf("file content mismatch:\n--- file ---\n%s\n--- want ---\n%s\n",
@@ -198,12 +198,12 @@ func TestWriteForVendor_FilePerm(t *testing.T) {
 	}
 }
 
-func TestWriteForVendor_Atomic_NoTempLeft(t *testing.T) {
+func TestWriteForProvider_Atomic_NoTempLeft(t *testing.T) {
 	isolateHome(t)
-	v := sampleVendor()
+	v := sampleProvider()
 
-	if _, err := WriteForVendor(v, "/usr/local/bin/cc-fleet"); err != nil {
-		t.Fatalf("WriteForVendor: %v", err)
+	if _, err := WriteForProvider(v, "/usr/local/bin/cc-fleet"); err != nil {
+		t.Fatalf("WriteForProvider: %v", err)
 	}
 	dir, err := ProfilesDir()
 	if err != nil {
@@ -240,18 +240,18 @@ func TestWriteForVendor_Atomic_NoTempLeft(t *testing.T) {
 	}
 }
 
-func TestWriteForVendor_HelperBinaryEmpty_UsesExecutable(t *testing.T) {
+func TestWriteForProvider_HelperBinaryEmpty_UsesExecutable(t *testing.T) {
 	isolateHome(t)
-	v := sampleVendor()
+	v := sampleProvider()
 
 	exe, err := os.Executable()
 	if err != nil {
 		t.Fatalf("os.Executable: %v", err)
 	}
 
-	path, err := WriteForVendor(v, "")
+	path, err := WriteForProvider(v, "")
 	if err != nil {
-		t.Fatalf("WriteForVendor: %v", err)
+		t.Fatalf("WriteForProvider: %v", err)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -269,19 +269,19 @@ func TestWriteForVendor_HelperBinaryEmpty_UsesExecutable(t *testing.T) {
 	}
 }
 
-func TestWriteForVendor_OverwriteExisting(t *testing.T) {
+func TestWriteForProvider_OverwriteExisting(t *testing.T) {
 	isolateHome(t)
-	v := sampleVendor()
+	v := sampleProvider()
 
 	// First write.
-	if _, err := WriteForVendor(v, "/old/path/cc-fleet"); err != nil {
-		t.Fatalf("first WriteForVendor: %v", err)
+	if _, err := WriteForProvider(v, "/old/path/cc-fleet"); err != nil {
+		t.Fatalf("first WriteForProvider: %v", err)
 	}
 	// Second write with a different helper path so we can prove the file
 	// content actually changed.
-	path, err := WriteForVendor(v, "/new/path/cc-fleet")
+	path, err := WriteForProvider(v, "/new/path/cc-fleet")
 	if err != nil {
-		t.Fatalf("second WriteForVendor: %v", err)
+		t.Fatalf("second WriteForProvider: %v", err)
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -295,29 +295,29 @@ func TestWriteForVendor_OverwriteExisting(t *testing.T) {
 	}
 }
 
-func TestRemoveForVendor_OK(t *testing.T) {
+func TestRemoveForProvider_OK(t *testing.T) {
 	isolateHome(t)
-	v := sampleVendor()
+	v := sampleProvider()
 
-	path, err := WriteForVendor(v, "/usr/local/bin/cc-fleet")
+	path, err := WriteForProvider(v, "/usr/local/bin/cc-fleet")
 	if err != nil {
-		t.Fatalf("WriteForVendor: %v", err)
+		t.Fatalf("WriteForProvider: %v", err)
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("Stat before remove: %v", err)
 	}
-	if err := RemoveForVendor(v.Name); err != nil {
-		t.Fatalf("RemoveForVendor: %v", err)
+	if err := RemoveForProvider(v.Name); err != nil {
+		t.Fatalf("RemoveForProvider: %v", err)
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("expected file gone, got Stat err=%v", err)
 	}
 }
 
-func TestRemoveForVendor_MissingNotError(t *testing.T) {
+func TestRemoveForProvider_MissingNotError(t *testing.T) {
 	isolateHome(t)
-	if err := RemoveForVendor("never-existed"); err != nil {
-		t.Fatalf("RemoveForVendor on missing: want nil, got %v", err)
+	if err := RemoveForProvider("never-existed"); err != nil {
+		t.Fatalf("RemoveForProvider on missing: want nil, got %v", err)
 	}
 }
 
@@ -333,7 +333,7 @@ func TestProfilePath(t *testing.T) {
 	}
 }
 
-func TestProfilePath_EmptyVendor(t *testing.T) {
+func TestProfilePath_EmptyProvider(t *testing.T) {
 	isolateHome(t)
 	if _, err := ProfilePath(""); err == nil {
 		t.Fatalf("ProfilePath(\"\"): want error, got nil")

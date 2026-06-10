@@ -23,7 +23,7 @@ func TestInteractiveAdd_KeyNotReadFromEchoingReader(t *testing.T) {
 	// os.Stdin in `go test` is not a terminal, so promptPassword takes its
 	// non-TTY guard branch and returns an error before reading any bytes.
 	input := strings.Join([]string{
-		"glm",                               // vendor name
+		"glm",                               // provider name
 		"https://api.example.com/anthropic", // base_url
 		"https://api.example.com/v1/models", // models_endpoint
 		"glm-4.6",                           // default_model

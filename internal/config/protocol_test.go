@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-// validOpenAIChat returns an openai-chat Vendor that should pass Validate: a
+// validOpenAIChat returns an openai-chat Provider that should pass Validate: a
 // loopback daemon base_url + a real upstream_url + a real-key backend.
-func validOpenAIChat(name string) *Vendor {
-	v := validVendor(name)
+func validOpenAIChat(name string) *Provider {
+	v := validProvider(name)
 	v.Protocol = ProtocolOpenAIChat
 	v.BaseURL = "http://127.0.0.1:17240/"
 	v.UpstreamURL = "https://api.openai.com/v1"
@@ -22,7 +22,7 @@ func validOpenAIChat(name string) *Vendor {
 // A codex row predating the protocol field (codex-oauth backend, no protocol)
 // resolves to the codex protocol and validates exactly as it did before.
 func TestProtocolCompatNormalize(t *testing.T) {
-	v := validVendor("codex")
+	v := validProvider("codex")
 	v.SecretBackend = CodexOAuthBackend
 	v.SecretRef = CodexOAuthBackend
 	v.BaseURL = "http://127.0.0.1:17222/"
@@ -41,7 +41,7 @@ func TestProtocolCompatNormalize(t *testing.T) {
 }
 
 func TestProtocolClosedSet(t *testing.T) {
-	v := validVendor("x")
+	v := validProvider("x")
 	v.Protocol = "openai-completions" // not in the closed set
 	if err := v.validate("x"); err == nil || !strings.Contains(err.Error(), "protocol") {
 		t.Fatalf("unknown protocol must be rejected, got %v", err)
@@ -51,15 +51,15 @@ func TestProtocolClosedSet(t *testing.T) {
 func TestValidateWire(t *testing.T) {
 	cases := []struct {
 		name    string
-		mutate  func(*Vendor)
+		mutate  func(*Provider)
 		wantErr string // substring; "" = must pass
 	}{
-		{"openai-chat ok", func(v *Vendor) {}, ""},
-		{"openai-responses ok", func(v *Vendor) { v.Protocol = ProtocolOpenAIResponses }, ""},
-		{"openai missing upstream_url", func(v *Vendor) { v.UpstreamURL = "" }, "requires upstream_url"},
-		{"openai with codex backend", func(v *Vendor) { v.SecretBackend = CodexOAuthBackend; v.SecretRef = CodexOAuthBackend }, "not the codex-oauth backend"},
-		{"openai non-loopback base", func(v *Vendor) { v.BaseURL = "https://api.openai.com/" }, "base_url"},
-		{"openai bad upstream", func(v *Vendor) { v.UpstreamURL = "http://api.openai.com/v1" }, "upstream_url"},
+		{"openai-chat ok", func(v *Provider) {}, ""},
+		{"openai-responses ok", func(v *Provider) { v.Protocol = ProtocolOpenAIResponses }, ""},
+		{"openai missing upstream_url", func(v *Provider) { v.UpstreamURL = "" }, "requires upstream_url"},
+		{"openai with codex backend", func(v *Provider) { v.SecretBackend = CodexOAuthBackend; v.SecretRef = CodexOAuthBackend }, "not the codex-oauth backend"},
+		{"openai non-loopback base", func(v *Provider) { v.BaseURL = "https://api.openai.com/" }, "base_url"},
+		{"openai bad upstream", func(v *Provider) { v.UpstreamURL = "http://api.openai.com/v1" }, "upstream_url"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -80,7 +80,7 @@ func TestValidateWire(t *testing.T) {
 
 	// codex-oauth protocol cross-checks.
 	t.Run("codex wrong backend", func(t *testing.T) {
-		v := validVendor("c")
+		v := validProvider("c")
 		v.Protocol = ProtocolCodexOAuth
 		v.BaseURL = "http://127.0.0.1:17222/"
 		v.ModelsEndpoint = "http://127.0.0.1:17222/v1/models"
@@ -89,7 +89,7 @@ func TestValidateWire(t *testing.T) {
 		}
 	})
 	t.Run("codex with upstream_url", func(t *testing.T) {
-		v := validVendor("c")
+		v := validProvider("c")
 		v.SecretBackend = CodexOAuthBackend
 		v.SecretRef = CodexOAuthBackend
 		v.BaseURL = "http://127.0.0.1:17222/"
@@ -101,8 +101,8 @@ func TestValidateWire(t *testing.T) {
 	})
 	// secret_ref is the per-credential id and becomes a token-file/flock name; a named
 	// ref must be a path-safe identifier, an unsafe one is rejected at load.
-	codexVendor := func(ref string) *Vendor {
-		v := validVendor("c")
+	codexProvider := func(ref string) *Provider {
+		v := validProvider("c")
 		v.SecretBackend = CodexOAuthBackend
 		v.SecretRef = ref
 		v.BaseURL = "http://127.0.0.1:17222/"
@@ -110,19 +110,19 @@ func TestValidateWire(t *testing.T) {
 		return v
 	}
 	t.Run("codex named secret_ref ok", func(t *testing.T) {
-		if err := codexVendor("codex-work").validate("c"); err != nil {
+		if err := codexProvider("codex-work").validate("c"); err != nil {
 			t.Fatalf("a path-safe named secret_ref must pass, got %v", err)
 		}
 	})
 	t.Run("codex path-unsafe secret_ref", func(t *testing.T) {
-		if err := codexVendor("../../etc/passwd").validate("c"); err == nil || !strings.Contains(err.Error(), "secret_ref") {
+		if err := codexProvider("../../etc/passwd").validate("c"); err == nil || !strings.Contains(err.Error(), "secret_ref") {
 			t.Fatalf("a path-unsafe secret_ref must be rejected, got %v", err)
 		}
 	})
 
 	// Anthropic-native must not carry upstream_url.
 	t.Run("anthropic with upstream_url", func(t *testing.T) {
-		v := validVendor("a")
+		v := validProvider("a")
 		v.UpstreamURL = "https://api.openai.com/v1"
 		if err := v.validate("a"); err == nil || !strings.Contains(err.Error(), "only valid for an openai-*") {
 			t.Fatalf("anthropic-native must reject upstream_url, got %v", err)
@@ -133,8 +133,8 @@ func TestValidateWire(t *testing.T) {
 // Two codex providers must not resolve to the same login credential: the default
 // (sentinel/empty) is single, and named credentials must be distinct.
 func TestValidate_CodexCredentialUniqueness(t *testing.T) {
-	codex := func(name, ref string) *Vendor {
-		v := validVendor(name)
+	codex := func(name, ref string) *Provider {
+		v := validProvider(name)
 		v.Protocol = ProtocolCodexOAuth
 		v.SecretBackend = CodexOAuthBackend
 		v.SecretRef = ref
@@ -142,10 +142,10 @@ func TestValidate_CodexCredentialUniqueness(t *testing.T) {
 		v.ModelsEndpoint = "http://127.0.0.1:17222/v1/models"
 		return v
 	}
-	cfg := func(vs ...*Vendor) *Config {
-		c := &Config{Version: SchemaVersion, Vendors: map[string]*Vendor{}}
+	cfg := func(vs ...*Provider) *Config {
+		c := &Config{Version: SchemaVersion, Providers: map[string]*Provider{}}
 		for _, v := range vs {
-			c.Vendors[v.Name] = v
+			c.Providers[v.Name] = v
 		}
 		return c
 	}
@@ -205,10 +205,10 @@ func TestValidateUpstreamURL(t *testing.T) {
 // An existing Anthropic-native config (no protocol/upstream_url lines) is
 // byte-stable through Save: omitempty must not introduce either field.
 func TestAnthropicNativeSaveByteStable(t *testing.T) {
-	cfg := &Config{Version: SchemaVersion, Vendors: map[string]*Vendor{
-		"deepseek": validVendor("deepseek"),
+	cfg := &Config{Version: SchemaVersion, Providers: map[string]*Provider{
+		"deepseek": validProvider("deepseek"),
 	}}
-	p := filepath.Join(t.TempDir(), "vendors.toml")
+	p := filepath.Join(t.TempDir(), "providers.toml")
 	if err := SaveToPath(cfg, p); err != nil {
 		t.Fatal(err)
 	}

@@ -73,7 +73,7 @@ func TestRunClaude_OutputCapBothStreams(t *testing.T) {
 	}
 }
 
-// TestRun_OutputTooLarge_Surfaces: end-to-end, a vendor child that floods stdout
+// TestRun_OutputTooLarge_Surfaces: end-to-end, a provider child that floods stdout
 // past the cap surfaces as SUBAGENT_OUTPUT_TOO_LARGE — not a misclassified
 // SUBAGENT_FAILED from a truncated envelope.
 func TestRun_OutputTooLarge_Surfaces(t *testing.T) {
@@ -111,11 +111,11 @@ secret_ref      = "glm.key"
 enabled         = true
 added_at        = 2026-05-24T05:00:00Z
 `
-	if err := os.WriteFile(filepath.Join(dir, "vendors.toml"), []byte(toml), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "providers.toml"), []byte(toml), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	res := Run(context.Background(), Request{Vendor: "glm", Prompt: "hi", JSON: true, Timeout: 10 * time.Second})
+	res := Run(context.Background(), Request{Provider: "glm", Prompt: "hi", JSON: true, Timeout: 10 * time.Second})
 	if res.OK {
 		t.Fatal("OK should be false on output overflow")
 	}

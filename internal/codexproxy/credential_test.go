@@ -150,7 +150,7 @@ func TestLogoutIfUnreferenced(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
-	cfg := &config.Config{Version: config.SchemaVersion, Vendors: map[string]*config.Vendor{
+	cfg := &config.Config{Version: config.SchemaVersion, Providers: map[string]*config.Provider{
 		"codex": {
 			Name: "codex", BaseURL: "http://127.0.0.1:17222/",
 			ModelsEndpoint: "http://127.0.0.1:17222/v1/models", DefaultModel: "gpt-5.5",
@@ -170,7 +170,7 @@ func TestLogoutIfUnreferenced(t *testing.T) {
 		t.Fatalf("a still-referenced credential must be kept: %v", err)
 	}
 
-	delete(cfg.Vendors, "codex")
+	delete(cfg.Providers, "codex")
 	if err := config.Save(cfg); err != nil {
 		t.Fatal(err)
 	}

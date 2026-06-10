@@ -1,16 +1,16 @@
 ---
 name: workflow
-description: Orchestrate a MULTI-PHASE, dependent, or resumable run over many vendor subagents from a JS script, off the main context (`cc-fleet workflow`). Use when stages depend on each other (one stage's output feeds the next), for fan-out→barrier→synthesis, per-item pipelines, loop-until-dry, or when a run must survive a kill and `--resume` from its journal. NOT a flat one-shot fan-out of independent tasks (that is /cc-fleet:subagent — cheaper, no script); NOT interactive collaboration you message back and forth (that is /cc-fleet:team); NOT trivial single-shot work the main session should just do.
+description: Orchestrate a MULTI-PHASE, dependent, or resumable run over many provider subagents from a JS script, off the main context (`cc-fleet workflow`). Use when stages depend on each other (one stage's output feeds the next), for fan-out→barrier→synthesis, per-item pipelines, loop-until-dry, or when a run must survive a kill and `--resume` from its journal. NOT a flat one-shot fan-out of independent tasks (that is /cc-fleet:subagent — cheaper, no script); NOT interactive collaboration you message back and forth (that is /cc-fleet:team); NOT trivial single-shot work the main session should just do.
 ---
 
 # workflow — multi-phase JS orchestration over provider subagents
 
 **Wrong lane?** A flat one-shot fan-out of independent tasks → /cc-fleet:subagent; interactive collaboration you message back and forth → /cc-fleet:team; arbitration in shared/routing.md. Shared docs are cited as shared/<file>.md; paths are relative to the skill's own directory, so from here a shared doc is ../shared/<file>.md.
 
-A **workflow** is a JavaScript script that fans out vendor `cc-fleet subagent` leaves and runs in a **cc-fleet process, OFF the main session's context**. You write the script; `cc-fleet workflow run` executes it. The orchestration plan lives in script variables (CPU, ~0 of your tokens) — you are invoked only when *authoring* the script, not on every scheduling decision. The API mirrors the native Claude Code Workflow tool — write the script exactly as you would a native workflow; the only addition is the `vendor` option on `agent()`.
+A **workflow** is a JavaScript script that fans out provider `cc-fleet subagent` leaves and runs in a **cc-fleet process, OFF the main session's context**. You write the script; `cc-fleet workflow run` executes it. The orchestration plan lives in script variables (CPU, ~0 of your tokens) — you are invoked only when *authoring* the script, not on every scheduling decision. The API mirrors the native Claude Code Workflow tool — write the script exactly as you would a native workflow; the only addition is the `provider` option on `agent()`.
 
 ## When to use it
-- **Multi-phase or dynamic** orchestration over many vendor subagents: fan-out + barrier, per-item pipeline, loop-until-dry, branch-on-result, with a board run-tree.
+- **Multi-phase or dynamic** orchestration over many provider subagents: fan-out + barrier, per-item pipeline, loop-until-dry, branch-on-result, with a board run-tree.
 - A single flat batch of independent one-shots is **not** a workflow — that's /cc-fleet:subagent. Don't write a script for it.
 
 ## Choosing the provider (ask at most once per task)
@@ -21,19 +21,19 @@ A **workflow** is a JavaScript script that fans out vendor `cc-fleet subagent` l
 
 Model tier within a provider: fan-out / leaf work → omit `--model` (or `--model fast`); judge / synthesis / sustained work → `--model strong`. The provider's roster decides the actual model — see shared/providers.md.
 
-In a script, `agent()`'s `opts.vendor` is **optional**: omitted, the leaf uses the run's default provider, resolved ONCE at launch and recorded with the run — so `--resume` stays stable even if the default changes later. A script meant to be shared or reproducible should still pin `vendor` explicitly.
+In a script, `agent()`'s `opts.provider` is **optional**: omitted, the leaf uses the run's default provider, resolved ONCE at launch and recorded with the run — so `--resume` stays stable even if the default changes later. A script meant to be shared or reproducible should still pin `provider` explicitly.
 
 ## The script API (mirrors the native Workflow tool)
 - `const meta = {name, description, whenToUse?, model?, phases?: [{title, detail?}]}` — a top-level **pure literal** (no calls/vars/spreads; the native `export const meta` form is also accepted). `name` + `description` are **required**; `model` is the default for agents that omit it. Read statically before the run → the board shows the named, phase-skeletoned run immediately.
-- `agent(prompt, opts) → Promise<string|object>` — runs ONE vendor subagent leaf. `opts.vendor` is optional (omitted → the run's default provider, above); the rest are optional: `model`, `schema`, `label`, `phase`, `timeout` (seconds), `max_budget_usd`, `max_turns`, `isolation: "worktree"`, `profile` ("slim" default / "slim-ro" / "full"), `tools`, `skills`, `mcp`. An unknown option key throws (typos fail loudly). On a leaf failure the promise **rejects** — an un-caught top-level `await agent()` aborts the run; inside `parallel`/`pipeline` a failed element degrades to `null`. Leaf failures classify like subagent failures (`error_code` table in /cc-fleet:subagent; self-heal flow in shared/troubleshooting.md).
+- `agent(prompt, opts) → Promise<string|object>` — runs ONE provider subagent leaf. `opts.provider` is optional (omitted → the run's default provider, above); the rest are optional: `model`, `schema`, `label`, `phase`, `timeout` (seconds), `max_budget_usd`, `max_turns`, `isolation: "worktree"`, `profile` ("slim" default / "slim-ro" / "full"), `tools`, `skills`, `mcp`. An unknown option key throws (typos fail loudly). On a leaf failure the promise **rejects** — an un-caught top-level `await agent()` aborts the run; inside `parallel`/`pipeline` a failed element degrades to `null`. Leaf failures classify like subagent failures (`error_code` table in /cc-fleet:subagent; self-heal flow in shared/troubleshooting.md).
   - **`schema`** (a plain object) goes to the claude child via `--json-schema`: claude injects a forced `StructuredOutput` tool and enforces that it is CALLED (the native mechanism — no JSON instruction is added to the prompt); the promise resolves with the parsed structured payload. Client-side validation stays as a backstop — a recursive JSON-Schema subset: `type` (object/array/string/number/integer/boolean/null; `integer` accepts `5.0`), `required`, nested `properties`, array `items`, scalar `enum`, string `pattern` (RE2 best-effort — the wire enforces the authoritative ECMA regex) / `format` (email/uri/uuid/date/date-time), `additionalProperties`, `allOf`/`anyOf`/`oneOf`, and intra-document `$ref` (`#/…` pointers, e.g. `#/$defs/Addr`; an external URI is unsupported and fails). A validation failure — or a result envelope without a structured payload — FAILS the leaf; there is no automatic retry. The forced `StructuredOutput` call costs turns: give a schema'd leaf `max_turns` ≥ 3 headroom (a budget of 1 starves it). `schema` needs claude ≥ 2.1.88 (the slim-profile floor); an older claude fails the leaf with a classified usage error.
   - **`isolation: "worktree"`** runs the leaf with cwd = a fresh git worktree (torn down after), so parallel file-editing leaves don't collide (requires a git repo).
   - **`profile`**: `"slim"` (the default: write-capable native-subagent mirror) / `"slim-ro"` (read-only research mirror) / `"full"` (ONLY to compare against a full session or diagnose a suspected slim regression). Rule of thumb: writes files → `slim`, read-only research → `slim-ro`. `tools`, `skills` (default `true`) and `mcp` refine a slim leaf and are rejected with `profile: "full"`; `tools` REPLACES the whole set, never appends. Tool whitelists, `mcp` per-profile defaults, and the claude-below-2.1.88 fail-open-to-`full` downgrade: shared/providers.md — do not re-derive them from memory. The run journal folds the effective profile + tools, so a `--resume` re-runs a leaf whose shape changed.
 - **Background = an unawaited promise.** There is no `run_in_background`/`wait()`: start a leaf with `const p = agent(...)`, keep working, `await p` later (`Promise.all` for a batch). Every leaf — awaited or not — is pool-bounded, journaled at completion, and the run only finalizes after all of them settle. A leaf that **rejects with nobody ever handling it fails the run** (a silently dropped failure is still a failure); fire-and-forget tolerance is an explicit `p.catch(() => null)`.
-- `parallel(thunks) → Promise<array>` — run each 0-arg thunk concurrently; **BARRIER** (settles once all finish), `null` where an element failed: `await parallel([() => agent("a", {vendor: "glm"}), () => agent("b", {vendor: "glm"})])`. Concurrent execs stay ~pool size even for a huge list (excess queues).
+- `parallel(thunks) → Promise<array>` — run each 0-arg thunk concurrently; **BARRIER** (settles once all finish), `null` where an element failed: `await parallel([() => agent("a", {provider: "glm"}), () => agent("b", {provider: "glm"})])`. Concurrent execs stay ~pool size even for a huge list (excess queues).
 - `pipeline(items, ...stages) → Promise<array>` — push each item through all stages independently with **NO inter-stage barrier** (item A can be in stage 3 while B is in stage 1). Each stage is `(prev, item, index) => …` (sync or async; its return value is awaited). A failing stage drops that item to `null` and skips its remaining stages. **DEFAULT to `pipeline` over `parallel`** — only use `parallel` when a stage genuinely needs ALL prior results together.
 - `workflow(path, args?) → Promise` — run another `.js` inline on the same engine (shared pool/journal/budget), **one level deep** only; resolves with the child's top-level `return` value.
-- `budget` — two parallel cap surfaces. **USD:** `budget.total` (the `--budget-usd` cap in USD, or `null`), `budget.spent()`, `budget.remaining()` (`Infinity` when uncapped) — USD floats (an Anthropic list-price estimate). **Tokens:** `budget.tokens_total` (the `--budget-tokens` cap, or `null`), `budget.tokens_spent()`, `budget.tokens_remaining()` — ints (input+output, cache-read excluded). `agent()` throws once **either** cap is reached; a `while (budget.remaining() > N)` loop scales depth to the cap. (Native's `budget.total` is a token target; here it is **USD** — `--budget-usd` is the cross-vendor cap since vendors price tokens differently — and tokens are the separate `tokens_*` surface.)
+- `budget` — two parallel cap surfaces. **USD:** `budget.total` (the `--budget-usd` cap in USD, or `null`), `budget.spent()`, `budget.remaining()` (`Infinity` when uncapped) — USD floats (an Anthropic list-price estimate). **Tokens:** `budget.tokens_total` (the `--budget-tokens` cap, or `null`), `budget.tokens_spent()`, `budget.tokens_remaining()` — ints (input+output, cache-read excluded). `agent()` throws once **either** cap is reached; a `while (budget.remaining() > N)` loop scales depth to the cap. (Native's `budget.total` is a token target; here it is **USD** — `--budget-usd` is the cross-provider cap since providers price tokens differently — and tokens are the separate `tokens_*` surface.)
 - `phase(title, detail?)` — name the current phase (tags subsequent agents lacking an explicit `phase`; the detail shows on the board row). `log(msg)` — a narrator line (board live log + stderr); `console.log/info/warn/error/debug` alias onto it (non-strings render as JSON, Errors by message).
 - `args` — the parsed `--args-json '<json>'` value (or the `workflow(child, args)` value); `undefined` when none was given.
 
@@ -68,19 +68,19 @@ To surface a detached run INSIDE this session (the run is otherwise invisible he
 cc-fleet workflow watch "$RUN"               # stream its live events as text until it finishes
 cc-fleet watch                               # stream the whole fleet (teammates + jobs + runs)
 ```
-Run either in a backgrounded shell to surface it in the `/tasks` panel, or delegate the `cc-fleet:workflow-watch` agent (a run id) / `cc-fleet:fleet-watch` agent (the fleet) to surface it in the agent panel. Both are read-only and print only canonical status — never a vendor reply.
+Run either in a backgrounded shell to surface it in the `/tasks` panel, or delegate the `cc-fleet:workflow-watch` agent (a run id) / `cc-fleet:fleet-watch` agent (the fleet) to surface it in the agent panel. Both are read-only and print only canonical status — never a provider reply.
 
 ## Resume (content-hash journal)
 Each run records a content-hash **journal** of its completed leaves. Re-run the same script under an existing run id to replay:
 ```bash
-cc-fleet workflow run audit.js --resume "$RUN"   # journaled leaves return cached (no vendor exec); only un-run leaves run
+cc-fleet workflow run audit.js --resume "$RUN"   # journaled leaves return cached (no provider exec); only un-run leaves run
 ```
-A leaf is keyed by its determinant (vendor + model + prompt + schema + slim shape), so an unchanged re-run is ~100% cache hits, a leaf whose prompt you edited (and anything downstream of its output) re-runs, and a run that was killed resumes by replaying what finished before the kill. The determinism lockdown makes this exact: with no clock/PRNG, the same script+args produce the same keys. A **failed** leaf is never journaled, so resume re-runs it.
+A leaf is keyed by its determinant (provider + model + prompt + schema + slim shape), so an unchanged re-run is ~100% cache hits, a leaf whose prompt you edited (and anything downstream of its output) re-runs, and a run that was killed resumes by replaying what finished before the kill. The determinism lockdown makes this exact: with no clock/PRNG, the same script+args produce the same keys. A **failed** leaf is never journaled, so resume re-runs it.
 
 ## Non-goals (state plainly, don't oversell)
 - **No pause.** A running `claude -p` can't be cleanly suspended; use `workflow stop` (reaps the run) + `run --resume` (cheap restart via the journal) instead.
 - **Client-side `schema` validation is a JSON-Schema subset** — the list above, not the full spec (an external `$ref` URI is unsupported and fails; an unknown `format` is an annotation, not enforced). claude enforces that `StructuredOutput` is called; this backstop checks what it was filled with, and a failure is terminal (no retry).
-- Key-safety is unchanged: the vendor key flows only via `apiKeyHelper`; prompts go to the leaf via stdin, never argv; the journal/events/board carry no key.
+- Key-safety is unchanged: the provider key flows only via `apiKeyHelper`; prompts go to the leaf via stdin, never argv; the journal/events/board carry no key.
 
 ## Worked example — research sweep (fan-out → pipeline → loop)
 ```js
@@ -93,7 +93,7 @@ const meta = {
 phase("map");
 const maps = (await parallel(
     args.map((m) => () => agent("List exported endpoints in module " + m,
-                                {vendor: "deepseek", label: "map:" + m}))
+                                {provider: "deepseek", label: "map:" + m}))
 )).filter(Boolean);  // e.g. --args-json '["auth","billing","users"]'
 
 phase("build");
@@ -101,14 +101,14 @@ phase("build");
 const checklists = await pipeline(
     maps,
     (prev, item, i) => agent("Draft an audit checklist for these endpoints:\n" + prev,
-                             {vendor: "glm", label: "build:" + i}),
+                             {provider: "glm", label: "build:" + i}),
 );
 
 phase("probe");
 const gaps = [];
 while (gaps.length < 10) {           // loop-until-dry (the runtime hard-caps 1000 leaves/run)
     const g = await agent("Given these checklists, name ONE uncovered risk, or reply NONE:\n"
-                          + checklists.join("\n"), {vendor: "kimi"});
+                          + checklists.join("\n"), {provider: "kimi"});
     if (g.trim() === "NONE") break;
     gaps.push(g);
 }

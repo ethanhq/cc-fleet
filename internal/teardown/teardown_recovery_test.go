@@ -13,7 +13,7 @@ import (
 )
 
 // TestTeardownTeam_DirGoneRecoversSwarmServer: when the team dir is already gone
-// but a swarm server / vendor process is still alive under the team name,
+// but a swarm server / provider process is still alive under the team name,
 // teardown must NOT bare-return — it kills the deterministic swarm server and
 // reaps the ghost (both derivable from the team name), leaving no orphan dir and
 // without claiming TeamRemoved (nothing the user could see was removed).

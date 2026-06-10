@@ -20,19 +20,19 @@ import (
 // --- test harness: a deterministic fake leaf via the runLeaf seam ----------------
 
 type leafCall struct {
-	vendor, prompt, runID, phase, label, model string
-	timeout                                    time.Duration
-	maxBudget                                  float64
-	maxTurns                                   int
-	attempt                                    int
-	persistIO                                  bool
-	ioPrompt                                   string
-	workingDir                                 string
-	promptProfile                              string
-	tools                                      []string
-	noSkills                                   bool
-	mcp                                        bool
-	jsonSchema                                 string
+	provider, prompt, runID, phase, label, model string
+	timeout                                      time.Duration
+	maxBudget                                    float64
+	maxTurns                                     int
+	attempt                                      int
+	persistIO                                    bool
+	ioPrompt                                     string
+	workingDir                                   string
+	promptProfile                                string
+	tools                                        []string
+	noSkills                                     bool
+	mcp                                          bool
+	jsonSchema                                   string
 }
 
 type recorder struct {
@@ -61,7 +61,7 @@ func (r *recorder) prompts() []string {
 }
 
 // fakeLeaf adapts a per-call responder into a runLeaf, recording every request and
-// stamping the run/phase/label/vendor back onto the Result (as subagent.Run does).
+// stamping the run/phase/label/provider back onto the Result (as subagent.Run does).
 func fakeLeaf(r *recorder, respond func(leafCall) subagent.Result) func(context.Context, subagent.Request) subagent.Result {
 	return func(_ context.Context, req subagent.Request) subagent.Result {
 		prompt := ""
@@ -70,7 +70,7 @@ func fakeLeaf(r *recorder, respond func(leafCall) subagent.Result) func(context.
 			prompt = string(b)
 		}
 		c := leafCall{
-			vendor: req.Vendor, prompt: prompt, runID: req.RunID, phase: req.Phase, label: req.Label,
+			provider: req.Provider, prompt: prompt, runID: req.RunID, phase: req.Phase, label: req.Label,
 			model: req.Model, timeout: req.Timeout, maxBudget: req.MaxBudgetUSD, maxTurns: req.MaxTurns,
 			attempt:   req.Attempt,
 			persistIO: req.PersistIO, ioPrompt: req.IOPrompt, workingDir: req.WorkingDir,
@@ -79,7 +79,7 @@ func fakeLeaf(r *recorder, respond func(leafCall) subagent.Result) func(context.
 		}
 		r.record(c)
 		res := respond(c)
-		res.RunID, res.Phase, res.Label, res.Vendor = req.RunID, req.Phase, req.Label, req.Vendor
+		res.RunID, res.Phase, res.Label, res.Provider = req.RunID, req.Phase, req.Label, req.Provider
 		return res
 	}
 }
@@ -183,9 +183,9 @@ func TestParallelFanout(t *testing.T) {
 	rec := &recorder{}
 	v, err := runScript(t, "run1", 4, echoLeaf(rec), `
 const results = await parallel([
-    () => agent("a", {vendor: "v"}),
-    () => agent("b", {vendor: "v"}),
-    () => agent("c", {vendor: "v"}),
+    () => agent("a", {provider: "v"}),
+    () => agent("b", {provider: "v"}),
+    () => agent("c", {provider: "v"}),
 ]);
 return { results };
 `)
@@ -213,8 +213,8 @@ func TestPipelineChaining(t *testing.T) {
 	v, err := runScript(t, "run2", 4, echoLeaf(rec), `
 const results = await pipeline(
     ["x", "y"],
-    (prev, item, i) => agent("s1:" + item, {vendor: "v"}),
-    (prev, item, i) => agent("s2:" + prev, {vendor: "v"}),
+    (prev, item, i) => agent("s1:" + item, {provider: "v"}),
+    (prev, item, i) => agent("s2:" + prev, {provider: "v"}),
 );
 return { results };
 `)
@@ -241,7 +241,7 @@ func TestLoopUntilDry(t *testing.T) {
 	v, err := runScript(t, "run3", 2, echoLeaf(rec), `
 const found = [];
 while (found.length < 2) {
-    found.push(await agent("probe", {vendor: "v"}));
+    found.push(await agent("probe", {provider: "v"}));
 }
 return { n: found.length };
 `)
@@ -261,7 +261,7 @@ func TestAgentFailureRejectsAtTopLevel(t *testing.T) {
 	failLeaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
 		return subagent.Result{OK: false, ErrorCode: "KEY_INVALID", ErrorMsg: "bad key"}
 	})
-	_, err := runScript(t, "run4", 2, failLeaf, `return await agent("go", {vendor: "v"});`)
+	_, err := runScript(t, "run4", 2, failLeaf, `return await agent("go", {provider: "v"});`)
 	if err == nil {
 		t.Fatal("expected a top-level agent failure to abort the run, got nil error")
 	}
@@ -280,7 +280,7 @@ func TestParallelCatchesFailureAsNull(t *testing.T) {
 		return subagent.Result{OK: true, Result: "ok:" + c.prompt}
 	})
 	v, err := runScript(t, "run5", 4, leaf, `
-const results = await parallel([() => agent("a", {vendor: "v"}), () => agent("b", {vendor: "v"})]);
+const results = await parallel([() => agent("a", {provider: "v"}), () => agent("b", {provider: "v"})]);
 return { aIsNull: results[0] === null, b: results[1] };
 `)
 	if err != nil {
@@ -304,7 +304,7 @@ func TestSchemaStructuredOutputReturned(t *testing.T) {
 		return subagent.Result{OK: true, Result: "prose", StructuredOutput: json.RawMessage(`{"answer": 42}`)}
 	})
 	v, err := runScript(t, "run6", 1, leaf, `
-const res = await agent("compute", {vendor: "v", schema: {required: ["answer"]}});
+const res = await agent("compute", {provider: "v", schema: {required: ["answer"]}});
 return { ans: res.answer };
 `)
 	if err != nil {
@@ -334,7 +334,7 @@ func TestSchemaNotSatisfiedTerminal(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"other": 1}`)}
 	})
 	_, err := runScript(t, "run7", 1, leaf, `
-return await agent("q", {vendor: "v", schema: {required: ["answer"]}});
+return await agent("q", {provider: "v", schema: {required: ["answer"]}});
 `)
 	if err == nil || !strings.Contains(err.Error(), "schema not satisfied") {
 		t.Fatalf("err = %v, want a schema-not-satisfied failure", err)
@@ -351,7 +351,7 @@ func TestSharedStateDeterministic(t *testing.T) {
 	rec := &recorder{}
 	v, err := runScript(t, "run8", 4, echoLeaf(rec), `
 const acc = [];
-await parallel(["a", "b", "c", "d"].map((p) => async () => { acc.push(await agent(p, {vendor: "v"})); }));
+await parallel(["a", "b", "c", "d"].map((p) => async () => { acc.push(await agent(p, {provider: "v"})); }));
 return { n: acc.length };
 `)
 	if err != nil {
@@ -373,7 +373,7 @@ func TestLeafPanicRecovered(t *testing.T) {
 		return subagent.Result{OK: true, Result: "ok:" + c.prompt}
 	})
 	v, err := runScript(t, "run9", 4, leaf, `
-const results = await parallel([() => agent("boom", {vendor: "v"}), () => agent("fine", {vendor: "v"})]);
+const results = await parallel([() => agent("boom", {provider: "v"}), () => agent("fine", {provider: "v"})]);
 return { zeroNull: results[0] === null, one: results[1] };
 `)
 	if err != nil {
@@ -406,7 +406,7 @@ func TestCancelStopsRun(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	eng := newTestEngine(ctx, "run10", 1) // pool of 1 → 2 queued behind the in-flight leaf
-	src := `return await parallel([() => agent("0", {vendor: "v"}), () => agent("1", {vendor: "v"}), () => agent("2", {vendor: "v"})]);`
+	src := `return await parallel([() => agent("0", {provider: "v"}), () => agent("1", {provider: "v"}), () => agent("2", {provider: "v"})]);`
 
 	done := make(chan error, 1)
 	go func() {
@@ -434,8 +434,8 @@ func TestLeafTagging(t *testing.T) {
 	rec := &recorder{}
 	_, err := runScript(t, "RID", 4, echoLeaf(rec), `
 phase("plan");
-await agent("p1", {vendor: "deepseek", label: "planner"});
-await agent("p2", {vendor: "glm", phase: "explicit", label: "other"});
+await agent("p1", {provider: "deepseek", label: "planner"});
+await agent("p2", {provider: "glm", phase: "explicit", label: "other"});
 return {};
 `)
 	if err != nil {
@@ -446,19 +446,19 @@ return {};
 	for _, c := range calls {
 		byPrompt[c.prompt] = c
 	}
-	if c := byPrompt["p1"]; c.runID != "RID" || c.phase != "plan" || c.label != "planner" || c.vendor != "deepseek" {
-		t.Errorf("p1 tagged %+v, want runID=RID phase=plan label=planner vendor=deepseek", c)
+	if c := byPrompt["p1"]; c.runID != "RID" || c.phase != "plan" || c.label != "planner" || c.provider != "deepseek" {
+		t.Errorf("p1 tagged %+v, want runID=RID phase=plan label=planner provider=deepseek", c)
 	}
-	if c := byPrompt["p2"]; c.phase != "explicit" || c.vendor != "glm" {
-		t.Errorf("p2 tagged %+v, want phase=explicit (explicit phase overrides current) vendor=glm", c)
+	if c := byPrompt["p2"]; c.phase != "explicit" || c.provider != "glm" {
+		t.Errorf("p2 tagged %+v, want phase=explicit (explicit phase overrides current) provider=glm", c)
 	}
 }
 
-func TestAgentRequiresVendor(t *testing.T) {
+func TestAgentRequiresProvider(t *testing.T) {
 	rec := &recorder{}
 	_, err := runScript(t, "run11", 2, echoLeaf(rec), `return await agent("hi");`)
-	if err == nil || !strings.Contains(err.Error(), "vendor") {
-		t.Errorf("expected a vendor-required error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "provider") {
+		t.Errorf("expected a provider-required error, got %v", err)
 	}
 }
 
@@ -466,7 +466,7 @@ func TestAgentRequiresVendor(t *testing.T) {
 // (the weak-model footgun this runtime exists to remove).
 func TestAgentUnknownOptionRejected(t *testing.T) {
 	rec := &recorder{}
-	_, err := runScript(t, "run12", 2, echoLeaf(rec), `return await agent("hi", {vendor: "v", modle: "x"});`)
+	_, err := runScript(t, "run12", 2, echoLeaf(rec), `return await agent("hi", {provider: "v", modle: "x"});`)
 	if err == nil || !strings.Contains(err.Error(), "unknown option") {
 		t.Errorf("expected an unknown-option error, got %v", err)
 	}
@@ -477,7 +477,7 @@ func TestAgentUnknownOptionRejected(t *testing.T) {
 func TestAgentOptionalNullAccepted(t *testing.T) {
 	rec := &recorder{}
 	_, err := runScript(t, "rn", 2, echoLeaf(rec),
-		`return await agent("p", {vendor: "v", model: null, schema: null, label: null, phase: null, timeout: null, max_budget_usd: null, max_turns: null});`)
+		`return await agent("p", {provider: "v", model: null, schema: null, label: null, phase: null, timeout: null, max_budget_usd: null, max_turns: null});`)
 	if err != nil {
 		t.Fatalf("explicit null for optionals must be accepted: %v", err)
 	}
@@ -492,7 +492,7 @@ func TestAgentOptionalNullAccepted(t *testing.T) {
 func TestAgentParamPlumbing(t *testing.T) {
 	rec := &recorder{}
 	_, err := runScript(t, "rp", 2, echoLeaf(rec),
-		`return await agent("p", {vendor: "v", model: "m", timeout: 42, max_turns: 3, max_budget_usd: 2});`)
+		`return await agent("p", {provider: "v", model: "m", timeout: 42, max_turns: 3, max_budget_usd: 2});`)
 	if err != nil {
 		t.Fatalf("run: %v (int timeout/budget must be accepted)", err)
 	}
@@ -524,8 +524,8 @@ func TestPipelineStageFailureToNull(t *testing.T) {
 	v, err := runScript(t, "rpf", 4, leaf, `
 const results = await pipeline(
     ["good", "bad"],
-    (prev, item, i) => agent("s1:" + item, {vendor: "v"}),
-    (prev, item, i) => agent("s2:" + prev, {vendor: "v"}),
+    (prev, item, i) => agent("s1:" + item, {provider: "v"}),
+    (prev, item, i) => agent("s2:" + prev, {provider: "v"}),
 );
 return { badIsNull: results[1] === null, good: results[0] };
 `)
@@ -558,7 +558,7 @@ func TestSchemaPropertiesKeys(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"a": 1, "b": 2}`)}
 	})
 	v, err := runScript(t, "rsp", 1, leaf, `
-const res = await agent("q", {vendor: "v", schema: {properties: {a: {}, b: {}}}});
+const res = await agent("q", {provider: "v", schema: {properties: {a: {}, b: {}}}});
 return { both: res.a + res.b };
 `)
 	if err != nil {
@@ -606,8 +606,8 @@ func TestArgsValue(t *testing.T) {
 func TestUnawaitedLeafCompletes(t *testing.T) {
 	rec := &recorder{}
 	v, err := runScript(t, "rb", 2, echoLeaf(rec), `
-agent("background", {vendor: "v"});
-return { fg: await agent("foreground", {vendor: "v"}) };
+agent("background", {provider: "v"});
+return { fg: await agent("foreground", {provider: "v"}) };
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -632,8 +632,8 @@ func TestUnhandledRejectionFailsRun(t *testing.T) {
 		return subagent.Result{OK: true, Result: "ok:" + c.prompt}
 	})
 	_, err := runScript(t, "rur", 2, leaf, `
-agent("bad", {vendor: "v"});
-return await agent("good", {vendor: "v"});
+agent("bad", {provider: "v"});
+return await agent("good", {provider: "v"});
 `)
 	if err == nil || !strings.Contains(err.Error(), "unhandled promise rejection") {
 		t.Fatalf("err = %v, want an unhandled-rejection failure", err)
@@ -652,8 +652,8 @@ func TestDelayedAwaitIsHandled(t *testing.T) {
 		return subagent.Result{OK: true, Result: "ok:" + c.prompt}
 	})
 	v, err := runScript(t, "rda", 2, leaf, `
-const p = agent("bad", {vendor: "v"});
-await agent("good", {vendor: "v"}); // the bad leaf rejects while this awaits
+const p = agent("bad", {provider: "v"});
+await agent("good", {provider: "v"}); // the bad leaf rejects while this awaits
 try {
     await p;
     return { caught: false };
@@ -710,7 +710,7 @@ return {
 }
 
 // TestConsoleAliasesLog: every console level routes to the log() narrator surface
-// (vendor-model muscle memory writes console.log) — strings pass through, Errors
+// (provider-model muscle memory writes console.log) — strings pass through, Errors
 // render by message, everything else as JSON.
 func TestConsoleAliasesLog(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -763,8 +763,8 @@ return null;
 func TestAgentNonFiniteNumberRejected(t *testing.T) {
 	rec := &recorder{}
 	for _, src := range []string{
-		`return await agent("p", {vendor: "v", timeout: Infinity});`,
-		`return await agent("p", {vendor: "v", max_budget_usd: 0/0});`,
+		`return await agent("p", {provider: "v", timeout: Infinity});`,
+		`return await agent("p", {provider: "v", max_budget_usd: 0/0});`,
 	} {
 		_, err := runScript(t, "rnf", 2, echoLeaf(rec), src)
 		if err == nil || !strings.Contains(err.Error(), "finite") {
@@ -839,7 +839,7 @@ func TestSchemaCanonicalJSSemantics(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"a": 1}`)}
 	})
 	_, err := runScript(t, "rcs", 1, leaf, `
-return await agent("q", {vendor: "v", schema: {required: ["a"], junk: undefined}});
+return await agent("q", {provider: "v", schema: {required: ["a"], junk: undefined}});
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -863,7 +863,7 @@ func TestConcurrentPhaseLog(t *testing.T) {
 const w = async (i) => {
     phase("p" + i);
     log("at " + i);
-    return agent("t" + i, {vendor: "v"});
+    return agent("t" + i, {provider: "v"});
 };
 await parallel([0, 1, 2, 3, 4, 5, 6, 7].map((i) => () => w(i)));
 `
@@ -894,7 +894,7 @@ func TestExecuteFinalizesFailedStatus(t *testing.T) {
 	t.Cleanup(func() { runLeaf = old })
 	dir := t.TempDir()
 	script := filepath.Join(dir, "f.js")
-	os.WriteFile(script, []byte("const meta = {name: \"n\", description: \"d\"};\nreturn await agent(\"go\", {vendor: \"v\"});\n"), 0o600)
+	os.WriteFile(script, []byte("const meta = {name: \"n\", description: \"d\"};\nreturn await agent(\"go\", {provider: \"v\"});\n"), 0o600)
 	run, err := Prepare(script)
 	if err != nil {
 		t.Fatal(err)
@@ -925,7 +925,7 @@ func TestExecuteStoppedStatusOnCancel(t *testing.T) {
 	t.Cleanup(func() { runLeaf = old })
 	dir := t.TempDir()
 	script := filepath.Join(dir, "s.js")
-	os.WriteFile(script, []byte("const meta = {name: \"n\", description: \"d\"};\nreturn await agent(\"go\", {vendor: \"v\"});\n"), 0o600)
+	os.WriteFile(script, []byte("const meta = {name: \"n\", description: \"d\"};\nreturn await agent(\"go\", {provider: \"v\"});\n"), 0o600)
 	run, err := Prepare(script)
 	if err != nil {
 		t.Fatal(err)
@@ -968,7 +968,7 @@ func TestExecutePanicFinalizesFailed(t *testing.T) {
 	t.Cleanup(func() { runLeaf = old })
 	dir := t.TempDir()
 	script := filepath.Join(dir, "p.js")
-	os.WriteFile(script, []byte("const meta = {name: \"n\", description: \"d\"};\nreturn await agent(\"go\", {vendor: \"v\"});\n"), 0o600)
+	os.WriteFile(script, []byte("const meta = {name: \"n\", description: \"d\"};\nreturn await agent(\"go\", {provider: \"v\"});\n"), 0o600)
 	run, err := Prepare(script)
 	if err != nil {
 		t.Fatal(err)

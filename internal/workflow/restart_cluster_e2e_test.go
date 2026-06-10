@@ -47,7 +47,7 @@ func TestT3_RestartStormOneEngine(t *testing.T) {
 	}
 
 	script := filepath.Join(env.home, "block.js")
-	body := "const meta = {name: \"t3\", description: \"d\"};\nphase(\"p\");\nawait agent(\"block\", {vendor: \"fake\", label: \"b\"});\n"
+	body := "const meta = {name: \"t3\", description: \"d\"};\nphase(\"p\");\nawait agent(\"block\", {provider: \"fake\", label: \"b\"});\n"
 	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

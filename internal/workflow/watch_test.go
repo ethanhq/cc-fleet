@@ -138,7 +138,7 @@ func TestEventTailGrownPastReset(t *testing.T) {
 
 // TestRenderEventScrubsControl: a control sequence in an opaque field never reaches the line.
 func TestRenderEventScrubsControl(t *testing.T) {
-	out := RenderEventLine(EventRecord{Kind: "leaf", Status: "done", Label: "a\x1b[31mb", Vendor: "v", Model: "m"})
+	out := RenderEventLine(EventRecord{Kind: "leaf", Status: "done", Label: "a\x1b[31mb", Provider: "v", Model: "m"})
 	if strings.ContainsRune(out, '\x1b') {
 		t.Errorf("render leaked an ESC control rune: %q", out)
 	}
@@ -149,7 +149,7 @@ func TestRenderEventScrubsControl(t *testing.T) {
 
 // TestWatchTerminalRun: a run already terminal streams its events, prints a final status line,
 // and returns nil. A failed run's final line points at `workflow status` and never echoes the
-// raw Error (which a schema-reject can taint with a vendor reply).
+// raw Error (which a schema-reject can taint with a provider reply).
 func TestWatchTerminalRun(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	run, err := subagent.NewRunWithMeta("n", "d", "", nil)
@@ -164,7 +164,7 @@ func TestWatchTerminalRun(t *testing.T) {
 		t.Fatal(err)
 	}
 	run.Status = "failed"
-	run.Error = "agent(v): schema not satisfied: value \"LEAKED_VENDOR_REPLY\" is not one of the enum values"
+	run.Error = "agent(v): schema not satisfied: value \"LEAKED_PROVIDER_REPLY\" is not one of the enum values"
 	if err := subagent.SaveRun(run); err != nil {
 		t.Fatal(err)
 	}
@@ -184,8 +184,8 @@ func TestWatchTerminalRun(t *testing.T) {
 	if !strings.Contains(s, "failed") || !strings.Contains(s, "workflow status") {
 		t.Errorf("final line should mark failed + point at `workflow status`:\n%s", s)
 	}
-	if strings.Contains(s, "LEAKED_VENDOR_REPLY") {
-		t.Errorf("the raw WorkflowRun.Error (tainted with a vendor reply) leaked to stdout:\n%s", s)
+	if strings.Contains(s, "LEAKED_PROVIDER_REPLY") {
+		t.Errorf("the raw WorkflowRun.Error (tainted with a provider reply) leaked to stdout:\n%s", s)
 	}
 }
 

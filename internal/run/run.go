@@ -1,8 +1,8 @@
-// Package run implements `cc-fleet run <vendor>` (lane 0): launch an interactive
-// foreground claude REPL backed by a vendor's profile + default model, by
+// Package run implements `cc-fleet run <provider>` (lane 0): launch an interactive
+// foreground claude REPL backed by a provider's profile + default model, by
 // replacing the cc-fleet process via exec. It is a strict subset of the spawn
 // pipeline — no tmux, team, locks, settle gate, or fingerprint recipe
-// placeholders — and holds the same key-safety invariant (vendor auth flows
+// placeholders — and holds the same key-safety invariant (provider auth flows
 // only through the profile apiKeyHelper; no key in env/argv).
 package run
 
@@ -21,13 +21,13 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/profile"
 )
 
-// Request is a lane-0 launch request. Model overrides the vendor's default_model
+// Request is a lane-0 launch request. Model overrides the provider's default_model
 // when non-empty; PermissionMode is a validated permmode value — "" means the
 // caller passed no permission flag, so Run falls back to the provider's configured
 // default_permission (itself possibly "" → no permission flag); ExtraArgs are
 // passed through to claude after cc-fleet's flags.
 type Request struct {
-	Vendor         string
+	Provider       string
 	Model          string
 	PermissionMode string
 	ExtraArgs      []string
@@ -65,12 +65,12 @@ var execClaude = func(bin string, argv, env []string) error {
 	return syscall.Exec(bin, argv, env)
 }
 
-// Run validates the request, ensures the vendor profile, resolves the claude
+// Run validates the request, ensures the provider profile, resolves the claude
 // binary, and replaces the current process with an interactive claude bound to
-// the vendor. Fail-before-exec: every rejecting check runs before any process
+// the provider. Fail-before-exec: every rejecting check runs before any process
 // replacement. On success it does not return.
 func Run(req Request) error {
-	if err := ids.ValidateVendorName(req.Vendor); err != nil {
+	if err := ids.ValidateProviderName(req.Provider); err != nil {
 		return err
 	}
 	for _, a := range req.ExtraArgs {
@@ -81,14 +81,14 @@ func Run(req Request) error {
 
 	cfg, err := config.Load()
 	if err != nil {
-		return fmt.Errorf("load vendors.toml: %w", err)
+		return fmt.Errorf("load providers.toml: %w", err)
 	}
-	v, ok := cfg.Vendors[req.Vendor]
+	v, ok := cfg.Providers[req.Provider]
 	if !ok {
-		return fmt.Errorf("vendor %q is not configured", req.Vendor)
+		return fmt.Errorf("provider %q is not configured", req.Provider)
 	}
 	if !v.Enabled {
-		return fmt.Errorf("vendor %q is disabled", req.Vendor)
+		return fmt.Errorf("provider %q is disabled", req.Provider)
 	}
 
 	// Resolve model (capability keyword default/strong/fast → slot id, else a
@@ -96,7 +96,7 @@ func Run(req Request) error {
 	model := v.ResolveModel(req.Model)
 	// config.Load guarantees a non-empty default_model; this guard is defensive.
 	if model == "" {
-		return fmt.Errorf("vendor %q has no default_model; pass --model", req.Vendor)
+		return fmt.Errorf("provider %q has no default_model; pass --model", req.Provider)
 	}
 
 	bin, err := resolveBinary()
@@ -107,11 +107,11 @@ func Run(req Request) error {
 	// For a codex provider, ensure the conversion daemon is up before the profile
 	// write (and before the exec that replaces this process — there is no
 	// after-exec hook), fail-before-mutation.
-	if err := codexproxy.EnsureForVendor(v, nil); err != nil {
+	if err := codexproxy.EnsureForProvider(v, nil); err != nil {
 		return fmt.Errorf("codex proxy unavailable: %w", err)
 	}
 
-	profilePath, err := profile.WriteForVendor(v, "")
+	profilePath, err := profile.WriteForProvider(v, "")
 	if err != nil {
 		return fmt.Errorf("write profile: %w", err)
 	}
@@ -130,7 +130,7 @@ func Run(req Request) error {
 // buildArgv builds the claude argv: bin, cc-fleet's managed flags
 // (--settings/--model + permission flags), then the passthrough. Managed flags
 // go first so claude always parses them — a passthrough "--" or value flag can't
-// push them past option parsing and drop the vendor profile. argv[0] == bin.
+// push them past option parsing and drop the provider profile. argv[0] == bin.
 func buildArgv(bin, profilePath, model string, permFlags, extra []string) []string {
 	argv := []string{bin, "--settings", profilePath, "--model", model}
 	argv = append(argv, permFlags...)

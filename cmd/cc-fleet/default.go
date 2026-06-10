@@ -26,13 +26,13 @@ func newDefaultCmd() *cobra.Command {
 		Use:   "default [provider]",
 		Short: "Show or set the default provider used when a lane omits one",
 		Long: `Without arguments, show the effective default provider: the one pinned in
-vendors.toml (source "configured"), or — when none is pinned and exactly one
+providers.toml (source "configured"), or — when none is pinned and exactly one
 provider is enabled — that sole provider (source "auto"), or "unset".
 
 With a <provider> argument, pin it as the default. Pinning refuses to overwrite
 an existing default unless --force is given. --unset clears the pin.
 
-The default is the provider a vendor-less spawn / subagent / run / workflow
+The default is the provider a provider-less spawn / subagent / run / workflow
 agent() resolves to; the model is still chosen per call from that provider's
 default/strong/fast roster.`,
 		Args:          cobra.MaximumNArgs(1),

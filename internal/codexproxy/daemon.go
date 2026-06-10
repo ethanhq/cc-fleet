@@ -55,7 +55,7 @@ func joinConfig(name string) (string, error) {
 
 // proxyState is the persisted daemon descriptor: pid + procStart guard against PID
 // reuse; the bound port; and the identity (protocol + upstream URL + codex credential
-// ref) a reuse check matches against so a daemon left from a different vendor — or a
+// ref) a reuse check matches against so a daemon left from a different provider — or a
 // different codex account on a recycled port — is never reused. Credential is omitempty
 // so a state file written before multi-credential reads back as the default credential.
 type proxyState struct {
@@ -68,7 +68,7 @@ type proxyState struct {
 }
 
 // withProxyLock serializes a single port's daemon start / exit decisions. It is a
-// standalone flock scope, held with none of the others (vendors / team / server /
+// standalone flock scope, held with none of the others (providers / team / server /
 // run / secret / token), so it cannot form a lock-order cycle.
 func withProxyLock(port int, fn func() error) error {
 	p, err := lockPath(port)
@@ -123,7 +123,7 @@ func loadOrCreateSecret() (string, error) {
 	return secret, nil
 }
 
-// PortFromBaseURL extracts the loopback port from a daemon-backed vendor's
+// PortFromBaseURL extracts the loopback port from a daemon-backed provider's
 // base_url, validating it is a plain loopback http URL first (config.ParseLoopbackURL
 // is the shared definition, also used at config load/validate time).
 func PortFromBaseURL(baseURL string) (int, error) {
@@ -138,24 +138,24 @@ func PortFromBaseURL(baseURL string) (int, error) {
 	return port, nil
 }
 
-// EnsureForVendorName loads the named vendor and ensures the proxy for it. The
-// workflow engine uses this (it has only the vendor name) to ensure the daemon
-// before minting a queued leaf. An unknown vendor is a no-op here — the leaf's own
+// EnsureForProviderName loads the named provider and ensures the proxy for it. The
+// workflow engine uses this (it has only the provider name) to ensure the daemon
+// before minting a queued leaf. An unknown provider is a no-op here — the leaf's own
 // path surfaces it.
-func EnsureForVendorName(name string) error {
+func EnsureForProviderName(name string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		return err
 	}
-	return EnsureForVendor(cfg.Vendors[name], nil)
+	return EnsureForProvider(cfg.Providers[name], nil)
 }
 
-// EnsureForVendor ensures the proxy daemon is up for a daemon-backed provider (a
-// no-op for an Anthropic-native vendor). Call it after the fingerprint gate and
+// EnsureForProvider ensures the proxy daemon is up for a daemon-backed provider (a
+// no-op for an Anthropic-native provider). Call it after the fingerprint gate and
 // before the profile write. Keys on the normalized protocol so a codex row
 // predating the protocol field (codex-oauth backend, no protocol) is recognized.
 // dg is the --verbose step-trace sink (nil = silent).
-func EnsureForVendor(v *config.Vendor, dg *diag.Logger) error {
+func EnsureForProvider(v *config.Provider, dg *diag.Logger) error {
 	if v == nil || !v.DaemonBacked() {
 		return nil
 	}
@@ -209,7 +209,7 @@ func EnsureDaemon(port int, protocol, upstreamURL, ref string, dg *diag.Logger) 
 }
 
 // healthy reports whether a live daemon on port already serves this exact identity.
-// A dead pid, a different protocol/upstream (port reuse or an edited vendor), or an
+// A dead pid, a different protocol/upstream (port reuse or an edited provider), or an
 // unresponsive port all return false. Readiness is the upstream-independent
 // /healthz: an openai daemon's /v1/models returns an empty list (its models come
 // from the real upstream), so it is no readiness signal.

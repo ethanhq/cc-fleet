@@ -19,15 +19,15 @@ func newRepairCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "repair",
-		Short: "Rewrite every vendor's profile JSON from vendors.toml",
-		Long: `Rewrite ~/.claude/profiles/<vendor>.json for every vendor in
-vendors.toml. Useful when:
+		Short: "Rewrite every provider's profile JSON from providers.toml",
+		Long: `Rewrite ~/.claude/profiles/<provider>.json for every provider in
+providers.toml. Useful when:
 
   - a profile file was accidentally deleted
   - the cc-fleet binary moved (apiKeyHelper path needs to be re-pinned)
   - profile permissions drifted
 
-Repair does NOT modify vendors.toml, secrets, or the models cache. It is
+Repair does NOT modify providers.toml, secrets, or the models cache. It is
 safe to re-run.`,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
@@ -43,10 +43,10 @@ safe to re-run.`,
 				return nil
 			}
 			if len(res.Repaired) == 0 {
-				fmt.Println("no vendors to repair")
+				fmt.Println("no providers to repair")
 				return nil
 			}
-			fmt.Printf("repaired %d vendor profile(s): %v\n", len(res.Repaired), res.Repaired)
+			fmt.Printf("repaired %d provider profile(s): %v\n", len(res.Repaired), res.Repaired)
 			return nil
 		},
 	}

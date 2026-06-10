@@ -17,7 +17,7 @@ func TestBackgroundLaunch(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", t.TempDir())
-	writeMinimalVendors(t, xdg)
+	writeMinimalProviders(t, xdg)
 
 	fakeClaude := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
 	orig := loadFP
@@ -26,7 +26,7 @@ func TestBackgroundLaunch(t *testing.T) {
 	}
 	t.Cleanup(func() { loadFP = orig })
 
-	res := Run(context.Background(), Request{Vendor: "glm", Prompt: "hi", JSON: true, Background: true, LeadSessionID: "lead-bg-1"})
+	res := Run(context.Background(), Request{Provider: "glm", Prompt: "hi", JSON: true, Background: true, LeadSessionID: "lead-bg-1"})
 	if !res.OK || res.JobID == "" || res.Status != "running" || res.PID <= 0 {
 		t.Fatalf("background launch handle wrong: %+v", res)
 	}
@@ -71,7 +71,7 @@ func TestBackgroundLaunchAutoDetectsLeadSession(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", t.TempDir())
-	writeMinimalVendors(t, xdg)
+	writeMinimalProviders(t, xdg)
 
 	fakeClaude := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
 	origFP := loadFP
@@ -84,7 +84,7 @@ func TestBackgroundLaunchAutoDetectsLeadSession(t *testing.T) {
 	detectLeadSession = func() string { return "auto-bg-session" }
 	t.Cleanup(func() { detectLeadSession = origDetect })
 
-	res := Run(context.Background(), Request{Vendor: "glm", Prompt: "hi", JSON: true, Background: true})
+	res := Run(context.Background(), Request{Provider: "glm", Prompt: "hi", JSON: true, Background: true})
 	if !res.OK || res.JobID == "" {
 		t.Fatalf("background launch failed: %+v", res)
 	}
@@ -112,7 +112,7 @@ func TestStatusFor_DonePathClassifiesAndCaches(t *testing.T) {
 	jobID := "job-done-1"
 	// Synthesize a finished job: dead pid + captured success envelope.
 	if err := writeMeta(dir, jobMeta{
-		JobID: jobID, PID: deadReapedPID(t), Vendor: "glm", Model: "glm-4.6",
+		JobID: jobID, PID: deadReapedPID(t), Provider: "glm", Model: "glm-4.6",
 		StartedAt: time.Now().UTC().Format(time.RFC3339), Status: "running", JSON: true,
 		LeadSessionID: "lead-done-1",
 	}); err != nil {
@@ -153,7 +153,7 @@ func TestListJobs_MultipleSortedNewestFirst(t *testing.T) {
 
 	mk := func(id, started string) {
 		if err := writeMeta(dir, jobMeta{
-			JobID: id, PID: deadReapedPID(t), Vendor: "glm", Model: "glm-4.6",
+			JobID: id, PID: deadReapedPID(t), Provider: "glm", Model: "glm-4.6",
 			StartedAt: started, Status: "running", JSON: true,
 		}); err != nil {
 			t.Fatal(err)

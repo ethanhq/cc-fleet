@@ -21,7 +21,7 @@ import (
 const maxRunTagLen = 256
 
 // newSubagentCmd builds `cc-fleet subagent [provider]` — a one-shot headless
-// vendor subagent. It follows the spawn command's --json / SilenceErrors
+// provider subagent. It follows the spawn command's --json / SilenceErrors
 // discipline so the skill gets exactly one envelope on stdout.
 func newSubagentCmd() *cobra.Command {
 	var (
@@ -50,11 +50,11 @@ func newSubagentCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "subagent [provider]",
-		Short: "Run a one-shot headless vendor subagent (Claude layer)",
-		Long: `Run a one-shot, headless vendor subagent: launch claude -p backed by a
-third-party vendor model (via the vendor profile) and return the result
+		Short: "Run a one-shot headless provider subagent (Claude layer)",
+		Long: `Run a one-shot, headless provider subagent: launch claude -p backed by a
+third-party provider model (via the provider profile) and return the result
 synchronously. The analog of the native Agent/Task tool, but the model can be
-a vendor id. No tmux pane, no team, no locks.
+a provider id. No tmux pane, no team, no locks.
 
 Designed to be invoked by the cc-fleet skill via Bash with --json, which
 emits one machine-readable subagent.Result envelope the skill switches on.
@@ -75,7 +75,7 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			vendor, perr := resolveProviderArg(firstArg(args))
+			provider, perr := resolveProviderArg(firstArg(args))
 			if perr != nil {
 				return reportSubagent(subagent.Result{OK: false,
 					ErrorCode: providerErrorCode(perr), ErrorMsg: perr.Error()}, asJSON)
@@ -90,7 +90,7 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 					OK:        false,
 					ErrorCode: subagent.ErrCodeBadArgs,
 					ErrorMsg:  "exactly one of --prompt or --prompt-file is required",
-					Vendor:    vendor,
+					Provider:  provider,
 				}
 				return reportSubagent(res, asJSON)
 			}
@@ -103,14 +103,14 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 			if runID != "" {
 				if err := ids.ValidateJobID(runID); err != nil {
 					res := subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
-						ErrorMsg: fmt.Sprintf("invalid --run-id: %v", err), Vendor: vendor}
+						ErrorMsg: fmt.Sprintf("invalid --run-id: %v", err), Provider: provider}
 					return reportSubagent(res, asJSON)
 				}
 			}
 			if len(phase) > maxRunTagLen || len(label) > maxRunTagLen {
 				res := subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
 					ErrorMsg: fmt.Sprintf("--phase and --label must each be at most %d bytes", maxRunTagLen),
-					Vendor:   vendor}
+					Provider: provider}
 				return reportSubagent(res, asJSON)
 			}
 
@@ -120,29 +120,29 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 			// --tools parse + canonicalization.
 			if err := subagent.ValidateProfile(promptProfile); err != nil {
 				return reportSubagent(subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
-					ErrorMsg: err.Error(), Vendor: vendor}, asJSON)
+					ErrorMsg: err.Error(), Provider: provider}, asJSON)
 			}
 			isFull := promptProfile == "" || promptProfile == subagent.ProfileFull
 			toolList, err := splitToolsCSV(tools)
 			if err != nil {
 				return reportSubagent(subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
-					ErrorMsg: fmt.Sprintf("invalid --tools: %v", err), Vendor: vendor}, asJSON)
+					ErrorMsg: fmt.Sprintf("invalid --tools: %v", err), Provider: provider}, asJSON)
 			}
 			noSkills := !skills
 			if isFull && (len(toolList) > 0 || noSkills || cmd.Flags().Changed("mcp")) {
 				return reportSubagent(subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
 					ErrorMsg: "--tools / --skills=false / --mcp are slim-only; pass --profile slim or slim-ro",
-					Vendor:   vendor}, asJSON)
+					Provider: provider}, asJSON)
 			}
 			if len(toolList) > 0 {
 				if _, err := subagent.CanonicalizeTools(toolList); err != nil {
 					return reportSubagent(subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
-						ErrorMsg: fmt.Sprintf("invalid --tools: %v", err), Vendor: vendor}, asJSON)
+						ErrorMsg: fmt.Sprintf("invalid --tools: %v", err), Provider: provider}, asJSON)
 				}
 			}
 			if err := subagent.ValidateToolsSkills(toolList, noSkills); err != nil {
 				return reportSubagent(subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
-					ErrorMsg: err.Error(), Vendor: vendor}, asJSON)
+					ErrorMsg: err.Error(), Provider: provider}, asJSON)
 			}
 			// MCP per-profile default when --mcp wasn't given: slim inherits the host
 			// config (native generic parity), slim-ro stays strict; for full the value is
@@ -157,7 +157,7 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 			}
 
 			req := subagent.Request{
-				Vendor:         vendor,
+				Provider:       provider,
 				Model:          model,
 				Prompt:         prompt,
 				OutputFormat:   outputFormat,
@@ -199,7 +199,7 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 						OK:        false,
 						ErrorCode: subagent.ErrCodeBadArgs,
 						ErrorMsg:  err.Error(),
-						Vendor:    vendor,
+						Provider:  provider,
 					}
 					return reportSubagent(res, asJSON)
 				}
@@ -221,13 +221,13 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 	cmd.Flags().StringVar(&promptFile, "prompt-file", "",
 		"Read the prompt from a file (or '-' for stdin); keeps large/sensitive prompts out of argv")
 	cmd.Flags().StringVar(&model, "model", "",
-		"Vendor model id (default: vendor's default_model)")
+		"Provider model id (default: provider's default_model)")
 	cmd.Flags().StringVar(&outputFormat, "output-format", "text",
 		"claude inner output format: text|json (passthrough; ignored when --json forces json)")
 	cmd.Flags().DurationVar(&timeout, "timeout", 300*time.Second,
 		"Hard wall-clock timeout; on expiry the whole process group is killed")
 	cmd.Flags().BoolVar(&probe, "probe", false,
-		"Probe vendor reachability before running (3s; default off, opposite of spawn)")
+		"Probe provider reachability before running (3s; default off, opposite of spawn)")
 	cmd.Flags().StringVar(&permissionMode, "permission-mode", "",
 		"claude permission mode (default: --dangerously-skip-permissions)")
 	cmd.Flags().BoolVar(&asJSON, "json", false,

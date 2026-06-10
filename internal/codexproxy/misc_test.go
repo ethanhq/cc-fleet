@@ -106,7 +106,7 @@ func TestQuotaMessage(t *testing.T) {
 	}
 }
 
-func TestEnsureForVendor_RejectsNonLoopback(t *testing.T) {
+func TestEnsureForProvider_RejectsNonLoopback(t *testing.T) {
 	for _, c := range []struct {
 		name, base, models string
 		wantErr            bool
@@ -118,15 +118,15 @@ func TestEnsureForVendor_RejectsNonLoopback(t *testing.T) {
 		{"no port", "http://127.0.0.1/", "http://127.0.0.1/v1/models", true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			v := &config.Vendor{SecretBackend: SecretBackend, BaseURL: c.base, ModelsEndpoint: c.models}
-			if err := EnsureForVendor(v, nil); (err != nil) != c.wantErr {
-				t.Fatalf("EnsureForVendor err=%v, wantErr=%v", err, c.wantErr)
+			v := &config.Provider{SecretBackend: SecretBackend, BaseURL: c.base, ModelsEndpoint: c.models}
+			if err := EnsureForProvider(v, nil); (err != nil) != c.wantErr {
+				t.Fatalf("EnsureForProvider err=%v, wantErr=%v", err, c.wantErr)
 			}
 		})
 	}
-	// A non-codex vendor is always a no-op, even with a remote base_url.
-	if err := EnsureForVendor(&config.Vendor{SecretBackend: "file", BaseURL: "https://api.example.com/"}, nil); err != nil {
-		t.Fatalf("non-codex vendor must be a no-op, got %v", err)
+	// A non-codex provider is always a no-op, even with a remote base_url.
+	if err := EnsureForProvider(&config.Provider{SecretBackend: "file", BaseURL: "https://api.example.com/"}, nil); err != nil {
+		t.Fatalf("non-codex provider must be a no-op, got %v", err)
 	}
 }
 

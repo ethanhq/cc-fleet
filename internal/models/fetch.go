@@ -14,22 +14,22 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/secrets"
 )
 
-// ErrKeyInvalid is a sentinel returned when the vendor responds 401 to the
+// ErrKeyInvalid is a sentinel returned when the provider responds 401 to the
 // /v1/models request. The skill (and `cc-fleet refresh --json`) dispatch on
 // this via errors.Is to map it to error_code=KEY_INVALID without parsing
 // prose.
-var ErrKeyInvalid = errors.New("vendor key invalid (HTTP 401)")
+var ErrKeyInvalid = errors.New("provider key invalid (HTTP 401)")
 
 // HTTPStatusError reports a non-2xx, non-401 response from a models endpoint.
 // (401 maps to the ErrKeyInvalid sentinel instead.) It carries the raw
 // StatusCode so a reachability probe can tell an auth failure (403) apart from
-// "vendor is reachable, the endpoint just answered unhappily" (other 4xx/5xx).
-// In every case the vendor returned an HTTP response, so the network is
+// "provider is reachable, the endpoint just answered unhappily" (other 4xx/5xx).
+// In every case the provider returned an HTTP response, so the network is
 // reachable — only a transport-layer failure (no response at all) means
 // unreachable.
 //
-// The default Error() string must NEVER include raw vendor body bytes —
-// vendors occasionally echo bearer keys or x-api-key fragments in 4xx/5xx
+// The default Error() string must NEVER include raw provider body bytes —
+// providers occasionally echo bearer keys or x-api-key fragments in 4xx/5xx
 // bodies. The body is preserved on the
 // struct but only exposed via BodyPreview() (already sanitized) for human
 // diagnostics. JSON envelopes / log lines that flow into stable contracts
@@ -42,7 +42,7 @@ type HTTPStatusError struct {
 }
 
 // Error returns a canonical, key-safe summary suitable for JSON envelopes,
-// logs, and any caller that might persist or forward the string. No raw vendor
+// logs, and any caller that might persist or forward the string. No raw provider
 // body bytes ever appear here.
 func (e *HTTPStatusError) Error() string {
 	return fmt.Sprintf("models: http %d from %s", e.StatusCode, e.Endpoint)
@@ -65,9 +65,9 @@ func (e *HTTPStatusError) BodyPreview() string {
 const fetchTimeout = 10 * time.Second
 
 // bodySnippetMax bounds how much of an error response body we echo into the
-// error message. Vendors occasionally include the bearer key in 401 bodies
+// error message. Providers occasionally include the bearer key in 401 bodies
 // ("Invalid key sk-..."), so we both cap the snippet AND rely on
-// truncateBodyPreview to ensure callers never log unbounded vendor bytes.
+// truncateBodyPreview to ensure callers never log unbounded provider bytes.
 const bodySnippetMax = 200
 
 // maxModelsBody bounds how much of a /v1/models response we buffer in memory. A
@@ -78,7 +78,7 @@ var maxModelsBody = 8 << 20 // 8 MiB
 
 // Fetch hits v.ModelsEndpoint and returns the parsed model list.
 //
-// It looks up the vendor's API key via the secrets package (so the caller
+// It looks up the provider's API key via the secrets package (so the caller
 // never has to handle key bytes itself) and sends it as a Bearer token.
 //
 // Response parsing handles both common shapes:
@@ -97,12 +97,12 @@ var maxModelsBody = 8 << 20 // 8 MiB
 // SECURITY: the bearer key is set on a single request header; it is never
 // logged, never placed into returned error messages, and the response body is
 // truncated to bodySnippetMax bytes before being formatted into any error.
-func Fetch(ctx context.Context, v *config.Vendor) ([]Model, error) {
+func Fetch(ctx context.Context, v *config.Provider) ([]Model, error) {
 	if v == nil {
-		return nil, errors.New("models: nil Vendor")
+		return nil, errors.New("models: nil Provider")
 	}
 	if v.ModelsEndpoint == "" {
-		return nil, fmt.Errorf("models: vendor %q has empty models_endpoint", v.Name)
+		return nil, fmt.Errorf("models: provider %q has empty models_endpoint", v.Name)
 	}
 
 	key, err := secrets.Keyget(v.Name)
@@ -120,7 +120,7 @@ func Fetch(ctx context.Context, v *config.Vendor) ([]Model, error) {
 //
 //   - the add wizard (key just typed in the TUI, not yet written to disk), and
 //   - the spawn reachability probe (which classifies the result into
-//     VENDOR_UNREACHABLE / KEY_INVALID / OK).
+//     PROVIDER_UNREACHABLE / KEY_INVALID / OK).
 //
 // An empty key sends no Authorization header, so it doubles as a keyless
 // reachability probe.
@@ -145,8 +145,8 @@ func FetchWithKey(ctx context.Context, endpoint string, key []byte) ([]Model, er
 	if err != nil {
 		return nil, fmt.Errorf("models: build request for %s: %w", endpoint, err)
 	}
-	// Bearer token. Some vendors also gate on a Anthropic-style x-api-key
-	// header, but every vendor we target (OpenAI-compat, Anthropic-compat
+	// Bearer token. Some providers also gate on a Anthropic-style x-api-key
+	// header, but every provider we target (OpenAI-compat, Anthropic-compat
 	// shims) accepts the Bearer form on /v1/models. Keep it minimal. An empty
 	// key (keyless reachability probe) sends no auth header at all.
 	if len(key) > 0 {
@@ -183,7 +183,7 @@ func FetchWithKey(ctx context.Context, endpoint string, key []byte) ([]Model, er
 			StatusCode: resp.StatusCode,
 			Endpoint:   endpoint,
 			// Still capture a snippet for human debug via BodyPreview(), but
-			// pre-sanitize through redact.MaskKeyLike so a vendor that echoes a
+			// pre-sanitize through redact.MaskKeyLike so a provider that echoes a
 			// bearer key into the body cannot leak it even via the preview surface.
 			body: truncateBodyPreview(redact.MaskKeyLike(body)),
 		}
@@ -198,14 +198,14 @@ func FetchWithKey(ctx context.Context, endpoint string, key []byte) ([]Model, er
 
 	out, err := parseModelsBody(body)
 	if err != nil {
-		// Do NOT include the body — it may contain unexpected vendor data
+		// Do NOT include the body — it may contain unexpected provider data
 		// (in degenerate cases including a key echo). Endpoint is safe.
 		return nil, fmt.Errorf("models: parse response from %s: %w", endpoint, err)
 	}
 	return out, nil
 }
 
-// rawModelEntry covers both vendor response styles: OpenAI uses owned_by,
+// rawModelEntry covers both provider response styles: OpenAI uses owned_by,
 // Anthropic uses display_name. We accept either and surface a single
 // `owned_by` to callers so the on-disk cache schema stays small.
 type rawModelEntry struct {

@@ -28,25 +28,25 @@ func newInitCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "init",
-		Short: "Create the cc-fleet config tree and (optionally) add a first vendor",
+		Short: "Create the cc-fleet config tree and (optionally) add a first provider",
 		Long: `Create the cc-fleet config directory hierarchy:
 
   ~/.config/cc-fleet/          (mode 0700)
   ~/.config/cc-fleet/secrets/  (mode 0700)
-  ~/.config/cc-fleet/vendors.toml (empty, mode 0600, schema version 1)
+  ~/.config/cc-fleet/providers.toml (empty, mode 0600, schema version 1)
   ~/.claude/profiles/          (mode 0700)
   ~/.claude/skills/cc-fleet/  (mode 0700; contents installed separately)
 
-In interactive mode (no --json), init asks whether to add a first vendor
+In interactive mode (no --json), init asks whether to add a first provider
 right away. Replying "y" drops you into the same prompts that ` + "`cc-fleet add`" + `
-would. Anything else (including bare Enter / EOF) skips the vendor step.
+would. Anything else (including bare Enter / EOF) skips the provider step.
 
 In --json mode, init is non-interactive: it creates the tree and runs the
 doctor health checks once, then prints a single JSON envelope.
 
 Init is idempotent — running on a HOME that's already initialized just
 reports each existing path under "already_had" and does not overwrite
-vendors.toml.`,
+providers.toml.`,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -102,24 +102,24 @@ func runInit(asJSON bool) error {
 	}
 	fmt.Println()
 
-	// Interactive vendor-add prompt. Reads one line; only "y"/"yes" branches
+	// Interactive provider-add prompt. Reads one line; only "y"/"yes" branches
 	// into the add flow. Everything else (Enter, EOF, "n") skips.
 	reader := bufio.NewReader(os.Stdin)
-	ans, _ := promptLine(reader, "Add a vendor now? (y/N): ")
+	ans, _ := promptLine(reader, "Add a provider now? (y/N): ")
 	ans = strings.TrimSpace(strings.ToLower(ans))
 	if ans != "y" && ans != "yes" {
 		return nil
 	}
 
 	if !isTTY(os.Stdin) {
-		fmt.Fprintln(os.Stderr, "init: cannot run interactive add without a tty; rerun `cc-fleet add <vendor>` with flags")
+		fmt.Fprintln(os.Stderr, "init: cannot run interactive add without a tty; rerun `cc-fleet add <provider>` with flags")
 		return nil
 	}
 
 	if err := interactiveAdd(reader); err != nil {
 		// Surface the error but don't fail init itself — the user can re-try
 		// add later.
-		fmt.Fprintf(os.Stderr, "init: vendor add aborted: %s\n", err)
+		fmt.Fprintf(os.Stderr, "init: provider add aborted: %s\n", err)
 	}
 	return nil
 }
@@ -129,7 +129,7 @@ func runInit(asJSON bool) error {
 // either Created or AlreadyHad.
 func firstWithSuffix(paths []string, suffix string) string {
 	for _, p := range paths {
-		// We want the cc-fleet config dir specifically (not vendors.toml).
+		// We want the cc-fleet config dir specifically (not providers.toml).
 		// "cc-fleet" is the last path element for that case.
 		if strings.HasSuffix(p, "/"+suffix) || p == suffix {
 			return p
@@ -140,13 +140,13 @@ func firstWithSuffix(paths []string, suffix string) string {
 
 // interactiveAdd walks the user through the same fields `cc-fleet add` would
 // require on the command line. It's intentionally tiny — just enough to
-// bootstrap a first vendor without leaving the init flow.
+// bootstrap a first provider without leaving the init flow.
 func interactiveAdd(reader *bufio.Reader) error {
-	name, err := promptLine(reader, "  vendor name (e.g. glm, deepseek): ")
+	name, err := promptLine(reader, "  provider name (e.g. glm, deepseek): ")
 	if err != nil {
 		return err
 	}
-	if err := userops.ValidateVendorName(name); err != nil {
+	if err := userops.ValidateProviderName(name); err != nil {
 		return err
 	}
 	baseURL, err := promptLine(reader, "  base_url: ")
@@ -184,6 +184,6 @@ func interactiveAdd(reader *bufio.Reader) error {
 		return addErr
 	}
 	fmt.Printf("  added %s (profile: %s, models: %d)\n",
-		res.Vendor, res.ProfilePath, res.ModelCount)
+		res.Provider, res.ProfilePath, res.ModelCount)
 	return nil
 }

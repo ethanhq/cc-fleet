@@ -25,10 +25,10 @@ func newRunCmd() *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "run [provider] [-- <claude args>]",
-		Short: "Launch an interactive claude session backed by a vendor",
+		Short: "Launch an interactive claude session backed by a provider",
 		Long: "Replace this process with an interactive `claude` REPL whose LLM backend is the\n" +
-			"named vendor: its profile pins the apiKeyHelper + base URL, and the model is the\n" +
-			"vendor's default_model unless --model overrides. The vendor key never enters env,\n" +
+			"named provider: its profile pins the apiKeyHelper + base URL, and the model is the\n" +
+			"provider's default_model unless --model overrides. The provider key never enters env,\n" +
 			"argv, or shell history. Requires an interactive terminal; Unix/macOS only.",
 		Args:          cobra.ArbitraryArgs,
 		SilenceErrors: true,
@@ -39,7 +39,7 @@ func newRunCmd() *cobra.Command {
 				fmt.Fprintln(os.Stderr, "cc-fleet run:", err)
 				os.Exit(2)
 			}
-			vendor, err := resolveProviderArg(requested)
+			provider, err := resolveProviderArg(requested)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "cc-fleet run:", err)
 				os.Exit(2)
@@ -53,14 +53,14 @@ func newRunCmd() *cobra.Command {
 				fmt.Fprintln(os.Stderr, "cc-fleet run: stdin and stdout must both be a terminal for an interactive session")
 				os.Exit(1)
 			}
-			if err := run.Run(run.Request{Vendor: vendor, Model: model, PermissionMode: permMode, ExtraArgs: extra}); err != nil {
+			if err := run.Run(run.Request{Provider: provider, Model: model, PermissionMode: permMode, ExtraArgs: extra}); err != nil {
 				fmt.Fprintln(os.Stderr, "cc-fleet run:", err)
 				os.Exit(1)
 			}
 			return nil // unreachable: a successful run.Run replaced the process
 		},
 	}
-	cmd.Flags().StringVar(&model, "model", "", "Vendor model id (default: the vendor's default_model)")
+	cmd.Flags().StringVar(&model, "model", "", "Provider model id (default: the provider's default_model)")
 	cmd.Flags().StringVar(&permissionMode, "permission-mode", "",
 		"Permission mode for the session (default|acceptEdits|plan|auto|bypassPermissions)")
 	cmd.Flags().BoolVar(&dangerSkip, "dangerously-skip-permissions", false,
@@ -68,12 +68,12 @@ func newRunCmd() *cobra.Command {
 	return cmd
 }
 
-// splitRunArgs separates an OPTIONAL vendor positional from the post-"--" claude
+// splitRunArgs separates an OPTIONAL provider positional from the post-"--" claude
 // passthrough. dashIdx is cobra Command.ArgsLenAtDash() (-1 when no "--" was
-// given). A blank vendor ("") means "use the default provider" — the caller
+// given). A blank provider ("") means "use the default provider" — the caller
 // resolves it. Pure, so the arg contract is unit-tested without running the
 // command. Shapes: `run` / `run <v>` / `run -- <args>` / `run <v> -- <args>`.
-func splitRunArgs(args []string, dashIdx int) (vendor string, extra []string, err error) {
+func splitRunArgs(args []string, dashIdx int) (provider string, extra []string, err error) {
 	if dashIdx < 0 {
 		switch len(args) {
 		case 0:
@@ -81,7 +81,7 @@ func splitRunArgs(args []string, dashIdx int) (vendor string, extra []string, er
 		case 1:
 			return args[0], nil, nil
 		default:
-			return "", nil, fmt.Errorf("usage: cc-fleet run [<vendor>] [-- <claude args>]")
+			return "", nil, fmt.Errorf("usage: cc-fleet run [<provider>] [-- <claude args>]")
 		}
 	}
 	// dashIdx counts the positionals BEFORE "--": 0 = default provider, 1 = explicit.
@@ -91,6 +91,6 @@ func splitRunArgs(args []string, dashIdx int) (vendor string, extra []string, er
 	case 1:
 		return args[0], args[1:], nil
 	default:
-		return "", nil, fmt.Errorf("usage: cc-fleet run [<vendor>] [-- <claude args>]")
+		return "", nil, fmt.Errorf("usage: cc-fleet run [<provider>] [-- <claude args>]")
 	}
 }

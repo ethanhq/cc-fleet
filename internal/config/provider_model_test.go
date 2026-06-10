@@ -3,7 +3,7 @@ package config
 import "testing"
 
 func TestResolveModel(t *testing.T) {
-	v := &Vendor{DefaultModel: "d", StrongModel: "s", FastModel: "f"}
+	v := &Provider{DefaultModel: "d", StrongModel: "s", FastModel: "f"}
 	cases := map[string]string{
 		"":            "d", // empty → default
 		"default":     "d",
@@ -18,7 +18,7 @@ func TestResolveModel(t *testing.T) {
 	}
 
 	// Blank strong/fast slots fall back to the default via the keywords.
-	blank := &Vendor{DefaultModel: "d"}
+	blank := &Provider{DefaultModel: "d"}
 	if got := blank.ResolveModel("strong"); got != "d" {
 		t.Errorf("blank strong slot: ResolveModel(strong) = %q, want d", got)
 	}
@@ -28,11 +28,11 @@ func TestResolveModel(t *testing.T) {
 }
 
 func TestStrongFastModelOrDefault(t *testing.T) {
-	set := &Vendor{DefaultModel: "d", StrongModel: "s", FastModel: "f"}
+	set := &Provider{DefaultModel: "d", StrongModel: "s", FastModel: "f"}
 	if set.StrongModelOrDefault() != "s" || set.FastModelOrDefault() != "f" {
 		t.Errorf("set slots: strong=%q fast=%q", set.StrongModelOrDefault(), set.FastModelOrDefault())
 	}
-	blank := &Vendor{DefaultModel: "d"}
+	blank := &Provider{DefaultModel: "d"}
 	if blank.StrongModelOrDefault() != "d" || blank.FastModelOrDefault() != "d" {
 		t.Errorf("blank slots should follow default: strong=%q fast=%q",
 			blank.StrongModelOrDefault(), blank.FastModelOrDefault())
@@ -79,23 +79,23 @@ func TestEffortLevels(t *testing.T) {
 // TestValidate_EffortAndPermission verifies the config-strict gate rejects an
 // invalid effort or default_permission and accepts the empty (unset) value.
 func TestValidate_EffortAndPermission(t *testing.T) {
-	base := func() *Vendor {
-		return &Vendor{
+	base := func() *Provider {
+		return &Provider{
 			Name: "v", BaseURL: "https://x/anthropic", DefaultModel: "d",
 			ModelsEndpoint: "https://x/v1/models", SecretBackend: "file", SecretRef: "v.key",
 		}
 	}
 	cases := []struct {
 		name    string
-		mutate  func(*Vendor)
+		mutate  func(*Provider)
 		wantErr bool
 	}{
-		{"effort empty ok", func(v *Vendor) { v.Effort = "" }, false},
-		{"effort max ok", func(v *Vendor) { v.Effort = "max" }, false},
-		{"effort bad", func(v *Vendor) { v.Effort = "ultra" }, true},
-		{"perm empty ok", func(v *Vendor) { v.DefaultPermission = "" }, false},
-		{"perm acceptEdits ok", func(v *Vendor) { v.DefaultPermission = "acceptEdits" }, false},
-		{"perm bad", func(v *Vendor) { v.DefaultPermission = "yolo" }, true},
+		{"effort empty ok", func(v *Provider) { v.Effort = "" }, false},
+		{"effort max ok", func(v *Provider) { v.Effort = "max" }, false},
+		{"effort bad", func(v *Provider) { v.Effort = "ultra" }, true},
+		{"perm empty ok", func(v *Provider) { v.DefaultPermission = "" }, false},
+		{"perm acceptEdits ok", func(v *Provider) { v.DefaultPermission = "acceptEdits" }, false},
+		{"perm bad", func(v *Provider) { v.DefaultPermission = "yolo" }, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

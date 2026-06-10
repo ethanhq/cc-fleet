@@ -47,12 +47,12 @@ type WatchOptions struct {
 // line + ctx.Err()). It is INSPECTION-ONLY: no spawn/stop/teardown — the only writes are the
 // dead-job result memoization any status read (the board, `workflow status`) already performs.
 //
-// Key-safety rests on the field SOURCE, not on scrubbing: the events stream carries no vendor
+// Key-safety rests on the field SOURCE, not on scrubbing: the events stream carries no provider
 // KEY by construction (a key never enters the engine's string space — it flows only via the
 // apiKeyHelper), and the final line prints only Status, never the raw WorkflowRun.Error (which a
-// schema-reject can taint with a vendor reply fragment). Like the board and `workflow status`,
+// schema-reject can taint with a provider reply fragment). Like the board and `workflow status`,
 // the stream DOES surface script-authored text (phase / label / log), so a script that
-// deliberately logs a vendor reply will show it — that is the author's choice, not an autonomous
+// deliberately logs a provider reply will show it — that is the author's choice, not an autonomous
 // leak. CleanTitle is layered on every opaque string only as a terminal-injection defense.
 func Watch(ctx context.Context, runID string, out io.Writer, opts WatchOptions) (subagent.WorkflowRun, error) {
 	if err := subagent.ValidateRunID(runID); err != nil {
@@ -124,7 +124,7 @@ func Watch(ctx context.Context, runID string, out io.Writer, opts WatchOptions) 
 func isTerminalStatus(status string) bool { return status != "" && status != "running" }
 
 // finalLine is the closing status line. It prints Status only — never the raw Error (which a
-// schema-reject can taint with a vendor reply fragment); a failed run points at `workflow
+// schema-reject can taint with a provider reply fragment); a failed run points at `workflow
 // status` for the cause. The run id is scrubbed as a terminal-injection defense.
 func finalLine(run subagent.WorkflowRun) string {
 	s := "run " + sessiontitle.CleanTitle(run.RunID) + " " + sessiontitle.CleanTitle(run.Status)
@@ -135,7 +135,7 @@ func finalLine(run subagent.WorkflowRun) string {
 }
 
 // RenderEventLine formats one event for the live stream. Every opaque field (status / label /
-// vendor / model / phase / msg / group type) is CleanTitle-scrubbed before it reaches the
+// provider / model / phase / msg / group type) is CleanTitle-scrubbed before it reaches the
 // terminal; the event carries no key or answer by construction (events.go). It is the renderer for
 // the `cc-fleet workflow watch` live status stream.
 func RenderEventLine(ev EventRecord) string {
@@ -143,8 +143,8 @@ func RenderEventLine(ev EventRecord) string {
 	switch ev.Kind {
 	case "leaf":
 		s := "  leaf " + clean(ev.Status) + " · " + clean(ev.Label)
-		if ev.Vendor != "" || ev.Model != "" {
-			s += " (" + clean(ev.Vendor) + "/" + clean(ev.Model) + ")"
+		if ev.Provider != "" || ev.Model != "" {
+			s += " (" + clean(ev.Provider) + "/" + clean(ev.Model) + ")"
 		}
 		return s
 	case "phase":

@@ -17,8 +17,8 @@ import (
 // stale one.
 func TestSpawn_StalePath_RecoversViaCcver(t *testing.T) {
 	f := newFixture(t)
-	f.startVendorServer()
-	f.writeVendorsTOML("")
+	f.startProviderServer()
+	f.writeProvidersTOML("")
 	live := f.installFakeClaude() // the binary ccver will resolve to
 
 	// Seed a fingerprint pointing at a file we then delete (the GC'd path).
@@ -44,7 +44,7 @@ func TestSpawn_StalePath_RecoversViaCcver(t *testing.T) {
 	}
 
 	res := Spawn(Request{
-		Vendor:    "deepseek",
+		Provider:  "deepseek",
 		AgentName: "worker-1",
 		Team:      "myproj",
 		AutoTeam:  true,
@@ -73,8 +73,8 @@ func TestSpawn_StalePath_RecoversViaCcver(t *testing.T) {
 // no team directory. A stale cache must never leave a half-built pane behind.
 func TestSpawn_NoBinaryAnywhere_StaleBeforeSideEffects(t *testing.T) {
 	f := newFixture(t)
-	f.startVendorServer()
-	f.writeVendorsTOML("")
+	f.startProviderServer()
+	f.writeProvidersTOML("")
 	// Strip claude (and tmux — unreached) from PATH; HOME is the fixture's temp
 	// dir with no ~/.local/share/claude/versions, so ccver.Detect finds nothing.
 	t.Setenv("PATH", t.TempDir())
@@ -88,7 +88,7 @@ func TestSpawn_NoBinaryAnywhere_StaleBeforeSideEffects(t *testing.T) {
 		t.Fatalf("Save fingerprint: %v", err)
 	}
 	res := Spawn(Request{
-		Vendor:    "deepseek",
+		Provider:  "deepseek",
 		AgentName: "worker-1",
 		Team:      "myproj",
 		AutoTeam:  true,
@@ -117,8 +117,8 @@ func TestSpawn_NoBinaryAnywhere_StaleBeforeSideEffects(t *testing.T) {
 // back (pane killed, member removed) and surface SPAWN_DID_NOT_SETTLE.
 func TestSpawn_SettleFails_RollsBack(t *testing.T) {
 	f := newFixture(t)
-	f.startVendorServer()
-	f.writeVendorsTOML("")
+	f.startProviderServer()
+	f.writeProvidersTOML("")
 	f.installFakeClaude() // live CC reports 2.1.150
 
 	// A user fingerprint OLDER than the live CC → CurrentVersionExceedsRecipe
@@ -139,7 +139,7 @@ func TestSpawn_SettleFails_RollsBack(t *testing.T) {
 	t.Cleanup(func() { settleOK = orig })
 
 	res := Spawn(Request{
-		Vendor:    "deepseek",
+		Provider:  "deepseek",
 		AgentName: "worker-1",
 		Team:      "myproj",
 		AutoTeam:  true,
@@ -178,8 +178,8 @@ func TestSpawn_SettleFails_RollsBack(t *testing.T) {
 // with --verify on.
 func TestSpawn_SettleSkippedWhenVersionMatched(t *testing.T) {
 	f := newFixture(t)
-	f.startVendorServer()
-	f.writeVendorsTOML("")
+	f.startProviderServer()
+	f.writeProvidersTOML("")
 	f.installFakeClaude() // live 2.1.150
 	f.writeFingerprint()  // recipe 2.1.150 == live → not newer → settle gated OFF
 
@@ -189,7 +189,7 @@ func TestSpawn_SettleSkippedWhenVersionMatched(t *testing.T) {
 	t.Cleanup(func() { settleOK = orig })
 
 	res := Spawn(Request{
-		Vendor:    "deepseek",
+		Provider:  "deepseek",
 		AgentName: "worker-1",
 		Team:      "myproj",
 		AutoTeam:  true,

@@ -10,11 +10,11 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/userops"
 )
 
-// editVendorView is the JSON shape we emit for the modified vendor. We don't
-// re-use config.Vendor directly because its struct fields only carry TOML
+// editProviderView is the JSON shape we emit for the modified provider. We don't
+// re-use config.Provider directly because its struct fields only carry TOML
 // tags (Go's encoding/json would otherwise capitalize keys, diverging from
 // `cc-fleet list --json`'s shape).
-type editVendorView struct {
+type editProviderView struct {
 	Name           string `json:"name"`
 	BaseURL        string `json:"base_url"`
 	DefaultModel   string `json:"default_model"`
@@ -26,16 +26,16 @@ type editVendorView struct {
 	SecretBackend  string `json:"secret_backend"`
 	SecretRef      string `json:"secret_ref"`
 	Enabled        bool   `json:"enabled"`
-	// KeyRotation is omitted when off/empty so single-key vendors' JSON shape stays tight.
+	// KeyRotation is omitted when off/empty so single-key providers' JSON shape stays tight.
 	KeyRotation string `json:"key_rotation,omitempty"`
 }
 
 // editJSONEnvelope is the success-side JSON shape `cc-fleet edit --json`
-// emits. The full post-edit vendor row is included so skill consumers can
+// emits. The full post-edit provider row is included so skill consumers can
 // observe the new state without re-running list.
 type editJSONEnvelope struct {
-	OK     bool           `json:"ok"`
-	Vendor editVendorView `json:"vendor"`
+	OK       bool             `json:"ok"`
+	Provider editProviderView `json:"provider"`
 }
 
 func newEditCmd() *cobra.Command {
@@ -59,9 +59,9 @@ func newEditCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "edit <vendor>",
-		Short: "Modify selected fields on an existing vendor",
-		Long: `Modify an existing vendor in vendors.toml. Only flags you pass are
+		Use:   "edit <provider>",
+		Short: "Modify selected fields on an existing provider",
+		Long: `Modify an existing provider in providers.toml. Only flags you pass are
 applied; everything else is preserved.
 
   --base-url            Update the ANTHROPIC_BASE_URL in the profile JSON too
@@ -70,11 +70,11 @@ applied; everything else is preserved.
   --secret-backend      Switch secret backend (file|pass|1password|vault|keyring)
   --secret-ref          Switch the reference used by the secret backend
   --api-key             Rotate the key (file backend only; writes to the
-                        vendor's existing secret_ref)
+                        provider's existing secret_ref)
   --key-rotation        Per-worker multi-key rotation (off|round_robin|random)
   --enable / --disable  Flip the enabled flag (mutually exclusive)
 
-Edit does NOT probe the vendor — use ` + "`cc-fleet refresh <vendor>`" + ` after
+Edit does NOT probe the provider — use ` + "`cc-fleet refresh <provider>`" + ` after
 changing a URL or key to revalidate.`,
 		Args:          cobra.ExactArgs(1),
 		SilenceErrors: true,
@@ -173,44 +173,44 @@ changing a URL or key to revalidate.`,
 			if asJSON {
 				emitJSON(editJSONEnvelope{
 					OK: true,
-					Vendor: editVendorView{
-						Name:           res.Vendor.Name,
-						BaseURL:        res.Vendor.BaseURL,
-						DefaultModel:   res.Vendor.DefaultModel,
-						StrongModel:    res.Vendor.StrongModel,
-						FastModel:      res.Vendor.FastModel,
-						Effort:         res.Vendor.Effort,
-						DefaultPerm:    res.Vendor.DefaultPermission,
-						ModelsEndpoint: res.Vendor.ModelsEndpoint,
-						SecretBackend:  res.Vendor.SecretBackend,
-						SecretRef:      res.Vendor.SecretRef,
-						Enabled:        res.Vendor.Enabled,
-						KeyRotation:    res.Vendor.KeyRotation,
+					Provider: editProviderView{
+						Name:           res.Provider.Name,
+						BaseURL:        res.Provider.BaseURL,
+						DefaultModel:   res.Provider.DefaultModel,
+						StrongModel:    res.Provider.StrongModel,
+						FastModel:      res.Provider.FastModel,
+						Effort:         res.Provider.Effort,
+						DefaultPerm:    res.Provider.DefaultPermission,
+						ModelsEndpoint: res.Provider.ModelsEndpoint,
+						SecretBackend:  res.Provider.SecretBackend,
+						SecretRef:      res.Provider.SecretRef,
+						Enabled:        res.Provider.Enabled,
+						KeyRotation:    res.Provider.KeyRotation,
 					},
 				})
 				return nil
 			}
-			fmt.Printf("updated vendor %s\n", res.Vendor.Name)
-			fmt.Printf("  base_url         = %s\n", res.Vendor.BaseURL)
-			fmt.Printf("  default_model    = %s\n", res.Vendor.DefaultModel)
-			if res.Vendor.StrongModel != "" {
-				fmt.Printf("  strong_model     = %s\n", res.Vendor.StrongModel)
+			fmt.Printf("updated provider %s\n", res.Provider.Name)
+			fmt.Printf("  base_url         = %s\n", res.Provider.BaseURL)
+			fmt.Printf("  default_model    = %s\n", res.Provider.DefaultModel)
+			if res.Provider.StrongModel != "" {
+				fmt.Printf("  strong_model     = %s\n", res.Provider.StrongModel)
 			}
-			if res.Vendor.FastModel != "" {
-				fmt.Printf("  fast_model       = %s\n", res.Vendor.FastModel)
+			if res.Provider.FastModel != "" {
+				fmt.Printf("  fast_model       = %s\n", res.Provider.FastModel)
 			}
-			if res.Vendor.Effort != "" {
-				fmt.Printf("  effort           = %s\n", res.Vendor.Effort)
+			if res.Provider.Effort != "" {
+				fmt.Printf("  effort           = %s\n", res.Provider.Effort)
 			}
-			if res.Vendor.DefaultPermission != "" {
-				fmt.Printf("  default_perm     = %s\n", res.Vendor.DefaultPermission)
+			if res.Provider.DefaultPermission != "" {
+				fmt.Printf("  default_perm     = %s\n", res.Provider.DefaultPermission)
 			}
-			fmt.Printf("  models_endpoint  = %s\n", res.Vendor.ModelsEndpoint)
-			fmt.Printf("  secret_backend   = %s\n", res.Vendor.SecretBackend)
-			fmt.Printf("  secret_ref       = %s\n", res.Vendor.SecretRef)
-			fmt.Printf("  enabled          = %v\n", res.Vendor.Enabled)
-			if res.Vendor.KeyRotation != "" {
-				fmt.Printf("  key_rotation     = %s\n", res.Vendor.KeyRotation)
+			fmt.Printf("  models_endpoint  = %s\n", res.Provider.ModelsEndpoint)
+			fmt.Printf("  secret_backend   = %s\n", res.Provider.SecretBackend)
+			fmt.Printf("  secret_ref       = %s\n", res.Provider.SecretRef)
+			fmt.Printf("  enabled          = %v\n", res.Provider.Enabled)
+			if res.Provider.KeyRotation != "" {
+				fmt.Printf("  key_rotation     = %s\n", res.Provider.KeyRotation)
 			}
 			return nil
 		},

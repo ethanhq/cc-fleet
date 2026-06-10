@@ -25,27 +25,27 @@ import (
 // Error codes returned by Add/Edit/Remove. Stable so cmd/ JSON envelopes can
 // expose them to the skill without prose parsing.
 const (
-	CodeVendorNameInvalid  = "VENDOR_NAME_INVALID"
-	CodeVendorExists       = "VENDOR_EXISTS"
-	CodeVendorUnknown      = "VENDOR_UNKNOWN"
-	CodeConfigLoadFailed   = "CONFIG_LOAD_FAILED"
-	CodeConfigSaveFailed   = "CONFIG_SAVE_FAILED"
-	CodeSecretWriteFailed  = "SECRET_WRITE_FAILED"
-	CodeSecretRemoveFailed = "SECRET_REMOVE_FAILED"
-	CodeProfileWriteFailed = "PROFILE_WRITE_FAILED"
-	CodeKeyInvalid         = "KEY_INVALID"
-	CodeVendorUnreachable  = "VENDOR_UNREACHABLE"
-	CodeAddFailed          = "ADD_FAILED"
-	CodeInvalidBackend     = "INVALID_BACKEND"
-	CodeBackendUnsupported = "BACKEND_UNSUPPORTED"
-	CodeInitFailed         = "INIT_FAILED"
-	CodeRepairFailed       = "REPAIR_FAILED"
-	CodeUninstallFailed    = "UNINSTALL_FAILED"
-	CodeDefaultAlreadySet  = "DEFAULT_ALREADY_SET"
+	CodeProviderNameInvalid = "PROVIDER_NAME_INVALID"
+	CodeProviderExists      = "PROVIDER_EXISTS"
+	CodeProviderUnknown     = "PROVIDER_UNKNOWN"
+	CodeConfigLoadFailed    = "CONFIG_LOAD_FAILED"
+	CodeConfigSaveFailed    = "CONFIG_SAVE_FAILED"
+	CodeSecretWriteFailed   = "SECRET_WRITE_FAILED"
+	CodeSecretRemoveFailed  = "SECRET_REMOVE_FAILED"
+	CodeProfileWriteFailed  = "PROFILE_WRITE_FAILED"
+	CodeKeyInvalid          = "KEY_INVALID"
+	CodeProviderUnreachable = "PROVIDER_UNREACHABLE"
+	CodeAddFailed           = "ADD_FAILED"
+	CodeInvalidBackend      = "INVALID_BACKEND"
+	CodeBackendUnsupported  = "BACKEND_UNSUPPORTED"
+	CodeInitFailed          = "INIT_FAILED"
+	CodeRepairFailed        = "REPAIR_FAILED"
+	CodeUninstallFailed     = "UNINSTALL_FAILED"
+	CodeDefaultAlreadySet   = "DEFAULT_ALREADY_SET"
 )
 
 // probeTimeout caps the synchronous /v1/models probe Add performs after
-// staging the vendor on disk. Matches doctor check 6's per-vendor budget.
+// staging the provider on disk. Matches doctor check 6's per-provider budget.
 const probeTimeout = 3 * time.Second
 
 // Op is the typed-error returned by Add/Edit/Remove etc. cmd/ envelopes surface
@@ -69,15 +69,15 @@ func (e *Op) Unwrap() error { return e.Err }
 
 func opErr(code string, err error) error { return &Op{Code: code, Err: err} }
 
-// withVendorsLock runs fn under the global vendors.toml flock
-// (config.WithVendorsConfigLock) so the load→mutate→save cycle of Add/Edit/
+// withProvidersLock runs fn under the global providers.toml flock
+// (config.WithProvidersConfigLock) so the load→mutate→save cycle of Add/Edit/
 // Remove is serialized across concurrent cc-fleet processes — no lost updates.
 // fn's own typed *Op errors propagate unchanged; only a raw lock-ACQUISITION
 // failure (can't open the lock file) is normalized into a typed
 // CONFIG_LOAD_FAILED Op so callers always see a stable error code.
-func withVendorsLock[T any](fn func() (T, error)) (T, error) {
+func withProvidersLock[T any](fn func() (T, error)) (T, error) {
 	var res T
-	err := config.WithVendorsConfigLock(func() error {
+	err := config.WithProvidersConfigLock(func() error {
 		var e error
 		res, e = fn()
 		return e
@@ -87,7 +87,7 @@ func withVendorsLock[T any](fn func() (T, error)) (T, error) {
 		if errors.As(err, &op) {
 			return res, err // fn's typed error — already carries its code
 		}
-		return res, opErr(CodeConfigLoadFailed, fmt.Errorf("acquire vendors config lock: %w", err))
+		return res, opErr(CodeConfigLoadFailed, fmt.Errorf("acquire providers config lock: %w", err))
 	}
 	return res, nil
 }
@@ -102,7 +102,7 @@ type InitResult struct {
 	AlreadyHad []string `json:"already_had"`
 }
 
-// Init creates the cc-fleet config directory tree and the empty vendors.toml if
+// Init creates the cc-fleet config directory tree and the empty providers.toml if
 // not yet present. The ~/.claude/skills ROOT is created (so an install path is
 // ready) but its contents are left to the install-skill step — Init does NOT copy
 // any SKILL.md.
@@ -145,26 +145,26 @@ func Init() (*InitResult, error) {
 		}
 	}
 
-	// Empty vendors.toml on first run so subsequent Load/Save calls have a
+	// Empty providers.toml on first run so subsequent Load/Save calls have a
 	// stable schema-version line. We don't overwrite an existing file (would
-	// destroy user vendors), but we do create a fresh one if missing.
-	vendorsPath, err := config.VendorsPath()
+	// destroy user providers), but we do create a fresh one if missing.
+	providersPath, err := config.ProvidersPath()
 	if err != nil {
-		return nil, opErr(CodeInitFailed, fmt.Errorf("resolve vendors path: %w", err))
+		return nil, opErr(CodeInitFailed, fmt.Errorf("resolve providers path: %w", err))
 	}
-	if _, statErr := os.Stat(vendorsPath); errors.Is(statErr, os.ErrNotExist) {
+	if _, statErr := os.Stat(providersPath); errors.Is(statErr, os.ErrNotExist) {
 		cfg := &config.Config{
-			Version: config.SchemaVersion,
-			Vendors: map[string]*config.Vendor{},
+			Version:   config.SchemaVersion,
+			Providers: map[string]*config.Provider{},
 		}
-		if err := config.SaveToPath(cfg, vendorsPath); err != nil {
-			return nil, opErr(CodeInitFailed, fmt.Errorf("write empty vendors.toml: %w", err))
+		if err := config.SaveToPath(cfg, providersPath); err != nil {
+			return nil, opErr(CodeInitFailed, fmt.Errorf("write empty providers.toml: %w", err))
 		}
-		res.Created = append(res.Created, vendorsPath)
+		res.Created = append(res.Created, providersPath)
 	} else if statErr != nil {
-		return nil, opErr(CodeInitFailed, fmt.Errorf("stat vendors.toml: %w", statErr))
+		return nil, opErr(CodeInitFailed, fmt.Errorf("stat providers.toml: %w", statErr))
 	} else {
-		res.AlreadyHad = append(res.AlreadyHad, vendorsPath)
+		res.AlreadyHad = append(res.AlreadyHad, providersPath)
 	}
 
 	return res, nil
@@ -218,44 +218,44 @@ type AddRequest struct {
 
 // AddResult is the structured success result of Add.
 type AddResult struct {
-	Vendor      string    `json:"vendor"`
+	Provider    string    `json:"provider"`
 	ProfilePath string    `json:"profile_path"`
 	AddedAt     time.Time `json:"added_at"`
 	ModelCount  int       `json:"model_count"`
 }
 
-// Add stages a new vendor end-to-end:
+// Add stages a new provider end-to-end:
 //
-//  1. validate the requested vendor name (regex)
+//  1. validate the requested provider name (regex)
 //  2. refuse to overwrite an existing entry (use Edit/Remove instead)
 //  3. if APIKey is set, write it to <SecretsDir>/<SecretRef> at 0600
-//  4. probe the vendor's /v1/models endpoint (3s) using the same secrets path
-//     keyget would — failures map to KEY_INVALID, VENDOR_UNREACHABLE, ADD_FAILED.
-//     A codex-oauth vendor skips the probe (its models endpoint is a lazily-started
+//  4. probe the provider's /v1/models endpoint (3s) using the same secrets path
+//     keyget would — failures map to KEY_INVALID, PROVIDER_UNREACHABLE, ADD_FAILED.
+//     A codex-oauth provider skips the probe (its models endpoint is a lazily-started
 //     loopback daemon) and seeds the static codex model list instead.
-//  5. commit vendors.toml + write profile JSON + populate the models cache
+//  5. commit providers.toml + write profile JSON + populate the models cache
 //
 // On any failure after step 3, the file-backend secret is rolled back so the
 // caller can re-run with a corrected key.
 //
-// The whole load→mutate→save cycle runs under the global vendors-config flock
+// The whole load→mutate→save cycle runs under the global providers-config flock
 // so concurrent add/edit/remove can't lose each other's updates.
 func Add(req AddRequest) (*AddResult, error) {
-	return withVendorsLock(func() (*AddResult, error) { return addLocked(req) })
+	return withProvidersLock(func() (*AddResult, error) { return addLocked(req) })
 }
 
 func addLocked(req AddRequest) (*AddResult, error) {
-	if err := ValidateVendorName(req.Name); err != nil {
-		return nil, opErr(CodeVendorNameInvalid, err)
+	if err := ValidateProviderName(req.Name); err != nil {
+		return nil, opErr(CodeProviderNameInvalid, err)
 	}
 
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, opErr(CodeConfigLoadFailed, err)
 	}
-	if _, exists := cfg.Vendors[req.Name]; exists {
-		return nil, opErr(CodeVendorExists,
-			fmt.Errorf("vendor %q already exists; use `cc-fleet edit` or `cc-fleet remove` first", req.Name))
+	if _, exists := cfg.Providers[req.Name]; exists {
+		return nil, opErr(CodeProviderExists,
+			fmt.Errorf("provider %q already exists; use `cc-fleet edit` or `cc-fleet remove` first", req.Name))
 	}
 
 	// Inline-key handling: only file backend supports writing the key for the
@@ -277,8 +277,8 @@ func addLocked(req AddRequest) (*AddResult, error) {
 		}
 	}
 
-	// Build the candidate vendor and validate schema before any further work.
-	v := &config.Vendor{
+	// Build the candidate provider and validate schema before any further work.
+	v := &config.Provider{
 		Name:              req.Name,
 		BaseURL:           req.BaseURL,
 		ModelsEndpoint:    req.ModelsEndpoint,
@@ -295,30 +295,30 @@ func addLocked(req AddRequest) (*AddResult, error) {
 		AddedAt:           time.Now().UTC(),
 	}
 
-	// Merge the new vendor into the loaded config and validate before any
-	// disk write. We persist the full merged config so existing vendors are
+	// Merge the new provider into the loaded config and validate before any
+	// disk write. We persist the full merged config so existing providers are
 	// preserved on success and easy to restore on probe failure (we just
-	// re-delete the staged vendor and re-save).
-	cfg.Vendors[req.Name] = v
+	// re-delete the staged provider and re-save).
+	cfg.Providers[req.Name] = v
 	if err := cfg.Validate(); err != nil {
-		delete(cfg.Vendors, req.Name)
+		delete(cfg.Providers, req.Name)
 		_ = rollbackInlineSecret(req)
 		return nil, opErr(CodeAddFailed, err)
 	}
 
 	// The probe re-uses the normal secrets.Keyget path, which loads
-	// vendors.toml internally. Persist the staged config so Keyget can
-	// find it, then roll back vendors.toml + secret if the probe fails.
+	// providers.toml internally. Persist the staged config so Keyget can
+	// find it, then roll back providers.toml + secret if the probe fails.
 	if err := config.Save(cfg); err != nil {
-		delete(cfg.Vendors, req.Name)
+		delete(cfg.Providers, req.Name)
 		_ = rollbackInlineSecret(req)
 		return nil, opErr(CodeConfigSaveFailed, err)
 	}
 
 	// Synchronous probe so a bad key fails the add (not silently later). Failure
-	// here rolls back vendors.toml + the inline secret. A codex provider skips it:
+	// here rolls back providers.toml + the inline secret. A codex provider skips it:
 	// its /v1/models is served by a lazily-started daemon, and starting that daemon
-	// under the vendors-config lock is forbidden (the proxy lock must not nest with
+	// under the providers-config lock is forbidden (the proxy lock must not nest with
 	// it). Instead the cache is seeded with codex's static model list so a fresh
 	// entry carries the real models (not zero) and model resolution works at once.
 	var fetched []models.Model
@@ -331,8 +331,8 @@ func addLocked(req AddRequest) (*AddResult, error) {
 		defer cancel()
 		f, fetchErr := models.Fetch(probeCtx, v)
 		if fetchErr != nil {
-			// Roll back the staged vendor row before returning the typed error.
-			delete(cfg.Vendors, req.Name)
+			// Roll back the staged provider row before returning the typed error.
+			delete(cfg.Providers, req.Name)
 			_ = config.Save(cfg)
 			_ = rollbackInlineSecret(req)
 			return nil, opErr(classifyAddErr(fetchErr), fetchErr)
@@ -341,26 +341,26 @@ func addLocked(req AddRequest) (*AddResult, error) {
 	}
 
 	// All good — write the profile JSON and refresh the models cache so the
-	// user can immediately `cc-fleet models <vendor>` without an explicit
+	// user can immediately `cc-fleet models <provider>` without an explicit
 	// `cc-fleet refresh`.
-	path, err := profile.WriteForVendor(v, "")
+	path, err := profile.WriteForProvider(v, "")
 	if err != nil {
-		delete(cfg.Vendors, req.Name)
+		delete(cfg.Providers, req.Name)
 		_ = config.Save(cfg)
 		_ = rollbackInlineSecret(req)
 		return nil, opErr(CodeProfileWriteFailed, err)
 	}
 
 	if err := updateModelsCache(req.Name, v.ModelsEndpoint, fetched); err != nil {
-		// Cache write failure is non-fatal: the vendor is fully staged and the
+		// Cache write failure is non-fatal: the provider is fully staged and the
 		// cache repopulates on the next `cc-fleet refresh`. Warn on stderr (so a
 		// --json caller's stdout envelope stays clean) but don't fail the add.
 		// The error is a cache/file error, never a key.
-		fmt.Fprintf(os.Stderr, "warning: vendor %s added but models cache update failed: %v\n", req.Name, err)
+		fmt.Fprintf(os.Stderr, "warning: provider %s added but models cache update failed: %v\n", req.Name, err)
 	}
 
 	return &AddResult{
-		Vendor:      req.Name,
+		Provider:    req.Name,
 		ProfilePath: path,
 		AddedAt:     v.AddedAt,
 		ModelCount:  len(fetched),
@@ -374,7 +374,7 @@ func classifyAddErr(err error) string {
 		return CodeKeyInvalid
 	}
 	if neterr.IsTransport(err) {
-		return CodeVendorUnreachable
+		return CodeProviderUnreachable
 	}
 	return CodeAddFailed
 }
@@ -427,16 +427,16 @@ func rollbackInlineSecret(req AddRequest) error {
 // the user doesn't need an explicit `cc-fleet refresh` right after `add`.
 // Failure here is non-fatal at the Add layer — the cache will repopulate on
 // the next refresh.
-func updateModelsCache(vendor, endpoint string, fetched []models.Model) error {
+func updateModelsCache(provider, endpoint string, fetched []models.Model) error {
 	cache, err := models.Load()
 	if err != nil {
 		return fmt.Errorf("load cache: %w", err)
 	}
-	if cache.Vendors == nil {
-		cache.Vendors = map[string]*models.VendorCache{}
+	if cache.Providers == nil {
+		cache.Providers = map[string]*models.ProviderCache{}
 	}
-	cache.Vendors[vendor] = &models.VendorCache{
-		Vendor:    vendor,
+	cache.Providers[provider] = &models.ProviderCache{
+		Provider:  provider,
 		Endpoint:  endpoint,
 		FetchedAt: time.Now().UTC(),
 		Models:    fetched,
@@ -470,39 +470,39 @@ type EditRequest struct {
 	// APIKey rotates the file-backend secret in place. Unlike the fields above
 	// it is a plain string ("" = no change) — there is no "set the key to
 	// empty" use case, so the cmd layer's non-empty gate is sufficient. Mirrors
-	// AddRequest.APIKey; only valid when the vendor's effective
+	// AddRequest.APIKey; only valid when the provider's effective
 	// SecretBackend=="file" (other backends manage their own secrets).
 	APIKey string
 }
 
-// EditResult mirrors the post-edit vendor row (skill consumers parse this to
+// EditResult mirrors the post-edit provider row (skill consumers parse this to
 // surface the new values to the user without re-running list).
 type EditResult struct {
-	Vendor *config.Vendor `json:"vendor"`
+	Provider *config.Provider `json:"provider"`
 }
 
-// Edit mutates the named vendor in place. Only fields set in req are applied;
+// Edit mutates the named provider in place. Only fields set in req are applied;
 // the rest are preserved. A schema-violating edit is rolled back before any
 // disk write. base_url changes also re-render the profile JSON so Claude
 // Code picks up the new ANTHROPIC_BASE_URL on the next spawn.
 //
-// Runs under the global vendors-config flock.
+// Runs under the global providers-config flock.
 func Edit(req EditRequest) (*EditResult, error) {
-	return withVendorsLock(func() (*EditResult, error) { return editLocked(req) })
+	return withProvidersLock(func() (*EditResult, error) { return editLocked(req) })
 }
 
 func editLocked(req EditRequest) (*EditResult, error) {
-	if err := ValidateVendorName(req.Name); err != nil {
-		return nil, opErr(CodeVendorNameInvalid, err)
+	if err := ValidateProviderName(req.Name); err != nil {
+		return nil, opErr(CodeProviderNameInvalid, err)
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, opErr(CodeConfigLoadFailed, err)
 	}
-	v, ok := cfg.Vendors[req.Name]
+	v, ok := cfg.Providers[req.Name]
 	if !ok {
-		return nil, opErr(CodeVendorUnknown,
-			fmt.Errorf("vendor %q not in vendors.toml", req.Name))
+		return nil, opErr(CodeProviderUnknown,
+			fmt.Errorf("provider %q not in providers.toml", req.Name))
 	}
 
 	baseURLChanged := false
@@ -551,14 +551,14 @@ func editLocked(req EditRequest) (*EditResult, error) {
 
 	// Inline key rotation (file backend only), mirroring Add. We validate
 	// against the EFFECTIVE backend/ref — i.e. after the merge above — so the
-	// user can rotate a key using the vendor's existing secret_ref without
+	// user can rotate a key using the provider's existing secret_ref without
 	// re-passing --secret-ref. Non-file backends provision keys themselves.
 	if req.APIKey != "" {
 		if v.SecretBackend != "file" {
 			return nil, opErr(CodeBackendUnsupported,
-				fmt.Errorf("--api-key is only supported with secret backend file (vendor %q uses %q)", req.Name, v.SecretBackend))
+				fmt.Errorf("--api-key is only supported with secret backend file (provider %q uses %q)", req.Name, v.SecretBackend))
 		}
-		// Multi-key guard: once a vendor has a keys.json, the inline single-key
+		// Multi-key guard: once a provider has a keys.json, the inline single-key
 		// path would silently write to the now-ignored legacy file. Refuse and
 		// point at the TUI (the multi-key human entry point). The message carries
 		// no key bytes.
@@ -568,7 +568,7 @@ func editLocked(req EditRequest) (*EditResult, error) {
 		}
 		if multi {
 			return nil, opErr(CodeBackendUnsupported,
-				fmt.Errorf("vendor %q has multiple keys; manage them in the TUI (cc-fleet)", req.Name))
+				fmt.Errorf("provider %q has multiple keys; manage them in the TUI (cc-fleet)", req.Name))
 		}
 		if v.SecretRef == "" {
 			return nil, opErr(CodeInvalidBackend,
@@ -583,10 +583,10 @@ func editLocked(req EditRequest) (*EditResult, error) {
 		return nil, opErr(CodeAddFailed, err)
 	}
 
-	// Write the rotated key BEFORE saving vendors.toml: key-first means a later
+	// Write the rotated key BEFORE saving providers.toml: key-first means a later
 	// Save failure leaves the config still pointing at the OLD (intact) ref so
-	// the vendor keeps working; save-first would point at a new ref whose key
-	// doesn't exist yet, breaking the vendor if the write then failed.
+	// the provider keeps working; save-first would point at a new ref whose key
+	// doesn't exist yet, breaking the provider if the write then failed.
 	if req.APIKey != "" {
 		if err := writeFileSecret(v.SecretRef, []byte(req.APIKey)); err != nil {
 			return nil, opErr(CodeSecretWriteFailed, err)
@@ -599,15 +599,15 @@ func editLocked(req EditRequest) (*EditResult, error) {
 
 	// Re-render the profile when a field it embeds moved: base_url
 	// (ANTHROPIC_BASE_URL) or a model/effort field (the tier env + effortLevel).
-	// The apiKeyHelper path is vendor-independent, and default_permission is
+	// The apiKeyHelper path is provider-independent, and default_permission is
 	// run-only, so neither touches the profile.
 	if baseURLChanged || profileFieldChanged {
-		if _, err := profile.WriteForVendor(v, ""); err != nil {
+		if _, err := profile.WriteForProvider(v, ""); err != nil {
 			return nil, opErr(CodeProfileWriteFailed, err)
 		}
 	}
 
-	return &EditResult{Vendor: v}, nil
+	return &EditResult{Provider: v}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -622,21 +622,21 @@ type RemoveRequest struct {
 
 // RemoveResult is the structured result of Remove.
 type RemoveResult struct {
-	Vendor         string `json:"removed"`
+	Provider       string `json:"removed"`
 	SecretRemoved  bool   `json:"secret_removed"`
 	ProfileRemoved bool   `json:"profile_removed"`
 	DefaultCleared bool   `json:"default_cleared,omitempty"` // the removed provider was the default_provider
 }
 
-// Remove deletes the vendor row from vendors.toml, the per-vendor profile JSON,
+// Remove deletes the provider row from providers.toml, the per-provider profile JSON,
 // and (without --keep-secret) the credential it owns: a file-backend on-disk secret,
 // or — for a codex provider — cc-fleet's own login token + its daemon. ~/.codex and
 // other external backends are never auto-purged; the user clears those themselves.
 //
-// Runs under the global vendors-config flock.
+// Runs under the global providers-config flock.
 func Remove(req RemoveRequest) (*RemoveResult, error) {
 	var codexRef string
-	res, err := withVendorsLock(func() (*RemoveResult, error) {
+	res, err := withProvidersLock(func() (*RemoveResult, error) {
 		r, ref, e := removeLocked(req)
 		codexRef = ref
 		return r, e
@@ -645,7 +645,7 @@ func Remove(req RemoveRequest) (*RemoveResult, error) {
 		return res, err
 	}
 	// Drop a removed codex provider's cc-fleet login (token file) + its daemon here,
-	// OUTSIDE the vendors lock: codexproxy's token/proxy locks are standalone scopes
+	// OUTSIDE the providers lock: codexproxy's token/proxy locks are standalone scopes
 	// that must never nest under it. LogoutIfUnreferenced no-ops if a concurrent re-add
 	// reclaimed the credential, and surfaces a removal failure (a surviving login would
 	// be silently reused on the next add). ~/.codex (the codex CLI login) is untouched.
@@ -658,20 +658,20 @@ func Remove(req RemoveRequest) (*RemoveResult, error) {
 }
 
 func removeLocked(req RemoveRequest) (*RemoveResult, string, error) {
-	if err := ValidateVendorName(req.Name); err != nil {
-		return nil, "", opErr(CodeVendorNameInvalid, err)
+	if err := ValidateProviderName(req.Name); err != nil {
+		return nil, "", opErr(CodeProviderNameInvalid, err)
 	}
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, "", opErr(CodeConfigLoadFailed, err)
 	}
-	v, ok := cfg.Vendors[req.Name]
+	v, ok := cfg.Providers[req.Name]
 	if !ok {
-		return nil, "", opErr(CodeVendorUnknown,
-			fmt.Errorf("vendor %q not in vendors.toml", req.Name))
+		return nil, "", opErr(CodeProviderUnknown,
+			fmt.Errorf("provider %q not in providers.toml", req.Name))
 	}
 
-	res := &RemoveResult{Vendor: req.Name}
+	res := &RemoveResult{Provider: req.Name}
 	// A codex provider's login is removed after the lock (see Remove); capture its
 	// credential ref before the row is gone.
 	codexRef := ""
@@ -680,13 +680,13 @@ func removeLocked(req RemoveRequest) (*RemoveResult, string, error) {
 	}
 
 	// Commit the config row deletion FIRST, before any destructive profile/secret
-	// cleanup: if Save fails, vendors.toml is unchanged and the profile + secret
+	// cleanup: if Save fails, providers.toml is unchanged and the profile + secret
 	// are still intact — never a config row pointing at already-deleted artifacts.
 	// Only once the row is durably gone do we reap the now-unreferenced profile +
 	// secret; a failure there leaves a harmless orphan, never a dangling
 	// reference or destroyed key the config still claims exists. (v still points
-	// at the removed Vendor struct — the map entry is gone but the value is held.)
-	delete(cfg.Vendors, req.Name)
+	// at the removed Provider struct — the map entry is gone but the value is held.)
+	delete(cfg.Providers, req.Name)
 	// Scrub a dangling default pointer in the SAME save: a default_provider naming
 	// the removed row would otherwise survive on disk (use-time errors, not a Load
 	// brick, but still a surprise).
@@ -698,8 +698,8 @@ func removeLocked(req RemoveRequest) (*RemoveResult, string, error) {
 		return nil, "", opErr(CodeConfigSaveFailed, err)
 	}
 
-	// Profile removal is idempotent (RemoveForVendor swallows ENOENT).
-	if err := profile.RemoveForVendor(req.Name); err != nil {
+	// Profile removal is idempotent (RemoveForProvider swallows ENOENT).
+	if err := profile.RemoveForProvider(req.Name); err != nil {
 		return nil, "", opErr(CodeProfileWriteFailed, err)
 	}
 	res.ProfileRemoved = true
@@ -715,7 +715,7 @@ func removeLocked(req RemoveRequest) (*RemoveResult, string, error) {
 		}
 		// Also purge the multi-key store + rotation counter (best-effort; a
 		// missing file is not an error). Independent of secret_ref because a
-		// multi-key vendor's keys live in <vendor>.keys.json, not secret_ref.
+		// multi-key provider's keys live in <provider>.keys.json, not secret_ref.
 		if err := secrets.RemoveKeySet(req.Name); err != nil {
 			return nil, "", opErr(CodeSecretRemoveFailed, err)
 		}
@@ -747,9 +747,9 @@ func removeFileSecret(ref string) error {
 // list
 // ---------------------------------------------------------------------------
 
-// VendorView is the per-vendor JSON shape `cc-fleet list --json` emits. Kept
+// ProviderView is the per-provider JSON shape `cc-fleet list --json` emits. Kept
 // flat (no nested objects) so jq dispatch in the skill stays trivial.
-type VendorView struct {
+type ProviderView struct {
 	Name           string `json:"name"`
 	BaseURL        string `json:"base_url"`
 	DefaultModel   string `json:"default_model"`
@@ -768,10 +768,10 @@ type VendorView struct {
 	Default        bool   `json:"default"` // this row is the EFFECTIVE default (configured, or sole-enabled auto)
 }
 
-// ListResult is the structured result of List. Vendors is always non-nil even
+// ListResult is the structured result of List. Providers is always non-nil even
 // when empty so JSON consumers can iterate without a presence check.
 type ListResult struct {
-	Vendors []VendorView `json:"vendors"`
+	Providers []ProviderView `json:"providers"`
 	// DefaultProvider is the CONFIGURED default ("" = unset). When unset and exactly
 	// one provider is enabled, that provider's row still carries Default=true (the
 	// implicit "auto" default), so a consumer can read default_provider to know
@@ -779,7 +779,7 @@ type ListResult struct {
 	DefaultProvider string `json:"default_provider"`
 }
 
-// List enumerates all configured vendors in alphabetical order. Each row is
+// List enumerates all configured providers in alphabetical order. Each row is
 // annotated with the local cache state (count + staleness) so callers can
 // show "(stale)" without an extra round-trip.
 func List() (*ListResult, error) {
@@ -792,8 +792,8 @@ func List() (*ListResult, error) {
 		return nil, opErr(CodeConfigLoadFailed, fmt.Errorf("load models cache: %w", err))
 	}
 
-	names := make([]string, 0, len(cfg.Vendors))
-	for n := range cfg.Vendors {
+	names := make([]string, 0, len(cfg.Providers))
+	for n := range cfg.Providers {
 		names = append(names, n)
 	}
 	sort.Strings(names)
@@ -802,10 +802,10 @@ func List() (*ListResult, error) {
 	// a resolution error (none/ambiguous) just means no row is flagged.
 	effDefault, _, _ := cfg.ResolveProvider("")
 
-	out := &ListResult{Vendors: []VendorView{}, DefaultProvider: cfg.DefaultProvider}
+	out := &ListResult{Providers: []ProviderView{}, DefaultProvider: cfg.DefaultProvider}
 	for _, name := range names {
-		v := cfg.Vendors[name]
-		view := VendorView{
+		v := cfg.Providers[name]
+		view := ProviderView{
 			Name:           v.Name,
 			BaseURL:        v.BaseURL,
 			DefaultModel:   v.DefaultModel,
@@ -821,7 +821,7 @@ func List() (*ListResult, error) {
 			Enabled:        v.Enabled,
 			Default:        name == effDefault,
 		}
-		if vc, ok := cache.Vendors[name]; ok && vc != nil {
+		if vc, ok := cache.Providers[name]; ok && vc != nil {
 			view.ModelsCount = len(vc.Models)
 			view.ModelsStale = models.IsStale(vc)
 		} else {
@@ -829,7 +829,7 @@ func List() (*ListResult, error) {
 			// refresh is needed.
 			view.ModelsStale = true
 		}
-		out.Vendors = append(out.Vendors, view)
+		out.Providers = append(out.Providers, view)
 	}
 	return out, nil
 }
@@ -883,16 +883,16 @@ func DefaultProvider() (*DefaultProviderView, error) {
 // provider must exist (UNKNOWN); a disabled provider is allowed to be pinned (it
 // errors at use, and the user may be pinning ahead of re-enabling).
 func SetDefaultProvider(name string, force bool) (*DefaultProviderView, error) {
-	_, err := withVendorsLock(func() (struct{}, error) {
+	_, err := withProvidersLock(func() (struct{}, error) {
 		cfg, err := config.Load()
 		if err != nil {
 			return struct{}{}, opErr(CodeConfigLoadFailed, err)
 		}
-		if err := ValidateVendorName(name); err != nil {
-			return struct{}{}, opErr(CodeVendorNameInvalid, err)
+		if err := ValidateProviderName(name); err != nil {
+			return struct{}{}, opErr(CodeProviderNameInvalid, err)
 		}
-		if _, ok := cfg.Vendors[name]; !ok {
-			return struct{}{}, opErr(CodeVendorUnknown, fmt.Errorf("provider %q not in vendors.toml", name))
+		if _, ok := cfg.Providers[name]; !ok {
+			return struct{}{}, opErr(CodeProviderUnknown, fmt.Errorf("provider %q not in providers.toml", name))
 		}
 		if cfg.DefaultProvider != "" && cfg.DefaultProvider != name && !force {
 			return struct{}{}, opErr(CodeDefaultAlreadySet,
@@ -912,7 +912,7 @@ func SetDefaultProvider(name string, force bool) (*DefaultProviderView, error) {
 
 // UnsetDefaultProvider clears default_provider (a no-op if already unset).
 func UnsetDefaultProvider() (*DefaultProviderView, error) {
-	_, err := withVendorsLock(func() (struct{}, error) {
+	_, err := withProvidersLock(func() (struct{}, error) {
 		cfg, err := config.Load()
 		if err != nil {
 			return struct{}{}, opErr(CodeConfigLoadFailed, err)
@@ -940,7 +940,7 @@ type RepairResult struct {
 	Repaired []string `json:"repaired"`
 }
 
-// Repair re-writes every vendor's profile JSON from the current vendors.toml.
+// Repair re-writes every provider's profile JSON from the current providers.toml.
 // Secrets are NOT touched (Repair fixes profiles users may have accidentally
 // deleted; secret backends own their own state).
 func Repair() (*RepairResult, error) {
@@ -948,16 +948,16 @@ func Repair() (*RepairResult, error) {
 	if err != nil {
 		return nil, opErr(CodeConfigLoadFailed, err)
 	}
-	names := make([]string, 0, len(cfg.Vendors))
-	for n := range cfg.Vendors {
+	names := make([]string, 0, len(cfg.Providers))
+	for n := range cfg.Providers {
 		names = append(names, n)
 	}
 	sort.Strings(names)
 
 	res := &RepairResult{Repaired: []string{}}
 	for _, name := range names {
-		v := cfg.Vendors[name]
-		if _, err := profile.WriteForVendor(v, ""); err != nil {
+		v := cfg.Providers[name]
+		if _, err := profile.WriteForProvider(v, ""); err != nil {
 			return nil, opErr(CodeRepairFailed,
 				fmt.Errorf("rewrite profile for %q: %w", name, err))
 		}
@@ -981,8 +981,8 @@ type UninstallResult struct {
 	Kept    []string `json:"kept"`
 }
 
-// Uninstall removes every cc-fleet-owned file: per-vendor profile JSONs,
-// vendors.toml, fingerprint.json, models-cache.json, the team-history records
+// Uninstall removes every cc-fleet-owned file: per-provider profile JSONs,
+// providers.toml, fingerprint.json, models-cache.json, the team-history records
 // under teams-history/, and finished background
 // jobs under subagent-jobs/ (see subagent.PurgeJobs — finished job files are
 // removed even when other jobs are still running; the live ones, and the dir
@@ -991,7 +991,7 @@ type UninstallResult struct {
 // preserved — the former is owned by the install machinery, the latter is
 // Claude Code's own state.
 //
-// Per-vendor file-backend secrets are removed unless KeepSecrets is true (the
+// Per-provider file-backend secrets are removed unless KeepSecrets is true (the
 // caller-level default). The whole <SecretsDir>/ tree is removed only when
 // KeepSecrets is false.
 func Uninstall(req UninstallRequest) (*UninstallResult, error) {
@@ -1002,18 +1002,18 @@ func Uninstall(req UninstallRequest) (*UninstallResult, error) {
 
 	cfg, err := config.Load()
 	if err != nil {
-		// Treat a malformed vendors.toml as "no vendors known" — Uninstall
+		// Treat a malformed providers.toml as "no providers known" — Uninstall
 		// should still get the rest of the tree clean. Surface in Kept so
 		// the user can see what was skipped.
-		res.Kept = append(res.Kept, fmt.Sprintf("vendors.toml (load failed: %v)", err))
-		cfg = &config.Config{Version: config.SchemaVersion, Vendors: map[string]*config.Vendor{}}
+		res.Kept = append(res.Kept, fmt.Sprintf("providers.toml (load failed: %v)", err))
+		cfg = &config.Config{Version: config.SchemaVersion, Providers: map[string]*config.Provider{}}
 	}
 
-	// 1. Per-vendor profiles.
-	for name := range cfg.Vendors {
+	// 1. Per-provider profiles.
+	for name := range cfg.Providers {
 		path, perr := profile.ProfilePath(name)
 		if perr != nil {
-			// Per-vendor failure shouldn't sink the whole uninstall.
+			// Per-provider failure shouldn't sink the whole uninstall.
 			res.Kept = append(res.Kept, fmt.Sprintf("profile %s (resolve failed: %v)", name, perr))
 			continue
 		}
@@ -1030,7 +1030,7 @@ func Uninstall(req UninstallRequest) (*UninstallResult, error) {
 		return nil, opErr(CodeUninstallFailed, fmt.Errorf("resolve config dir: %w", err))
 	}
 	tops := []string{
-		filepath.Join(cfgDir, "vendors.toml"),
+		filepath.Join(cfgDir, "providers.toml"),
 		filepath.Join(cfgDir, "fingerprint.json"),
 		filepath.Join(cfgDir, "models-cache.json"),
 	}

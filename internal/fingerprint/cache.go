@@ -1,5 +1,5 @@
 // Package fingerprint provides the per-cc-version spawn template (env vars +
-// flag list) that cc-fleet replays when launching vendor teammates.
+// flag list) that cc-fleet replays when launching provider teammates.
 //
 // The template ships as a BUNDLED default recipe embedded in the binary (see
 // bundled.go's //go:embed default_fingerprint.json, loaded via LoadOrBundled),

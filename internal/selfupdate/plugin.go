@@ -86,7 +86,7 @@ func updateViaPkgManager(ctx context.Context, out io.Writer, name string, args .
 }
 
 // runCmd runs an external admin tool (claude / npm / go), streaming its output.
-// It inherits the user's environment — childenv.Clean is for vendor-worker
+// It inherits the user's environment — childenv.Clean is for provider-worker
 // children only, not for trusted local tooling.
 func runCmd(ctx context.Context, out io.Writer, name string, args ...string) error {
 	cmd := exec.CommandContext(ctx, name, args...)

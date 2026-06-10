@@ -93,7 +93,7 @@ func TestAnnotateHealth_Seam(t *testing.T) {
 		t.Fatalf("a: got status=%q class=%q", got[0].Status, got[0].ErrorClass)
 	}
 	// SECURITY: the enriched Detail is canonical and must never echo the raw
-	// pane text fed by captureFn (which carried the vendor's "余额不足").
+	// pane text fed by captureFn (which carried the provider's "余额不足").
 	if strings.Contains(got[0].Detail, "余额不足") {
 		t.Fatalf("a: Detail leaked raw pane text: %q", got[0].Detail)
 	}

@@ -20,7 +20,7 @@ const (
 	// StatusOK means the check passed.
 	StatusOK Status = "ok"
 	// StatusWarn means the check failed in a way that's informational — e.g.
-	// OAuth credentials missing when the user only ever uses vendor profiles.
+	// OAuth credentials missing when the user only ever uses provider profiles.
 	// Warns do NOT make DoctorResult.OK false.
 	StatusWarn Status = "warn"
 	// StatusFail means the check failed and the user almost certainly needs

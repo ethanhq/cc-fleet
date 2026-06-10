@@ -33,7 +33,7 @@ func TestGC_RemovesFinishedSyncJobUnderPIDReuse(t *testing.T) {
 		JobID:     jobID,
 		PID:       os.Getpid(),
 		PGID:      os.Getpid(),
-		Vendor:    "glm",
+		Provider:  "glm",
 		Model:     "glm-4.6",
 		StartedAt: time.Now().Add(-72 * time.Hour).Format(time.RFC3339),
 		Status:    "done",
@@ -44,7 +44,7 @@ func TestGC_RemovesFinishedSyncJobUnderPIDReuse(t *testing.T) {
 		t.Fatalf("write meta: %v", err)
 	}
 	// Result cache: presence is the load-bearing signal.
-	res := Result{OK: true, JobID: jobID, Status: "done", Vendor: "glm", Model: "glm-4.6"}
+	res := Result{OK: true, JobID: jobID, Status: "done", Provider: "glm", Model: "glm-4.6"}
 	if data, err := json.Marshal(res); err != nil {
 		t.Fatalf("marshal result: %v", err)
 	} else if err := os.WriteFile(filepath.Join(dir, jobID+".result.json"), data, 0o600); err != nil {
@@ -89,7 +89,7 @@ func TestGC_KeepsRunningJobWithoutResultCache(t *testing.T) {
 		JobID:     jobID,
 		PID:       os.Getpid(),
 		PGID:      os.Getpid(),
-		Vendor:    "glm",
+		Provider:  "glm",
 		StartedAt: time.Now().Add(-72 * time.Hour).Format(time.RFC3339),
 		Status:    "running",
 	}
@@ -118,7 +118,7 @@ func plantFinishedJob(t *testing.T, dir, jobID string, started time.Time) {
 	t.Helper()
 	meta := jobMeta{
 		JobID: jobID, PID: os.Getpid(), PGID: os.Getpid(),
-		Vendor: "glm", Model: "glm-4.6",
+		Provider: "glm", Model: "glm-4.6",
 		StartedAt: started.Format(time.RFC3339), Status: "done",
 	}
 	data, err := json.Marshal(meta)

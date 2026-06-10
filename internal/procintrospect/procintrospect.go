@@ -16,7 +16,7 @@
 // All readers are best-effort: a vanished pid, a permission error, or a race
 // against process exit yields a nil/empty result rather than a hard failure.
 // The marker cc-fleet matches on (--agent-id <name>@<team>, --settings
-// <vendor>.json) never contains whitespace, so the darwin space-split argv is
+// <provider>.json) never contains whitespace, so the darwin space-split argv is
 // sufficient for every cc-fleet use even though it cannot perfectly recover an
 // argument that itself contains a space (see Cmdline's darwin doc).
 package procintrospect

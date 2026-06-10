@@ -33,8 +33,8 @@ func cwdMap(m map[string]string) func(string) string {
 func TestUpsertListRoundtrip(t *testing.T) {
 	sandbox(t)
 	mates := []teardown.Teammate{
-		{Team: "alpha", Name: "alice", Vendor: "glm", Model: "glm-4.6", SpawnTime: 1000, LeadSessionID: "s1"},
-		{Team: "alpha", Name: "bob", Vendor: "kimi", SpawnTime: 2000, LeadSessionID: "s2"},
+		{Team: "alpha", Name: "alice", Provider: "glm", Model: "glm-4.6", SpawnTime: 1000, LeadSessionID: "s1"},
+		{Team: "alpha", Name: "bob", Provider: "kimi", SpawnTime: 2000, LeadSessionID: "s2"},
 	}
 	if err := Upsert(mates, cwdMap(map[string]string{"s1": "/work/a", "s2": "/work/b"})); err != nil {
 		t.Fatalf("Upsert: %v", err)

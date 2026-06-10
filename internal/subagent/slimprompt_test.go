@@ -117,7 +117,7 @@ func TestSlimRenderCommonMarkers(t *testing.T) {
 	t.Setenv("SHELL", "/bin/zsh") // deterministic Shell line
 	dir := t.TempDir()            // not a git repo
 	for _, profile := range []string{ProfileSlim, ProfileSlimRO} {
-		out, err := RenderSlimPrompt(profile, dir, "vendor-model-x")
+		out, err := RenderSlimPrompt(profile, dir, "provider-model-x")
 		if err != nil {
 			t.Fatalf("RenderSlimPrompt(%q): %v", profile, err)
 		}
@@ -132,14 +132,14 @@ func TestSlimRenderCommonMarkers(t *testing.T) {
 			"Is directory a git repo: No",
 			"Shell: zsh",
 			"Today's date: "+time.Now().Format("2006-01-02"),
-			"You are powered by the model named vendor-model-x.",
+			"You are powered by the model named provider-model-x.",
 		)
 		// Identity line and the agent paragraph must be separated, not concatenated into
 		// "...CLI for Claude.You are an agent...".
 		if strings.Contains(out, "CLI for Claude.You are an agent") {
 			t.Errorf("%q render concatenated the identity line and the agent paragraph", profile)
 		}
-		// No knowledge-cutoff line (vendor models — accepted deviation).
+		// No knowledge-cutoff line (provider models — accepted deviation).
 		if strings.Contains(out, "knowledge cutoff") {
 			t.Errorf("%q render leaked a knowledge-cutoff line", profile)
 		}

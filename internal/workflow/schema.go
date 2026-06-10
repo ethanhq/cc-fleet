@@ -195,7 +195,7 @@ func validateAgainstSchema(value, schema, root interface{}, depth int) error {
 	return nil
 }
 
-// checkType verifies value's JSON type. `integer` accepts a zero-fraction number (a vendor
+// checkType verifies value's JSON type. `integer` accepts a zero-fraction number (a provider
 // may emit 5.0 for an integer field); an unknown type name imposes no constraint.
 func checkType(v interface{}, t string) error {
 	ok := true

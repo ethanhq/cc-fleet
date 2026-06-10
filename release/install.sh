@@ -167,7 +167,7 @@ cat <<EOF
 
 ==> Next steps
 
-   cc-fleet             # launch the interactive TUI — register a vendor and get started
+   cc-fleet             # launch the interactive TUI — register a provider and get started
                         #   (config is auto-created on first save; no init needed)
    cc-fleet doctor      # optional: run the health checks
    cc-fleet update      # later: update cc-fleet + the plugin to the latest release

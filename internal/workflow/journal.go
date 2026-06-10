@@ -18,7 +18,7 @@ import (
 // journal is a run's append-only content-hash cache of completed leaf results — the
 // engine of cross-invocation resume. On `workflow run --resume <id>` (or any re-run
 // reusing the id) a leaf whose content key is journaled returns its cached result
-// WITHOUT a vendor exec; only un-journaled leaves (new, edited, or failed-last-time)
+// WITHOUT a provider exec; only un-journaled leaves (new, edited, or failed-last-time)
 // run. Because the runtime bans the clock/PRNG, the same script+args produce the same
 // keys, so an unchanged re-run is ~100% cache hits and a killed run resumes by
 // replaying the leaves that finished before the kill.
@@ -34,7 +34,7 @@ import (
 //
 // Each key maps to an ORDERED QUEUE of results (in journaled = original execution order),
 // and a lookup CONSUMES one entry. This is what makes duplicate-key leaves correct: a
-// script that calls agent() with the same vendor/model/prompt/schema N times (e.g. a
+// script that calls agent() with the same provider/model/prompt/schema N times (e.g. a
 // loop-until-dry probing the same prompt) produces N entries under one key. A run killed
 // after K of N completed journals K entries, so on resume the first K calls each pop one
 // cached result and calls K+1..N find the queue empty and RE-RUN — only the unrun work
@@ -48,8 +48,8 @@ type journal struct {
 // journalEntry is one JSONL line: a successfully-completed leaf's content key and its
 // raw answer string. Failed/partial leaves are never written, so resume re-runs them.
 // Result is the journaled value: the answer text, or the structured payload for a
-// schema leaf; replay re-decodes + re-validates it (deterministic, no vendor exec).
-// The vendor key never enters a result, so the journal carries no secret; files are
+// schema leaf; replay re-decodes + re-validates it (deterministic, no provider exec).
+// The provider key never enters a result, so the journal carries no secret; files are
 // 0600 (the board's content-privacy posture).
 type journalEntry struct {
 	Key    string `json:"key"`
@@ -183,14 +183,14 @@ func removeJournalKeys(path string, keys map[string]bool) (bool, error) {
 	return true, nil
 }
 
-// journalKey is the content hash of a leaf's result determinant: vendor, model, the
+// journalKey is the content hash of a leaf's result determinant: provider, model, the
 // BASE prompt, the schema JSON, and the isolation mode (a worktree leaf can produce a
 // different result than an in-place one). It EXCLUDES display-only fields (label/phase) and
 // the caps (timeout/max_budget_usd/max_turns — those only ever yield a failure, which
 // is never journaled). model is the EFFECTIVE model: the explicit model= if given, else
 // the meta.model fallback (applied in agent() BEFORE this key is computed), else empty —
-// in which case the vendor resolves its own default_model at runtime (the caveat below).
-// It is keyed as the script determines it, not the vendor-default it later resolves to.
+// in which case the provider resolves its own default_model at runtime (the caveat below).
+// It is keyed as the script determines it, not the provider-default it later resolves to.
 //
 // effProfile is the EFFECTIVE slim profile (post-version-gate, resolved in agent() before
 // keying) with its resolved tools/skills/mcp. When the effective profile is full ("" or
@@ -202,23 +202,23 @@ func removeJournalKeys(path string, keys map[string]bool) (bool, error) {
 // the same ambient-context exclusion the full-profile journal already makes.
 //
 // Caveat: when BOTH model= and meta.model are omitted the key holds
-// the empty string, so a vendor-config change between a run and its resume — editing a
-// vendor's default_model or base_url — is NOT captured, and an omitted-model leaf could
+// the empty string, so a provider-config change between a run and its resume — editing a
+// provider's default_model or base_url — is NOT captured, and an omitted-model leaf could
 // serve a result produced under the old config.
 // In practice a resume reuses the run id moments later under stable config; after a
-// deliberate vendor-config change, start a fresh run (or the "v1" scheme prefix can be
+// deliberate provider-config change, start a fresh run (or the "v1" scheme prefix can be
 // bumped). schemaJSON is the schema's canonical JSON (the VM's stringify + a sorted-key
 // Go re-encode → stable bytes).
 //
 // Each field is LENGTH-PREFIXED (8-byte big-endian) rather than separated by a sentinel
 // byte: a prompt is an arbitrary script string that may itself contain any byte, so a
-// sentinel-only framing (vendor\x00model\x00prompt…) could collide across field
+// sentinel-only framing (provider\x00model\x00prompt…) could collide across field
 // boundaries; length-prefixing makes the preimage unambiguous for any content.
-func journalKey(vendor, model, prompt, schemaJSON, isolation, effProfile string, tools []string, noSkills, mcp bool) string {
+func journalKey(provider, model, prompt, schemaJSON, isolation, effProfile string, tools []string, noSkills, mcp bool) string {
 	h := sha256.New()
 	h.Write([]byte("v1"))
 	var n [8]byte
-	parts := []string{vendor, model, prompt, schemaJSON, isolation}
+	parts := []string{provider, model, prompt, schemaJSON, isolation}
 	// Fold the slim determinants only for a non-full effective profile, with the same
 	// length-prefix discipline — so a full leaf's preimage is byte-identical to today's.
 	if effProfile != "" && effProfile != subagent.ProfileFull {

@@ -9,14 +9,14 @@ drive it through plain language, but every command also works directly. Run `cc-
 | Command | What it does |
 |---------|--------------|
 | `cc-fleet` | Open the interactive TUI (Model Providers hub + Agents Board). |
-| `init` | Create the config tree and optionally add a first vendor (runs the health checks). |
-| `add <vendor>` | Register a vendor and probe its `/v1/models` endpoint. |
-| `edit <vendor>` | Modify fields on an existing vendor. |
-| `remove <vendor>` | Delete a vendor and its profile (optionally its secret). |
-| `list` | List configured vendors with status and cache info. |
-| `models <vendor>` | List cached models for a vendor. |
-| `refresh <vendor>` | Re-query a vendor's `/v1/models` and update the cache. |
-| `keyget <vendor>` | Fetch a vendor API key — used internally by Claude's `apiKeyHelper`. |
+| `init` | Create the config tree and optionally add a first provider (runs the health checks). |
+| `add <provider>` | Register a provider and probe its `/v1/models` endpoint. |
+| `edit <provider>` | Modify fields on an existing provider. |
+| `remove <provider>` | Delete a provider and its profile (optionally its secret). |
+| `list` | List configured providers with status and cache info. |
+| `models <provider>` | List cached models for a provider. |
+| `refresh <provider>` | Re-query a provider's `/v1/models` and update the cache. |
+| `keyget <provider>` | Fetch a provider API key — used internally by Claude's `apiKeyHelper`. |
 | `spawn [provider]` | Spawn a provider teammate as a tmux pane (provider optional → default). |
 | `subagent [provider]` | Run a one-shot headless provider subagent (provider optional → default). |
 | `run [provider]` | Launch an interactive provider-backed `claude` session (provider optional → default; foreground). |
@@ -26,11 +26,11 @@ drive it through plain language, but every command also works directly. Run `cc-
 | `hide` / `show` | Hide / restore a teammate's tmux pane without killing it. |
 | `teardown <team\|%pane>` | Kill teammate panes and clean up team state. |
 | `doctor` | Run the health checks (`--fix` attempts safe repairs). |
-| `repair` | Rewrite every vendor's profile JSON from `vendors.toml`. |
+| `repair` | Rewrite every provider's profile JSON from `providers.toml`. |
 | `refresh-fingerprint` | Re-probe the Claude Code spawn template via a live probe agent. |
 | `uninstall` | Remove all cc-fleet config + cached state (never touches the binary). |
 
-## Registering a vendor from the CLI
+## Registering a provider from the CLI
 
 The TUI is the easy path, but you can script registration. Pipe the key on stdin so it
 never lands in argv or shell history:
@@ -66,7 +66,7 @@ cc-fleet subagent deepseek --model deepseek-chat --prompt "Summarize this log" -
 
 It needs no tmux and no agent-teams — pure stdout in, result out.
 
-## Interactive — a vendor-backed session you drive
+## Interactive — a provider-backed session you drive
 
 ```bash
 cc-fleet run deepseek                              # interactive claude on deepseek
@@ -75,9 +75,9 @@ cc-fleet run deepseek --dangerously-skip-permissions
 ```
 
 `cc-fleet run [provider]` (provider optional → default) replaces the current process with an interactive `claude` REPL whose LLM
-backend is the vendor (the profile pins the `apiKeyHelper` + base URL; the model is the vendor's
+backend is the provider (the profile pins the `apiKeyHelper` + base URL; the model is the provider's
 `default_model` unless `--model` overrides). Unlike spawn/subagent, this is **you** using a
-vendor, not Claude delegating. No tmux, no agent-teams — just a terminal.
+provider, not Claude delegating. No tmux, no agent-teams — just a terminal.
 
 - `--permission-mode <mode>` / `--dangerously-skip-permissions` — the session's permission posture
   (mutually exclusive). It execs the binary directly, so a `claude` shell alias that adds such a
@@ -100,15 +100,15 @@ In tmux, panes split alongside your lead. Outside tmux, teammates run in a detac
 `cc-fleet-swarm-<team>` server (attach with `tmux -L cc-fleet-swarm-<team> attach`). `hide` /
 `show` are in-tmux only.
 
-**Cleanup order for a vendor team:** `cc-fleet teardown <team>` **first** (it reaps the tmux
+**Cleanup order for a provider team:** `cc-fleet teardown <team>` **first** (it reaps the tmux
 panes/processes), then your native `TeamDelete` (which only removes `~/.claude/teams/<team>/`).
-Running `TeamDelete` alone leaves orphan vendor panes billing the key.
+Running `TeamDelete` alone leaves orphan provider panes billing the key.
 
 ## Multiple keys & rotation
 
-A file-backend vendor can hold several API keys (`<vendor>.keys.json`, mode `0600`) with
+A file-backend provider can hold several API keys (`<provider>.keys.json`, mode `0600`) with
 per-key enable/disable, managed from the TUI key-manager. `keyget` is the rotation point —
-strategy is per vendor:
+strategy is per provider:
 
 - `off` — always the first enabled key.
 - `round_robin` — advance a counter on each worker spawn.
@@ -149,7 +149,7 @@ cc-fleet keeps its **own** token chain (`codex login`), never reading or writing
 ## Health & repair
 
 - `cc-fleet doctor` runs the checks; `--fix` attempts safe repairs.
-- `cc-fleet repair` rebuilds vendor profile JSON from `vendors.toml`.
+- `cc-fleet repair` rebuilds provider profile JSON from `providers.toml`.
 - `cc-fleet refresh-fingerprint` re-captures Claude Code's spawn template if a CC upgrade
   changed it.
 
@@ -157,7 +157,7 @@ cc-fleet keeps its **own** token chain (`codex login`), never reading or writing
 
 | Path | Contents |
 |------|----------|
-| `~/.config/cc-fleet/vendors.toml` | Vendor definitions (mode `0600`). |
+| `~/.config/cc-fleet/providers.toml` | Provider definitions (mode `0600`). |
 | `~/.config/cc-fleet/secrets/` | File-backend keys (dir `0700`, keys `0600`, gitignored). |
-| `~/.claude/profiles/` | Generated per-vendor spawn profiles. |
+| `~/.claude/profiles/` | Generated per-provider spawn profiles. |
 | `~/.claude/teams/<team>/` | Native team state (managed by Claude, not cc-fleet). |

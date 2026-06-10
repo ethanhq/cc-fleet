@@ -31,7 +31,7 @@ func (c SpawnContext) placeholders() map[string]string {
 // Apply substitutes placeholders in fp.FlagsTemplate using ctx and returns a
 // fresh []string ready to hand to exec.Command (minus the binary path — the
 // caller prepends fp.BinaryPath, plus any cc-fleet-side additions like
-// --settings <profile> and --model <vendor-model-id>).
+// --settings <profile> and --model <provider-model-id>).
 //
 // A nil fp returns nil. Tokens with no matching placeholder pass through
 // verbatim — that's intentional so unknown flags (e.g. --agent-type

@@ -45,10 +45,10 @@ func (r *rollbackRecorder) install(t *testing.T) {
 // TestSpawn_RollbackOnWriteTeamConfigFailure: a successful tmux SplitWindow
 // followed by a forced WriteTeamConfig failure MUST trigger pane cleanup (kill
 // the pane on the right server, reap the claude process by agent id) — otherwise
-// the pane + process stay live and the vendor key keeps burning.
+// the pane + process stay live and the provider key keeps burning.
 func TestSpawn_RollbackOnWriteTeamConfigFailure(t *testing.T) {
 	f := newFixture(t)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 
 	rec := &rollbackRecorder{}
@@ -63,7 +63,7 @@ func TestSpawn_RollbackOnWriteTeamConfigFailure(t *testing.T) {
 	}
 
 	res := Spawn(Request{
-		Vendor: "deepseek", AgentName: "rb1", Team: "rbteam",
+		Provider: "deepseek", AgentName: "rb1", Team: "rbteam",
 		Probe: false, AutoTeam: true,
 	})
 	if res.OK {
@@ -99,7 +99,7 @@ func TestSpawn_RollbackOnWriteTeamConfigFailure(t *testing.T) {
 // surface — EnsureInbox after a successful WriteTeamConfig.
 func TestSpawn_RollbackOnEnsureInboxFailure(t *testing.T) {
 	f := newFixture(t)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 
 	rec := &rollbackRecorder{}
@@ -112,7 +112,7 @@ func TestSpawn_RollbackOnEnsureInboxFailure(t *testing.T) {
 	}
 
 	res := Spawn(Request{
-		Vendor: "deepseek", AgentName: "rb2", Team: "rbteam2",
+		Provider: "deepseek", AgentName: "rb2", Team: "rbteam2",
 		Probe: false, AutoTeam: true,
 	})
 	if res.OK {
@@ -139,7 +139,7 @@ func TestSpawn_RollbackOnEnsureInboxFailure(t *testing.T) {
 // takes its new-session branch and returns createdServer=true.
 func TestSpawn_RollbackSwarmFirstMemberKillsServer(t *testing.T) {
 	f := newFixture(t)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 	t.Setenv("TMUX", "")                  // out-of-tmux → swarm branch
 	t.Setenv("MOCK_HASSESSION_EXIT", "1") // session absent → first member creates it
@@ -154,7 +154,7 @@ func TestSpawn_RollbackSwarmFirstMemberKillsServer(t *testing.T) {
 	}
 
 	res := Spawn(Request{
-		Vendor: "deepseek", AgentName: "swrb", Team: "swarm-rb",
+		Provider: "deepseek", AgentName: "swrb", Team: "swarm-rb",
 		Probe: false, AutoTeam: true,
 	})
 	if res.OK {
@@ -183,7 +183,7 @@ func TestSpawn_RollbackSwarmFirstMemberKillsServer(t *testing.T) {
 // its split-window/additional-teammate branch and returns createdServer=false.
 func TestSpawn_RollbackSwarmLaterMemberKeepsServer(t *testing.T) {
 	f := newFixture(t)
-	f.writeVendorsTOML("")
+	f.writeProvidersTOML("")
 	f.writeFingerprint()
 	t.Setenv("TMUX", "") // out-of-tmux → swarm branch
 	// MOCK_HASSESSION_EXIT unset/0 → session exists → later member.
@@ -202,7 +202,7 @@ func TestSpawn_RollbackSwarmLaterMemberKeepsServer(t *testing.T) {
 	}
 
 	res := Spawn(Request{
-		Vendor: "deepseek", AgentName: "second", Team: "swarm-rb2",
+		Provider: "deepseek", AgentName: "second", Team: "swarm-rb2",
 		Probe: false, AutoTeam: true,
 	})
 	if res.OK {
@@ -252,7 +252,7 @@ func TestSpawn_RollbackSwarmLaterMemberKeepsServer(t *testing.T) {
 func TestSpawn_RollbackOnInboxFailure_UndoesMemberAndSocket(t *testing.T) {
 	t.Run("in-tmux: member removed", func(t *testing.T) {
 		f := newFixture(t)
-		f.writeVendorsTOML("")
+		f.writeProvidersTOML("")
 		f.writeFingerprint()
 
 		rec := &rollbackRecorder{}
@@ -265,7 +265,7 @@ func TestSpawn_RollbackOnInboxFailure_UndoesMemberAndSocket(t *testing.T) {
 		}
 
 		res := Spawn(Request{
-			Vendor: "deepseek", AgentName: "undo1", Team: "undoteam",
+			Provider: "deepseek", AgentName: "undo1", Team: "undoteam",
 			Probe: false, AutoTeam: true,
 		})
 		if res.OK {
@@ -285,7 +285,7 @@ func TestSpawn_RollbackOnInboxFailure_UndoesMemberAndSocket(t *testing.T) {
 
 	t.Run("swarm first member: member removed + socket cleared", func(t *testing.T) {
 		f := newFixture(t)
-		f.writeVendorsTOML("")
+		f.writeProvidersTOML("")
 		f.writeFingerprint()
 		t.Setenv("TMUX", "")                  // out-of-tmux → swarm branch
 		t.Setenv("MOCK_HASSESSION_EXIT", "1") // session absent → first member (createdServer=true)
@@ -300,7 +300,7 @@ func TestSpawn_RollbackOnInboxFailure_UndoesMemberAndSocket(t *testing.T) {
 		}
 
 		res := Spawn(Request{
-			Vendor: "deepseek", AgentName: "undosw", Team: "undoswarm",
+			Provider: "deepseek", AgentName: "undosw", Team: "undoswarm",
 			Probe: false, AutoTeam: true,
 		})
 		if res.OK {

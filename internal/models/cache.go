@@ -34,7 +34,7 @@ func Path() (string, error) {
 
 // Load reads and parses the default cache file.
 //
-// A missing file is NOT an error: an empty Cache (version=1, no vendors) is
+// A missing file is NOT an error: an empty Cache (version=1, no providers) is
 // returned so first-run callers can mutate + Save it without special-casing.
 func Load() (*Cache, error) {
 	path, err := Path()
@@ -57,8 +57,8 @@ func LoadFromPath(path string) (*Cache, error) {
 	if err := json.Unmarshal(data, &c); err != nil {
 		return nil, fmt.Errorf("models: parse %s: %w", path, err)
 	}
-	if c.Vendors == nil {
-		c.Vendors = map[string]*VendorCache{}
+	if c.Providers == nil {
+		c.Providers = map[string]*ProviderCache{}
 	}
 	return &c, nil
 }
@@ -98,7 +98,7 @@ func SaveToPath(c *Cache, path string) error {
 // IsStale reports whether vc was fetched too long ago to trust without a
 // refresh. A nil entry or zero FetchedAt is treated as stale so callers
 // default to "tell the user to refresh".
-func IsStale(vc *VendorCache) bool {
+func IsStale(vc *ProviderCache) bool {
 	if vc == nil {
 		return true
 	}
@@ -110,5 +110,5 @@ func IsStale(vc *VendorCache) bool {
 
 // emptyCache returns a fresh Cache at the current schema version.
 func emptyCache() *Cache {
-	return &Cache{Version: CacheVersion, Vendors: map[string]*VendorCache{}}
+	return &Cache{Version: CacheVersion, Providers: map[string]*ProviderCache{}}
 }

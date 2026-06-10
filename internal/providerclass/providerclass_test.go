@@ -1,4 +1,4 @@
-package vendorclass
+package providerclass
 
 import (
 	"net/http"
@@ -47,9 +47,9 @@ func TestMatchClass(t *testing.T) {
 	}
 }
 
-// vendorFor builds a minimal *config.Vendor pointing its models_endpoint at url.
-func vendorFor(url string) *config.Vendor {
-	return &config.Vendor{
+// providerFor builds a minimal *config.Provider pointing its models_endpoint at url.
+func providerFor(url string) *config.Provider {
+	return &config.Provider{
 		Name:           "probe-test",
 		BaseURL:        url + "/anthropic",
 		DefaultModel:   "m",
@@ -62,7 +62,7 @@ func vendorFor(url string) *config.Vendor {
 
 func TestReachability(t *testing.T) {
 	// Isolate config so secrets.Keyget can't read the dev machine's real
-	// vendors.toml. The probe key lookup is best-effort; with no config it
+	// providers.toml. The probe key lookup is best-effort; with no config it
 	// degrades to a keyless reachability probe, which is all these httptest
 	// servers need (none gate on auth).
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -73,7 +73,7 @@ func TestReachability(t *testing.T) {
 			_, _ = w.Write([]byte(`{"data":[]}`))
 		}))
 		defer srv.Close()
-		p := Reachability(vendorFor(srv.URL))
+		p := Reachability(providerFor(srv.URL))
 		if p.Block || p.Warn != "" {
 			t.Fatalf("200 → Block=%v Warn=%q, want no block, no warn", p.Block, p.Warn)
 		}
@@ -84,7 +84,7 @@ func TestReachability(t *testing.T) {
 			w.WriteHeader(http.StatusUnauthorized)
 		}))
 		defer srv.Close()
-		p := Reachability(vendorFor(srv.URL))
+		p := Reachability(providerFor(srv.URL))
 		if !p.Block || p.Code != "KEY_INVALID" {
 			t.Fatalf("401 → Block=%v Code=%q, want block KEY_INVALID", p.Block, p.Code)
 		}
@@ -95,7 +95,7 @@ func TestReachability(t *testing.T) {
 			w.WriteHeader(http.StatusForbidden)
 		}))
 		defer srv.Close()
-		p := Reachability(vendorFor(srv.URL))
+		p := Reachability(providerFor(srv.URL))
 		if !p.Block || p.Code != "KEY_INVALID" {
 			t.Fatalf("403 → Block=%v Code=%q, want block KEY_INVALID", p.Block, p.Code)
 		}
@@ -106,7 +106,7 @@ func TestReachability(t *testing.T) {
 			w.WriteHeader(http.StatusInternalServerError)
 		}))
 		defer srv.Close()
-		p := Reachability(vendorFor(srv.URL))
+		p := Reachability(providerFor(srv.URL))
 		if p.Block {
 			t.Fatalf("500 → Block=true, want no block")
 		}
@@ -115,18 +115,18 @@ func TestReachability(t *testing.T) {
 		}
 	})
 
-	t.Run("bad host blocks VENDOR_UNREACHABLE", func(t *testing.T) {
+	t.Run("bad host blocks PROVIDER_UNREACHABLE", func(t *testing.T) {
 		// 127.0.0.1:1 (reserved tcpmux) is never listening → dial refused, no
 		// HTTP response → transport failure.
-		p := Reachability(vendorFor("http://127.0.0.1:1"))
-		if !p.Block || p.Code != "VENDOR_UNREACHABLE" {
-			t.Fatalf("conn refused → Block=%v Code=%q, want block VENDOR_UNREACHABLE", p.Block, p.Code)
+		p := Reachability(providerFor("http://127.0.0.1:1"))
+		if !p.Block || p.Code != "PROVIDER_UNREACHABLE" {
+			t.Fatalf("conn refused → Block=%v Code=%q, want block PROVIDER_UNREACHABLE", p.Block, p.Code)
 		}
 	})
 
-	t.Run("nil vendor no block", func(t *testing.T) {
+	t.Run("nil provider no block", func(t *testing.T) {
 		if p := Reachability(nil); p.Block {
-			t.Fatalf("nil vendor → Block=true, want no block")
+			t.Fatalf("nil provider → Block=true, want no block")
 		}
 	})
 }

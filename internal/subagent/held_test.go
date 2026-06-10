@@ -13,7 +13,7 @@ import (
 func mintHeldFixture(t *testing.T) string {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	jobID := MintQueuedLeaf(Request{Vendor: "v", RunID: "run-h", Phase: "p", Label: "l", LeadSessionID: "sess"}, "m")
+	jobID := MintQueuedLeaf(Request{Provider: "v", RunID: "run-h", Phase: "p", Label: "l", LeadSessionID: "sess"}, "m")
 	if jobID == "" {
 		t.Fatal("mint failed")
 	}

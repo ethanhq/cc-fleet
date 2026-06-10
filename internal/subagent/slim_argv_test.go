@@ -215,7 +215,7 @@ func TestBuildSlimArgv(t *testing.T) {
 	}
 
 	t.Run("slim default tools + sidecar written 0600", func(t *testing.T) {
-		sa, err := buildSlimArgv(ProfileSlim, "job-slim", Request{PromptProfile: ProfileSlim}, "vendor-m")
+		sa, err := buildSlimArgv(ProfileSlim, "job-slim", Request{PromptProfile: ProfileSlim}, "provider-m")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -235,7 +235,7 @@ func TestBuildSlimArgv(t *testing.T) {
 			t.Fatalf("sidecar mode = %v, want 0600", got)
 		}
 		data, _ := os.ReadFile(sa.promptFile)
-		if !strings.Contains(string(data), "You are powered by the model named vendor-m.") {
+		if !strings.Contains(string(data), "You are powered by the model named provider-m.") {
 			t.Fatalf("rendered sidecar missing the model line")
 		}
 	})
@@ -281,7 +281,7 @@ func TestJobMeta_ProfileFieldsRoundtrip(t *testing.T) {
 	dir := t.TempDir()
 	in := jobMeta{
 		JobID:         "job-rt",
-		Vendor:        "glm",
+		Provider:      "glm",
 		Model:         "glm-4.6",
 		PromptProfile: ProfileSlimRO,
 		SlimDowngrade: "slim disabled: claude version 2.1.50 below floor 2.1.88",

@@ -23,12 +23,12 @@ const (
 	watchFleetCheckMinInterval = 2 * time.Second
 )
 
-// newWatchCmd builds `cc-fleet watch` — stream a live text snapshot of the whole fleet (vendor
+// newWatchCmd builds `cc-fleet watch` — stream a live text snapshot of the whole fleet (provider
 // teammates + one-shot subagent jobs + workflow runs), refreshed on an interval until
 // interrupted. It is the cross-lane companion to `workflow watch <id>`: run it in a backgrounded
 // shell to surface the fleet in the /tasks panel, or via the `cc-fleet:fleet-watch` agent to
 // surface it in the agent panel. INSPECTION-ONLY and key-safe: it prints only field-source-safe
-// columns (never a vendor reply / job result, never raw pane text — only canonical health). The
+// columns (never a provider reply / job result, never raw pane text — only canonical health). The
 // only writes it triggers are the dead-job result memoization any status read (the board,
 // `workflow status`, ListJobs) already performs; it never spawns, stops, or tears down anything.
 func newWatchCmd() *cobra.Command {
@@ -40,12 +40,12 @@ func newWatchCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "watch",
 		Short: "Stream the fleet status board (teammates, subagent jobs, workflow runs) as text",
-		Long: `Stream a live text snapshot of the whole cc-fleet fleet — vendor teammates, one-shot
+		Long: `Stream a live text snapshot of the whole cc-fleet fleet — provider teammates, one-shot
 subagent jobs, and workflow runs — refreshed on an interval until interrupted (Ctrl-C) or
 --timeout. Run it in a backgrounded shell to surface the fleet in the /tasks panel, or via the
 cc-fleet:fleet-watch agent to surface it in the agent panel.
 
-Read-only: it never prints a vendor reply, a job result, or raw pane text — only canonical
+Read-only: it never prints a provider reply, a job result, or raw pane text — only canonical
 status. --check adds a per-teammate pane health scan (slower; a higher minimum interval).`,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
@@ -131,10 +131,10 @@ func fleetLeadIDs(tm []teardown.Teammate, jobs []subagent.Result) []string {
 
 // renderFleet formats one snapshot. Every opaque string is CleanTitle-scrubbed (terminal-injection
 // defense); the columns are a strict ALLOWLIST of field-source-safe data — it NEVER prints
-// Result.Result (the vendor answer), an error message, or raw pane text. Teammate Status/ErrorClass
+// Result.Result (the provider answer), an error message, or raw pane text. Teammate Status/ErrorClass
 // come from AnnotateHealth, which returns only canonical classes.
 //
-// LOAD-BEARING: the jobs allowlist is the ONLY thing keeping a vendor answer off stdout — a Result
+// LOAD-BEARING: the jobs allowlist is the ONLY thing keeping a provider answer off stdout — a Result
 // from ListJobs for a just-finished --background job still carries the answer in Result.Result (its
 // cache, unlike a sync job's, is not answer-stripped). Do NOT add a result/error/preview column to
 // the jobs section.
@@ -149,7 +149,7 @@ func renderFleet(s fleetSnap, now time.Time) string {
 	}
 	for _, t := range s.teammates {
 		line := fmt.Sprintf("  %s/%s  %s/%s  pane=%s  pid=%d",
-			clean(t.Team), clean(t.Name), clean(t.Vendor), clean(t.Model), clean(t.PaneID), t.PID)
+			clean(t.Team), clean(t.Name), clean(t.Provider), clean(t.Model), clean(t.PaneID), t.PID)
 		if t.Status != "" {
 			line += "  " + clean(t.Status)
 			if t.ErrorClass != "" {
@@ -174,7 +174,7 @@ func renderFleet(s fleetSnap, now time.Time) string {
 		if j.Phase != "" {
 			seg += clean(j.Phase) + " "
 		}
-		seg += clean(j.Label) + "  " + clean(j.Vendor) + "/" + clean(j.Model) + "  " + clean(j.Status) + "  " + clean(j.JobID)
+		seg += clean(j.Label) + "  " + clean(j.Provider) + "/" + clean(j.Model) + "  " + clean(j.Status) + "  " + clean(j.JobID)
 		b.WriteString(seg + "\n")
 	}
 

@@ -9,13 +9,13 @@ import (
 	"testing"
 )
 
-// helperFromProfile renders a profile for sampleVendor() with helperBinary and
+// helperFromProfile renders a profile for sampleProvider() with helperBinary and
 // returns the apiKeyHelper string from the generated JSON.
 func helperFromProfile(t *testing.T, helperBinary string) string {
 	t.Helper()
-	data, err := GenerateForVendor(sampleVendor(), helperBinary)
+	data, err := GenerateForProvider(sampleProvider(), helperBinary)
 	if err != nil {
-		t.Fatalf("GenerateForVendor: %v", err)
+		t.Fatalf("GenerateForProvider: %v", err)
 	}
 	var back struct {
 		APIKeyHelper string `json:"apiKeyHelper"`
@@ -27,7 +27,7 @@ func helperFromProfile(t *testing.T, helperBinary string) string {
 }
 
 // TestPosixQuote_SafePathVerbatim documents the byte-stable common case: a
-// space/metachar-free install path and the (already grammar-validated) vendor
+// space/metachar-free install path and the (already grammar-validated) provider
 // name are emitted WITHOUT quotes, so existing profiles stay unchanged.
 func TestPosixQuote_SafePathVerbatim(t *testing.T) {
 	for _, s := range []string{"/usr/local/bin/cc-fleet", "deepseek", "glm-4", "/a/b_c/d.bin"} {
@@ -66,7 +66,7 @@ func TestApiKeyHelper_ExecutesThroughShell_WithSpacePath(t *testing.T) {
 	}
 	helper := filepath.Join(dir, "cc-fleet")
 	// Fake helper: echoes a sentinel only when called as `<bin> keyget deepseek`
-	// (deepseek == sampleVendor().Name).
+	// (deepseek == sampleProvider().Name).
 	script := "#!/bin/sh\nif [ \"$1\" = keyget ] && [ \"$2\" = deepseek ]; then echo SENTINEL_KEY_OK; else echo WRONG_ARGS; fi\n"
 	if err := os.WriteFile(helper, []byte(script), 0o755); err != nil {
 		t.Fatalf("write helper: %v", err)

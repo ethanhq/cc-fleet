@@ -1,6 +1,6 @@
 ---
 name: fleet-watch
-description: Use to watch the whole cc-fleet fleet live from inside this session — it surfaces a running fleet in the agent panel and streams the status board (vendor teammates, one-shot subagent jobs, and workflow runs) until interrupted.
+description: Use to watch the whole cc-fleet fleet live from inside this session — it surfaces a running fleet in the agent panel and streams the status board (provider teammates, one-shot subagent jobs, and workflow runs) until interrupted.
 model: haiku
 tools: Bash
 ---

@@ -14,7 +14,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/diag"
 )
 
-// codexStanza returns a vendors.toml stanza for a codex provider whose
+// codexStanza returns a providers.toml stanza for a codex provider whose
 // endpoints point at base.
 func codexStanza(base string) string {
 	return fmt.Sprintf(`
@@ -41,20 +41,20 @@ func TestSpawn_CodexSkipsProbe_EnsuresDaemon(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data":[]}`))
 	}))
 	t.Cleanup(srv.Close)
-	f.writeVendorsTOML(codexStanza(srv.URL))
+	f.writeProvidersTOML(codexStanza(srv.URL))
 	f.writeFingerprint()
 
 	var ensured atomic.Int32
-	ensureVendorProxy = func(v *config.Vendor, _ *diag.Logger) error {
+	ensureProviderProxy = func(v *config.Provider, _ *diag.Logger) error {
 		if v == nil || v.SecretBackend != codexproxy.SecretBackend {
-			t.Errorf("ensureVendorProxy got a non-codex vendor: %+v", v)
+			t.Errorf("ensureProviderProxy got a non-codex provider: %+v", v)
 		}
 		ensured.Add(1)
 		return nil
 	}
-	t.Cleanup(func() { ensureVendorProxy = codexproxy.EnsureForVendor })
+	t.Cleanup(func() { ensureProviderProxy = codexproxy.EnsureForProvider })
 
-	res := Spawn(Request{Vendor: "codex", AgentName: "cw", Team: "ct", Probe: true, AutoTeam: true})
+	res := Spawn(Request{Provider: "codex", AgentName: "cw", Team: "ct", Probe: true, AutoTeam: true})
 	if !res.OK {
 		t.Fatalf("codex spawn: code=%s msg=%s", res.ErrorCode, res.ErrorMsg)
 	}
@@ -62,7 +62,7 @@ func TestSpawn_CodexSkipsProbe_EnsuresDaemon(t *testing.T) {
 		t.Fatalf("codex probe must be skipped; models endpoint hit %d time(s)", got)
 	}
 	if got := ensured.Load(); got != 1 {
-		t.Fatalf("ensureVendorProxy calls = %d, want 1", got)
+		t.Fatalf("ensureProviderProxy calls = %d, want 1", got)
 	}
 }
 
@@ -70,15 +70,15 @@ func TestSpawn_CodexSkipsProbe_EnsuresDaemon(t *testing.T) {
 // profile written, no team dir, no tmux call.
 func TestSpawn_CodexDaemonFailure_FailsBeforeMutation(t *testing.T) {
 	f := newFixture(t)
-	f.writeVendorsTOML(codexStanza("http://127.0.0.1:17222"))
+	f.writeProvidersTOML(codexStanza("http://127.0.0.1:17222"))
 	f.writeFingerprint()
 
-	ensureVendorProxy = func(*config.Vendor, *diag.Logger) error {
+	ensureProviderProxy = func(*config.Provider, *diag.Logger) error {
 		return fmt.Errorf("codex proxy did not become ready on port 17222")
 	}
-	t.Cleanup(func() { ensureVendorProxy = codexproxy.EnsureForVendor })
+	t.Cleanup(func() { ensureProviderProxy = codexproxy.EnsureForProvider })
 
-	res := Spawn(Request{Vendor: "codex", AgentName: "cw", Team: "ct2", Probe: false, AutoTeam: true})
+	res := Spawn(Request{Provider: "codex", AgentName: "cw", Team: "ct2", Probe: false, AutoTeam: true})
 	if res.OK || res.ErrorCode != ErrCodeProxyUnavailable {
 		t.Fatalf("want CODEX_PROXY_UNAVAILABLE, got ok=%v code=%s", res.OK, res.ErrorCode)
 	}

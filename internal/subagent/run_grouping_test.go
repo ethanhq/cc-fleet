@@ -14,7 +14,7 @@ func TestSyncJobCarriesRunGrouping(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 
-	jobID := regSyncJob(Request{Vendor: "glm", RunID: "run-1", Phase: "build", Label: "w1"}, "glm-4.6")
+	jobID := regSyncJob(Request{Provider: "glm", RunID: "run-1", Phase: "build", Label: "w1"}, "glm-4.6")
 	if jobID == "" {
 		t.Fatal("registerSyncJob returned an empty job id")
 	}
@@ -26,7 +26,7 @@ func TestSyncJobCarriesRunGrouping(t *testing.T) {
 		t.Fatalf("running sync job missing run grouping: %+v", jobs[0])
 	}
 
-	finalizeSyncJob(jobID, Result{OK: true, Vendor: "glm", Model: "glm-4.6", Result: "answer"})
+	finalizeSyncJob(jobID, Result{OK: true, Provider: "glm", Model: "glm-4.6", Result: "answer"})
 	jobs, _ = ListJobs()
 	if len(jobs) != 1 || jobs[0].Status != "done" {
 		t.Fatalf("after finalize want 1 done job: %+v", jobs)

@@ -7,7 +7,7 @@ Two layers — **user commands** (humans run interactively, pretty output by def
 - Claude layer (you run with `--json`)
 - Spawn flags (full set) + permission inheritance
 - Spawn JSON envelopes (success / failure)
-- How vendor teammates differ from native `Agent`
+- How provider teammates differ from native `Agent`
 
 ---
 
@@ -15,17 +15,17 @@ Two layers — **user commands** (humans run interactively, pretty output by def
 
 ```
 cc-fleet init                            First-time setup: create dirs, run doctor,
-                                         prompt to add first vendor.
-cc-fleet add <vendor> [flags]            Add a vendor (interactive prompts when
+                                         prompt to add first provider.
+cc-fleet add <provider> [flags]            Add a provider (interactive prompts when
                                          flags omitted on a tty).
-cc-fleet edit <vendor> [flags]           Modify one or more vendor fields. Incl.
+cc-fleet edit <provider> [flags]           Modify one or more provider fields. Incl.
                                          --api-key-stdin / --api-key-file (rotate
                                          single key, file backend; never plain
                                          --api-key — argv leaks to history) and
                                          --key-rotation off|round_robin|random.
-cc-fleet remove <vendor>                 Delete vendor + derived files (incl. multi-
+cc-fleet remove <provider>                 Delete provider + derived files (incl. multi-
                                          key store + rotation counter).
-cc-fleet list                            Pretty table of configured vendors (--json adds
+cc-fleet list                            Pretty table of configured providers (--json adds
                                          default_provider + a per-row default flag).
 cc-fleet default [provider]              Show or set the default provider used when a lane
                                          omits one. No arg shows it; <provider> pins it
@@ -34,7 +34,7 @@ cc-fleet default [provider]              Show or set the default provider used w
                                          provider's roster. --json for the structured view.
 cc-fleet doctor [--fix]                  Run the health checks (Core + live-teammate
                                          Optional); --fix auto-repairs the safe ones.
-cc-fleet repair                          Rebuild derived files from vendors.toml.
+cc-fleet repair                          Rebuild derived files from providers.toml.
 cc-fleet uninstall [--wipe-secrets]      Remove config/profiles/models cache. Secrets are
                                          PRESERVED by default; --wipe-secrets also removes
                                          them. Keeps the skill dir (owned by the plugin /
@@ -65,7 +65,7 @@ cc-fleet codex-proxy stop                started lazily by spawn / subagent / ru
 
 `ccf` is a short alias (symlink) for `cc-fleet` — every command works as `ccf …` too. (Install creates it; `make uninstall` removes it. The apiKeyHelper a spawn writes always points at the real `cc-fleet` path regardless.)
 
-**Multi-key + per-worker rotation:** a file-backend vendor can hold several API keys (managed in the interactive TUI: edit a vendor → "Manage API keys →" → add/edit/delete/enable-disable, keys shown masked `sk-…238`). With `--key-rotation round_robin` (or `random`) and ≥2 enabled keys, each spawned worker / subagent draws the next key via `keyget` — granularity is **per-worker** (Claude caches apiKeyHelper per process), so a fan-out of N workers spreads across the enabled keys to share vendor quota / rate limits. Default `off` = always the first enabled key. Disabled keys are never selected.
+**Multi-key + per-worker rotation:** a file-backend provider can hold several API keys (managed in the interactive TUI: edit a provider → "Manage API keys →" → add/edit/delete/enable-disable, keys shown masked `sk-…238`). With `--key-rotation round_robin` (or `random`) and ≥2 enabled keys, each spawned worker / subagent draws the next key via `keyget` — granularity is **per-worker** (Claude caches apiKeyHelper per process), so a fan-out of N workers spreads across the enabled keys to share provider quota / rate limits. Default `off` = always the first enabled key. Disabled keys are never selected.
 
 **Tell the user to run `init` / `add` / `edit` / `remove` / `uninstall` themselves** — you do not run them on their behalf (they involve credentials). Same for **`run`** — it's interactive and execs into `claude`, so it would block / replace you; the human runs it.
 
@@ -77,7 +77,7 @@ cc-fleet codex-proxy stop                started lazily by spawn / subagent / ru
 cc-fleet spawn [provider] --as <name> --team <team> [--model <m>] --json
                                          Spawn a provider teammate into a tmux pane.
                                          The provider arg is OPTIONAL — omit it to use the
-                                         default provider (cc-fleet default; a vendor-less
+                                         default provider (cc-fleet default; a provider-less
                                          call errors NO_DEFAULT_PROVIDER / DEFAULT_PROVIDER_DISABLED).
                                          Outside tmux ($TMUX empty) it auto-builds an
                                          out-of-tmux swarm session; --json carries
@@ -111,11 +111,11 @@ cc-fleet ps --json [--check]             List live cc-fleet teammates across all
                                          Empty → ok:true with []. --check adds per-pane
                                          health (status / error_class), redacted.
 
-cc-fleet list --json                     Configured vendors + enabled flag + cache
-                                         freshness. Use to pick a vendor.
-cc-fleet models <vendor> --json          Cached model list for vendor. Use to pick
+cc-fleet list --json                     Configured providers + enabled flag + cache
+                                         freshness. Use to pick a provider.
+cc-fleet models <provider> --json          Cached model list for provider. Use to pick
                                          --model. Empty → run refresh.
-cc-fleet refresh <vendor> --json         Re-query vendor's models endpoint. Updates cache.
+cc-fleet refresh <provider> --json         Re-query provider's models endpoint. Updates cache.
 
 cc-fleet refresh-fingerprint --probe-team <team> --json
                                          Snapshot Claude Code's spawn template from a
@@ -132,11 +132,11 @@ cc-fleet refresh-fingerprint --probe-team <team> --json
 cc-fleet spawn [provider]                (provider optional → default provider)
   --as <name>                            Teammate name. Required.
   --team <team>                          Target team. Required (or use --auto-team).
-  --model <model-id>                     Vendor model id. Default: vendor's default_model.
+  --model <model-id>                     Provider model id. Default: provider's default_model.
   --color <color>                        Pane color tag. Default: auto-pick.
   --target <tmux-target>                 tmux session/window/pane.
                                          Default: largest attached session, right split.
-  --probe / --no-probe                   Probe vendor reachability (3s). Default: --probe.
+  --probe / --no-probe                   Probe provider reachability (3s). Default: --probe.
   --auto-team / --no-auto-team           Create the team if it doesn't exist. Default: on.
   --lead-session-id <uuid>               Override parent session UUID. Default: team config.
   --permission-mode <mode>               Override inherited permission mode.
@@ -145,7 +145,7 @@ cc-fleet spawn [provider]                (provider optional → default provider
   --json                                 Machine-readable envelope. Always use this.
 ```
 
-**Permission mode (best-effort startup-intent inheritance).** By default a vendor teammate inherits the permission mode the **lead session was started with** (e.g. the lead launched with `--dangerously-skip-permissions` or `--permission-mode acceptEdits`), detected from the lead process at spawn time; a lead on `default`/`plan` passes nothing down. Pass `--permission-mode <mode>` or `--dangerously-skip-permissions` to override per spawn (highest precedence; the two override flags are mutually exclusive). The `--json` envelope reports `permission_inheritance`: `"manual"` (you overrode), `"lead-flag"` (took the lead's explicit startup flag), `"lead-default"` (lead had none → none applied), or `"frozen-template"` (couldn't detect the lead → fell back to the bundled recipe's flags). **Limitation:** a permission-mode switch made at **runtime** inside the lead session (after startup) is NOT propagated — only the startup intent is captured.
+**Permission mode (best-effort startup-intent inheritance).** By default a provider teammate inherits the permission mode the **lead session was started with** (e.g. the lead launched with `--dangerously-skip-permissions` or `--permission-mode acceptEdits`), detected from the lead process at spawn time; a lead on `default`/`plan` passes nothing down. Pass `--permission-mode <mode>` or `--dangerously-skip-permissions` to override per spawn (highest precedence; the two override flags are mutually exclusive). The `--json` envelope reports `permission_inheritance`: `"manual"` (you overrode), `"lead-flag"` (took the lead's explicit startup flag), `"lead-default"` (lead had none → none applied), or `"frozen-template"` (couldn't detect the lead → fell back to the bundled recipe's flags). **Limitation:** a permission-mode switch made at **runtime** inside the lead session (after startup) is NOT propagated — only the startup intent is captured.
 
 ## Spawn JSON envelope (success)
 ```json
@@ -168,9 +168,9 @@ cc-fleet spawn [provider]                (provider optional → default provider
 ```json
 {
   "ok": false,
-  "error_code": "VENDOR_UNREACHABLE",
+  "error_code": "PROVIDER_UNREACHABLE",
   "error_msg": "Could not reach api.deepseek.com (timeout 3s)",
-  "vendor": "deepseek",
+  "provider": "deepseek",
   "suggestion": "Run cc-fleet doctor"
 }
 ```
@@ -178,18 +178,18 @@ Dispatch on `error_code` (see `shared/troubleshooting.md`), never parse `error_m
 
 ---
 
-## How vendor teammates differ from native `Agent`
+## How provider teammates differ from native `Agent`
 
-| | Native `Agent({model: 'sonnet'})` | cc-fleet vendor teammate |
+| | Native `Agent({model: 'sonnet'})` | cc-fleet provider teammate |
 |---|---|---|
-| LLM backend | Anthropic | Any Anthropic-compatible vendor (DeepSeek, GLM, …) |
-| Billing | Main session's own quota (OAuth or API key) | Vendor metered API |
+| LLM backend | Anthropic | Any Anthropic-compatible provider (DeepSeek, GLM, …) |
+| Billing | Main session's own quota (OAuth or API key) | Provider metered API |
 | Lifecycle | One-shot, exits when done | Long-lived in a tmux pane, multi-turn |
 | Tool stack | Full Claude Code | Full Claude Code (same harness) |
-| Rate limit | Shared with main session | Independent (vendor's quota) |
-| Privacy | Anthropic | Vendor (e.g. Chinese data → Chinese vendor) |
+| Rate limit | Shared with main session | Independent (provider's quota) |
+| Privacy | Anthropic | Provider (e.g. Chinese data → Chinese provider) |
 | Spawned via | Native `Agent` tool | `cc-fleet spawn` (/cc-fleet:team) |
-| `--settings` injection | Not possible | Yes (vendor profile JSON) |
-| Vendor model id | Not possible (enum-locked) | Yes (`--model <vendor-id>`) |
+| `--settings` injection | Not possible | Yes (provider profile JSON) |
+| Provider model id | Not possible (enum-locked) | Yes (`--model <provider-id>`) |
 
 If you only need Anthropic and the work fits the main session, native `Agent` is simpler. cc-fleet is for the cases where the four right-column properties matter.

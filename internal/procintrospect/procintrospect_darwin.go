@@ -20,7 +20,7 @@ var execCommand = exec.Command
 // so the command string is space-split. An argument that itself contains a
 // space (rare — e.g. a --settings path under a HOME that has a space) cannot be
 // perfectly reconstructed, but this is sufficient for every cc-fleet marker
-// (--agent-id <name>@<team>, --settings <vendor>.json, --model <id>), none of
+// (--agent-id <name>@<team>, --settings <provider>.json, --model <id>), none of
 // which contain whitespace. `-ww` disables ps's column truncation so a long
 // teammate command line (binary path + a dozen flags) survives intact.
 //
