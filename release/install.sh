@@ -32,7 +32,7 @@ Options:
     --skill plugin|global|none  How to install the skill. Default: plugin.
                                   plugin = via Claude Code plugin (also adds the
                                            SessionStart hook + /ps //doctor commands).
-                                  global = copy the bundled SKILL.md into a skill dir.
+                                  global = copy the bundled per-lane skills into ~/.claude/skills/.
                                   none   = binary only.
     --scope user|project|local  Plugin install scope (--skill plugin). Default: user.
     --prefix DIR                Install the binary into DIR. Default: ${DEFAULT_PREFIX}.
@@ -113,16 +113,18 @@ case "$SKILL_MODE" in
         fi
         ;;
     global)
-        if [[ -f "${SCRIPT_DIR}/SKILL.md" ]]; then
-            mkdir -p "${SKILL_DIR}"
-            cp "${SCRIPT_DIR}/SKILL.md" "${SKILL_DIR}/SKILL.md"
-            if [[ -d "${SCRIPT_DIR}/references" ]]; then
-                mkdir -p "${SKILL_DIR}/references"
-                cp "${SCRIPT_DIR}/references/"*.md "${SKILL_DIR}/references/"
-            fi
-            echo "==> Installed the cc-fleet skill (global) to ${SKILL_DIR}/"
+        if [[ -d "${SCRIPT_DIR}/skills" ]]; then
+            root="$(dirname "${SKILL_DIR}")"   # ~/.claude/skills
+            rm -rf "${root}/cc-fleet"          # drop the legacy single skill
+            for lane in subagent team workflow; do
+                mkdir -p "${root}/cc-fleet-${lane}"
+                cp "${SCRIPT_DIR}/skills/${lane}/SKILL.md" "${root}/cc-fleet-${lane}/SKILL.md"
+            done
+            mkdir -p "${root}/shared"
+            cp "${SCRIPT_DIR}/skills/shared/"*.md "${root}/shared/"
+            echo "==> Installed the per-lane cc-fleet skills (global) to ${root}/"
         else
-            echo "install.sh: SKILL.md not found next to this script — cannot --skill global" >&2
+            echo "install.sh: skills/ not found next to this script — cannot --skill global" >&2
             exit 1
         fi
         ;;

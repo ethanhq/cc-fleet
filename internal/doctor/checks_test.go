@@ -454,6 +454,98 @@ func TestCheckSkillInstalled_ViaPlugin(t *testing.T) {
 	}
 }
 
+// writeSkill drops a SKILL.md at <home>/.claude/skills/<dir>/SKILL.md.
+func writeSkill(t *testing.T, home, dir string) {
+	t.Helper()
+	d := filepath.Join(home, ".claude", "skills", dir)
+	if err := os.MkdirAll(d, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", d, err)
+	}
+	if err := os.WriteFile(filepath.Join(d, "SKILL.md"), []byte("# skill"), 0o600); err != nil {
+		t.Fatalf("write %s: %v", d, err)
+	}
+}
+
+// TestCheckSkillInstalled_PerLaneAllThree: the three global per-lane skills present → OK.
+func TestCheckSkillInstalled_PerLaneAllThree(t *testing.T) {
+	home := setupHome(t)
+	for _, lane := range skillLanes {
+		writeSkill(t, home, "cc-fleet-"+lane)
+	}
+	r := CheckSkillInstalled()
+	if r.Status != StatusOK {
+		t.Fatalf("Status = %s, want ok for all three per-lane skills (detail=%s)", r.Status, r.Detail)
+	}
+}
+
+// TestCheckSkillInstalled_PerLanePartialWarns: only one of the three present → WARN
+// (a partial install must not read as healthy — the other lanes are uninvokable).
+func TestCheckSkillInstalled_PerLanePartialWarns(t *testing.T) {
+	home := setupHome(t)
+	writeSkill(t, home, "cc-fleet-subagent") // team + workflow missing
+	r := CheckSkillInstalled()
+	if r.Status != StatusWarn {
+		t.Fatalf("Status = %s, want warn for a partial per-lane install (detail=%s)", r.Status, r.Detail)
+	}
+}
+
+// TestCheckSkillInstalled_CoexistenceWarns: the per-lane skills AND a legacy single
+// skill both present → WARN (the old router competes).
+func TestCheckSkillInstalled_CoexistenceWarns(t *testing.T) {
+	home := setupHome(t)
+	for _, lane := range skillLanes {
+		writeSkill(t, home, "cc-fleet-"+lane)
+	}
+	writeSkill(t, home, "cc-fleet") // the legacy router
+	r := CheckSkillInstalled()
+	if r.Status != StatusWarn {
+		t.Fatalf("Status = %s, want warn on old+new coexistence (detail=%s)", r.Status, r.Detail)
+	}
+}
+
+// TestCheckSkillInstalled_PluginLegacyCacheNoWarn: the new per-lane skills present
+// alongside a LEGACY single skill that only lingers in the plugin cache (a stale
+// version Claude Code won't load) must NOT WARN — only a manual ~/.claude/skills/cc-fleet
+// copy actively competes.
+func TestCheckSkillInstalled_PluginLegacyCacheNoWarn(t *testing.T) {
+	home := setupHome(t)
+	for _, lane := range skillLanes {
+		writeSkill(t, home, "cc-fleet-"+lane)
+	}
+	// Stale legacy in the plugin cache (an old version dir), NOT under ~/.claude/skills.
+	legacy := filepath.Join(home, ".claude", "plugins", "cache", "ethanhq", "cc-fleet", "0.1.0", "skills", "cc-fleet")
+	if err := os.MkdirAll(legacy, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "SKILL.md"), []byte("# old"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	r := CheckSkillInstalled()
+	if r.Status != StatusOK {
+		t.Fatalf("Status = %s, want ok (stale plugin-cache legacy must not WARN) detail=%s", r.Status, r.Detail)
+	}
+}
+
+// TestCheckSkillInstalled_PluginPerLane: the three per-lane skills under one plugin
+// version root → OK.
+func TestCheckSkillInstalled_PluginPerLane(t *testing.T) {
+	home := setupHome(t)
+	root := filepath.Join(home, ".claude", "plugins", "cache", "ethanhq", "cc-fleet", "0.2.0", "skills")
+	for _, lane := range skillLanes {
+		d := filepath.Join(root, lane)
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "SKILL.md"), []byte("# skill"), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	r := CheckSkillInstalled()
+	if r.Status != StatusOK || !strings.Contains(r.Detail, "plugin") {
+		t.Fatalf("Status = %s detail = %q, want ok + plugin mention", r.Status, r.Detail)
+	}
+}
+
 // ---------- Check 8: fingerprint ----------
 
 func TestCheckFingerprint_Missing(t *testing.T) {

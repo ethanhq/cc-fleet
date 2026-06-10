@@ -23,18 +23,17 @@ The config tree is created automatically on first use — `cc-fleet init` is opt
 health-check, `cc-fleet list` to see what's configured, and `cc-fleet update` to update
 the binary + plugin later.
 
-> **Skill channel.** By default `install.sh` installs the skill via the Claude Code
-> plugin (`--skill plugin`). Use `--skill global` to copy the bundled `SKILL.md`
-> into `~/.claude/skills/cc-fleet/` instead (handy offline), or `--skill none` for
-> the binary only. Pick **one** channel so you don't end up with two copies.
+> **Skill channel.** By default `install.sh` installs the skills via the Claude Code
+> plugin (`--skill plugin`). Use `--skill global` to copy the bundled per-lane skills
+> into `~/.claude/skills/cc-fleet-{subagent,team,workflow}/` instead (handy offline), or
+> `--skill none` for the binary only. Pick **one** channel so you don't end up with two copies.
 
 ## What's in this archive
 
 | File | Purpose |
 |---|---|
 | `cc-fleet` | The prebuilt binary for this platform. |
-| `install.sh` | Copy-binary installer (no build). Skill via the plugin by default; `--skill global` copies the bundled skill, `--skill none` skips it. For a from-source build, clone the repo and run `make install`. |
-| `SKILL.md` | The bundled `cc-fleet` skill — used by `--skill global` (the default install uses the plugin instead). |
-| `references/` | Skill reference docs (progressive disclosure), installed alongside `SKILL.md`. |
+| `install.sh` | Copy-binary installer (no build). Skills via the plugin by default; `--skill global` copies the bundled skills, `--skill none` skips them. For a from-source build, clone the repo and run `make install`. |
+| `skills/` | The bundled per-lane skills (`subagent` / `team` / `workflow`) + `shared/` docs — used by `--skill global` (the default install uses the plugin instead). |
 
 Full documentation: https://github.com/ethanhq/cc-fleet

@@ -1,6 +1,6 @@
 # Troubleshooting — spawn failures + fingerprint self-heal
 
-Read this on a `cc-fleet spawn --json` failure (`ok:false`), or when a spawn returns `FINGERPRINT_MISSING` / `SPAWN_DID_NOT_SETTLE`. (Subagent failure codes live in `references/subagent.md`; hide/show codes in `references/teammates.md`.)
+Read this on a `cc-fleet spawn --json` failure (`ok:false`), or when a spawn returns `FINGERPRINT_MISSING` / `SPAWN_DID_NOT_SETTLE`. (Subagent failure codes live in `the /cc-fleet:subagent skill`; hide/show codes in `the /cc-fleet:team skill`.)
 
 ## Contents
 - Spawn `error_code` dispatch table
@@ -38,7 +38,7 @@ Dispatch on `error_code` — do **not** parse `error_msg` prose.
 - One retry max for transient failures (`VENDOR_UNREACHABLE` after `doctor`, rate-limit class).
 - For config-level failures (`UNKNOWN_VENDOR`, `KEY_INVALID`, `VENDOR_DISABLED`), surface to the user and stop — don't re-run blindly.
 - For `FINGERPRINT_MISSING` (corrupt existing cache) and `SPAWN_DID_NOT_SETTLE` (recipe drift on a newer CC), run the self-heal flow before retrying. For `FINGERPRINT_STALE` (no `claude` binary anywhere) the self-heal flow can't help — install/fix Claude Code or PATH, then retry.
-- **Spawn errors ≠ runtime errors.** This table is for `cc-fleet spawn` *failing up front*. A spawn that *succeeds* and then the teammate wedges on a `429` / balance / `401` mid-task produces **no error envelope and no idle notification** — that case is "Watching for stuck vendor teammates" in `references/teammates.md` (poll `cc-fleet ps --json --check`; never wait open-endedly).
+- **Spawn errors ≠ runtime errors.** This table is for `cc-fleet spawn` *failing up front*. A spawn that *succeeds* and then the teammate wedges on a `429` / balance / `401` mid-task produces **no error envelope and no idle notification** — that case is "Watching for stuck vendor teammates" in `the /cc-fleet:team skill` (poll `cc-fleet ps --json --check`; never wait open-endedly).
 
 ---
 

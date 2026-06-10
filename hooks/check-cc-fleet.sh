@@ -18,5 +18,5 @@ if command -v cc-fleet >/dev/null 2>&1; then
   exit 0
 fi
 
-echo "cc-fleet binary not found on PATH — the cc-fleet skill needs it to spawn vendor teammates/subagents. Install: go install github.com/ethanhq/cc-fleet/cmd/cc-fleet@latest  (or grab a release / see https://github.com/ethanhq/cc-fleet#install)."
+echo "cc-fleet binary not found on PATH — the cc-fleet skills need it to spawn vendor teammates/subagents. Install: go install github.com/ethanhq/cc-fleet/cmd/cc-fleet@latest  (or grab a release / see https://github.com/ethanhq/cc-fleet#install)."
 exit 0

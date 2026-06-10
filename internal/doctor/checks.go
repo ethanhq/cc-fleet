@@ -297,73 +297,123 @@ func CheckVendorKeys() CheckResult {
 // ~/.claude/skills/cc-fleet/SKILL.md (the manual `make install-skill`
 // channel). We deliberately don't validate SKILL.md content; existence is enough.
 //
-// The skill ships through two channels and doctor checks BOTH:
-//  1. the manual `make install-skill` path ~/.claude/skills/cc-fleet/SKILL.md, and
-//  2. the cc-fleet plugin, which Claude Code unpacks under
-//     ~/.claude/plugins/cache/<marketplace>/cc-fleet/<version>/skills/cc-fleet/SKILL.md.
+// skillLanes are the per-lane skill directory basenames (the plugin ships these
+// three; the global install prefixes them, see globalSkillDir).
+var skillLanes = []string{"subagent", "team", "workflow"}
+
+// The skill ships through two channels AND two layouts:
+//   - the per-lane layout (subagent / team / workflow) — the current form, OK only
+//     when ALL THREE are present (a partial install leaves a lane uninvokable);
+//   - the legacy single `cc-fleet` skill — a compat OK.
 //
-// Either present → OK. A MISSING skill (neither channel) is only a WARN, not a
-// FAIL — doctor can't auto-install (the source lives in the cc-fleet repo), so
-// it surfaces a hint instead.
+// Each layout is checked in both the manual `make install-skill` path
+// (~/.claude/skills/) and the cc-fleet plugin cache. Binary and plugin update on
+// separate channels, so a new-plugin + old-binary reading either layout as OK is
+// the intended behavior. Both layouts present at once is a WARN: the legacy router
+// competes with the per-lane skills. A MISSING skill is a WARN (doctor can't
+// auto-install — the source lives in the cc-fleet repo).
 func CheckSkillInstalled() CheckResult {
-	r := CheckResult{ID: 7, Title: "skill installed at ~/.claude/skills/cc-fleet/ (or via plugin)"}
+	r := CheckResult{ID: 7, Title: "cc-fleet skills installed (per-lane, or legacy single skill)"}
 	cdir, err := claudeDir()
 	if err != nil {
 		r.Status = StatusFail
 		r.Detail = err.Error()
 		return r
 	}
-	path := filepath.Join(cdir, "skills", "cc-fleet", "SKILL.md")
-	info, err := os.Stat(path)
-	if err == nil {
-		if info.IsDir() {
-			r.Status = StatusFail
-			r.Detail = fmt.Sprintf("%s is a directory, not a file", path)
-			return r
-		}
+	newWhere := perLaneSkillsPath(cdir)
+	oldWhere := legacySkillPath(cdir)
+	// Coexistence is only a real conflict for a MANUAL ~/.claude/skills/cc-fleet copy
+	// (Claude Code loads every dir under skills/, so the old router competes). A legacy
+	// skill that only lingers in the plugin cache is a stale, inactive version, not a
+	// conflict — so it must not WARN.
+	manualLegacy := manualLegacySkillPath(cdir) != ""
+	switch {
+	case newWhere != "" && manualLegacy:
+		r.Status = StatusWarn
+		r.Detail = "both the per-lane skills and a legacy ~/.claude/skills/cc-fleet skill are installed — the old router competes"
+		r.FixHint = "remove the legacy copy: rm -rf ~/.claude/skills/cc-fleet"
+	case newWhere != "":
 		r.Status = StatusOK
-		r.Detail = path
-		return r
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		// A real stat error (permission, etc.) — not a clean "absent".
-		r.Status = StatusFail
-		r.Detail = err.Error()
-		return r
-	}
-	// Not at the legacy manual-install path — look for the plugin-delivered copy
-	// before warning, so a plugin user reports OK instead of a false WARN.
-	if p, ok := pluginSkillPath(cdir); ok {
+		r.Detail = newWhere
+	case oldWhere != "":
 		r.Status = StatusOK
-		r.Detail = fmt.Sprintf("installed via the cc-fleet plugin: %s", p)
-		return r
+		r.Detail = "legacy single skill: " + oldWhere
+	default:
+		r.Status = StatusWarn
+		r.Detail = "no cc-fleet skills found in ~/.claude/skills or the plugin cache"
+		r.FixHint = "run `make install-skill`, or install the cc-fleet plugin (/plugin install cc-fleet@<marketplace>)"
 	}
-	r.Status = StatusWarn
-	r.Detail = fmt.Sprintf("not found at %s and no cc-fleet plugin skill detected", path)
-	r.FixHint = "run `make install-skill`, or install the cc-fleet plugin (/plugin install cc-fleet@<marketplace>)"
 	return r
 }
 
-// pluginSkillPath returns the path to a cc-fleet SKILL.md delivered by the
-// cc-fleet plugin, if one is installed, and ok=false otherwise. Claude Code
-// unpacks marketplace plugins under
-// ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/; the cc-fleet plugin
-// (plugin name "cc-fleet", fixed in .claude-plugin/plugin.json) ships
-// skills/cc-fleet/SKILL.md. The glob spans any marketplace + version so a
-// fork or an upgrade still matches; a layout change just falls back to the WARN
-// (no worse than before).
-func pluginSkillPath(cdir string) (string, bool) {
+// perLaneSkillsPath returns the directory holding the per-lane skills when ALL
+// THREE (subagent / team / workflow) are present under ONE root, else "". The
+// global install prefixes the dirs (cc-fleet-<lane>); the plugin ships them bare
+// under a single <version> root. The all-three-under-one-root check (not three
+// independent globs) means a partial install can't read as healthy.
+func perLaneSkillsPath(cdir string) string {
+	// Global: ~/.claude/skills/cc-fleet-<lane>/SKILL.md
+	if allLanesPresent(filepath.Join(cdir, "skills"), "cc-fleet-") {
+		return filepath.Join(cdir, "skills") + " (per-lane)"
+	}
+	// Plugin: ~/.claude/plugins/cache/<marketplace>/cc-fleet/<version>/skills/<lane>/SKILL.md.
+	// Glob one lane to enumerate candidate version roots, then require the siblings
+	// under the SAME root.
+	pattern := filepath.Join(cdir, "plugins", "cache", "*", "cc-fleet", "*", "skills", skillLanes[0], "SKILL.md")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return ""
+	}
+	for _, m := range matches {
+		skillsRoot := filepath.Dir(filepath.Dir(m)) // .../skills
+		if allLanesPresent(skillsRoot, "") {
+			return skillsRoot + " (plugin, per-lane)"
+		}
+	}
+	return ""
+}
+
+// allLanesPresent reports whether every skillLane's SKILL.md exists under dir,
+// each in a directory named prefix+lane.
+func allLanesPresent(dir, prefix string) bool {
+	for _, lane := range skillLanes {
+		p := filepath.Join(dir, prefix+lane, "SKILL.md")
+		if info, err := os.Stat(p); err != nil || info.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
+// manualLegacySkillPath returns the manual ~/.claude/skills/cc-fleet/SKILL.md path
+// if present, else "" — the only legacy copy that actively competes (Claude Code
+// loads every dir under skills/).
+func manualLegacySkillPath(cdir string) string {
+	manual := filepath.Join(cdir, "skills", "cc-fleet", "SKILL.md")
+	if info, err := os.Stat(manual); err == nil && !info.IsDir() {
+		return manual
+	}
+	return ""
+}
+
+// legacySkillPath returns the path to a legacy single `cc-fleet` SKILL.md (manual
+// or plugin), if one is installed, else "" — used for the compat-OK path (either
+// channel counts as "installed").
+func legacySkillPath(cdir string) string {
+	if m := manualLegacySkillPath(cdir); m != "" {
+		return m
+	}
 	pattern := filepath.Join(cdir, "plugins", "cache", "*", "cc-fleet", "*", "skills", "cc-fleet", "SKILL.md")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
-		return "", false // only ErrBadPattern, impossible for this fixed pattern
+		return ""
 	}
 	for _, m := range matches {
 		if info, statErr := os.Stat(m); statErr == nil && !info.IsDir() {
-			return m, true
+			return m
 		}
 	}
-	return "", false
+	return ""
 }
 
 // CheckPluginVersionMatch is check 10: the running cc-fleet binary's version

@@ -36,7 +36,7 @@ Options:
     --skill plugin|global|none  How to install the skill. Default: plugin.
                                   plugin = via Claude Code plugin (also adds the
                                            SessionStart hook + /ps //doctor commands).
-                                  global = copy SKILL.md into ~/.claude/skills/${SKILL_NAME}/.
+                                  global = copy the per-lane skills into ~/.claude/skills/.
                                   none   = binary only.
     --scope user|project|local  Plugin install scope (--skill plugin). Default: user.
     --prefix DIR                Install the binary into DIR. Default: ${HOME}/.local/bin.
@@ -186,11 +186,15 @@ case "$SKILL_MODE" in
         fi
         ;;
     global)
-        dir="${HOME}/.claude/skills/${SKILL_NAME}"
-        mkdir -p "${dir}/references"
-        cp "${extract}/SKILL.md" "${dir}/SKILL.md"
-        cp "${extract}/references/"*.md "${dir}/references/"
-        echo "==> Installed the cc-fleet skill (global) to ${dir}/"
+        root="${HOME}/.claude/skills"
+        rm -rf "${root}/cc-fleet"   # drop the legacy single skill so it can't compete
+        for lane in subagent team workflow; do
+            mkdir -p "${root}/cc-fleet-${lane}"
+            cp "${extract}/skills/${lane}/SKILL.md" "${root}/cc-fleet-${lane}/SKILL.md"
+        done
+        mkdir -p "${root}/shared"
+        cp "${extract}/skills/shared/"*.md "${root}/shared/"
+        echo "==> Installed the per-lane cc-fleet skills (global) to ${root}/"
         ;;
     none)
         echo "==> Skipped skill install (--skill none)"

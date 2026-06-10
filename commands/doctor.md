@@ -10,4 +10,4 @@ Read the diagnostics above and give the user a short, actionable summary:
 - which checks pass, warn, or fail,
 - for each WARN/FAIL, the concrete next step (the check's own fix hint is usually the answer).
 
-Note: "skill installed" check may WARN if the skill was installed via this plugin rather than `make install-skill` — that is expected and not a problem. This is a **read-only** diagnostic; do not change any config.
+Note: the "skills installed" check is OK when the per-lane skills (subagent / team / workflow) are present via plugin OR `make install-skill`; it WARNs only on a partial install or if the legacy single skill coexists with the new ones. This is a **read-only** diagnostic; do not change any config.

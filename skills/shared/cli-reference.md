@@ -25,7 +25,13 @@ cc-fleet edit <vendor> [flags]           Modify one or more vendor fields. Incl.
                                          --key-rotation off|round_robin|random.
 cc-fleet remove <vendor>                 Delete vendor + derived files (incl. multi-
                                          key store + rotation counter).
-cc-fleet list                            Pretty table of configured vendors.
+cc-fleet list                            Pretty table of configured vendors (--json adds
+                                         default_provider + a per-row default flag).
+cc-fleet default [provider]              Show or set the default provider used when a lane
+                                         omits one. No arg shows it; <provider> pins it
+                                         (refuses to overwrite without --force); --unset
+                                         clears it. The model is still per-call from the
+                                         provider's roster. --json for the structured view.
 cc-fleet doctor [--fix]                  Run the health checks (Core + live-teammate
                                          Optional); --fix auto-repairs the safe ones.
 cc-fleet repair                          Rebuild derived files from vendors.toml.
@@ -34,9 +40,11 @@ cc-fleet uninstall [--wipe-secrets]      Remove config/profiles/models cache. Se
                                          them. Keeps the skill dir (owned by the plugin /
                                          make install-skill). (Removing the BINARY + ccf
                                          alias is `make uninstall`.)
-cc-fleet run <vendor>                    Launch an INTERACTIVE claude REPL on the vendor in
+cc-fleet run [provider]                  Launch an INTERACTIVE claude REPL on the provider in
                                          the foreground (execs into claude, takes over the
-                                         terminal). Flags: --model, --permission-mode <m> |
+                                         terminal). The provider arg is OPTIONAL — omit it to
+                                         use the default provider (cc-fleet default). Flags:
+                                         --model, --permission-mode <m> |
                                          --dangerously-skip-permissions, -- <claude args>.
                                          HUMAN-ONLY — never run it yourself (not a --json
                                          command; it would block + replace your process).
@@ -66,18 +74,22 @@ cc-fleet codex-proxy stop                started lazily by spawn / subagent / ru
 ## Claude layer — you run these with --json
 
 ```
-cc-fleet spawn <vendor> --as <name> --team <team> [--model <m>] --json
-                                         Spawn a vendor teammate into a tmux pane.
+cc-fleet spawn [provider] --as <name> --team <team> [--model <m>] --json
+                                         Spawn a provider teammate into a tmux pane.
+                                         The provider arg is OPTIONAL — omit it to use the
+                                         default provider (cc-fleet default; a vendor-less
+                                         call errors NO_DEFAULT_PROVIDER / DEFAULT_PROVIDER_DISABLED).
                                          Outside tmux ($TMUX empty) it auto-builds an
                                          out-of-tmux swarm session; --json carries
                                          tmux_socket + attach_command (also on stderr).
 
-cc-fleet subagent <vendor> --model <m> --prompt "<task>" [--lead-session-id <id>] --json
-                                         One-shot headless vendor subagent;
+cc-fleet subagent [provider] --model <m> --prompt "<task>" [--lead-session-id <id>] --json
+                                         One-shot headless provider subagent (provider
+                                         OPTIONAL — omit for the default provider);
                                          synchronous result on stdout. No pane,
                                          no team. Parent Claude session auto-detected
                                          when possible; --lead-session-id overrides.
-                                         (Full manual: references/subagent.md.)
+                                         (Full manual: the /cc-fleet:subagent skill.)
 
 cc-fleet subagent-status <job_id> --json Poll a --background subagent job
                                          (running | done | failed).
@@ -109,7 +121,7 @@ cc-fleet refresh-fingerprint --probe-team <team> --json
                                          Snapshot Claude Code's spawn template from a
                                          live probe teammate (Linux: /proc; macOS: ps).
                                          Used inside the self-heal flow only
-                                         (references/troubleshooting.md).
+                                         (shared/troubleshooting.md).
 ```
 
 ---
@@ -117,7 +129,7 @@ cc-fleet refresh-fingerprint --probe-team <team> --json
 ## Spawn flags (full set)
 
 ```
-cc-fleet spawn <vendor>
+cc-fleet spawn [provider]                (provider optional → default provider)
   --as <name>                            Teammate name. Required.
   --team <team>                          Target team. Required (or use --auto-team).
   --model <model-id>                     Vendor model id. Default: vendor's default_model.
@@ -162,7 +174,7 @@ cc-fleet spawn <vendor>
   "suggestion": "Run cc-fleet doctor"
 }
 ```
-Dispatch on `error_code` (see `references/troubleshooting.md`), never parse `error_msg`.
+Dispatch on `error_code` (see `shared/troubleshooting.md`), never parse `error_msg`.
 
 ---
 
@@ -176,7 +188,7 @@ Dispatch on `error_code` (see `references/troubleshooting.md`), never parse `err
 | Tool stack | Full Claude Code | Full Claude Code (same harness) |
 | Rate limit | Shared with main session | Independent (vendor's quota) |
 | Privacy | Anthropic | Vendor (e.g. Chinese data → Chinese vendor) |
-| Spawned via | Native `Agent` tool | `cc-fleet spawn` (this skill) |
+| Spawned via | Native `Agent` tool | `cc-fleet spawn` (/cc-fleet:team) |
 | `--settings` injection | Not possible | Yes (vendor profile JSON) |
 | Vendor model id | Not possible (enum-locked) | Yes (`--model <vendor-id>`) |
 
