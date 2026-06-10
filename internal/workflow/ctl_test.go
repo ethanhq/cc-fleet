@@ -42,11 +42,21 @@ func (g *gateLeaf) release(prompt string) { close(g.gate(prompt)) }
 
 func (g *gateLeaf) run(ctx context.Context, req subagent.Request) subagent.Result {
 	return fakeLeaf(g.rec, func(c leafCall) subagent.Result {
+		stopped := subagent.Result{OK: false, ErrorCode: subagent.ErrCodeStopped, ErrorMsg: "killed"}
 		select {
 		case <-g.gate(c.prompt):
-			return subagent.Result{OK: true, Result: fmt.Sprintf("ok:%s#%d", c.prompt, c.attempt)}
+			// Cancellation wins when it lands in the SAME window as the gate close: a
+			// killed leaf returns stopped, it does not "succeed" because the gate opened
+			// (a real leaf's process is dead). Without this, Go's random ready-case pick
+			// makes the stop/restart sequence flaky on a slow scheduler.
+			select {
+			case <-ctx.Done():
+				return stopped
+			default:
+				return subagent.Result{OK: true, Result: fmt.Sprintf("ok:%s#%d", c.prompt, c.attempt)}
+			}
 		case <-ctx.Done():
-			return subagent.Result{OK: false, ErrorCode: subagent.ErrCodeStopped, ErrorMsg: "killed"}
+			return stopped
 		}
 	})(ctx, req)
 }
