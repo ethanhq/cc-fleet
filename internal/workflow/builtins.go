@@ -50,6 +50,13 @@ type engine struct {
 	sessionID string // parent Claude session (board grouping); seeded from the manifest, re-persisted every save
 	cwd       string // launching project dir (board run header); seeded from the manifest, re-persisted every save
 	argsJSON  string // --args-json, re-persisted so a restart resumes with the SAME args (else leaf keys shift)
+	// The run's default-provider resolution, fixed at mint and seeded from the manifest
+	// (re-persisted every save so the whole-manifest overwrite can't wipe it). A
+	// vendor-less agent() resolves to defaultProvider; when it is empty, agent() throws
+	// defaultProviderErr (the recorded error_code). One of the two is set when the run
+	// uses a default; both empty for an all-explicit script.
+	defaultProvider    string
+	defaultProviderErr string
 	// Budget accounting, loop-protected. A cap (<=0 = uncapped) trips on the FIRST of two
 	// counters to breach: USD (an Anthropic list-price ESTIMATE — claude's own metering, not
 	// the third-party vendor's actual charge) and tokens (Usage.InputTokens+OutputTokens, the
@@ -312,7 +319,17 @@ func (e *engine) jsAgent(call goja.FunctionCall) goja.Value {
 	o := e.agentOpts(call.Argument(1))
 	vendor := o.str("vendor")
 	if vendor == "" {
-		panic(e.newError("agent: opts.vendor is required"))
+		// Vendor-less leaf: consume the run's mint-fixed default (recorded in the
+		// manifest, so a resume keys on the SAME provider — never a live re-resolve).
+		// The recorded NAME is used as-is; if the provider was since removed/disabled
+		// it fails through the normal vendor validation in subagent.Run AFTER the
+		// journal lookup, so a completed leaf still cache-hits on resume. When no
+		// default resolved at mint, throw the recorded error_code.
+		if e.defaultProvider != "" {
+			vendor = e.defaultProvider
+		} else {
+			panic(e.newError("agent: opts.vendor omitted and no default provider (%s)", e.defaultProviderErr))
+		}
 	}
 	isolation := o.str("isolation")
 	if isolation != "" && isolation != "worktree" {
@@ -832,6 +849,10 @@ func (e *engine) saveManifest(status, errText string) {
 		BudgetTokens: e.budgetTokensTotal,
 		SpentUSD:     e.budgetSpent,
 		SpentTokens:  e.budgetTokensSpent,
+		// The mint-fixed default resolution: re-persisted so a resume reads the SAME
+		// provider a vendor-less leaf already keyed on (never a live re-resolve).
+		DefaultProvider:      e.defaultProvider,
+		DefaultProviderError: e.defaultProviderErr,
 	})
 }
 

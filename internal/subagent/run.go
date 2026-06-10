@@ -82,6 +82,16 @@ type WorkflowRun struct {
 	// A resume counts only newly-run leaves; journaled replays are free. Not a leaf determinant.
 	SpentUSD    float64 `json:"spent_usd,omitempty"`
 	SpentTokens int64   `json:"spent_tokens,omitempty"`
+	// DefaultProvider / DefaultProviderError record the run's default-provider
+	// resolution at mint, so a vendor-less agent() resolves to the SAME provider on
+	// resume regardless of a live config change (a mid-run default change must never
+	// re-key an omitted-vendor leaf). Exactly one is set when the run uses any
+	// default: the resolved provider name, or the error_code (NO_DEFAULT_PROVIDER /
+	// DEFAULT_PROVIDER_DISABLED) a vendor-less agent() then throws. Both empty when
+	// no default was resolvable AND nothing needed one (an all-explicit script). Not
+	// a leaf determinant beyond the vendor it supplies.
+	DefaultProvider      string `json:"default_provider,omitempty"`
+	DefaultProviderError string `json:"default_provider_error,omitempty"`
 }
 
 // runsDir is ConfigDir/subagent-jobs/runs.

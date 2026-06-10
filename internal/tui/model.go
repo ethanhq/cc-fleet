@@ -106,6 +106,10 @@ type Model struct {
 	vendors      []userops.VendorView
 	vendorsErr   error
 	vendorCursor int
+	// defaultProvider is the CONFIGURED default provider ("" = unset, then a sole
+	// enabled provider serves implicitly as "auto"). Drives the ★ badge's
+	// configured/auto wording and whether `*` sets fresh vs switches.
+	defaultProvider string
 
 	// Add-wizard: the single grouped picker (cursor over the flat selectable rows)
 	// and the protocol the chosen row implies (carried into submitAdd).
@@ -329,8 +333,9 @@ func (m Model) Init() tea.Cmd {
 // after the user navigated away can't clobber m.loading / m.vendors /
 // m.vendorsErr — the vendor list only ever loads from screenList.
 type vendorsMsg struct {
-	vendors []userops.VendorView
-	err     error
+	vendors         []userops.VendorView
+	defaultProvider string // the CONFIGURED default ("" = unset / auto)
+	err             error
 }
 
 func (vendorsMsg) owningScreen() screen { return screenList }
@@ -384,7 +389,7 @@ func loadVendors() tea.Msg {
 	if err != nil {
 		return vendorsMsg{err: err}
 	}
-	return vendorsMsg{vendors: res.Vendors}
+	return vendorsMsg{vendors: res.Vendors, defaultProvider: res.DefaultProvider}
 }
 
 // loadBoard returns a tea.Cmd that assembles a board refresh tagged with the
@@ -1134,6 +1139,23 @@ func removeVendorCmd(name string) tea.Cmd {
 	}
 }
 
+// setDefaultCmd pins name as the default provider (force overwrites an existing
+// pin — the TUI switch is the user acting). unsetDefaultCmd clears it. Both land
+// as an opDoneMsg so the list reloads and the outcome pops as an info modal.
+func setDefaultCmd(name string, force bool) tea.Cmd {
+	return func() tea.Msg {
+		_, err := userops.SetDefaultProvider(name, force)
+		return opDoneMsg{verb: "set default", name: name, err: err}
+	}
+}
+
+func unsetDefaultCmd(name string) tea.Cmd {
+	return func() tea.Msg {
+		_, err := userops.UnsetDefaultProvider()
+		return opDoneMsg{verb: "clear default", name: name, err: err}
+	}
+}
+
 // codexRollbackDoneMsg reports a finished abandon-rollback (a codex row removed after
 // its login was cancelled). Distinct from opDoneMsg so the cancel lands quietly on the
 // provider list rather than a "remove OK" outcome modal; epoch-tagged so a stale one
@@ -1299,6 +1321,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case vendorsMsg:
 		m.loading = false
 		m.vendors = msg.vendors
+		m.defaultProvider = msg.defaultProvider
 		// Group the list by wire class (stable, so the name order within a class
 		// that List returns is preserved).
 		sort.SliceStable(m.vendors, func(i, j int) bool {
@@ -1789,7 +1812,27 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if v.Protocol == config.ProtocolCodexOAuth {
 				prompt = "Remove " + v.Name + "? Deletes its profile and cc-fleet's codex login (if unused elsewhere); ~/.codex is untouched."
 			}
+			if m.defaultProvider == v.Name {
+				prompt += " It is the default provider — also clears the default."
+			}
 			return m.openConfirm(confirmRemoveVendor, v.Name, prompt)
+		}
+	case "*":
+		// Set / switch / clear the default provider. A fresh set (none pinned, or the
+		// row is only the sole-enabled "auto") acts immediately; switching away from a
+		// pinned default or clearing the pinned row confirms first.
+		if m.vendorCursor < addRow && !m.loading {
+			v := m.vendors[m.vendorCursor]
+			switch {
+			case m.defaultProvider == v.Name:
+				return m.openConfirm(confirmUnsetDefault, v.Name, "Clear "+v.Name+" as the default provider?")
+			case m.defaultProvider != "":
+				return m.openConfirm(confirmSwitchDefault, v.Name,
+					"Switch the default provider from "+m.defaultProvider+" to "+v.Name+"?")
+			default:
+				m.loading = true
+				return m, setDefaultCmd(v.Name, false)
+			}
 		}
 	}
 	return m, nil

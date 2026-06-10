@@ -394,7 +394,7 @@ func TestPreviewMatchesEditNoteGap(t *testing.T) {
 		return cfg - note
 	}
 	const w = 60
-	if p, e := gap(vendorDetailLines(v, w)), gap(newEditForm(v).viewLines(w)); p != e {
+	if p, e := gap(vendorDetailLines(v, w, "")), gap(newEditForm(v).viewLines(w)); p != e {
 		t.Fatalf("Note→Config gap differs (Config jumps entering edit): preview=%d edit=%d", p, e)
 	}
 }

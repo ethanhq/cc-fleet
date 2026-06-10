@@ -41,6 +41,7 @@ const (
 	CodeInitFailed         = "INIT_FAILED"
 	CodeRepairFailed       = "REPAIR_FAILED"
 	CodeUninstallFailed    = "UNINSTALL_FAILED"
+	CodeDefaultAlreadySet  = "DEFAULT_ALREADY_SET"
 )
 
 // probeTimeout caps the synchronous /v1/models probe Add performs after
@@ -102,9 +103,9 @@ type InitResult struct {
 }
 
 // Init creates the cc-fleet config directory tree and the empty vendors.toml if
-// not yet present. The skill directory is created (so the install path is ready)
-// but its contents are left to the install-skill step — Init does NOT copy
-// SKILL.md.
+// not yet present. The ~/.claude/skills ROOT is created (so an install path is
+// ready) but its contents are left to the install-skill step — Init does NOT copy
+// any SKILL.md.
 //
 // Idempotent: a fresh run on an already-initialized HOME is a no-op (returns
 // Created=nil, AlreadyHad=[<paths>]). Returns an *Op on hard failures.
@@ -128,9 +129,12 @@ func Init() (*InitResult, error) {
 	if home == "" {
 		return nil, opErr(CodeInitFailed, errors.New("HOME is not set"))
 	}
-	skillDir := filepath.Join(home, ".claude", "skills", "cc-fleet")
+	// The skills ROOT (not a specific skill dir) — the install machinery owns the
+	// per-lane dirs (cc-fleet-subagent/team/workflow) + shared; Init just makes the
+	// root exist so an install path is ready.
+	skillsRoot := filepath.Join(home, ".claude", "skills")
 
-	dirs := []string{cfgDir, secretsDir, profilesDir, skillDir}
+	dirs := []string{cfgDir, secretsDir, profilesDir, skillsRoot}
 	for _, d := range dirs {
 		if existed, mkErr := ensureDir(d, 0o700); mkErr != nil {
 			return nil, opErr(CodeInitFailed, fmt.Errorf("mkdir %s: %w", d, mkErr))
@@ -621,6 +625,7 @@ type RemoveResult struct {
 	Vendor         string `json:"removed"`
 	SecretRemoved  bool   `json:"secret_removed"`
 	ProfileRemoved bool   `json:"profile_removed"`
+	DefaultCleared bool   `json:"default_cleared,omitempty"` // the removed provider was the default_provider
 }
 
 // Remove deletes the vendor row from vendors.toml, the per-vendor profile JSON,
@@ -682,6 +687,13 @@ func removeLocked(req RemoveRequest) (*RemoveResult, string, error) {
 	// reference or destroyed key the config still claims exists. (v still points
 	// at the removed Vendor struct — the map entry is gone but the value is held.)
 	delete(cfg.Vendors, req.Name)
+	// Scrub a dangling default pointer in the SAME save: a default_provider naming
+	// the removed row would otherwise survive on disk (use-time errors, not a Load
+	// brick, but still a surprise).
+	if cfg.DefaultProvider == req.Name {
+		cfg.DefaultProvider = ""
+		res.DefaultCleared = true
+	}
 	if err := config.Save(cfg); err != nil {
 		return nil, "", opErr(CodeConfigSaveFailed, err)
 	}
@@ -753,12 +765,18 @@ type VendorView struct {
 	Enabled        bool   `json:"enabled"`
 	ModelsCount    int    `json:"models_count"`
 	ModelsStale    bool   `json:"models_stale"`
+	Default        bool   `json:"default"` // this row is the EFFECTIVE default (configured, or sole-enabled auto)
 }
 
 // ListResult is the structured result of List. Vendors is always non-nil even
 // when empty so JSON consumers can iterate without a presence check.
 type ListResult struct {
 	Vendors []VendorView `json:"vendors"`
+	// DefaultProvider is the CONFIGURED default ("" = unset). When unset and exactly
+	// one provider is enabled, that provider's row still carries Default=true (the
+	// implicit "auto" default), so a consumer can read default_provider to know
+	// whether it was pinned vs auto-resolved.
+	DefaultProvider string `json:"default_provider"`
 }
 
 // List enumerates all configured vendors in alphabetical order. Each row is
@@ -780,7 +798,11 @@ func List() (*ListResult, error) {
 	}
 	sort.Strings(names)
 
-	out := &ListResult{Vendors: []VendorView{}}
+	// The effective default (configured, else sole-enabled) drives the per-row flag;
+	// a resolution error (none/ambiguous) just means no row is flagged.
+	effDefault, _, _ := cfg.ResolveProvider("")
+
+	out := &ListResult{Vendors: []VendorView{}, DefaultProvider: cfg.DefaultProvider}
 	for _, name := range names {
 		v := cfg.Vendors[name]
 		view := VendorView{
@@ -797,6 +819,7 @@ func List() (*ListResult, error) {
 			Protocol:       v.EffectiveProtocol(),
 			UpstreamURL:    v.UpstreamURL,
 			Enabled:        v.Enabled,
+			Default:        name == effDefault,
 		}
 		if vc, ok := cache.Vendors[name]; ok && vc != nil {
 			view.ModelsCount = len(vc.Models)
@@ -809,6 +832,103 @@ func List() (*ListResult, error) {
 		out.Vendors = append(out.Vendors, view)
 	}
 	return out, nil
+}
+
+// ---------------------------------------------------------------------------
+// default provider
+// ---------------------------------------------------------------------------
+
+// DefaultProviderView is the structured result of `cc-fleet default` (show). Source
+// is "configured" (pinned + resolvable), "auto" (unset but a sole enabled provider
+// serves), "disabled" (pinned but the provider is disabled), "unknown" (pinned but
+// the provider no longer exists), or "unset" (nothing pinned, no sole provider).
+// Provider is the effective/pinned name ("" only when truly unset). Candidates lists
+// the enabled providers (the set to pin / ask among).
+type DefaultProviderView struct {
+	Provider   string   `json:"provider"`
+	Source     string   `json:"source"`
+	Configured string   `json:"configured"` // the pinned value ("" = not pinned)
+	Candidates []string `json:"candidates"`
+}
+
+// DefaultProvider reports the effective default. Read-only. A pinned-but-broken
+// default (disabled / removed) is reported as such — NOT "unset" — so the show
+// command can suggest the right recovery (re-enable / --force / --unset) instead of
+// a bare set that would fail DEFAULT_ALREADY_SET.
+func DefaultProvider() (*DefaultProviderView, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return nil, opErr(CodeConfigLoadFailed, err)
+	}
+	view := &DefaultProviderView{Configured: cfg.DefaultProvider, Candidates: cfg.EnabledProviders()}
+	name, source, rerr := cfg.ResolveProvider("")
+	switch {
+	case rerr == nil && source == "default":
+		view.Provider, view.Source = name, "configured"
+	case rerr == nil && source == "sole":
+		view.Provider, view.Source = name, "auto"
+	case errors.Is(rerr, config.ErrDefaultProviderDisabled):
+		view.Provider, view.Source = cfg.DefaultProvider, "disabled"
+	case errors.Is(rerr, config.ErrDefaultProviderUnknown):
+		view.Provider, view.Source = cfg.DefaultProvider, "unknown"
+	default:
+		view.Source = "unset"
+	}
+	return view, nil
+}
+
+// SetDefaultProvider pins default_provider. It refuses to overwrite an existing
+// pin unless force is set (DEFAULT_ALREADY_SET) — a guard the skill relies on to
+// only ever fill a blank default, never silently change the user's choice. The
+// provider must exist (UNKNOWN); a disabled provider is allowed to be pinned (it
+// errors at use, and the user may be pinning ahead of re-enabling).
+func SetDefaultProvider(name string, force bool) (*DefaultProviderView, error) {
+	_, err := withVendorsLock(func() (struct{}, error) {
+		cfg, err := config.Load()
+		if err != nil {
+			return struct{}{}, opErr(CodeConfigLoadFailed, err)
+		}
+		if err := ValidateVendorName(name); err != nil {
+			return struct{}{}, opErr(CodeVendorNameInvalid, err)
+		}
+		if _, ok := cfg.Vendors[name]; !ok {
+			return struct{}{}, opErr(CodeVendorUnknown, fmt.Errorf("provider %q not in vendors.toml", name))
+		}
+		if cfg.DefaultProvider != "" && cfg.DefaultProvider != name && !force {
+			return struct{}{}, opErr(CodeDefaultAlreadySet,
+				fmt.Errorf("default provider is already %q; pass --force to change it", cfg.DefaultProvider))
+		}
+		cfg.DefaultProvider = name
+		if err := config.Save(cfg); err != nil {
+			return struct{}{}, opErr(CodeConfigSaveFailed, err)
+		}
+		return struct{}{}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return DefaultProvider()
+}
+
+// UnsetDefaultProvider clears default_provider (a no-op if already unset).
+func UnsetDefaultProvider() (*DefaultProviderView, error) {
+	_, err := withVendorsLock(func() (struct{}, error) {
+		cfg, err := config.Load()
+		if err != nil {
+			return struct{}{}, opErr(CodeConfigLoadFailed, err)
+		}
+		if cfg.DefaultProvider != "" {
+			cfg.DefaultProvider = ""
+			if err := config.Save(cfg); err != nil {
+				return struct{}{}, opErr(CodeConfigSaveFailed, err)
+			}
+		}
+		return struct{}{}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return DefaultProvider()
 }
 
 // ---------------------------------------------------------------------------
@@ -1002,10 +1122,10 @@ func Uninstall(req UninstallRequest) (*UninstallResult, error) {
 	// considered them. Skill dir is the install machinery's; teams/ is Claude Code's.
 	home := os.Getenv("HOME")
 	if home != "" {
-		skillDir := filepath.Join(home, ".claude", "skills", "cc-fleet")
+		skillsRoot := filepath.Join(home, ".claude", "skills")
 		teamsDir := filepath.Join(home, ".claude", "teams")
-		if _, err := os.Stat(skillDir); err == nil {
-			res.Kept = append(res.Kept, skillDir)
+		if _, err := os.Stat(skillsRoot); err == nil {
+			res.Kept = append(res.Kept, skillsRoot)
 		}
 		if _, err := os.Stat(teamsDir); err == nil {
 			res.Kept = append(res.Kept, teamsDir)

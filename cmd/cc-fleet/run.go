@@ -24,7 +24,7 @@ func newRunCmd() *cobra.Command {
 		dangerSkip     bool
 	)
 	cmd := &cobra.Command{
-		Use:   "run <vendor> [-- <claude args>]",
+		Use:   "run [provider] [-- <claude args>]",
 		Short: "Launch an interactive claude session backed by a vendor",
 		Long: "Replace this process with an interactive `claude` REPL whose LLM backend is the\n" +
 			"named vendor: its profile pins the apiKeyHelper + base URL, and the model is the\n" +
@@ -34,7 +34,12 @@ func newRunCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			vendor, extra, err := splitRunArgs(args, cmd.ArgsLenAtDash())
+			requested, extra, err := splitRunArgs(args, cmd.ArgsLenAtDash())
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "cc-fleet run:", err)
+				os.Exit(2)
+			}
+			vendor, err := resolveProviderArg(requested)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, "cc-fleet run:", err)
 				os.Exit(2)
@@ -63,19 +68,29 @@ func newRunCmd() *cobra.Command {
 	return cmd
 }
 
-// splitRunArgs requires exactly one vendor positional before any "--", and
-// returns the post-"--" tokens as claude passthrough. dashIdx is
-// cobra Command.ArgsLenAtDash() (-1 when no "--" was given). Pure, so the arg
-// contract is unit-tested without running the command.
+// splitRunArgs separates an OPTIONAL vendor positional from the post-"--" claude
+// passthrough. dashIdx is cobra Command.ArgsLenAtDash() (-1 when no "--" was
+// given). A blank vendor ("") means "use the default provider" — the caller
+// resolves it. Pure, so the arg contract is unit-tested without running the
+// command. Shapes: `run` / `run <v>` / `run -- <args>` / `run <v> -- <args>`.
 func splitRunArgs(args []string, dashIdx int) (vendor string, extra []string, err error) {
 	if dashIdx < 0 {
-		if len(args) != 1 {
-			return "", nil, fmt.Errorf("usage: cc-fleet run <vendor> [-- <claude args>]")
+		switch len(args) {
+		case 0:
+			return "", nil, nil
+		case 1:
+			return args[0], nil, nil
+		default:
+			return "", nil, fmt.Errorf("usage: cc-fleet run [<vendor>] [-- <claude args>]")
 		}
-		return args[0], nil, nil
 	}
-	if dashIdx != 1 {
-		return "", nil, fmt.Errorf("usage: cc-fleet run <vendor> [-- <claude args>]")
+	// dashIdx counts the positionals BEFORE "--": 0 = default provider, 1 = explicit.
+	switch dashIdx {
+	case 0:
+		return "", args, nil
+	case 1:
+		return args[0], args[1:], nil
+	default:
+		return "", nil, fmt.Errorf("usage: cc-fleet run [<vendor>] [-- <claude args>]")
 	}
-	return args[0], args[1:], nil
 }

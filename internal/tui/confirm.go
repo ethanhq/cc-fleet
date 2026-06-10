@@ -64,6 +64,8 @@ const (
 	confirmRemoveVendor      = "remove-vendor"
 	confirmDeleteKey         = "delete-key"
 	confirmReplaceKey        = "replace-key"
+	confirmSwitchDefault     = "switch-default" // change the pinned default to another provider
+	confirmUnsetDefault      = "unset-default"  // clear the pinned default
 )
 
 // confirmAmber is the modal's confirm-phase accent: the border AND the Cancel/Confirm buttons share
@@ -182,6 +184,14 @@ func (m Model) runConfirmed() (tea.Model, tea.Cmd) {
 		m.confirm = nil
 		m.loading = true
 		return m, removeVendorCmd(c.id)
+	case confirmSwitchDefault:
+		m.confirm = nil
+		m.loading = true
+		return m, setDefaultCmd(c.id, true) // user confirmed the switch → force
+	case confirmUnsetDefault:
+		m.confirm = nil
+		m.loading = true
+		return m, unsetDefaultCmd(c.id)
 	case confirmDeleteKey:
 		// The keyset can refresh while the modal is open, so the target is re-validated
 		// by identity (index + the key value captured at open) before the splice.

@@ -14,7 +14,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/spawn"
 )
 
-// newSpawnCmd builds the `cc-fleet spawn <vendor>` command. Keep the flag set
+// newSpawnCmd builds the `cc-fleet spawn [provider]` command (provider optional →
 // stable — the skill drives this surface and reads the --json envelope.
 func newSpawnCmd() *cobra.Command {
 	var (
@@ -33,7 +33,7 @@ func newSpawnCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "spawn <vendor>",
+		Use:   "spawn [provider]",
 		Short: "Spawn a vendor teammate as a tmux pane (Claude layer)",
 		Long: `Spawn a vendor teammate into a tmux pane using cc-fleet's cached
 fingerprint + the vendor's profile. Designed to be invoked by the
@@ -43,12 +43,17 @@ envelope that the skill switches on.
 The team is registered (or created with --auto-team), the agent's inbox
 file is pre-created, and the tmux split-window is run with the apiKeyHelper
 profile that lazily fetches the vendor key.`,
-		Args:          cobra.ExactArgs(1),
+		Args:          cobra.MaximumNArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			vendor, perr := resolveProviderArg(firstArg(args))
+			if perr != nil {
+				return reportSpawn(spawn.Result{OK: false,
+					ErrorCode: providerErrorCode(perr), ErrorMsg: perr.Error()}, asJSON)
+			}
 			if onWindows {
-				res := spawn.Result{OK: false, ErrorCode: "UNSUPPORTED_ON_WINDOWS", ErrorMsg: windowsUnsupportedMsg("spawn"), Vendor: args[0]}
+				res := spawn.Result{OK: false, ErrorCode: "UNSUPPORTED_ON_WINDOWS", ErrorMsg: windowsUnsupportedMsg("spawn"), Vendor: vendor}
 				return reportSpawn(res, asJSON)
 			}
 			// Team / agent names flow into filesystem paths (config.json, inbox
@@ -57,13 +62,13 @@ profile that lazily fetches the vendor key.`,
 			// spawn state mutation runs.
 			if team != "" {
 				if _, err := ids.NewTeamID(team); err != nil {
-					res := spawn.Result{OK: false, ErrorCode: "BAD_ARGS", ErrorMsg: err.Error(), Vendor: args[0]}
+					res := spawn.Result{OK: false, ErrorCode: "BAD_ARGS", ErrorMsg: err.Error(), Vendor: vendor}
 					return reportSpawn(res, asJSON)
 				}
 			}
 			if agentName != "" {
 				if _, err := ids.NewAgentName(agentName); err != nil {
-					res := spawn.Result{OK: false, ErrorCode: "BAD_ARGS", ErrorMsg: err.Error(), Vendor: args[0]}
+					res := spawn.Result{OK: false, ErrorCode: "BAD_ARGS", ErrorMsg: err.Error(), Vendor: vendor}
 					return reportSpawn(res, asJSON)
 				}
 			}
@@ -71,11 +76,11 @@ profile that lazily fetches the vendor key.`,
 			// contradictory / invalid flags BEFORE any spawn side effect.
 			permOverride, permErr := resolvePermissionOverride(permissionMode, dangerSkip)
 			if permErr != nil {
-				res := spawn.Result{OK: false, ErrorCode: "BAD_ARGS", ErrorMsg: permErr.Error(), Vendor: args[0]}
+				res := spawn.Result{OK: false, ErrorCode: "BAD_ARGS", ErrorMsg: permErr.Error(), Vendor: vendor}
 				return reportSpawn(res, asJSON)
 			}
 			req := spawn.Request{
-				Vendor:                 args[0],
+				Vendor:                 vendor,
 				AgentName:              agentName,
 				Team:                   team,
 				Model:                  model,

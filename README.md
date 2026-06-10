@@ -144,7 +144,7 @@ tmux new-session -s cc-fleet
 
 > *"Use deepseek to summarize this 2,000-line log file."*
 
-`cc-fleet subagent <vendor>` runs the vendor model headless and returns the result
+`cc-fleet subagent [provider]` runs the provider model headless and returns the result
 synchronously — **no pane, no team, no agent-teams**. Ideal for one-off analysis and batch
 fan-out of independent tasks.
 
@@ -167,7 +167,7 @@ cc-fleet run deepseek                          # an interactive claude, on DeepS
 cc-fleet run deepseek --dangerously-skip-permissions
 ```
 
-`cc-fleet run <vendor>` drops you straight into an interactive Claude Code session with the LLM
+`cc-fleet run [provider]` drops you straight into an interactive Claude Code session with the LLM
 backend swapped to the vendor — the same `claude` you know, just on DeepSeek / GLM / Qwen / … and
 billing the vendor key. Reach for a cheaper or different-jurisdiction model for your own
 day-to-day coding, not only for delegated work. `--model` overrides the default; `--permission-mode`

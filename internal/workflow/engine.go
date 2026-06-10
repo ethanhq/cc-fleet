@@ -22,6 +22,7 @@ import (
 
 	"github.com/dop251/goja"
 
+	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
@@ -186,15 +187,17 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 		runCtx: ctx, leafCtx: leafCtx, cancelLeaves: cancelLeaves,
 		cbs: make(chan leafCB, 64), loopDone: make(chan struct{}), ctl: map[string]*leafCtl{}, heldPhases: map[string]bool{},
 		name: meta.Name, description: meta.Description, startedAt: startedAt, phases: phases,
-		persistIO:         !opts.NoPersistIO, // the board's inline prompt/answer detail is default-on
-		enginePID:         detachedEnginePID(opts),
-		metaModel:         meta.Model, // default model for agents that omit model
-		whenToUse:         meta.WhenToUse,
-		budgetTotal:       opts.BudgetUSD,
-		budgetTokensTotal: opts.BudgetTokens,
-		sessionID:         prepared.SessionID, // from the minted manifest; re-persisted on every save
-		cwd:               prepared.Cwd,       // launching project dir; ditto
-		argsJSON:          opts.ArgsJSON,
+		persistIO:          !opts.NoPersistIO, // the board's inline prompt/answer detail is default-on
+		enginePID:          detachedEnginePID(opts),
+		metaModel:          meta.Model, // default model for agents that omit model
+		whenToUse:          meta.WhenToUse,
+		budgetTotal:        opts.BudgetUSD,
+		budgetTokensTotal:  opts.BudgetTokens,
+		sessionID:          prepared.SessionID, // from the minted manifest; re-persisted on every save
+		cwd:                prepared.Cwd,       // launching project dir; ditto
+		argsJSON:           opts.ArgsJSON,
+		defaultProvider:    prepared.DefaultProvider,      // resolved at mint; re-persisted on every save
+		defaultProviderErr: prepared.DefaultProviderError, // the code a vendor-less agent() throws
 	}
 	// Load the run's content-hash journal (resume). The path is derived from the
 	// already-validated runID; a missing file (a fresh run) yields an empty cache that
@@ -351,6 +354,22 @@ func normalizeBudgetSentinels(opts *Options) {
 // or re-execs cc-fleet as a DETACHED child that runs it to completion off the launching
 // process, returning the run id immediately. Detaching reuses the subagent leaf's
 // proven process-group primitive — no new platform split.
+// resolveRunDefault resolves the run-level default provider at mint, returning
+// EITHER the provider name OR a stable error_code (never both). A config-load
+// failure or an unresolvable default yields the code; an all-explicit script
+// never consumes it. Used by Launch.
+func resolveRunDefault() (provider, errCode string) {
+	cfg, err := config.Load()
+	if err != nil {
+		return "", config.ProviderErrorCode(err)
+	}
+	name, _, rerr := cfg.ResolveProvider("")
+	if rerr != nil {
+		return "", config.ProviderErrorCode(rerr)
+	}
+	return name, ""
+}
+
 func Launch(ctx context.Context, scriptPath string, opts Options, foreground bool) (string, error) {
 	abs, err := filepath.Abs(scriptPath)
 	if err != nil {
@@ -371,6 +390,13 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 			return "", fmt.Errorf("workflow: cannot resume: %w", rerr)
 		}
 		run = existing
+		// Inherit the recorded default-resolution (do NOT re-resolve — a mid-run
+		// change of default_provider must never re-key an omitted-vendor leaf). A
+		// PRE-feature manifest carries neither field; resolve+stamp once here so a
+		// vendor-less script resumed on an old run still has a default.
+		if run.DefaultProvider == "" && run.DefaultProviderError == "" {
+			run.DefaultProvider, run.DefaultProviderError = resolveRunDefault()
+		}
 		// One engine per run: refuse to resume a run that still has a LIVE engine — a verifiably-live
 		// detached one, or a foreground/unreapable run (EnginePID<=0) still claiming to run. The board
 		// Restart path stops the old engine first (so the status is no longer running when it reaches
@@ -431,6 +457,10 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 		run.NoPersistIO = opts.NoPersistIO
 		run.BudgetUSD = opts.BudgetUSD
 		run.BudgetTokens = opts.BudgetTokens
+		// Resolve the run's default provider ONCE at mint and record the RESULT (the
+		// provider OR the error code a vendor-less agent() will throw). An all-explicit
+		// script never reads either, so an unresolvable default does not block launch.
+		run.DefaultProvider, run.DefaultProviderError = resolveRunDefault()
 		if cwd, cerr := os.Getwd(); cerr == nil {
 			run.Cwd = cwd
 		}

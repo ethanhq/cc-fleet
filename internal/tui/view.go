@@ -207,7 +207,11 @@ func (m Model) viewList() string {
 		default:
 			name = faintStyle.Render(name)
 		}
-		return "  " + marker + dot + " " + name
+		badge := ""
+		if v.Default {
+			badge = " " + noteStyle.Render("★")
+		}
+		return "  " + marker + dot + " " + name + badge
 	})
 	if len(m.vendors) == 0 {
 		leftLines = append(leftLines, faintStyle.Render("  (none yet)"))
@@ -230,7 +234,7 @@ func (m Model) viewList() string {
 	if m.vendorCursor < addRow {
 		v := m.vendors[m.vendorCursor]
 		cardTitle = trunc(v.Name, 24)
-		rightLines = vendorDetailLines(v, rightW)
+		rightLines = vendorDetailLines(v, rightW, m.defaultProvider)
 	}
 	cursorLine := cursorVisualLine
 	if m.vendorCursor >= addRow {
@@ -241,7 +245,7 @@ func (m Model) viewList() string {
 	pad := strings.Repeat(" ", boardMargin)
 	return indentBox(title+"\n\n"+headerSummaryLine(left, right, m.boardInner()), boardMargin) +
 		"\n" + m.headerRule() + "\n" + indentBox(board, boardMargin) +
-		"\n" + pad + footer("↑/↓ move · →/⏎ edit · d delete · tab agents board · q quit")
+		"\n" + pad + footer("↑/↓ move · →/⏎ edit · * default · d delete · tab agents board · q quit")
 }
 
 // vendorCacheFig is a vendor's models-cache figure: "N models[ (stale)]".
@@ -266,13 +270,22 @@ func resolvedSlot(slot, def string) string {
 // vendorDetailLines is the Model Providers hub's read-only config card: the enabled state + default
 // model, then the vendors.toml fields. The key row shows only the secret backend + ref —
 // never key material (the status line already carries the model, so no separate field).
-func vendorDetailLines(v userops.VendorView, rightW int) []string {
+func vendorDetailLines(v userops.VendorView, rightW int, configuredDefault string) []string {
 	status := okStyle.Render("● enabled")
 	if !v.Enabled {
 		status = liveStyle.Render("○ disabled")
 	}
 	if v.DefaultModel != "" {
 		status += liveStyle.Render(" · " + trunc(v.DefaultModel, 28))
+	}
+	// The default-provider badge: ★ default when pinned, ★ default (auto) when this
+	// is the sole enabled provider serving implicitly.
+	if v.Default {
+		label := "★ default"
+		if configuredDefault != v.Name {
+			label = "★ default (auto)"
+		}
+		status += noteStyle.Render(" · " + label)
 	}
 	// Pad the Note body to the same reserve the edit form uses (fieldNoteReserve), so
 	// the Config block sits at the same row here and in edit — entering edit doesn't

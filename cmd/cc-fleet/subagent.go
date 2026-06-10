@@ -20,7 +20,7 @@ import (
 // becomes a filesystem path component for the run manifest).
 const maxRunTagLen = 256
 
-// newSubagentCmd builds `cc-fleet subagent <vendor>` — a one-shot headless
+// newSubagentCmd builds `cc-fleet subagent [provider]` — a one-shot headless
 // vendor subagent. It follows the spawn command's --json / SilenceErrors
 // discipline so the skill gets exactly one envelope on stdout.
 func newSubagentCmd() *cobra.Command {
@@ -49,7 +49,7 @@ func newSubagentCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "subagent <vendor>",
+		Use:   "subagent [provider]",
 		Short: "Run a one-shot headless vendor subagent (Claude layer)",
 		Long: `Run a one-shot, headless vendor subagent: launch claude -p backed by a
 third-party vendor model (via the vendor profile) and return the result
@@ -71,11 +71,15 @@ exceed the sync timeout), prefer --background: the job runs detached, returns a
 job handle immediately, and you poll subagent-status (a wedged sync subagent can't
 be polled). Hitting --max-budget-usd returns a SUBAGENT_FAILED envelope whose
 suggestion names the spent cost and how to retry (raise the cap or switch model).`,
-		Args:          cobra.ExactArgs(1),
+		Args:          cobra.MaximumNArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			vendor := args[0]
+			vendor, perr := resolveProviderArg(firstArg(args))
+			if perr != nil {
+				return reportSubagent(subagent.Result{OK: false,
+					ErrorCode: providerErrorCode(perr), ErrorMsg: perr.Error()}, asJSON)
+			}
 
 			// Validate exactly-one-of(--prompt, --prompt-file) at the CLI layer
 			// (no claude launch on bad args).

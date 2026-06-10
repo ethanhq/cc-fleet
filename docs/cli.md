@@ -17,9 +17,9 @@ drive it through plain language, but every command also works directly. Run `cc-
 | `models <vendor>` | List cached models for a vendor. |
 | `refresh <vendor>` | Re-query a vendor's `/v1/models` and update the cache. |
 | `keyget <vendor>` | Fetch a vendor API key — used internally by Claude's `apiKeyHelper`. |
-| `spawn <vendor>` | Spawn a vendor teammate as a tmux pane (Claude layer). |
-| `subagent <vendor>` | Run a one-shot headless vendor subagent. |
-| `run <vendor>` | Launch an interactive vendor-backed `claude` session (foreground; you drive it). |
+| `spawn [provider]` | Spawn a provider teammate as a tmux pane (provider optional → default). |
+| `subagent [provider]` | Run a one-shot headless provider subagent (provider optional → default). |
+| `run [provider]` | Launch an interactive provider-backed `claude` session (provider optional → default; foreground). |
 | `codex add` / `login` / `logout` / `status` | Register the ChatGPT-subscription provider + manage cc-fleet's own codex login. |
 | `codex-proxy status` / `stop` | Inspect / stop the local codex conversion daemon. |
 | `ps` | List live cc-fleet teammates (`--json`, `--check` for health). |
@@ -74,7 +74,7 @@ cc-fleet run deepseek --model deepseek-reasoner
 cc-fleet run deepseek --dangerously-skip-permissions
 ```
 
-`cc-fleet run <vendor>` replaces the current process with an interactive `claude` REPL whose LLM
+`cc-fleet run [provider]` (provider optional → default) replaces the current process with an interactive `claude` REPL whose LLM
 backend is the vendor (the profile pins the `apiKeyHelper` + base URL; the model is the vendor's
 `default_model` unless `--model` overrides). Unlike spawn/subagent, this is **you** using a
 vendor, not Claude delegating. No tmux, no agent-teams — just a terminal.

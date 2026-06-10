@@ -14,8 +14,9 @@ import (
 // is always non-nil even when empty so jq dispatch in the skill doesn't have
 // to special-case nil.
 type listJSONEnvelope struct {
-	OK      bool                 `json:"ok"`
-	Vendors []userops.VendorView `json:"vendors"`
+	OK              bool                 `json:"ok"`
+	Vendors         []userops.VendorView `json:"vendors"`
+	DefaultProvider string               `json:"default_provider"`
 }
 
 func newListCmd() *cobra.Command {
@@ -43,7 +44,7 @@ can iterate without a presence check.`,
 				return err
 			}
 			if asJSON {
-				emitJSON(listJSONEnvelope{OK: true, Vendors: res.Vendors})
+				emitJSON(listJSONEnvelope{OK: true, Vendors: res.Vendors, DefaultProvider: res.DefaultProvider})
 				return nil
 			}
 			if len(res.Vendors) == 0 {

@@ -60,6 +60,12 @@ var validProtocols = []string{"", ProtocolOpenAIChat, ProtocolOpenAIResponses, P
 type Config struct {
 	Version int                `toml:"version"`
 	Vendors map[string]*Vendor `toml:"-"`
+	// DefaultProvider is the global default provider name a vendor-less invocation
+	// resolves to (subagent / spawn / run / workflow agent()). "" = unset (then a
+	// sole enabled provider serves implicitly, else the caller errors). Existence
+	// is NOT validated at Load — a use-time error keeps a config with a since-removed
+	// default loadable, so even `cc-fleet default --unset` can run.
+	DefaultProvider string `toml:"-"`
 }
 
 // Vendor is one [vendor] table inside vendors.toml.
@@ -184,6 +190,78 @@ func (v *Vendor) ResolveModel(requested string) string {
 	}
 }
 
+// Provider-resolution sentinels. A vendor-less lane invocation maps an empty
+// request through ResolveProvider; these classify the no-result outcomes so a CLI
+// can emit a stable error_code and the skill can dispatch on it.
+var (
+	// ErrNoDefaultProvider: no provider was named, no default is set, and zero or
+	// more-than-one providers are enabled (so there is no unambiguous choice). The
+	// message lists the enabled candidates.
+	ErrNoDefaultProvider = errors.New("no default provider")
+	// ErrDefaultProviderDisabled: default_provider names a provider that exists but
+	// is disabled. Never falls through to another provider (no surprise vendor).
+	ErrDefaultProviderDisabled = errors.New("default provider is disabled")
+	// ErrDefaultProviderUnknown: default_provider names a provider that no longer
+	// exists (a dangling pointer; remove scrubs the default, so this is the
+	// hand-edited / racing case).
+	ErrDefaultProviderUnknown = errors.New("default provider is unknown")
+)
+
+// ProviderErrorCode maps a ResolveProvider sentinel to a stable error_code string
+// (one source for the CLI envelopes and the workflow manifest). A non-sentinel
+// error reads as a config-load failure.
+func ProviderErrorCode(err error) string {
+	switch {
+	case errors.Is(err, ErrDefaultProviderDisabled):
+		return "DEFAULT_PROVIDER_DISABLED"
+	case errors.Is(err, ErrDefaultProviderUnknown):
+		return "DEFAULT_PROVIDER_UNKNOWN"
+	case errors.Is(err, ErrNoDefaultProvider):
+		return "NO_DEFAULT_PROVIDER"
+	default:
+		return "CONFIG_LOAD_FAILED"
+	}
+}
+
+// EnabledProviders returns the enabled provider names in sorted order.
+func (c *Config) EnabledProviders() []string {
+	out := make([]string, 0, len(c.Vendors))
+	for name, v := range c.Vendors {
+		if v != nil && v.Enabled {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// ResolveProvider maps a requested provider name to a concrete enabled provider,
+// applying the precedence: explicit request > DefaultProvider > the sole enabled
+// provider > error. requested "" means "no provider named". An explicit request
+// is returned as-is (existence/enabled checks stay on the caller's normal path);
+// the default/sole branches return only an enabled provider. The returned source
+// ("explicit" | "default" | "sole") lets a caller phrase an honest notice.
+func (c *Config) ResolveProvider(requested string) (name, source string, err error) {
+	if requested != "" {
+		return requested, "explicit", nil
+	}
+	if c.DefaultProvider != "" {
+		v, ok := c.Vendors[c.DefaultProvider]
+		if !ok || v == nil {
+			return "", "", fmt.Errorf("%w: %q", ErrDefaultProviderUnknown, c.DefaultProvider)
+		}
+		if !v.Enabled {
+			return "", "", fmt.Errorf("%w: %q", ErrDefaultProviderDisabled, c.DefaultProvider)
+		}
+		return c.DefaultProvider, "default", nil
+	}
+	enabled := c.EnabledProviders()
+	if len(enabled) == 1 {
+		return enabled[0], "sole", nil
+	}
+	return "", "", fmt.Errorf("%w (enabled: %s)", ErrNoDefaultProvider, strings.Join(enabled, ", "))
+}
+
 // With1M appends the 1M-context marker to a model id, idempotently (never doubles
 // it); a blank id is returned unchanged. Strip1M removes a TRAILING marker (an
 // interior "[1m]" is left alone); Has1M reports a trailing marker (the TUI
@@ -273,11 +351,25 @@ func parse(data []byte) (*Config, error) {
 		}
 	}
 
+	// default_provider as a STRING is the scalar default-provider key; as a TABLE it
+	// is a (hand-named) vendor called "default_provider" — fall through to the vendor
+	// loop so such a config still loads instead of bricking on the type mismatch.
+	defaultProviderIsScalar := false
+	if v, ok := raw["default_provider"]; ok {
+		if s, isStr := v.(string); isStr {
+			cfg.DefaultProvider = s
+			defaultProviderIsScalar = true
+		}
+	}
+
 	// Re-decode each vendor table individually into a typed *Vendor. We use
 	// toml.Marshal on the sub-map and Unmarshal into the struct so we get the
 	// standard struct-tag handling (including time.Time parsing).
 	for key, val := range raw {
 		if key == "version" {
+			continue
+		}
+		if key == "default_provider" && defaultProviderIsScalar {
 			continue
 		}
 		sub, ok := val.(map[string]any)
@@ -319,6 +411,9 @@ func SaveToPath(c *Config, path string) error {
 	// table per vendor in sorted order) so the file is stable and diff-friendly.
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "version = %d\n", c.Version)
+	if c.DefaultProvider != "" {
+		fmt.Fprintf(&buf, "default_provider = %q\n", c.DefaultProvider)
+	}
 
 	names := make([]string, 0, len(c.Vendors))
 	for name := range c.Vendors {
@@ -356,6 +451,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Version != SchemaVersion {
 		return fmt.Errorf("config: unsupported version %d (want %d)", c.Version, SchemaVersion)
+	}
+	// A scalar default_provider key and a vendor TABLE named "default_provider" can't
+	// coexist — Save would emit both and the next parse would hit a TOML key/table
+	// collision. Reject the combination so it can never be written (a legacy
+	// default_provider-named vendor with NO scalar default still loads + saves fine).
+	if c.DefaultProvider != "" {
+		if _, clash := c.Vendors["default_provider"]; clash {
+			return errors.New(`config: a provider named "default_provider" conflicts with the default_provider key — rename the provider or clear the default`)
+		}
 	}
 	// Stable iteration order for predictable error messages in tests.
 	names := make([]string, 0, len(c.Vendors))

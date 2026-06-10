@@ -12,11 +12,12 @@ func TestSplitRunArgs(t *testing.T) {
 		wantErr    bool
 	}{
 		{"vendor only", []string{"deepseek"}, -1, "deepseek", nil, false},
-		{"no args", nil, -1, "", nil, true},
+		{"no args (default)", nil, -1, "", nil, false},
 		{"two positionals, no dash", []string{"a", "b"}, -1, "", nil, true},
 		{"vendor + passthrough", []string{"deepseek", "--resume", "x"}, 1, "deepseek", []string{"--resume", "x"}, false},
-		{"dash before vendor", []string{"--resume"}, 0, "", nil, true},
+		{"default + passthrough", []string{"--resume"}, 0, "", []string{"--resume"}, false},
 		{"vendor + empty passthrough", []string{"deepseek"}, 1, "deepseek", nil, false},
+		{"two positionals before dash", []string{"a", "b", "x"}, 2, "", nil, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
