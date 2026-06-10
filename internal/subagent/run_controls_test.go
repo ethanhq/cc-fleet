@@ -93,10 +93,10 @@ func TestEngineCmdlineMatches(t *testing.T) {
 		ok   bool
 		want bool
 	}{
-		{"detached engine", []string{"/usr/bin/cc-fleet", "workflow", "run", "/t/x.star", "--foreground", "--run-id", id}, true, true},
-		{"foreground (no --run-id)", []string{"/usr/bin/cc-fleet", "workflow", "run", "/t/x.star", "--foreground"}, true, false},
-		{"foreground --resume mentions id", []string{"/usr/bin/cc-fleet", "workflow", "run", "/t/x.star", "--resume", id, "--foreground"}, true, false},
-		{"wrong id", []string{"/usr/bin/cc-fleet", "workflow", "run", "x.star", "--run-id", "other"}, true, false},
+		{"detached engine", []string{"/usr/bin/cc-fleet", "workflow", "run", "/t/x.js", "--foreground", "--run-id", id}, true, true},
+		{"foreground (no --run-id)", []string{"/usr/bin/cc-fleet", "workflow", "run", "/t/x.js", "--foreground"}, true, false},
+		{"foreground --resume mentions id", []string{"/usr/bin/cc-fleet", "workflow", "run", "/t/x.js", "--resume", id, "--foreground"}, true, false},
+		{"wrong id", []string{"/usr/bin/cc-fleet", "workflow", "run", "x.js", "--run-id", "other"}, true, false},
 		{"unrelated process", []string{"/usr/bin/python", "server.py"}, true, false},
 		{"unreadable argv", nil, false, false},
 	}

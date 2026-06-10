@@ -1,17 +1,18 @@
 package workflow
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"net/url"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
-	"go.starlark.net/lib/json"
-	"go.starlark.net/starlark"
+	"github.com/dop251/goja"
 )
 
 // schemaError marks a structural schema defect (a dangling/malformed `$ref` or nesting past
@@ -26,42 +27,76 @@ func isSchemaError(err error) bool {
 	return errors.As(err, &se)
 }
 
-// jsonEncode / jsonDecode reuse go.starlark.net's tested JSON module instead of a
-// bespoke Go<->Starlark converter. Both are called via starlark.Call UNDER THE GIL
-// (like any Starlark op), so they participate in the single-interpreter discipline.
-var (
-	jsonEncode = json.Module.Members["encode"]
-	jsonDecode = json.Module.Members["decode"]
-)
-
 // maxSchemaDepth bounds recursive schema validation against a pathological deeply-nested
 // schema (and a deeply-nested reply). Real schemas are shallow; this is a backstop.
 const maxSchemaDepth = 32
 
-// encodeSchema serializes a Starlark schema value to a JSON string — passed to the
-// leaf via --json-schema AND folded into the journal key, so its output must be
-// byte-stable (go.starlark.net's json.encode canonicalizes, so it is). Runs under the GIL.
-func encodeSchema(thread *starlark.Thread, schema starlark.Value) (string, error) {
-	enc, err := starlark.Call(thread, jsonEncode, starlark.Tuple{schema}, nil)
+// canonicalSchemaJSON serializes an agent() schema value to canonical JSON — passed to
+// the leaf via --json-schema AND folded into the journal key, so it must be byte-stable
+// and JS-faithful: the VM's own JSON.stringify defines the value semantics (undefined /
+// function / symbol members drop, non-finite numbers become null, a cycle throws), then
+// a Go decode/encode round-trip sorts the object keys so member insertion order can't
+// shift the bytes. Depth-bounded like validation.
+func (e *engine) canonicalSchemaJSON(v goja.Value) (string, error) {
+	sv, err := e.jsonStringify(goja.Undefined(), v)
+	if err != nil {
+		return "", fmt.Errorf("schema is not JSON-serializable: %v", err)
+	}
+	s, ok := sv.Export().(string)
+	if !ok {
+		return "", fmt.Errorf("schema must be a JSON-serializable value")
+	}
+	var tree interface{}
+	if err := json.Unmarshal([]byte(s), &tree); err != nil {
+		return "", fmt.Errorf("schema is not valid JSON: %v", err)
+	}
+	if err := checkSchemaDepth(tree, 0); err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(tree)
 	if err != nil {
 		return "", err
 	}
-	s, ok := starlark.AsString(enc)
-	if !ok {
-		return "", fmt.Errorf("json.encode did not return a string")
+	return string(data), nil
+}
+
+// checkSchemaDepth bounds a schema tree's nesting (the stringify round-trip already
+// guarantees the value is pure JSON).
+func checkSchemaDepth(v interface{}, depth int) error {
+	if depth > maxSchemaDepth {
+		return schemaError{fmt.Errorf("schema nesting exceeds %d levels", maxSchemaDepth)}
 	}
-	return s, nil
+	switch t := v.(type) {
+	case map[string]interface{}:
+		for _, el := range t {
+			if err := checkSchemaDepth(el, depth+1); err != nil {
+				return err
+			}
+		}
+	case []interface{}:
+		for _, el := range t {
+			if err := checkSchemaDepth(el, depth+1); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // decodeAndValidate parses the reply JSON and validates it against the schema subset: `type`,
 // `required`, `properties`, `items`, `enum`, `pattern`/`format`/`additionalProperties`,
 // `allOf`/`anyOf`/`oneOf`, and intra-document `$ref` (`#/…`; an external ref is unsupported, fails).
 // It is the local backstop for claude's `--json-schema`: a live failure is terminal, a resume
-// failure is a cache miss. Single-pass over the value; `maxSchemaDepth` bounds a recursive `$ref`.
-func decodeAndValidate(thread *starlark.Thread, reply string, schema starlark.Value) (starlark.Value, error) {
-	v, err := starlark.Call(thread, jsonDecode, starlark.Tuple{starlark.String(stripCodeFence(reply))}, nil)
-	if err != nil {
+// failure is a cache miss. Both sides decode through encoding/json, so every number is a float64
+// and equality stays uniform. Single-pass over the value; `maxSchemaDepth` bounds a recursive `$ref`.
+func decodeAndValidate(reply, schemaJSON string) (interface{}, error) {
+	var v interface{}
+	if err := json.Unmarshal([]byte(stripCodeFence(reply)), &v); err != nil {
 		return nil, fmt.Errorf("reply is not valid JSON: %v", err)
+	}
+	var schema interface{}
+	if err := json.Unmarshal([]byte(schemaJSON), &schema); err != nil {
+		return nil, schemaError{fmt.Errorf("schema is not valid JSON: %v", err)}
 	}
 	if err := validateAgainstSchema(v, schema, schema, 0); err != nil {
 		return nil, err
@@ -69,14 +104,14 @@ func decodeAndValidate(thread *starlark.Thread, reply string, schema starlark.Va
 	return v, nil
 }
 
-// validateAgainstSchema recursively checks value against schema (a *starlark.Dict). A
-// non-dict schema imposes no structural constraint (valid-JSON-only). Errors are wrapped
-// with the failing path (property/item) for an actionable retry message.
-func validateAgainstSchema(value, schema, root starlark.Value, depth int) error {
+// validateAgainstSchema recursively checks value against schema (a JSON object). A
+// non-object schema imposes no structural constraint (valid-JSON-only). Errors are
+// wrapped with the failing path (property/item) for an actionable retry message.
+func validateAgainstSchema(value, schema, root interface{}, depth int) error {
 	if depth > maxSchemaDepth {
 		return schemaError{fmt.Errorf("schema nesting exceeds %d levels", maxSchemaDepth)}
 	}
-	sd, ok := schema.(*starlark.Dict)
+	sd, ok := schema.(map[string]interface{})
 	if !ok {
 		return nil
 	}
@@ -86,82 +121,72 @@ func validateAgainstSchema(value, schema, root starlark.Value, depth int) error 
 	if err := checkComposition(value, sd, root, depth); err != nil {
 		return err
 	}
-	if tv, found, _ := sd.Get(starlark.String("type")); found {
-		if ts, ok := starlark.AsString(tv); ok {
-			if err := checkType(value, ts); err != nil {
+	if ts, ok := sd["type"].(string); ok {
+		if err := checkType(value, ts); err != nil {
+			return err
+		}
+	}
+	if lst, ok := sd["enum"].([]interface{}); ok && !enumContains(lst, value) {
+		return fmt.Errorf("value %v is not one of the enum values", value)
+	}
+	// pattern / format constrain STRING values only (a non-string is left to `type`).
+	if s, isStr := value.(string); isStr {
+		if pat, ok := sd["pattern"].(string); ok {
+			// JSON Schema `pattern` is ECMA-262; Go RE2 is a best-effort local approximation. An
+			// uncompilable pattern is skipped — `--json-schema` stays authoritative on the wire.
+			if re, cerr := regexp.Compile(pat); cerr == nil && !re.MatchString(s) {
+				return fmt.Errorf("value does not match pattern %q", pat)
+			}
+		}
+		if format, ok := sd["format"].(string); ok {
+			if err := checkFormat(format, s); err != nil {
 				return err
 			}
 		}
 	}
-	if ev, found, _ := sd.Get(starlark.String("enum")); found {
-		if lst, ok := ev.(*starlark.List); ok && !enumContains(lst, value) {
-			return fmt.Errorf("value %s is not one of the enum values", value.String())
-		}
-	}
-	// pattern / format constrain STRING values only (a non-string is left to `type`).
-	if s, isStr := starlark.AsString(value); isStr {
-		if pv, found, _ := sd.Get(starlark.String("pattern")); found {
-			if pat, ok := starlark.AsString(pv); ok {
-				// JSON Schema `pattern` is ECMA-262; Go RE2 is a best-effort local approximation. An
-				// uncompilable pattern is skipped — `--json-schema` stays authoritative on the wire.
-				if re, cerr := regexp.Compile(pat); cerr == nil && !re.MatchString(s) {
-					return fmt.Errorf("value does not match pattern %q", pat)
-				}
-			}
-		}
-		if fv, found, _ := sd.Get(starlark.String("format")); found {
-			if format, ok := starlark.AsString(fv); ok {
-				if err := checkFormat(format, s); err != nil {
-					return err
-				}
-			}
-		}
-	}
-	rv, hasRequired, _ := sd.Get(starlark.String("required"))
-	pv, hasProperties, _ := sd.Get(starlark.String("properties"))
-	d, isObject := value.(*starlark.Dict)
+	rv, hasRequired := sd["required"]
+	pv, hasProperties := sd["properties"]
+	d, isObject := value.(map[string]interface{})
 	// `required`/`properties` are object constraints — a non-object reply (e.g. the bare
 	// string "oops" for schema={"required":["answer"]}) must FAIL, not slip through.
 	if (hasRequired || hasProperties) && !isObject {
-		return fmt.Errorf("expected a JSON object, got %s", value.Type())
+		return fmt.Errorf("expected a JSON object, got %s", jsonTypeName(value))
 	}
 	if isObject {
-		if lst, ok := rv.(*starlark.List); ok {
-			for i := 0; i < lst.Len(); i++ {
-				ks, ok := starlark.AsString(lst.Index(i))
+		if lst, ok := rv.([]interface{}); ok {
+			for _, k := range lst {
+				ks, ok := k.(string)
 				if !ok {
 					continue
 				}
-				if _, f, _ := d.Get(starlark.String(ks)); !f {
+				if _, f := d[ks]; !f {
 					return fmt.Errorf("missing required key %q", ks)
 				}
 			}
 		}
-		if props, ok := pv.(*starlark.Dict); ok {
-			for _, k := range props.Keys() {
-				cv, present, _ := d.Get(k)
+		if props, ok := pv.(map[string]interface{}); ok {
+			for k, sub := range props {
+				cv, present := d[k]
 				if !present {
 					continue // properties does NOT imply required (JSON-Schema semantics)
 				}
-				sub, _, _ := props.Get(k)
 				if err := validateAgainstSchema(cv, sub, root, depth+1); err != nil {
-					ks, _ := starlark.AsString(k)
-					return fmt.Errorf("property %q: %w", ks, err)
+					return fmt.Errorf("property %q: %w", k, err)
 				}
 			}
 		}
 		// additionalProperties governs keys NOT named in `properties`: `false` rejects any extra
 		// key; a schema validates each extra value against it; `true`/absent imposes nothing.
-		if apv, found, _ := sd.Get(starlark.String("additionalProperties")); found {
+		if apv, found := sd["additionalProperties"]; found {
 			if err := checkAdditionalProps(d, pv, apv, root, depth); err != nil {
 				return err
 			}
 		}
 	}
-	if lst, ok := value.(*starlark.List); ok {
-		if iv, found, _ := sd.Get(starlark.String("items")); found {
-			for i := 0; i < lst.Len(); i++ {
-				if err := validateAgainstSchema(lst.Index(i), iv, root, depth+1); err != nil {
+	if lst, ok := value.([]interface{}); ok {
+		if iv, found := sd["items"]; found {
+			for i, el := range lst {
+				if err := validateAgainstSchema(el, iv, root, depth+1); err != nil {
 					return fmt.Errorf("item %d: %w", i, err)
 				}
 			}
@@ -170,55 +195,57 @@ func validateAgainstSchema(value, schema, root starlark.Value, depth int) error 
 	return nil
 }
 
-// checkType verifies value's JSON type. `integer` accepts a zero-fraction Float (a vendor
+// checkType verifies value's JSON type. `integer` accepts a zero-fraction number (a vendor
 // may emit 5.0 for an integer field); an unknown type name imposes no constraint.
-func checkType(v starlark.Value, t string) error {
+func checkType(v interface{}, t string) error {
 	ok := true
 	switch t {
 	case "object":
-		_, ok = v.(*starlark.Dict)
+		_, ok = v.(map[string]interface{})
 	case "array":
-		_, ok = v.(*starlark.List)
+		_, ok = v.([]interface{})
 	case "string":
-		_, ok = v.(starlark.String)
+		_, ok = v.(string)
 	case "boolean":
-		_, ok = v.(starlark.Bool)
+		_, ok = v.(bool)
 	case "null":
-		ok = v == starlark.None
+		ok = v == nil
 	case "number":
-		ok = isJSONNumber(v)
+		_, ok = v.(float64)
 	case "integer":
-		ok = isJSONInteger(v)
+		f, isNum := v.(float64)
+		ok = isNum && !math.IsInf(f, 0) && f == math.Trunc(f)
 	}
 	if !ok {
-		return fmt.Errorf("expected type %s, got %s", t, v.Type())
+		return fmt.Errorf("expected type %s, got %s", t, jsonTypeName(v))
 	}
 	return nil
 }
 
-func isJSONNumber(v starlark.Value) bool {
+// jsonTypeName names a decoded JSON value's type for error messages.
+func jsonTypeName(v interface{}) string {
 	switch v.(type) {
-	case starlark.Int, starlark.Float:
-		return true
+	case nil:
+		return "null"
+	case bool:
+		return "boolean"
+	case float64:
+		return "number"
+	case string:
+		return "string"
+	case []interface{}:
+		return "array"
+	case map[string]interface{}:
+		return "object"
 	}
-	return false
+	return fmt.Sprintf("%T", v)
 }
 
-func isJSONInteger(v starlark.Value) bool {
-	switch n := v.(type) {
-	case starlark.Int:
-		return true
-	case starlark.Float:
-		f := float64(n)
-		return !math.IsInf(f, 0) && f == math.Trunc(f)
-	}
-	return false
-}
-
-// enumContains reports whether v equals any element of lst (Starlark value equality).
-func enumContains(lst *starlark.List, v starlark.Value) bool {
-	for i := 0; i < lst.Len(); i++ {
-		if eq, err := starlark.Equal(lst.Index(i), v); err == nil && eq {
+// enumContains reports whether v equals any element of lst. Both sides came through
+// encoding/json (uniform float64 numbers), so deep equality is exact.
+func enumContains(lst []interface{}, v interface{}) bool {
+	for _, el := range lst {
+		if reflect.DeepEqual(el, v) {
 			return true
 		}
 	}
@@ -247,9 +274,9 @@ func stripCodeFence(s string) string {
 // JSON pointer into root, then validate against the target), allOf (every subschema must
 // pass), anyOf (at least one), oneOf (exactly one). Each is independent and ANDed with the
 // rest of the schema; an absent keyword is a no-op.
-func checkComposition(value starlark.Value, sd *starlark.Dict, root starlark.Value, depth int) error {
-	if rv, found, _ := sd.Get(starlark.String("$ref")); found {
-		ref, ok := starlark.AsString(rv)
+func checkComposition(value interface{}, sd map[string]interface{}, root interface{}, depth int) error {
+	if rv, found := sd["$ref"]; found {
+		ref, ok := rv.(string)
 		if !ok {
 			return schemaError{fmt.Errorf("$ref must be a string")}
 		}
@@ -263,60 +290,54 @@ func checkComposition(value starlark.Value, sd *starlark.Dict, root starlark.Val
 			return fmt.Errorf("$ref %s: %w", ref, err)
 		}
 	}
-	if av, found, _ := sd.Get(starlark.String("allOf")); found {
-		if lst, ok := av.(*starlark.List); ok {
-			var firstMismatch error
-			for i := 0; i < lst.Len(); i++ {
-				err := validateAgainstSchema(value, lst.Index(i), root, depth+1)
-				if err == nil {
-					continue
-				}
-				if isSchemaError(err) {
-					return err // a broken branch — surface ahead of any value mismatch (scan all branches)
-				}
-				if firstMismatch == nil {
-					firstMismatch = fmt.Errorf("allOf[%d]: %w", i, err)
-				}
+	if lst, ok := sd["allOf"].([]interface{}); ok {
+		var firstMismatch error
+		for i, sub := range lst {
+			err := validateAgainstSchema(value, sub, root, depth+1)
+			if err == nil {
+				continue
 			}
-			if firstMismatch != nil {
-				return firstMismatch // allOf requires every branch; report the first value mismatch
+			if isSchemaError(err) {
+				return err // a broken branch — surface ahead of any value mismatch (scan all branches)
+			}
+			if firstMismatch == nil {
+				firstMismatch = fmt.Errorf("allOf[%d]: %w", i, err)
 			}
 		}
-	}
-	if av, found, _ := sd.Get(starlark.String("anyOf")); found {
-		if lst, ok := av.(*starlark.List); ok { // an empty anyOf matches nothing → fails below
-			matched := false
-			for i := 0; i < lst.Len(); i++ {
-				err := validateAgainstSchema(value, lst.Index(i), root, depth+1)
-				if err == nil {
-					matched = true
-					continue // keep scanning — a LATER branch may be structurally broken
-				}
-				if isSchemaError(err) {
-					return err // a broken branch (unresolvable $ref / too deep) — surface, don't swallow
-				}
-			}
-			if !matched {
-				return fmt.Errorf("anyOf: value matches none of the %d subschemas", lst.Len())
-			}
+		if firstMismatch != nil {
+			return firstMismatch // allOf requires every branch; report the first value mismatch
 		}
 	}
-	if ov, found, _ := sd.Get(starlark.String("oneOf")); found {
-		if lst, ok := ov.(*starlark.List); ok { // an empty oneOf matches 0 subschemas → fails below
-			matched := 0
-			for i := 0; i < lst.Len(); i++ {
-				err := validateAgainstSchema(value, lst.Index(i), root, depth+1)
-				if err == nil {
-					matched++
-					continue
-				}
-				if isSchemaError(err) {
-					return err // a broken branch — surface, don't swallow as a non-match
-				}
+	if lst, ok := sd["anyOf"].([]interface{}); ok { // an empty anyOf matches nothing → fails below
+		matched := false
+		for _, sub := range lst {
+			err := validateAgainstSchema(value, sub, root, depth+1)
+			if err == nil {
+				matched = true
+				continue // keep scanning — a LATER branch may be structurally broken
 			}
-			if matched != 1 {
-				return fmt.Errorf("oneOf: value matches %d subschemas, want exactly 1", matched)
+			if isSchemaError(err) {
+				return err // a broken branch (unresolvable $ref / too deep) — surface, don't swallow
 			}
+		}
+		if !matched {
+			return fmt.Errorf("anyOf: value matches none of the %d subschemas", len(lst))
+		}
+	}
+	if lst, ok := sd["oneOf"].([]interface{}); ok { // an empty oneOf matches 0 subschemas → fails below
+		matched := 0
+		for _, sub := range lst {
+			err := validateAgainstSchema(value, sub, root, depth+1)
+			if err == nil {
+				matched++
+				continue
+			}
+			if isSchemaError(err) {
+				return err // a broken branch — surface, don't swallow as a non-match
+			}
+		}
+		if matched != 1 {
+			return fmt.Errorf("oneOf: value matches %d subschemas, want exactly 1", matched)
 		}
 	}
 	return nil
@@ -325,7 +346,7 @@ func checkComposition(value starlark.Value, sd *starlark.Dict, root starlark.Val
 // resolveRef resolves an intra-document JSON-pointer $ref into root and returns the referenced
 // subschema. Only intra-document pointers (`#` and `#/…`) are supported; an external URI is an
 // error so an unresolvable ref FAILS validation rather than silently passing.
-func resolveRef(ref string, root starlark.Value) (starlark.Value, error) {
+func resolveRef(ref string, root interface{}) (interface{}, error) {
 	if ref == "#" {
 		return root, nil
 	}
@@ -336,18 +357,18 @@ func resolveRef(ref string, root starlark.Value) (starlark.Value, error) {
 	for _, tok := range strings.Split(strings.TrimPrefix(ref, "#/"), "/") {
 		tok = unescapeJSONPointer(tok)
 		switch c := cur.(type) {
-		case *starlark.Dict:
-			nv, found, _ := c.Get(starlark.String(tok))
+		case map[string]interface{}:
+			nv, found := c[tok]
 			if !found {
 				return nil, fmt.Errorf("$ref %q: %q not found", ref, tok)
 			}
 			cur = nv
-		case *starlark.List:
+		case []interface{}:
 			idx, err := strconv.Atoi(tok)
-			if err != nil || idx < 0 || idx >= c.Len() {
+			if err != nil || idx < 0 || idx >= len(c) {
 				return nil, fmt.Errorf("$ref %q: %q is not a valid array index", ref, tok)
 			}
-			cur = c.Index(idx)
+			cur = c[idx]
 		default:
 			return nil, fmt.Errorf("$ref %q: %q is not an object or array", ref, tok)
 		}
@@ -364,36 +385,32 @@ func unescapeJSONPointer(t string) string {
 
 // checkAdditionalProps enforces additionalProperties on an object: for each key NOT named in
 // `properties`, reject it when additionalProperties is `false`, or validate its value against the
-// additionalProperties schema. `true` (or a non-bool, non-dict value) imposes nothing.
-func checkAdditionalProps(d *starlark.Dict, properties, ap, root starlark.Value, depth int) error {
+// additionalProperties schema. `true` (or a non-bool, non-object value) imposes nothing.
+func checkAdditionalProps(d map[string]interface{}, properties, ap, root interface{}, depth int) error {
 	declared := map[string]bool{}
-	if props, ok := properties.(*starlark.Dict); ok {
-		for _, k := range props.Keys() {
-			if ks, ok := starlark.AsString(k); ok {
-				declared[ks] = true
-			}
+	if props, ok := properties.(map[string]interface{}); ok {
+		for k := range props {
+			declared[k] = true
 		}
 	}
 	allowed := true
-	var apSchema starlark.Value
+	var apSchema interface{}
 	switch a := ap.(type) {
-	case starlark.Bool:
-		allowed = bool(a)
-	case *starlark.Dict:
+	case bool:
+		allowed = a
+	case map[string]interface{}:
 		apSchema = a
 	}
-	for _, k := range d.Keys() {
-		ks, ok := starlark.AsString(k)
-		if !ok || declared[ks] {
+	for k, cv := range d {
+		if declared[k] {
 			continue
 		}
 		if !allowed {
-			return fmt.Errorf("additional property %q is not allowed", ks)
+			return fmt.Errorf("additional property %q is not allowed", k)
 		}
 		if apSchema != nil {
-			cv, _, _ := d.Get(k)
 			if err := validateAgainstSchema(cv, apSchema, root, depth+1); err != nil {
-				return fmt.Errorf("additional property %q: %w", ks, err)
+				return fmt.Errorf("additional property %q: %w", k, err)
 			}
 		}
 	}

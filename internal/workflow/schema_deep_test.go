@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"go.starlark.net/starlark"
-
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
@@ -17,32 +15,32 @@ func TestDeepSchemaNestedValid(t *testing.T) {
 	leaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"user":{"id":7,"tags":["a","b"]}}`)}
 	})
-	g, err := runScript(t, "ds1", 1, leaf, `
-res = agent("q", vendor="v", schema={
-  "type": "object", "required": ["user"],
-  "properties": {"user": {"type": "object", "required": ["id", "tags"],
-    "properties": {"id": {"type": "integer"}, "tags": {"type": "array", "items": {"type": "string"}}}}}})
-uid = res["user"]["id"]
+	v, err := runScript(t, "ds1", 1, leaf, `
+const res = await agent("q", {vendor: "v", schema: {
+  type: "object", required: ["user"],
+  properties: {user: {type: "object", required: ["id", "tags"],
+    properties: {id: {type: "integer"}, tags: {type: "array", items: {type: "string"}}}}}}});
+return { uid: res.user.id };
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if i, _ := starlark.AsInt32(g["uid"]); i != 7 {
-		t.Errorf("uid = %v, want 7", g["uid"])
+	if n := intField(t, wantMap(t, v), "uid"); n != 7 {
+		t.Errorf("uid = %v, want 7", n)
 	}
 }
 
 // TestDeepSchemaNestedTypeMismatchTerminal: a nested type violation (id should be an
 // integer) fails validation TERMINALLY after exactly one exec — the deep validator
-// catches what the v1 shallow key-presence check would have passed.
+// catches what a shallow key-presence check would have passed.
 func TestDeepSchemaNestedTypeMismatchTerminal(t *testing.T) {
 	rec := &recorder{}
 	leaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"user":{"id":"not-an-int"}}`)}
 	})
 	_, err := runScript(t, "ds2", 1, leaf, `
-res = agent("q", vendor="v", schema={"type": "object",
-  "properties": {"user": {"type": "object", "properties": {"id": {"type": "integer"}}}}})
+return await agent("q", {vendor: "v", schema: {type: "object",
+  properties: {user: {type: "object", properties: {id: {type: "integer"}}}}}});
 `)
 	if err == nil || !strings.Contains(err.Error(), "schema not satisfied") {
 		t.Fatalf("expected a deep-schema failure, got %v", err)
@@ -60,7 +58,7 @@ func TestDeepSchemaIntegerAcceptsZeroFractionFloat(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"n":5.0}`)}
 	})
 	if _, err := runScript(t, "ds3", 1, leaf,
-		`res = agent("q", vendor="v", schema={"properties": {"n": {"type": "integer"}}})`); err != nil {
+		`return await agent("q", {vendor: "v", schema: {properties: {n: {type: "integer"}}}});`); err != nil {
 		t.Fatalf("5.0 must satisfy an integer field: %v", err)
 	}
 }
@@ -74,7 +72,7 @@ func TestDeepSchemaRequiredRejectsScalar(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`"oops"`)} // valid JSON, but a scalar string
 	})
 	_, err := runScript(t, "dssc", 1, leaf,
-		`res = agent("q", vendor="v", schema={"required": ["answer"]})`)
+		`return await agent("q", {vendor: "v", schema: {required: ["answer"]}});`)
 	if err == nil || !strings.Contains(err.Error(), "schema not satisfied") {
 		t.Fatalf("a scalar payload must fail a required-keys schema, got %v", err)
 	}
@@ -88,7 +86,7 @@ func TestDeepSchemaEnum(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"color":"purple"}`)} // not in enum
 	})
 	_, err := runScript(t, "ds4", 1, leaf,
-		`res = agent("q", vendor="v", schema={"properties": {"color": {"enum": ["red", "green", "blue"]}}})`)
+		`return await agent("q", {vendor: "v", schema: {properties: {color: {enum: ["red", "green", "blue"]}}}});`)
 	if err == nil || !strings.Contains(err.Error(), "schema not satisfied") {
 		t.Fatalf("an out-of-enum value must fail, got %v", err)
 	}
@@ -100,13 +98,14 @@ func TestDeepSchemaEnum(t *testing.T) {
 	leaf2 := fakeLeaf(rec2, func(c leafCall) subagent.Result {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"color":"red"}`)}
 	})
-	g, err := runScript(t, "ds4b", 1, leaf2,
-		`res = agent("q", vendor="v", schema={"properties": {"color": {"enum": ["red", "green", "blue"]}}})
-c = res["color"]`)
+	v, err := runScript(t, "ds4b", 1, leaf2, `
+const res = await agent("q", {vendor: "v", schema: {properties: {color: {enum: ["red", "green", "blue"]}}}});
+return { c: res.color };
+`)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if asStr(t, g["c"]) != "red" {
-		t.Errorf("c = %v, want red", g["c"])
+	if s := strField(t, wantMap(t, v), "c"); s != "red" {
+		t.Errorf("c = %q, want red", s)
 	}
 }

@@ -62,11 +62,11 @@ func TestEngineEmitsLiveEvents(t *testing.T) {
 	t.Cleanup(func() { runLeaf = old })
 
 	dir := t.TempDir()
-	script := filepath.Join(dir, "e.star")
-	src := `meta = {"name": "n", "description": "d"}
-phase("map")
-log("starting")
-x = agent("a", vendor="v", label="alpha")
+	script := filepath.Join(dir, "e.js")
+	src := `const meta = {name: "n", description: "d"};
+phase("map");
+log("starting");
+await agent("a", {vendor: "v", label: "alpha"});
 `
 	if err := os.WriteFile(script, []byte(src), 0o600); err != nil {
 		t.Fatal(err)
@@ -115,7 +115,7 @@ func TestEventsCachedAndFailed(t *testing.T) {
 		old := runLeaf
 		runLeaf = echoLeaf(rec)
 		t.Cleanup(func() { runLeaf = old })
-		_, script := writeScript(t, `x = agent("q", vendor="v")`)
+		_, script := writeScript(t, `await agent("q", {vendor: "v"});`)
 		run, err := Prepare(script)
 		if err != nil {
 			t.Fatal(err)
@@ -133,11 +133,11 @@ func TestEventsCachedAndFailed(t *testing.T) {
 	t.Run("failed", func(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 		old := runLeaf
-		runLeaf = func(subagent.Request) subagent.Result {
+		runLeaf = func(context.Context, subagent.Request) subagent.Result {
 			return subagent.Result{OK: false, ErrorCode: "X", ErrorMsg: "boom"}
 		}
 		t.Cleanup(func() { runLeaf = old })
-		_, script := writeScript(t, `x = agent("q", vendor="v")`)
+		_, script := writeScript(t, `await agent("q", {vendor: "v"});`)
 		run, err := Prepare(script)
 		if err != nil {
 			t.Fatal(err)

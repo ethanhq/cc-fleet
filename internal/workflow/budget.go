@@ -5,7 +5,7 @@ import (
 	"math"
 	"strings"
 
-	"go.starlark.net/starlark"
+	"github.com/dop251/goja"
 
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
@@ -22,7 +22,7 @@ const (
 )
 
 // budgetWouldExceed reports whether reserving (usd, tok) more would breach EITHER active cap —
-// the first-to-trip-aborts gate. An unset cap (total<=0) never trips. GIL-held callers only.
+// the first-to-trip-aborts gate. An unset cap (total<=0) never trips. Loop-held callers only.
 func (e *engine) budgetWouldExceed(usd float64, tok int64) bool {
 	if e.budgetTotal > 0 && e.budgetSpent+e.budgetReserved+usd > e.budgetTotal {
 		return true
@@ -35,7 +35,7 @@ func (e *engine) budgetWouldExceed(usd float64, tok int64) bool {
 
 // budgetReserve / budgetRelease move a leaf's pessimistic estimate in/out of *Reserved; budgetCharge
 // books its reconciled real cost into *Spent. This is the SINGLE reservation mechanism both caps
-// share (USD + tokens). GIL-held callers only, so the counters stay exact across a parallel fan-out.
+// share (USD + tokens). Loop-held callers only, so the counters stay exact across a parallel fan-out.
 func (e *engine) budgetReserve(usd float64, tok int64) {
 	e.budgetReserved += usd
 	e.budgetTokensReserved += tok
@@ -55,12 +55,12 @@ func (e *engine) budgetCharge(usd float64, tok int64) {
 	e.budgetTokensSpent += tok
 	// Persist the new running spend so an external `workflow status` reader sees a live run-level
 	// total mid-run (the manifest otherwise only restamps at phase/terminal transitions). Bounded
-	// by real leaf completions (cache hits never charge); GIL-held, so it serializes with charging.
+	// by real leaf completions (cache hits never charge); loop-held, so it serializes with charging.
 	e.saveManifest("running", "")
 }
 
 // budgetExceededErr is the gate's refusal, naming only the active cap(s): USD (a list-price
-// estimate) and/or tokens (exact). GIL-held caller.
+// estimate) and/or tokens (exact). Loop-held caller.
 func (e *engine) budgetExceededErr() error {
 	var parts []string
 	if e.budgetTotal > 0 {
@@ -81,70 +81,47 @@ func leafTokens(res subagent.Result) int64 {
 	return int64(res.Usage.InputTokens + res.Usage.OutputTokens)
 }
 
-// budgetValue is the predeclared `budget` object, mirroring native: budget.total / .spent() /
-// .remaining() report the USD cap (a Float, or None/+Inf when uncapped) and tokens_total /
-// tokens_spent() / tokens_remaining() report the token cap (an Int, or None/a large int when
-// uncapped). The USD figure is an Anthropic LIST-PRICE estimate (claude's own metering, not the
-// third-party vendor's actual charge); the token figure (input+output, cache-read excluded) is the
-// exact vendor-neutral count. It is a thin view over the engine's GIL-protected accounting, so every
-// read happens single-threaded under the GIL — no separate lock. agent() enforces the caps (the
-// first to trip aborts) and books each completed leaf's real cost; a journal cache hit costs nothing.
-type budgetValue struct{ e *engine }
-
-var (
-	_ starlark.Value    = budgetValue{}
-	_ starlark.HasAttrs = budgetValue{}
-)
-
-func (b budgetValue) String() string        { return "budget" }
-func (b budgetValue) Type() string          { return "budget" }
-func (b budgetValue) Freeze()               {}
-func (b budgetValue) Truth() starlark.Bool  { return starlark.True }
-func (b budgetValue) Hash() (uint32, error) { return 0, fmt.Errorf("budget is unhashable") }
-
-func (b budgetValue) AttrNames() []string {
-	return []string{"remaining", "spent", "tokens_remaining", "tokens_spent", "tokens_total", "total"}
-}
-
-// Attr returns budget.total / tokens_total (Float|Int|None) or the spent()/remaining() methods. A
-// method reads the engine's budget fields under the GIL (all Starlark runs under it), so the value is
-// consistent even when called from a parallel/pipeline goroutine. The token figures mirror the USD
-// ones in Int: tokens_total is None when uncapped; tokens_remaining is MaxInt64 when uncapped (the
-// Int analog of the USD +Inf, so a `while budget.tokens_remaining() > N` loop stays unbounded).
-func (b budgetValue) Attr(name string) (starlark.Value, error) {
-	switch name {
-	case "total":
-		if b.e.budgetTotal <= 0 {
-			return starlark.None, nil // uncapped
-		}
-		return starlark.Float(b.e.budgetTotal), nil
-	case "spent":
-		return starlark.NewBuiltin("spent", func(*starlark.Thread, *starlark.Builtin, starlark.Tuple, []starlark.Tuple) (starlark.Value, error) {
-			return starlark.Float(b.e.budgetSpent), nil
-		}), nil
-	case "remaining":
-		return starlark.NewBuiltin("remaining", func(*starlark.Thread, *starlark.Builtin, starlark.Tuple, []starlark.Tuple) (starlark.Value, error) {
-			if b.e.budgetTotal <= 0 {
-				return starlark.Float(math.Inf(1)), nil
-			}
-			return starlark.Float(b.e.budgetTotal - b.e.budgetSpent), nil
-		}), nil
-	case "tokens_total":
-		if b.e.budgetTokensTotal <= 0 {
-			return starlark.None, nil // uncapped
-		}
-		return starlark.MakeInt64(b.e.budgetTokensTotal), nil
-	case "tokens_spent":
-		return starlark.NewBuiltin("tokens_spent", func(*starlark.Thread, *starlark.Builtin, starlark.Tuple, []starlark.Tuple) (starlark.Value, error) {
-			return starlark.MakeInt64(b.e.budgetTokensSpent), nil
-		}), nil
-	case "tokens_remaining":
-		return starlark.NewBuiltin("tokens_remaining", func(*starlark.Thread, *starlark.Builtin, starlark.Tuple, []starlark.Tuple) (starlark.Value, error) {
-			if b.e.budgetTokensTotal <= 0 {
-				return starlark.MakeInt64(math.MaxInt64), nil
-			}
-			return starlark.MakeInt64(b.e.budgetTokensTotal - b.e.budgetTokensSpent), nil
-		}), nil
+// newBudgetObject builds the script-facing `budget` object, mirroring native: total /
+// spent() / remaining() report the USD cap (null when uncapped; remaining → +Inf) and
+// tokens_total / tokens_spent() / tokens_remaining() the token cap (null / MaxInt64 when
+// uncapped, so a `while remaining() > N` loop stays unbounded). The USD figure is an
+// Anthropic LIST-PRICE estimate (claude's own metering, not the third-party vendor's
+// actual charge); the token figure (input+output, cache-read excluded) is the exact
+// vendor-neutral count. Every function executes on the engine loop — the only place JS
+// runs — so reads are consistent with the gates. Properties are non-writable so a
+// script can't clobber the accounting view.
+func newBudgetObject(vm *goja.Runtime, e *engine) *goja.Object {
+	obj := vm.NewObject()
+	def := func(name string, v goja.Value) {
+		_ = obj.DefineDataProperty(name, v, goja.FLAG_FALSE, goja.FLAG_FALSE, goja.FLAG_TRUE)
 	}
-	return nil, nil // unknown attribute → Starlark reports "budget has no .<name>"
+	if e.budgetTotal > 0 {
+		def("total", vm.ToValue(e.budgetTotal))
+	} else {
+		def("total", goja.Null())
+	}
+	def("spent", vm.ToValue(func(goja.FunctionCall) goja.Value {
+		return vm.ToValue(e.budgetSpent)
+	}))
+	def("remaining", vm.ToValue(func(goja.FunctionCall) goja.Value {
+		if e.budgetTotal <= 0 {
+			return vm.ToValue(math.Inf(1))
+		}
+		return vm.ToValue(e.budgetTotal - e.budgetSpent)
+	}))
+	if e.budgetTokensTotal > 0 {
+		def("tokens_total", vm.ToValue(e.budgetTokensTotal))
+	} else {
+		def("tokens_total", goja.Null())
+	}
+	def("tokens_spent", vm.ToValue(func(goja.FunctionCall) goja.Value {
+		return vm.ToValue(e.budgetTokensSpent)
+	}))
+	def("tokens_remaining", vm.ToValue(func(goja.FunctionCall) goja.Value {
+		if e.budgetTokensTotal <= 0 {
+			return vm.ToValue(int64(math.MaxInt64))
+		}
+		return vm.ToValue(e.budgetTokensTotal - e.budgetTokensSpent)
+	}))
+	return obj
 }

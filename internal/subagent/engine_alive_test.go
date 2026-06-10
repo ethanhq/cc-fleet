@@ -14,7 +14,7 @@ func TestEngineAlive(t *testing.T) {
 	t.Cleanup(func() { reuseGuardArgv = orig })
 	self := os.Getpid()
 	const dead = 0x7ffffffe // a pid that is (effectively) not running
-	engineArgv := []string{"cc-fleet", "workflow", "run", "--run-id", "r1", "s.star"}
+	engineArgv := []string{"cc-fleet", "workflow", "run", "--run-id", "r1", "s.js"}
 
 	// Foreground run (EnginePID 0) is never "alive".
 	if EngineAlive(WorkflowRun{EnginePID: 0, RunID: "r1"}) {

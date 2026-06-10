@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"go.starlark.net/starlark"
-
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
@@ -14,16 +12,16 @@ func TestSchemaAllOfValid(t *testing.T) {
 	leaf := fakeLeaf(&recorder{}, func(leafCall) subagent.Result {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"name":"x","employeeId":7}`)}
 	})
-	g, err := runScript(t, "co1", 1, leaf, `
-res = agent("q", vendor="v", schema={"allOf": [
-  {"type":"object","required":["name"],"properties":{"name":{"type":"string"}}},
-  {"type":"object","required":["employeeId"],"properties":{"employeeId":{"type":"integer"}}}]})
-n = res["name"]
+	v, err := runScript(t, "co1", 1, leaf, `
+const res = await agent("q", {vendor: "v", schema: {allOf: [
+  {type: "object", required: ["name"], properties: {name: {type: "string"}}},
+  {type: "object", required: ["employeeId"], properties: {employeeId: {type: "integer"}}}]}});
+return { n: res.name };
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if s, _ := starlark.AsString(g["n"]); s != "x" {
+	if s := strField(t, wantMap(t, v), "n"); s != "x" {
 		t.Errorf("name = %q, want x", s)
 	}
 }
@@ -35,9 +33,9 @@ func TestSchemaAllOfViolationTerminal(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"name":"x"}`)} // missing employeeId
 	})
 	if _, err := runScript(t, "co2", 1, leaf, `
-res = agent("q", vendor="v", schema={"allOf": [
-  {"type":"object","required":["name"]},
-  {"type":"object","required":["employeeId"]}]})
+return await agent("q", {vendor: "v", schema: {allOf: [
+  {type: "object", required: ["name"]},
+  {type: "object", required: ["employeeId"]}]}});
 `); err == nil {
 		t.Fatal("want a terminal validation error (allOf second subschema unmet)")
 	}
@@ -52,9 +50,9 @@ func TestSchemaOneOfMatchesTwoFails(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"card":"4111","bank":"acme"}`)}
 	})
 	if _, err := runScript(t, "co3", 1, leaf, `
-res = agent("q", vendor="v", schema={"oneOf": [
-  {"type":"object","required":["card"]},
-  {"type":"object","required":["bank"]}]})
+return await agent("q", {vendor: "v", schema: {oneOf: [
+  {type: "object", required: ["card"]},
+  {type: "object", required: ["bank"]}]}});
 `); err == nil {
 		t.Fatal("want an error: payload matches 2 oneOf subschemas, not exactly 1")
 	}
@@ -65,17 +63,17 @@ func TestSchemaRefResolved(t *testing.T) {
 	leaf := fakeLeaf(&recorder{}, func(leafCall) subagent.Result {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"shipTo":{"zip":"10001"}}`)}
 	})
-	g, err := runScript(t, "co4", 1, leaf, `
-res = agent("q", vendor="v", schema={
-  "type":"object","required":["shipTo"],
-  "properties":{"shipTo":{"$ref":"#/$defs/addr"}},
-  "$defs":{"addr":{"type":"object","required":["zip"],"properties":{"zip":{"type":"string"}}}}})
-z = res["shipTo"]["zip"]
+	v, err := runScript(t, "co4", 1, leaf, `
+const res = await agent("q", {vendor: "v", schema: {
+  type: "object", required: ["shipTo"],
+  properties: {shipTo: {"$ref": "#/$defs/addr"}},
+  "$defs": {addr: {type: "object", required: ["zip"], properties: {zip: {type: "string"}}}}}});
+return { z: res.shipTo.zip };
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if s, _ := starlark.AsString(g["z"]); s != "10001" {
+	if s := strField(t, wantMap(t, v), "z"); s != "10001" {
 		t.Errorf("zip = %q, want 10001", s)
 	}
 }
@@ -86,9 +84,9 @@ func TestSchemaOneOfSurfacesBrokenRef(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`"x"`)}
 	})
 	if _, err := runScript(t, "co6", 1, leaf, `
-res = agent("q", vendor="v", schema={"oneOf": [
-  {"$ref":"#/missing"},
-  {"type":"string"}]})
+return await agent("q", {vendor: "v", schema: {oneOf: [
+  {"$ref": "#/missing"},
+  {type: "string"}]}});
 `); err == nil {
 		t.Fatal("want an error: oneOf has an unresolvable $ref branch (must surface, not swallow)")
 	}
@@ -100,9 +98,9 @@ func TestSchemaAnyOfSurfacesBrokenRefAfterMatch(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`"x"`)}
 	})
 	if _, err := runScript(t, "co8", 1, leaf, `
-res = agent("q", vendor="v", schema={"anyOf": [
-  {"type":"string"},
-  {"$ref":"#/missing"}]})
+return await agent("q", {vendor: "v", schema: {anyOf: [
+  {type: "string"},
+  {"$ref": "#/missing"}]}});
 `); err == nil {
 		t.Fatal("want an error: anyOf has a broken $ref branch after a matching branch")
 	}
@@ -115,9 +113,9 @@ func TestSchemaAnyOfDefectBehindMismatch(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`"x"`)}
 	})
 	if _, err := runScript(t, "co9", 1, leaf, `
-res = agent("q", vendor="v", schema={"anyOf": [
-  {"type":"string"},
-  {"type":"number","$ref":"#/missing"}]})
+return await agent("q", {vendor: "v", schema: {anyOf: [
+  {type: "string"},
+  {type: "number", "$ref": "#/missing"}]}});
 `); err == nil {
 		t.Fatal("want an error: the broken $ref behind a type mismatch must still surface")
 	}
@@ -130,9 +128,9 @@ func TestSchemaAllOfDefectBehindMismatch(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`"x"`)}
 	})
 	if _, err := runScript(t, "co10", 1, leaf, `
-res = agent("q", vendor="v", schema={"anyOf": [
-  {"type":"string"},
-  {"allOf":[{"type":"number"}, {"$ref":"#/missing"}]}]})
+return await agent("q", {vendor: "v", schema: {anyOf: [
+  {type: "string"},
+  {allOf: [{type: "number"}, {"$ref": "#/missing"}]}]}});
 `); err == nil {
 		t.Fatal("want an error: the broken $ref in allOf[1] must surface past the allOf[0] mismatch")
 	}
@@ -140,12 +138,12 @@ res = agent("q", vendor="v", schema={"anyOf": [
 
 // An empty anyOf matches nothing and an empty oneOf matches zero subschemas — both fail, not accept.
 func TestSchemaEmptyAnyOfOneOfFail(t *testing.T) {
-	for i, schema := range []string{`{"anyOf":[]}`, `{"oneOf":[]}`} {
+	for i, schema := range []string{`{anyOf: []}`, `{oneOf: []}`} {
 		l := fakeLeaf(&recorder{}, func(leafCall) subagent.Result {
 			return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`"x"`)}
 		})
 		if _, err := runScript(t, "coE"+string(rune('a'+i)), 1, l,
-			"res = agent(\"q\", vendor=\"v\", schema="+schema+")"); err == nil {
+			`return await agent("q", {vendor: "v", schema: `+schema+`});`); err == nil {
 			t.Fatalf("want an error: %s must match nothing", schema)
 		}
 	}
@@ -156,16 +154,16 @@ func TestSchemaRefArrayIndex(t *testing.T) {
 	leaf := fakeLeaf(&recorder{}, func(leafCall) subagent.Result {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"x":"hi"}`)}
 	})
-	g, err := runScript(t, "co7", 1, leaf, `
-res = agent("q", vendor="v", schema={
-  "type":"object","properties":{"x":{"$ref":"#/$defs/opts/1"}},
-  "$defs":{"opts":[{"type":"integer"},{"type":"string"}]}})
-x = res["x"]
+	v, err := runScript(t, "co7", 1, leaf, `
+const res = await agent("q", {vendor: "v", schema: {
+  type: "object", properties: {x: {"$ref": "#/$defs/opts/1"}},
+  "$defs": {opts: [{type: "integer"}, {type: "string"}]}}});
+return { x: res.x };
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if s, _ := starlark.AsString(g["x"]); s != "hi" {
+	if s := strField(t, wantMap(t, v), "x"); s != "hi" {
 		t.Errorf("x = %q, want hi", s)
 	}
 }
@@ -176,9 +174,9 @@ func TestSchemaRefViolation(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"shipTo":{"zip":123}}`)}
 	})
 	if _, err := runScript(t, "co5", 1, leaf, `
-res = agent("q", vendor="v", schema={
-  "type":"object","properties":{"shipTo":{"$ref":"#/$defs/addr"}},
-  "$defs":{"addr":{"type":"object","required":["zip"],"properties":{"zip":{"type":"string"}}}}})
+return await agent("q", {vendor: "v", schema: {
+  type: "object", properties: {shipTo: {"$ref": "#/$defs/addr"}},
+  "$defs": {addr: {type: "object", required: ["zip"], properties: {zip: {type: "string"}}}}}});
 `); err == nil {
 		t.Fatal("want an error: $ref target requires zip:string, got integer")
 	}
@@ -191,7 +189,7 @@ func TestSchemaExternalRefFails(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"a":1}`)}
 	})
 	if _, err := runScript(t, "co11", 1, leaf,
-		`res = agent("q", vendor="v", schema={"type":"object","properties":{"a":{"$ref":"https://example.com/s.json"}}})`); err == nil {
+		`return await agent("q", {vendor: "v", schema: {type: "object", properties: {a: {"$ref": "https://example.com/s.json"}}}});`); err == nil {
 		t.Fatal("want an error: an external $ref is unsupported by the local backstop")
 	}
 }
@@ -202,14 +200,14 @@ func TestSchemaPattern(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"code":"AB12"}`)}
 	})
 	if _, err := runScript(t, "pt1", 1, ok,
-		`res = agent("q", vendor="v", schema={"type":"object","properties":{"code":{"type":"string","pattern":"^[A-Z]{2}[0-9]{2}$"}}})`); err != nil {
+		`return await agent("q", {vendor: "v", schema: {type: "object", properties: {code: {type: "string", pattern: "^[A-Z]{2}[0-9]{2}$"}}}});`); err != nil {
 		t.Fatalf("matching pattern should pass: %v", err)
 	}
 	bad := fakeLeaf(&recorder{}, func(leafCall) subagent.Result {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"code":"xx"}`)}
 	})
 	if _, err := runScript(t, "pt2", 1, bad,
-		`res = agent("q", vendor="v", schema={"type":"object","properties":{"code":{"type":"string","pattern":"^[A-Z]{2}[0-9]{2}$"}}})`); err == nil {
+		`return await agent("q", {vendor: "v", schema: {type: "object", properties: {code: {type: "string", pattern: "^[A-Z]{2}[0-9]{2}$"}}}});`); err == nil {
 		t.Fatal("want a pattern-mismatch error")
 	}
 }
@@ -220,7 +218,7 @@ func TestSchemaPatternEcmaSkipped(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"p":"x1"}`)}
 	})
 	if _, err := runScript(t, "pt3", 1, leaf,
-		`res = agent("q", vendor="v", schema={"type":"object","properties":{"p":{"type":"string","pattern":"(?=.*[0-9])"}}})`); err != nil {
+		`return await agent("q", {vendor: "v", schema: {type: "object", properties: {p: {type: "string", pattern: "(?=.*[0-9])"}}}});`); err != nil {
 		t.Fatalf("an uncompilable (ECMA) pattern should be skipped, not fail: %v", err)
 	}
 }
@@ -231,14 +229,14 @@ func TestSchemaFormat(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"e":"a@b.com"}`)}
 	})
 	if _, err := runScript(t, "fm1", 1, good,
-		`res = agent("q", vendor="v", schema={"type":"object","properties":{"e":{"type":"string","format":"email"}}})`); err != nil {
+		`return await agent("q", {vendor: "v", schema: {type: "object", properties: {e: {type: "string", format: "email"}}}});`); err != nil {
 		t.Fatalf("valid email should pass: %v", err)
 	}
 	bad := fakeLeaf(&recorder{}, func(leafCall) subagent.Result {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"e":"nope"}`)}
 	})
 	if _, err := runScript(t, "fm2", 1, bad,
-		`res = agent("q", vendor="v", schema={"type":"object","properties":{"e":{"type":"string","format":"email"}}})`); err == nil {
+		`return await agent("q", {vendor: "v", schema: {type: "object", properties: {e: {type: "string", format: "email"}}}});`); err == nil {
 		t.Fatal("want an invalid-email error")
 	}
 }
@@ -249,14 +247,14 @@ func TestSchemaAdditionalPropertiesFalse(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"a":1,"b":2}`)}
 	})
 	if _, err := runScript(t, "ap1", 1, extra,
-		`res = agent("q", vendor="v", schema={"type":"object","properties":{"a":{"type":"integer"}},"additionalProperties":False})`); err == nil {
+		`return await agent("q", {vendor: "v", schema: {type: "object", properties: {a: {type: "integer"}}, additionalProperties: false}});`); err == nil {
 		t.Fatal("want an additional-property error (b not allowed)")
 	}
 	clean := fakeLeaf(&recorder{}, func(leafCall) subagent.Result {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"a":1}`)}
 	})
 	if _, err := runScript(t, "ap2", 1, clean,
-		`res = agent("q", vendor="v", schema={"type":"object","properties":{"a":{"type":"integer"}},"additionalProperties":False})`); err != nil {
+		`return await agent("q", {vendor: "v", schema: {type: "object", properties: {a: {type: "integer"}}, additionalProperties: false}});`); err != nil {
 		t.Fatalf("a clean object should pass: %v", err)
 	}
 }

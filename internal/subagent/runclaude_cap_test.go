@@ -115,7 +115,7 @@ added_at        = 2026-05-24T05:00:00Z
 		t.Fatal(err)
 	}
 
-	res := Run(Request{Vendor: "glm", Prompt: "hi", JSON: true, Timeout: 10 * time.Second})
+	res := Run(context.Background(), Request{Vendor: "glm", Prompt: "hi", JSON: true, Timeout: 10 * time.Second})
 	if res.OK {
 		t.Fatal("OK should be false on output overflow")
 	}

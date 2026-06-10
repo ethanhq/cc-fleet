@@ -1,13 +1,15 @@
 // Package workflow is cc-fleet's deterministic orchestration runtime: it runs a
-// Starlark script that fans out vendor subagent leaves, in a cc-fleet process OFF the
-// main Claude context. The script's plan lives in Starlark variables (CPU, ~0 tokens);
-// the model is invoked only at agent() leaves. It mirrors the native Claude Code
-// Workflow API (meta / agent / parallel / pipeline / phase / log); the only shape
-// differences are agent()'s vendor= parameter and Starlark syntax.
+// JavaScript workflow script that fans out vendor subagent leaves, in a cc-fleet
+// process OFF the main Claude context. The script's plan lives in script variables
+// (CPU, ~0 tokens); the model is invoked only at agent() leaves. The API mirrors the
+// native Claude Code Workflow tool (const meta / agent / parallel / pipeline / phase /
+// log / budget / args / workflow); the only shape difference is agent()'s required
+// opts.vendor.
 //
-// Concurrency is a GIL (see sched.go): one mutex serializes ALL Starlark interpreter
-// execution, released only around the blocking vendor exec, so the engine is -race
-// clean while the slow leaves still overlap up to a bounded pool.
+// Concurrency is a single-owner loop (see loop.go): one goroutine runs ALL script
+// execution and engine-state mutation, builtins return Promises, and the blocking
+// vendor execs run on leaf goroutines — so the engine is -race clean while the slow
+// leaves still overlap up to a bounded pool.
 package workflow
 
 import (
@@ -18,28 +20,16 @@ import (
 	"path/filepath"
 	"time"
 
-	"go.starlark.net/starlark"
-	"go.starlark.net/syntax"
+	"github.com/dop251/goja"
 
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
-// fileOptions are the resolver/compiler options for every workflow script:
-// top-level for/if allowed (the body reads like the native JS body); `while` disabled
-// (forces a bounded `for _ in range(N): … break`, complementing the lifetime cap);
-// recursion disabled (default); `set` allowed; no global reassignment (globals freeze
-// after load → safe concurrent reads from parallel/pipeline goroutines).
-var fileOptions = &syntax.FileOptions{
-	TopLevelControl: true,
-	While:           false,
-	GlobalReassign:  false,
-	Recursion:       false,
-	Set:             true,
-}
-
 // runLeaf is the vendor-subagent leaf — a seam so tests inject a deterministic fake
 // in place of a real `claude -p` exec. Production = subagent.Run (in-process,
-// key-safe via apiKeyHelper, board-registered, tagged with run/phase/label).
+// key-safe via apiKeyHelper, board-registered, tagged with run/phase/label). The ctx
+// is the engine's per-leaf cancel handle: an aborting run cancels it and the exec
+// dies promptly instead of draining to its own timeout.
 var runLeaf = subagent.Run
 
 // mintQueuedLeaf records a leaf's queued placeholder (PID=0) before it gets a pool slot — a seam so
@@ -70,7 +60,7 @@ type Options struct {
 	// foreground re-exec path); empty means Prepare mints a fresh one.
 	RunID       string
 	Concurrency int    // 0 → defaultConcurrency()
-	ArgsJSON    string // optional; predeclared to the script as `args`
+	ArgsJSON    string // optional; the script's `args` value
 	// Resume names an EXISTING run to re-execute against its journal (cross-invocation
 	// replay): Launch reuses this id instead of minting a fresh one, and the engine's
 	// unconditional journal load then serves the leaves that already completed. Empty =
@@ -97,36 +87,26 @@ type Options struct {
 	LeadSessionID string
 }
 
-// Prepare parses a script, extracts + validates its `meta` literal, and mints a run
-// manifest with the name/description/declared phases — BEFORE any execution, so a bad
-// script never mints a half-run and the board shows the named, phase-skeletoned run
-// immediately. Returns the new manifest (its RunID is handed to a detached child or
-// printed to the caller).
+// Prepare parses a script, extracts + validates its `const meta` literal, and mints a
+// run manifest with the name/description/declared phases — BEFORE any execution, so a
+// bad script never mints a half-run and the board shows the named, phase-skeletoned
+// run immediately. The normalize step full-parses the wrapped body, so any syntax
+// error fails here with NO manifest left behind. Returns the new manifest (its RunID
+// is handed to a detached child or printed to the caller).
 func Prepare(scriptPath string) (subagent.WorkflowRun, error) {
 	src, err := os.ReadFile(scriptPath)
 	if err != nil {
 		return subagent.WorkflowRun{}, fmt.Errorf("workflow: read script: %w", err)
 	}
-	meta, err := extractMeta(fileOptions, scriptPath, src)
-	if err != nil {
-		return subagent.WorkflowRun{}, err
+	_, prog, nerr := normalizeScript(scriptPath, src)
+	if nerr != nil {
+		return subagent.WorkflowRun{}, nerr
 	}
-	// Resolve the whole script (not just meta) BEFORE minting: a resolve error — e.g. a reassigned
-	// top-level global — must fail with NO manifest left behind, not mint a 0-leaf run the board then
-	// lists forever. SourceProgramOptions resolves without executing the body.
-	if _, _, rerr := starlark.SourceProgramOptions(fileOptions, scriptPath, src, scriptPredeclared()); rerr != nil {
-		return subagent.WorkflowRun{}, rerr
+	meta, merr := extractMeta(prog)
+	if merr != nil {
+		return subagent.WorkflowRun{}, merr
 	}
 	return subagent.NewRunWithMeta(meta.Name, meta.Description, meta.WhenToUse, metaPhases(meta))
-}
-
-// scriptPredeclared reports the names a workflow script may reference without defining them — the
-// builtins() environment plus `args` (runtime-predeclared only with --args-json, but always allowed
-// here so the Prepare resolve doesn't reject a script that legitimately uses it). Universe builtins
-// (len/range/…) are resolved by the resolver itself.
-func scriptPredeclared() func(string) bool {
-	base := (&engine{}).builtins(Options{})
-	return func(name string) bool { return name == "args" || base.Has(name) }
 }
 
 // metaPhases converts a parsed script meta's phase plan into the manifest's RunPhase
@@ -141,10 +121,10 @@ func metaPhases(meta scriptMeta) []subagent.RunPhase {
 }
 
 // Execute runs a prepared script's body to completion in the CURRENT process,
-// tagging every leaf with runID, and flips the manifest to done/failed on exit. It
-// NEVER lets a panic escape: a panic (anywhere on the top-level thread) is recovered
-// into a failed status so a detached run always finalizes. (Goroutine panics inside
-// parallel/pipeline are recovered at their own boundary in callOrNone.)
+// tagging every leaf with runID, and flips the manifest to done/failed — or "stopped"
+// when the run ctx was cancelled (a cooperative stop is not a failure) — on exit. It
+// NEVER lets a panic escape: a panic is recovered into a failed status so a detached
+// run always finalizes.
 func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err error) {
 	// Fail-fast on a bad run id (e.g. a malformed `--run-id`) before doing anything —
 	// it becomes a manifest path component, and a doomed-to-not-persist run shouldn't run.
@@ -181,7 +161,12 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 		failManifest(e)
 		return e
 	}
-	meta, merr := extractMeta(fileOptions, scriptPath, src)
+	normalized, prog, nerr := normalizeScript(scriptPath, src)
+	if nerr != nil {
+		failManifest(nerr)
+		return nerr
+	}
+	meta, merr := extractMeta(prog)
 	if merr != nil {
 		failManifest(merr)
 		return merr
@@ -192,12 +177,17 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 	if concurrency <= 0 {
 		concurrency = defaultConcurrency()
 	}
+	// leafCtx is every leaf exec's parent: a cooperative stop (ctx) or an aborting run
+	// (script failure) cancels it, and the in-flight execs die promptly.
+	leafCtx, cancelLeaves := context.WithCancel(ctx)
+	defer cancelLeaves()
 	eng := &engine{
-		sched: newScheduler(ctx, concurrency), runID: runID,
+		sched: newScheduler(leafCtx, concurrency), runID: runID,
+		runCtx: ctx, leafCtx: leafCtx, cancelLeaves: cancelLeaves,
 		name: meta.Name, description: meta.Description, startedAt: startedAt, phases: phases,
 		persistIO:         !opts.NoPersistIO, // the board's inline prompt/answer detail is default-on
 		enginePID:         detachedEnginePID(opts),
-		metaModel:         meta.Model, // default model for agents that omit model=
+		metaModel:         meta.Model, // default model for agents that omit model
 		whenToUse:         meta.WhenToUse,
 		budgetTotal:       opts.BudgetUSD,
 		budgetTokensTotal: opts.BudgetTokens,
@@ -238,13 +228,16 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 			err = fmt.Errorf("workflow: script panicked: %v", r)
 		}
 		status, errText := "done", ""
-		if err != nil {
+		switch {
+		case eng.stopped:
+			status = "stopped" // a cooperative stop is not a failure; Error stays empty
+		case err != nil:
 			status, errText = "failed", err.Error()
 		}
 		eng.saveManifest(status, errText)
 	}()
 
-	_, execErr := eng.run(scriptPath, src, opts)
+	_, execErr := eng.run(scriptPath, normalized, opts)
 	return execErr
 }
 
@@ -259,19 +252,64 @@ func detachedEnginePID(opts Options) int {
 	return 0
 }
 
-// run executes a script body under the GIL and returns its module globals. The top
-// level holds the GIL; every builtin returns with the GIL held (runBlocking's
-// defer-lock invariant), so this unlock is balanced on the normal path. On a panic
-// the unlock is skipped, leaving the GIL locked — harmless, the run is ending and the
-// caller's recover finalizes. Shared by Execute and the tests (which assert on the
-// returned globals).
-func (eng *engine) run(scriptPath string, src interface{}, opts Options) (starlark.StringDict, error) {
-	predeclared := eng.builtins(opts)
-	thread := eng.sched.newThread("workflow:" + eng.runID)
-	eng.sched.lock()
-	g, err := starlark.ExecFileOptions(fileOptions, thread, scriptPath, src, predeclared)
-	eng.sched.unlock()
-	return g, err
+// run executes a normalized script body: it builds the VM, compiles the wrapped form,
+// calls the body arrow with (workflow, args), and drives the loop until the returned
+// async-IIFE promise settles and the in-flight leaves drain. Returns the script's
+// settled value. Shared by Execute and the tests (which assert on the value's Export).
+func (e *engine) run(scriptPath string, src []byte, opts Options) (goja.Value, error) {
+	if err := e.setupVM(); err != nil {
+		return nil, err
+	}
+	// Interrupt any JS busy on the loop when the run ctx dies — the cooperative-stop
+	// path for a script spinning in pure JS (the loop's select can't see ctx while a
+	// callback runs). The watchdog dies with the loop.
+	go func() {
+		select {
+		case <-e.runCtx.Done():
+			e.vm.Interrupt("workflow: run stopped")
+		case <-e.loopDone:
+		}
+	}()
+	prog, cerr := goja.Compile(scriptPath, wrapScript(src), false)
+	if cerr != nil {
+		return nil, cerr
+	}
+	fnVal, xerr := e.vm.RunProgram(prog)
+	if xerr != nil {
+		return nil, xerr
+	}
+	fn, ok := goja.AssertFunction(fnVal)
+	if !ok {
+		return nil, fmt.Errorf("workflow: script did not compile to a callable body")
+	}
+	pv, callErr := fn(goja.Undefined(), e.workflowFn, e.argsValue(opts))
+	if callErr != nil {
+		// An async body converts a sync throw into a rejection, so an error here is
+		// uncatchable — an Interrupt from the watchdog means the run was stopped.
+		if e.runCtx.Err() != nil {
+			e.stopped = true
+		}
+		return nil, callErr
+	}
+	prom, ok := pv.Export().(*goja.Promise)
+	if !ok {
+		return nil, fmt.Errorf("workflow: script body did not produce a promise")
+	}
+	return e.drive(prom)
+}
+
+// argsValue materializes --args-json as a plain JS value via the VM's own JSON.parse
+// (never a Go host-object wrapper). Absent — or invalid, though Launch pre-validates —
+// yields undefined, so a script reading `args` sees undefined rather than throwing.
+func (e *engine) argsValue(opts Options) goja.Value {
+	if opts.ArgsJSON == "" {
+		return goja.Undefined()
+	}
+	v, err := e.jsonParse(goja.Undefined(), e.vm.ToValue(opts.ArgsJSON))
+	if err != nil {
+		return goja.Undefined()
+	}
+	return v
 }
 
 // normalizeBudgetSentinels turns the --no-budget -1 sentinel into 0 (explicit uncap) for both caps,
@@ -378,9 +416,10 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 			return "", fmt.Errorf("workflow: persist run options: %w", serr)
 		}
 	}
-	// Persist the script as runs/<id>.star (the saved-script slice of native save-script)
-	// so a stopped run can be restarted from the board (`workflow run --resume <id>`).
-	// Best-effort: a write hiccup just means restart needs the original path.
+	// Persist the script as the run's saved-script sidecar (the saved-script slice of
+	// native save-script) so a stopped run can be restarted from the board
+	// (`workflow run --resume <id>`). Best-effort: a write hiccup just means restart
+	// needs the original path.
 	if data, rerr := os.ReadFile(abs); rerr == nil {
 		if sp, serr := subagent.RunScriptPath(run.RunID); serr == nil {
 			_ = os.WriteFile(sp, data, 0o600)

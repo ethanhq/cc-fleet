@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +20,7 @@ func TestLaunch_ResumeLiveGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, lerr := Launch(context.Background(), "/nonexistent.star", Options{Resume: run.RunID}, false)
+	_, lerr := Launch(context.Background(), "/nonexistent.js", Options{Resume: run.RunID}, false)
 	if lerr == nil || !strings.Contains(lerr.Error(), "already has a live engine") {
 		t.Fatalf("Launch --resume of a still-running run must refuse with a live-engine error, got: %v", lerr)
 	}
@@ -41,5 +42,28 @@ func TestWaitEngineStarted_Timeout(t *testing.T) {
 	}
 	if WaitEngineStarted(run.RunID, 12345) {
 		t.Fatal("WaitEngineStarted must return false when the child never stamps its pid")
+	}
+}
+
+// TestRestart_StarOnlyRunRefused: a run whose only saved script is the retired Starlark
+// engine's .star sidecar is refused explicitly — its script can't execute on the
+// JavaScript runtime — before any destructive step (stop / journal rewrite).
+func TestRestart_StarOnlyRunRefused(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	run, err := subagent.NewRunWithMeta("n", "d", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lp, err := subagent.LegacyRunScriptPath(run.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lp, []byte("meta = {\"name\": \"n\", \"description\": \"d\"}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rerr := Restart(context.Background(), run.RunID, "")
+	if rerr == nil || !strings.Contains(rerr.Error(), "predates the JavaScript workflow engine") {
+		t.Fatalf("restart of a .star-only run must refuse with the predates error, got: %v", rerr)
 	}
 }

@@ -43,7 +43,14 @@ func restartLocked(ctx context.Context, runID, journalKey string) error {
 	}
 	// The saved script is what the resume re-executes — verify it's readable BEFORE any
 	// destructive step (stop / journal rewrite), so a missing script never leaves a half-torn run.
+	// A run that carries only the retired Starlark engine's .star sidecar is refused explicitly:
+	// its script can't execute on the JavaScript runtime.
 	if _, serr := os.Stat(scriptPath); serr != nil {
+		if lp, lerr := subagent.LegacyRunScriptPath(runID); lerr == nil {
+			if _, sterr := os.Stat(lp); sterr == nil {
+				return fmt.Errorf("workflow: run %s predates the JavaScript workflow engine; its Starlark script can't restart — start a fresh run", runID)
+			}
+		}
 		return fmt.Errorf("workflow: saved script for run %s is unavailable; cannot restart: %w", runID, serr)
 	}
 	// A running run's engine must be GONE before the journal is rewritten (it O_APPENDs to it).

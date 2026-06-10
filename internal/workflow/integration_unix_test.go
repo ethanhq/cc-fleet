@@ -9,8 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"go.starlark.net/starlark"
-
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
@@ -65,16 +63,18 @@ func TestRealLeafIntegration(t *testing.T) {
 
 	// A real workflow: a barriered fan-out + a no-barrier pipeline, ALL through the
 	// real in-process leaf (runLeaf is intentionally NOT overridden here).
-	wf := filepath.Join(home, "wf.star")
-	wfSrc := `meta = {"name": "e2e", "description": "real fake-claude leaves", "phases": [{"title": "map"}]}
-phase("map")
-fan = [r for r in parallel([
-    lambda: agent("alpha", vendor="fake", label="a"),
-    lambda: agent("beta", vendor="fake", label="b"),
-]) if r != None]
-chain = pipeline(["x"], lambda prev, item, i: agent("stage1:" + item, vendor="fake"))
-ok = len([r for r in fan if r == "LEAF_OK"])
-chained = chain[0]
+	wf := filepath.Join(home, "wf.js")
+	wfSrc := `const meta = {name: "e2e", description: "real fake-claude leaves", phases: [{title: "map"}]};
+phase("map");
+const fan = (await parallel([
+    () => agent("alpha", {vendor: "fake", label: "a"}),
+    () => agent("beta", {vendor: "fake", label: "b"}),
+])).filter((r) => r !== null);
+const chain = await pipeline(["x"], (prev, item, i) => agent("stage1:" + item, {vendor: "fake"}));
+return {
+    ok: fan.filter((r) => r === "LEAF_OK").length,
+    chained: chain[0],
+};
 `
 	if err := os.WriteFile(wf, []byte(wfSrc), 0o600); err != nil {
 		t.Fatal(err)
@@ -84,22 +84,26 @@ chained = chain[0]
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
-	// Run via the engine directly so the script globals (the leaf results flowing
-	// back) are assertable; runLeaf stays = subagent.Run (the real leaf).
+	// Run via the engine directly so the script's returned object (the leaf results
+	// flowing back) is assertable; runLeaf stays = subagent.Run (the real leaf).
 	src, _ := os.ReadFile(wf)
+	leafCtx, cancelLeaves := context.WithCancel(context.Background())
+	defer cancelLeaves()
 	eng := &engine{
-		sched: newScheduler(context.Background(), 4), runID: run.RunID,
+		sched: newScheduler(leafCtx, 4), runID: run.RunID,
+		runCtx: context.Background(), leafCtx: leafCtx, cancelLeaves: cancelLeaves,
 		name: run.Name, description: run.Description, startedAt: run.StartedAt, phases: run.Phases,
 	}
-	g, err := eng.run(wf, src, Options{})
+	v, err := eng.run(wf, src, Options{})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
 
-	if i, _ := starlark.AsInt32(g["ok"]); i != 2 {
-		t.Errorf("ok = %v, want 2 (both fan-out leaves returned the fake claude result)", g["ok"])
+	m := wantMap(t, v)
+	if i := intField(t, m, "ok"); i != 2 {
+		t.Errorf("ok = %v, want 2 (both fan-out leaves returned the fake claude result)", i)
 	}
-	if s, _ := starlark.AsString(g["chained"]); s != "LEAF_OK" {
+	if s := strField(t, m, "chained"); s != "LEAF_OK" {
 		t.Errorf("chained = %q, want LEAF_OK (pipeline leaf result flowed back)", s)
 	}
 

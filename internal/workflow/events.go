@@ -31,10 +31,10 @@ type EventRecord struct {
 
 // eventWriter appends a run's live events. It mirrors journal.go: a single
 // open/write/close per line (no shared fd, no buffering), MkdirAll-recreate-safe,
-// 0600, best-effort, nil-receiver-safe. ALL emits run with the engine GIL held (the
-// launch event before the leaf exec, the done/failed event after runBlocking re-locks,
-// phase/log/group in their builtins), so the seq counter needs no atomic and lines never
-// interleave — the same "GIL-held callers only" invariant as the journal.
+// 0600, best-effort, nil-receiver-safe. ALL emits run on the engine loop (builtins emit
+// directly; a leaf goroutine's launch/done/failed events ride its posted callbacks), so
+// the seq counter needs no atomic and lines never interleave — the same loop-only
+// invariant as the journal.
 type eventWriter struct {
 	path string
 	seq  int64
@@ -42,7 +42,7 @@ type eventWriter struct {
 
 func newEventWriter(path string) *eventWriter { return &eventWriter{path: path} }
 
-// emit stamps the next seq and appends one JSON line. GIL-held callers only; nil-safe.
+// emit stamps the next seq and appends one JSON line. Loop-held callers only; nil-safe.
 func (w *eventWriter) emit(rec EventRecord) {
 	if w == nil {
 		return

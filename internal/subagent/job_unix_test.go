@@ -3,6 +3,7 @@
 package subagent
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -25,7 +26,7 @@ func TestBackgroundLaunch(t *testing.T) {
 	}
 	t.Cleanup(func() { loadFP = orig })
 
-	res := Run(Request{Vendor: "glm", Prompt: "hi", JSON: true, Background: true, LeadSessionID: "lead-bg-1"})
+	res := Run(context.Background(), Request{Vendor: "glm", Prompt: "hi", JSON: true, Background: true, LeadSessionID: "lead-bg-1"})
 	if !res.OK || res.JobID == "" || res.Status != "running" || res.PID <= 0 {
 		t.Fatalf("background launch handle wrong: %+v", res)
 	}
@@ -83,7 +84,7 @@ func TestBackgroundLaunchAutoDetectsLeadSession(t *testing.T) {
 	detectLeadSession = func() string { return "auto-bg-session" }
 	t.Cleanup(func() { detectLeadSession = origDetect })
 
-	res := Run(Request{Vendor: "glm", Prompt: "hi", JSON: true, Background: true})
+	res := Run(context.Background(), Request{Vendor: "glm", Prompt: "hi", JSON: true, Background: true})
 	if !res.OK || res.JobID == "" {
 		t.Fatalf("background launch failed: %+v", res)
 	}

@@ -1,69 +1,91 @@
 package workflow
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 
-	"go.starlark.net/starlark"
+	"github.com/dop251/goja"
 )
 
-// nestedLocalKey marks a thread that is executing inside a nested workflow() child (and,
-// via fanout propagation, the parallel/pipeline goroutine threads it spawns). A workflow()
-// call from such a thread is rejected — enforcing native's "one level deep only".
-const nestedLocalKey = "wfNested"
-
-// workflow runs another .star inline on the SAME engine — sharing its scheduler (one
-// pool), journal (cache/resume), budget, live-event channel, AND its meta-derived
-// settings — exactly one level deep. The child inherits the PARENT's meta.model (the
-// default model for agents omitting model=) and whenToUse; the child's own `meta.model`/
-// `whenToUse` are NOT binding (a single shared engine has one of each, and per-concurrent-
-// child scoping would race a parent parallel that nests in several branches). A child that
-// needs a specific model passes model= on its agent() calls. (The child's body still
-// executes; its meta is just not re-read by the engine.)
-// The child's leaves appear under a workflow group bracket on the board. Starlark module
-// bodies have no top-level `return`, so the child returns a value by setting a module
-// global named `result` (None if it doesn't). args= is passed to the child as its frozen
-// `args` global.
-//
-// Re-entrancy is safe: workflow() is called with the GIL held, and ExecFileOptions runs
-// the child body under that same held GIL while the parent thread is paused here — the
-// child's own agent()/parallel() builtins do the usual unlock-around-exec/relock, so the
-// single GIL is never double-locked.
-func (e *engine) workflow(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	var path string
-	var argsVal starlark.Value
-	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "script", &path, "args?", &argsVal); err != nil {
-		return nil, err
+// jsWorkflow runs another .js script inline on the SAME engine — sharing its scheduler
+// (one pool), journal (cache/resume), budget, live-event channel, AND its meta-derived
+// settings — exactly one level deep: the parent body's `workflow` parameter is this
+// function, while the child body's is a stub that only throws (the guard is lexical, so
+// it also covers workflow() calls from the child's parallel/pipeline thunks). The guard
+// targets ACCIDENTAL depth, not a deliberately adversarial author: a script polluting
+// Object.prototype/globalThis to hand its child the real function only recurses its own
+// engine process — leaf spend stays bound by the lifetime/budget caps and the process by
+// `workflow stop` — the same self-inflicted, externally-stoppable class as a busy spin.
+// The child inherits the PARENT's meta.model and whenToUse; its own `const meta` stays scoped to
+// its wrapper and is not re-read by the engine (a single shared engine has one of each).
+// args is passed as the child's own `args` parameter. Returns the child's async-IIFE
+// promise, with the group bracket closed — and a rejection relabeled with the script
+// name — when it settles. Runs on the loop.
+func (e *engine) jsWorkflow(call goja.FunctionCall) goja.Value {
+	path, ok := call.Argument(0).Export().(string)
+	if !ok || path == "" {
+		panic(e.newError("workflow: script must be a path string"))
 	}
-	if thread.Local(nestedLocalKey) != nil {
-		return nil, fmt.Errorf("workflow: nested workflows are one level deep only")
+	// args crosses the child boundary as a JSON clone (the VM's own stringify→parse):
+	// plain data passes through; a function — e.g. the parent smuggling its own
+	// `workflow` capability past the one-level guard — cannot.
+	childArgs := goja.Value(goja.Undefined())
+	if a := call.Argument(1); !goja.IsUndefined(a) && !goja.IsNull(a) {
+		cloned, cerr := e.jsonClone(a)
+		if cerr != nil {
+			panic(e.newError("workflow: args must be a JSON-serializable value: %v", cerr))
+		}
+		childArgs = cloned
 	}
 	abs, aerr := filepath.Abs(path)
 	if aerr != nil {
-		return nil, fmt.Errorf("workflow: resolve %q: %w", path, aerr)
+		panic(e.newError("workflow: resolve %q: %v", path, aerr))
 	}
+	base := filepath.Base(path)
 	src, rerr := os.ReadFile(abs)
 	if rerr != nil {
-		return nil, fmt.Errorf("workflow: read %q: %w", path, rerr)
+		panic(e.newError("workflow: read %q: %v", path, rerr))
 	}
-
-	child := e.builtins(Options{}) // SAME engine receiver → shares sched/journal/budget/events
-	if argsVal != nil && argsVal != starlark.None {
-		argsVal.Freeze()
-		child["args"] = argsVal
+	normalized, _, nerr := normalizeScript(abs, src)
+	if nerr != nil {
+		panic(e.newError("workflow(%s): %v", base, nerr))
 	}
-
+	prog, cerr := goja.Compile(abs, wrapScript(normalized), false)
+	if cerr != nil {
+		panic(e.newError("workflow(%s): %v", base, cerr))
+	}
+	fnVal, xerr := e.vm.RunProgram(prog)
+	if xerr != nil {
+		panic(e.newError("workflow(%s): %v", base, xerr))
+	}
+	childFn, ok := goja.AssertFunction(fnVal)
+	if !ok {
+		panic(e.newError("workflow(%s): script did not compile to a callable body", base))
+	}
 	gid := e.emitGroupOpen("workflow")
-	defer e.emitGroupClose(gid)
-	childThread := e.sched.newThread("workflow:" + e.runID + ":nested")
-	childThread.SetLocal(nestedLocalKey, true)
-	g, err := starlark.ExecFileOptions(fileOptions, childThread, abs, src, child)
-	if err != nil {
-		return nil, fmt.Errorf("workflow(%s): %w", filepath.Base(path), err)
+	pv, perr := childFn(goja.Undefined(), e.nestedStub, childArgs)
+	if perr != nil {
+		e.emitGroupClose(gid)
+		panic(e.newError("workflow(%s): %v", base, perr))
 	}
-	if r, ok := g["result"]; ok {
-		return r, nil
+	pobj := pv.ToObject(e.vm)
+	then, ok := goja.AssertFunction(pobj.Get("then"))
+	if !ok {
+		e.emitGroupClose(gid)
+		panic(e.newError("workflow(%s): script body did not produce a promise", base))
 	}
-	return starlark.None, nil
+	chained, terr := then(pobj,
+		e.vm.ToValue(func(c goja.FunctionCall) goja.Value {
+			e.emitGroupClose(gid)
+			return c.Argument(0)
+		}),
+		e.vm.ToValue(func(c goja.FunctionCall) goja.Value {
+			e.emitGroupClose(gid)
+			panic(e.newError("workflow(%s): %v", base, rejectionError(c.Argument(0))))
+		}))
+	if terr != nil {
+		e.emitGroupClose(gid)
+		panic(e.newError("workflow(%s): %v", base, terr))
+	}
+	return chained
 }

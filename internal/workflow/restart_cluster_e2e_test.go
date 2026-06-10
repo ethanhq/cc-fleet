@@ -16,9 +16,14 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
-// blockingFakeClaude blocks until the test removes $GATE_FILE, so a workflow leaf stays in-flight and its
-// engine stays live — long enough to fire a restart storm against it.
+// blockingFakeClaude answers --version with the fingerprint's version (so the slim
+// version gate passes without consuming the gate), then blocks until the test removes
+// $GATE_FILE — so a workflow leaf stays in-flight and its engine stays live, long enough
+// to fire a restart storm against it.
 const blockingFakeClaude = `#!/bin/sh
+for a in "$@"; do
+  if [ "$a" = "--version" ]; then printf '2.1.150 (Claude Code)\n'; exit 0; fi
+done
 cat > /dev/null
 while [ -f "$GATE_FILE" ]; do sleep 0.05; done
 printf '{"type":"result","subtype":"success","is_error":false,"result":"ok","num_turns":1,"total_cost_usd":0.001,"usage":{"input_tokens":5,"output_tokens":5}}'
@@ -41,8 +46,8 @@ func TestT3_RestartStormOneEngine(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	script := filepath.Join(env.home, "block.star")
-	body := "meta = {\"name\": \"t3\", \"description\": \"d\"}\nphase(\"p\")\nagent(\"block\", vendor=\"fake\", label=\"b\")\n"
+	script := filepath.Join(env.home, "block.js")
+	body := "const meta = {name: \"t3\", description: \"d\"};\nphase(\"p\");\nawait agent(\"block\", {vendor: \"fake\", label: \"b\"});\n"
 	if err := os.WriteFile(script, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

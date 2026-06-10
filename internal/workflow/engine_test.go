@@ -6,12 +6,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
-	"go.starlark.net/starlark"
+	"github.com/dop251/goja"
 
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
@@ -60,8 +61,8 @@ func (r *recorder) prompts() []string {
 
 // fakeLeaf adapts a per-call responder into a runLeaf, recording every request and
 // stamping the run/phase/label/vendor back onto the Result (as subagent.Run does).
-func fakeLeaf(r *recorder, respond func(leafCall) subagent.Result) func(subagent.Request) subagent.Result {
-	return func(req subagent.Request) subagent.Result {
+func fakeLeaf(r *recorder, respond func(leafCall) subagent.Result) func(context.Context, subagent.Request) subagent.Result {
+	return func(_ context.Context, req subagent.Request) subagent.Result {
 		prompt := ""
 		if req.PromptReader != nil {
 			b, _ := io.ReadAll(req.PromptReader)
@@ -82,17 +83,27 @@ func fakeLeaf(r *recorder, respond func(leafCall) subagent.Result) func(subagent
 }
 
 // echoLeaf returns OK with "ok:<prompt>".
-func echoLeaf(r *recorder) func(subagent.Request) subagent.Result {
+func echoLeaf(r *recorder) func(context.Context, subagent.Request) subagent.Result {
 	return fakeLeaf(r, func(c leafCall) subagent.Result {
 		return subagent.Result{OK: true, Result: "ok:" + c.prompt}
 	})
 }
 
-// runScript runs src with a fake leaf and returns the script's module globals. It
-// isolates ConfigDir to a temp dir so any manifest writes stay out of the real home,
-// and pins resolveProfile to identity so the default-slim leaf shape (and any journal
-// key) never depends on the host claude version.
-func runScript(t *testing.T, runID string, concurrency int, leaf func(subagent.Request) subagent.Result, src string) (starlark.StringDict, error) {
+// newTestEngine wires an engine the way Execute does (run/leaf ctx pair + scheduler),
+// minus the manifest/journal/events plumbing the fake-leaf unit tests don't need.
+func newTestEngine(ctx context.Context, runID string, concurrency int) *engine {
+	leafCtx, cancel := context.WithCancel(ctx)
+	return &engine{
+		sched: newScheduler(leafCtx, concurrency), runID: runID,
+		runCtx: ctx, leafCtx: leafCtx, cancelLeaves: cancel,
+	}
+}
+
+// runScript runs src with a fake leaf and returns the script's settled value (its
+// top-level `return`). It isolates ConfigDir to a temp dir so any manifest writes stay
+// out of the real home, and pins resolveProfile to identity so the default-slim leaf
+// shape (and any journal key) never depends on the host claude version.
+func runScript(t *testing.T, runID string, concurrency int, leaf func(context.Context, subagent.Request) subagent.Result, src string) (goja.Value, error) {
 	t.Helper()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	old := runLeaf
@@ -101,34 +112,64 @@ func runScript(t *testing.T, runID string, concurrency int, leaf func(subagent.R
 	oldR := resolveProfile
 	resolveProfile = func(requested string) (string, string) { return requested, "" }
 	t.Cleanup(func() { resolveProfile = oldR })
-	eng := &engine{sched: newScheduler(context.Background(), concurrency), runID: runID}
-	return eng.run("test.star", src, Options{})
+	eng := newTestEngine(context.Background(), runID, concurrency)
+	return eng.run("test.js", []byte(src), Options{})
 }
 
-// --- small starlark-value assertion helpers --------------------------------------
+// --- exported-value assertion helpers ---------------------------------------------
 
-func wantStringList(t *testing.T, g starlark.StringDict, name string) []starlark.Value {
+// wantMap exports the script's returned value as an object.
+func wantMap(t *testing.T, v goja.Value) map[string]interface{} {
 	t.Helper()
-	v, ok := g[name]
+	if v == nil {
+		t.Fatal("script returned no value")
+	}
+	m, ok := v.Export().(map[string]interface{})
 	if !ok {
-		t.Fatalf("global %q not set", name)
+		t.Fatalf("script returned %T, want an object", v.Export())
 	}
-	l, ok := v.(*starlark.List)
-	if !ok {
-		t.Fatalf("global %q is %s, want list", name, v.Type())
-	}
-	out := make([]starlark.Value, 0, l.Len())
-	for i := 0; i < l.Len(); i++ {
-		out = append(out, l.Index(i))
-	}
-	return out
+	return m
 }
 
-func asStr(t *testing.T, v starlark.Value) string {
+func listField(t *testing.T, m map[string]interface{}, name string) []interface{} {
 	t.Helper()
-	s, ok := starlark.AsString(v)
+	v, ok := m[name]
 	if !ok {
-		t.Fatalf("value %v is %s, want string", v, v.Type())
+		t.Fatalf("field %q not returned", name)
+	}
+	l, ok := v.([]interface{})
+	if !ok {
+		t.Fatalf("field %q is %T, want array", name, v)
+	}
+	return l
+}
+
+func strAt(t *testing.T, lst []interface{}, i int) string {
+	t.Helper()
+	s, ok := lst[i].(string)
+	if !ok {
+		t.Fatalf("element %d is %T (%v), want string", i, lst[i], lst[i])
+	}
+	return s
+}
+
+func intField(t *testing.T, m map[string]interface{}, name string) int64 {
+	t.Helper()
+	switch n := m[name].(type) {
+	case int64:
+		return n
+	case float64:
+		return int64(n)
+	}
+	t.Fatalf("field %q is %T (%v), want number", name, m[name], m[name])
+	return 0
+}
+
+func strField(t *testing.T, m map[string]interface{}, name string) string {
+	t.Helper()
+	s, ok := m[name].(string)
+	if !ok {
+		t.Fatalf("field %q is %T (%v), want string", name, m[name], m[name])
 	}
 	return s
 }
@@ -137,23 +178,24 @@ func asStr(t *testing.T, v starlark.Value) string {
 
 func TestParallelFanout(t *testing.T) {
 	rec := &recorder{}
-	g, err := runScript(t, "run1", 4, echoLeaf(rec), `
-results = parallel([
-    lambda: agent("a", vendor="v"),
-    lambda: agent("b", vendor="v"),
-    lambda: agent("c", vendor="v"),
-])
+	v, err := runScript(t, "run1", 4, echoLeaf(rec), `
+const results = await parallel([
+    () => agent("a", {vendor: "v"}),
+    () => agent("b", {vendor: "v"}),
+    () => agent("c", {vendor: "v"}),
+]);
+return { results };
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	got := wantStringList(t, g, "results")
+	got := listField(t, wantMap(t, v), "results")
 	if len(got) != 3 {
 		t.Fatalf("got %d results, want 3", len(got))
 	}
 	// parallel preserves index order even though execution is concurrent.
 	for i, want := range []string{"ok:a", "ok:b", "ok:c"} {
-		if s := asStr(t, got[i]); s != want {
+		if s := strAt(t, got, i); s != want {
 			t.Errorf("results[%d] = %q, want %q", i, s, want)
 		}
 	}
@@ -165,63 +207,58 @@ results = parallel([
 func TestPipelineChaining(t *testing.T) {
 	rec := &recorder{}
 	// stage2 sees stage1's output as `prev`; assert the chain by echoing it forward.
-	g, err := runScript(t, "run2", 4, echoLeaf(rec), `
-results = pipeline(
+	v, err := runScript(t, "run2", 4, echoLeaf(rec), `
+const results = await pipeline(
     ["x", "y"],
-    lambda prev, item, i: agent("s1:" + item, vendor="v"),
-    lambda prev, item, i: agent("s2:" + prev, vendor="v"),
-)
+    (prev, item, i) => agent("s1:" + item, {vendor: "v"}),
+    (prev, item, i) => agent("s2:" + prev, {vendor: "v"}),
+);
+return { results };
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	got := wantStringList(t, g, "results")
+	got := listField(t, wantMap(t, v), "results")
 	if len(got) != 2 {
 		t.Fatalf("got %d results, want 2", len(got))
 	}
 	// item "x": s1 → "ok:s1:x", then s2 prompt "s2:ok:s1:x" → "ok:s2:ok:s1:x".
-	if s := asStr(t, got[0]); s != "ok:s2:ok:s1:x" {
+	if s := strAt(t, got, 0); s != "ok:s2:ok:s1:x" {
 		t.Errorf("results[0] = %q, want chained ok:s2:ok:s1:x", s)
 	}
-	if s := asStr(t, got[1]); s != "ok:s2:ok:s1:y" {
+	if s := strAt(t, got, 1); s != "ok:s2:ok:s1:y" {
 		t.Errorf("results[1] = %q", s)
 	}
 }
 
-func TestForBreakLoopUntilDry(t *testing.T) {
+func TestLoopUntilDry(t *testing.T) {
 	rec := &recorder{}
-	// A bounded loop that breaks once it has accumulated 2 — the faithful "loop until
-	// dry" idiom (no `while`).
-	g, err := runScript(t, "run3", 2, echoLeaf(rec), `
-found = []
-for _ in range(10):
-    r = agent("probe", vendor="v")
-    found.append(r)
-    if len(found) >= 2:
-        break
-n = len(found)
+	// A plain while loop that breaks once it has accumulated 2 — the loop-until-dry
+	// idiom, now in its native form.
+	v, err := runScript(t, "run3", 2, echoLeaf(rec), `
+const found = [];
+while (found.length < 2) {
+    found.push(await agent("probe", {vendor: "v"}));
+}
+return { n: found.length };
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	n, ok := g["n"]
-	if !ok {
-		t.Fatal("n not set")
-	}
-	if i, _ := starlark.AsInt32(n); i != 2 {
-		t.Errorf("loop ran to n=%v, want 2 (break)", n)
+	if n := intField(t, wantMap(t, v), "n"); n != 2 {
+		t.Errorf("loop ran to n=%v, want 2", n)
 	}
 	if c := len(rec.prompts()); c != 2 {
 		t.Errorf("leaf called %d times, want 2 (loop broke early)", c)
 	}
 }
 
-func TestAgentFailureRaisesAtTopLevel(t *testing.T) {
+func TestAgentFailureRejectsAtTopLevel(t *testing.T) {
 	rec := &recorder{}
 	failLeaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
 		return subagent.Result{OK: false, ErrorCode: "KEY_INVALID", ErrorMsg: "bad key"}
 	})
-	_, err := runScript(t, "run4", 2, failLeaf, `x = agent("go", vendor="v")`)
+	_, err := runScript(t, "run4", 2, failLeaf, `return await agent("go", {vendor: "v"});`)
 	if err == nil {
 		t.Fatal("expected a top-level agent failure to abort the run, got nil error")
 	}
@@ -230,27 +267,27 @@ func TestAgentFailureRaisesAtTopLevel(t *testing.T) {
 	}
 }
 
-func TestParallelCatchesFailureAsNone(t *testing.T) {
+func TestParallelCatchesFailureAsNull(t *testing.T) {
 	rec := &recorder{}
-	// First prompt fails, second succeeds → [None, "ok:b"].
+	// First prompt fails, second succeeds → [null, "ok:b"].
 	leaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
 		if c.prompt == "a" {
 			return subagent.Result{OK: false, ErrorCode: "RATE_LIMITED", ErrorMsg: "slow down"}
 		}
 		return subagent.Result{OK: true, Result: "ok:" + c.prompt}
 	})
-	g, err := runScript(t, "run5", 4, leaf, `
-results = parallel([lambda: agent("a", vendor="v"), lambda: agent("b", vendor="v")])
-a_is_none = results[0] == None
-b = results[1]
+	v, err := runScript(t, "run5", 4, leaf, `
+const results = await parallel([() => agent("a", {vendor: "v"}), () => agent("b", {vendor: "v"})]);
+return { aIsNull: results[0] === null, b: results[1] };
 `)
 	if err != nil {
 		t.Fatalf("run: %v (a failing branch must NOT abort parallel)", err)
 	}
-	if v := g["a_is_none"]; v != starlark.Bool(true) {
-		t.Errorf("failed branch should be None, got a_is_none=%v", v)
+	m := wantMap(t, v)
+	if m["aIsNull"] != true {
+		t.Errorf("failed branch should be null, got aIsNull=%v", m["aIsNull"])
 	}
-	if s := asStr(t, g["b"]); s != "ok:b" {
+	if s := strField(t, m, "b"); s != "ok:b" {
 		t.Errorf("surviving branch = %q, want ok:b", s)
 	}
 }
@@ -263,15 +300,15 @@ func TestSchemaStructuredOutputReturned(t *testing.T) {
 	leaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
 		return subagent.Result{OK: true, Result: "prose", StructuredOutput: json.RawMessage(`{"answer": 42}`)}
 	})
-	g, err := runScript(t, "run6", 1, leaf, `
-res = agent("compute", vendor="v", schema={"required": ["answer"]})
-ans = res["answer"]
+	v, err := runScript(t, "run6", 1, leaf, `
+const res = await agent("compute", {vendor: "v", schema: {required: ["answer"]}});
+return { ans: res.answer };
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if i, _ := starlark.AsInt32(g["ans"]); i != 42 {
-		t.Errorf("ans = %v, want 42 (the structured payload)", g["ans"])
+	if n := intField(t, wantMap(t, v), "ans"); n != 42 {
+		t.Errorf("ans = %v, want 42 (the structured payload)", n)
 	}
 	calls := rec.snapshot()
 	if len(calls) != 1 {
@@ -294,7 +331,7 @@ func TestSchemaNotSatisfiedTerminal(t *testing.T) {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"other": 1}`)}
 	})
 	_, err := runScript(t, "run7", 1, leaf, `
-res = agent("q", vendor="v", schema={"required": ["answer"]})
+return await agent("q", {vendor: "v", schema: {required: ["answer"]}});
 `)
 	if err == nil || !strings.Contains(err.Error(), "schema not satisfied") {
 		t.Fatalf("err = %v, want a schema-not-satisfied failure", err)
@@ -304,34 +341,26 @@ res = agent("q", vendor="v", schema={"required": ["answer"]})
 	}
 }
 
-// TestSharedMutableFrozenError is the convert-under-lock completion (review C1): a
-// def-built thunk list that mutates a shared captured container must NOT race the
-// detector — freezing each thunk before release turns the mutation into a
-// deterministic Starlark error, surfaced as None. Running this under `-race` is the
-// real assertion (a clean race detector); the None results confirm the frozen path.
-func TestSharedMutableFrozenError(t *testing.T) {
+// TestSharedStateDeterministic: thunks mutating a shared captured array are LEGAL on
+// the single-threaded loop (where Starlark needed freeze-to-error) — every push lands,
+// deterministically, and -race stays clean because only the loop runs JS.
+func TestSharedStateDeterministic(t *testing.T) {
 	rec := &recorder{}
-	g, err := runScript(t, "run8", 4, echoLeaf(rec), `
-def build():
-    acc = []
-    thunks = []
-    for p in ["a", "b", "c", "d"]:
-        thunks.append(lambda: acc.append(agent(p, vendor="v")))
-    return thunks
-
-results = parallel(build())
-all_none = all([r == None for r in results])
+	v, err := runScript(t, "run8", 4, echoLeaf(rec), `
+const acc = [];
+await parallel(["a", "b", "c", "d"].map((p) => async () => { acc.push(await agent(p, {vendor: "v"})); }));
+return { n: acc.length };
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if v := g["all_none"]; v != starlark.Bool(true) {
-		t.Errorf("thunks mutating a shared frozen list should each fail to None; got %v", g["results"])
+	if n := intField(t, wantMap(t, v), "n"); n != 4 {
+		t.Errorf("shared array got %d pushes, want 4", n)
 	}
 }
 
-// TestLeafPanicRecovered (review C4): a panicking leaf inside a parallel thunk is
-// recovered to None — the run survives, the process does not crash.
+// TestLeafPanicRecovered: a panicking leaf inside a parallel thunk is recovered to a
+// rejection (→ null) — the run survives, the process does not crash.
 func TestLeafPanicRecovered(t *testing.T) {
 	rec := &recorder{}
 	leaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
@@ -340,66 +369,58 @@ func TestLeafPanicRecovered(t *testing.T) {
 		}
 		return subagent.Result{OK: true, Result: "ok:" + c.prompt}
 	})
-	g, err := runScript(t, "run9", 4, leaf, `
-results = parallel([lambda: agent("boom", vendor="v"), lambda: agent("fine", vendor="v")])
-zero_none = results[0] == None
-one = results[1]
+	v, err := runScript(t, "run9", 4, leaf, `
+const results = await parallel([() => agent("boom", {vendor: "v"}), () => agent("fine", {vendor: "v"})]);
+return { zeroNull: results[0] === null, one: results[1] };
 `)
 	if err != nil {
 		t.Fatalf("run: %v (a panicking leaf must not abort the run)", err)
 	}
-	if g["zero_none"] != starlark.Bool(true) {
-		t.Errorf("panicking branch should be None")
+	m := wantMap(t, v)
+	if m["zeroNull"] != true {
+		t.Errorf("panicking branch should be null")
 	}
-	if s := asStr(t, g["one"]); s != "ok:fine" {
+	if s := strField(t, m, "one"); s != "ok:fine" {
 		t.Errorf("surviving branch = %q", s)
 	}
 }
 
-// TestCancelSkipsQueuedLeaves (review C4/S4): cancelling the engine ctx makes queued
-// agents return promptly (None) while an in-flight leaf is joined before the barrier
-// returns — no hang, no abandoned goroutine (wg.Wait is the join).
-func TestCancelSkipsQueuedLeaves(t *testing.T) {
+// TestCancelStopsRun: cancelling the run ctx mid-flight stops the run — queued leaves
+// never launch, the in-flight leaf's exec ctx cancels, the loop drains, and the run
+// returns a stop (not a hang, not a leak) with eng.stopped set for the "stopped"
+// manifest finalize.
+func TestCancelStopsRun(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	rec := &recorder{}
-	release := make(chan struct{})
 	started := make(chan struct{}, 1)
-	leaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
+	leaf := func(ctx context.Context, req subagent.Request) subagent.Result {
 		started <- struct{}{}
-		<-release
-		return subagent.Result{OK: true, Result: "ok"}
-	})
+		<-ctx.Done() // the leaf dies when its exec ctx cancels
+		return subagent.Result{OK: false, ErrorCode: "SUBAGENT_STOPPED", ErrorMsg: "stopped"}
+	}
 	old := runLeaf
 	runLeaf = leaf
 	t.Cleanup(func() { runLeaf = old })
 
 	ctx, cancel := context.WithCancel(context.Background())
-	eng := &engine{sched: newScheduler(ctx, 1), runID: "run10"} // pool of 1 → 2 queued
-	src := `results = parallel([lambda: agent("0", vendor="v"), lambda: agent("1", vendor="v"), lambda: agent("2", vendor="v")])
-n_none = len([r for r in results if r == None])`
+	eng := newTestEngine(ctx, "run10", 1) // pool of 1 → 2 queued behind the in-flight leaf
+	src := `return await parallel([() => agent("0", {vendor: "v"}), () => agent("1", {vendor: "v"}), () => agent("2", {vendor: "v"})]);`
 
-	done := make(chan starlark.StringDict, 1)
+	done := make(chan error, 1)
 	go func() {
-		g, err := eng.run("c.star", src, Options{})
-		if err != nil {
-			t.Errorf("run: %v", err)
-		}
-		done <- g
+		_, err := eng.run("c.js", []byte(src), Options{})
+		done <- err
 	}()
 
 	<-started // one leaf is in-flight (holds the only slot); the other two are queued
-	cancel()  // queued agents' acquireSlot returns false → None
-	// The in-flight leaf keeps the single slot, so the two queued goroutines' select
-	// has only ctx.Done ready (slots full) → they deterministically resolve to None.
-	// Give them a beat to do so BEFORE freeing the slot, so a freed slot can't be
-	// grabbed instead (cancel is best-effort; this just makes the test deterministic).
-	time.Sleep(100 * time.Millisecond)
-	close(release) // now let the in-flight leaf finish and the barrier complete
+	cancel()
 
 	select {
-	case g := <-done:
-		if i, _ := starlark.AsInt32(g["n_none"]); i != 2 {
-			t.Errorf("n_none = %v, want 2 (two queued leaves cancelled)", g["n_none"])
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "stopped") {
+			t.Errorf("err = %v, want a run-stopped error", err)
+		}
+		if !eng.stopped {
+			t.Error("eng.stopped not set — the manifest would finalize failed, not stopped")
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("run did not return after cancel — possible deadlock/leak")
@@ -409,9 +430,10 @@ n_none = len([r for r in results if r == None])`
 func TestLeafTagging(t *testing.T) {
 	rec := &recorder{}
 	_, err := runScript(t, "RID", 4, echoLeaf(rec), `
-phase("plan")
-x = agent("p1", vendor="deepseek", label="planner")
-y = agent("p2", vendor="glm", phase="explicit", label="other")
+phase("plan");
+await agent("p1", {vendor: "deepseek", label: "planner"});
+await agent("p2", {vendor: "glm", phase: "explicit", label: "other"});
+return {};
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -425,39 +447,49 @@ y = agent("p2", vendor="glm", phase="explicit", label="other")
 		t.Errorf("p1 tagged %+v, want runID=RID phase=plan label=planner vendor=deepseek", c)
 	}
 	if c := byPrompt["p2"]; c.phase != "explicit" || c.vendor != "glm" {
-		t.Errorf("p2 tagged %+v, want phase=explicit (explicit phase= overrides current) vendor=glm", c)
+		t.Errorf("p2 tagged %+v, want phase=explicit (explicit phase overrides current) vendor=glm", c)
 	}
 }
 
 func TestAgentRequiresVendor(t *testing.T) {
 	rec := &recorder{}
-	_, err := runScript(t, "run11", 2, echoLeaf(rec), `x = agent("hi")`)
+	_, err := runScript(t, "run11", 2, echoLeaf(rec), `return await agent("hi");`)
 	if err == nil || !strings.Contains(err.Error(), "vendor") {
 		t.Errorf("expected a vendor-required error, got %v", err)
 	}
 }
 
-// TestAgentOptionalNoneAccepted: passing an explicit None for every optional (the
+// TestAgentUnknownOptionRejected: a typo'd option must fail loudly, not silently no-op
+// (the weak-model footgun this runtime exists to remove).
+func TestAgentUnknownOptionRejected(t *testing.T) {
+	rec := &recorder{}
+	_, err := runScript(t, "run12", 2, echoLeaf(rec), `return await agent("hi", {vendor: "v", modle: "x"});`)
+	if err == nil || !strings.Contains(err.Error(), "unknown option") {
+		t.Errorf("expected an unknown-option error, got %v", err)
+	}
+}
+
+// TestAgentOptionalNullAccepted: passing an explicit null for every optional (the
 // documented "omitted" default) must behave like omitting them, not error.
-func TestAgentOptionalNoneAccepted(t *testing.T) {
+func TestAgentOptionalNullAccepted(t *testing.T) {
 	rec := &recorder{}
 	_, err := runScript(t, "rn", 2, echoLeaf(rec),
-		`x = agent("p", vendor="v", model=None, schema=None, label=None, phase=None, timeout=None, max_budget_usd=None, max_turns=None)`)
+		`return await agent("p", {vendor: "v", model: null, schema: null, label: null, phase: null, timeout: null, max_budget_usd: null, max_turns: null});`)
 	if err != nil {
-		t.Fatalf("explicit None for optionals must be accepted: %v", err)
+		t.Fatalf("explicit null for optionals must be accepted: %v", err)
 	}
 	c := rec.snapshot()[0]
 	if c.model != "" || c.label != "" || c.phase != "" || c.timeout != 0 || c.maxBudget != 0 || c.maxTurns != 0 {
-		t.Errorf("None optionals should map to zero values, got %+v", c)
+		t.Errorf("null optionals should map to zero values, got %+v", c)
 	}
 }
 
 // TestAgentParamPlumbing asserts model/timeout/max_turns/max_budget_usd reach the
-// Request, and that an INT timeout + INT budget are accepted (the strict-typing fix).
+// Request, and that integer numbers are accepted for the float options.
 func TestAgentParamPlumbing(t *testing.T) {
 	rec := &recorder{}
 	_, err := runScript(t, "rp", 2, echoLeaf(rec),
-		`x = agent("p", vendor="v", model="m", timeout=42, max_turns=3, max_budget_usd=2)`)
+		`return await agent("p", {vendor: "v", model: "m", timeout: 42, max_turns: 3, max_budget_usd: 2});`)
 	if err != nil {
 		t.Fatalf("run: %v (int timeout/budget must be accepted)", err)
 	}
@@ -476,9 +508,9 @@ func TestAgentParamPlumbing(t *testing.T) {
 	}
 }
 
-// TestPipelineStageFailureToNone: a stage that fails drops its item to None and skips
+// TestPipelineStageFailureToNull: a stage that fails drops its item to null and skips
 // the item's remaining stages (the asymmetric, less-obvious pipeline path).
-func TestPipelineStageFailureToNone(t *testing.T) {
+func TestPipelineStageFailureToNull(t *testing.T) {
 	rec := &recorder{}
 	leaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
 		if strings.HasPrefix(c.prompt, "s1:bad") {
@@ -486,22 +518,22 @@ func TestPipelineStageFailureToNone(t *testing.T) {
 		}
 		return subagent.Result{OK: true, Result: "ok:" + c.prompt}
 	})
-	g, err := runScript(t, "rpf", 4, leaf, `
-results = pipeline(
+	v, err := runScript(t, "rpf", 4, leaf, `
+const results = await pipeline(
     ["good", "bad"],
-    lambda prev, item, i: agent("s1:" + item, vendor="v"),
-    lambda prev, item, i: agent("s2:" + prev, vendor="v"),
-)
-bad_is_none = results[1] == None
-good = results[0]
+    (prev, item, i) => agent("s1:" + item, {vendor: "v"}),
+    (prev, item, i) => agent("s2:" + prev, {vendor: "v"}),
+);
+return { badIsNull: results[1] === null, good: results[0] };
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if g["bad_is_none"] != starlark.Bool(true) {
-		t.Errorf("the item whose stage1 failed should be None")
+	m := wantMap(t, v)
+	if m["badIsNull"] != true {
+		t.Errorf("the item whose stage1 failed should be null")
 	}
-	if s := asStr(t, g["good"]); s != "ok:s2:ok:s1:good" {
+	if s := strField(t, m, "good"); s != "ok:s2:ok:s1:good" {
 		t.Errorf("good = %q, want chained", s)
 	}
 	stage2 := 0
@@ -516,21 +548,21 @@ good = results[0]
 }
 
 // TestSchemaPropertiesKeys: with no `required`, the schema's `properties` keys are
-// enforced (the v1 shallow heuristic).
+// enforced on present values (JSON-Schema semantics).
 func TestSchemaPropertiesKeys(t *testing.T) {
 	rec := &recorder{}
 	leaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
 		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"a": 1, "b": 2}`)}
 	})
-	g, err := runScript(t, "rsp", 1, leaf, `
-res = agent("q", vendor="v", schema={"properties": {"a": {}, "b": {}}})
-both = res["a"] + res["b"]
+	v, err := runScript(t, "rsp", 1, leaf, `
+const res = await agent("q", {vendor: "v", schema: {properties: {a: {}, b: {}}}});
+return { both: res.a + res.b };
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if i, _ := starlark.AsInt32(g["both"]); i != 3 {
-		t.Errorf("both = %v, want 3", g["both"])
+	if n := intField(t, wantMap(t, v), "both"); n != 3 {
+		t.Errorf("both = %v, want 3", n)
 	}
 }
 
@@ -549,25 +581,225 @@ func TestStripCodeFence(t *testing.T) {
 	}
 }
 
-func TestArgsPredeclared(t *testing.T) {
+func TestArgsValue(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	rec := &recorder{}
 	old := runLeaf
 	runLeaf = echoLeaf(rec)
 	t.Cleanup(func() { runLeaf = old })
-	eng := &engine{sched: newScheduler(context.Background(), 2), runID: "ra"}
-	g, err := eng.run("a.star", `n = args["count"]`, Options{ArgsJSON: `{"count": 7}`})
+	eng := newTestEngine(context.Background(), "ra", 2)
+	v, err := eng.run("a.js", []byte(`return { n: args.count };`), Options{ArgsJSON: `{"count": 7}`})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if i, _ := starlark.AsInt32(g["n"]); i != 7 {
-		t.Errorf("args[count] = %v, want 7", g["n"])
+	if n := intField(t, wantMap(t, v), "n"); n != 7 {
+		t.Errorf("args.count = %v, want 7", n)
 	}
 }
 
-// TestConcurrentPhaseLog (review C3): phase()/log() driven from concurrent parallel
-// goroutines must be GIL-serialized — the manifest read-modify-write in AppendRunPhase
-// must not lose updates. Run under -race; assert all 8 distinct phases landed.
+// TestUnawaitedLeafCompletes: a leaf the script never awaits still runs to completion
+// before the run finalizes (the in-flight counter drains the loop), and a fulfilled
+// unawaited promise is not an "unhandled rejection".
+func TestUnawaitedLeafCompletes(t *testing.T) {
+	rec := &recorder{}
+	v, err := runScript(t, "rb", 2, echoLeaf(rec), `
+agent("background", {vendor: "v"});
+return { fg: await agent("foreground", {vendor: "v"}) };
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if s := strField(t, wantMap(t, v), "fg"); s != "ok:foreground" {
+		t.Errorf("fg = %q", s)
+	}
+	if n := len(rec.prompts()); n != 2 {
+		t.Errorf("leaf ran %d times, want 2 (the unawaited leaf still completed)", n)
+	}
+}
+
+// TestUnhandledRejectionFailsRun: a leaf that failed with NOBODY ever handling its
+// rejection fails the otherwise-successful run — a silently dropped failure is still
+// a failure.
+func TestUnhandledRejectionFailsRun(t *testing.T) {
+	rec := &recorder{}
+	leaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
+		if c.prompt == "bad" {
+			return subagent.Result{OK: false, ErrorCode: "KEY_INVALID", ErrorMsg: "nope"}
+		}
+		return subagent.Result{OK: true, Result: "ok:" + c.prompt}
+	})
+	_, err := runScript(t, "rur", 2, leaf, `
+agent("bad", {vendor: "v"});
+return await agent("good", {vendor: "v"});
+`)
+	if err == nil || !strings.Contains(err.Error(), "unhandled promise rejection") {
+		t.Fatalf("err = %v, want an unhandled-rejection failure", err)
+	}
+}
+
+// TestDelayedAwaitIsHandled: a leaf promise that rejects BEFORE the script attaches a
+// handler is not a false failure — awaiting it later (in a try/catch) clears it from
+// the unhandled set (handled-set semantics).
+func TestDelayedAwaitIsHandled(t *testing.T) {
+	rec := &recorder{}
+	leaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
+		if c.prompt == "bad" {
+			return subagent.Result{OK: false, ErrorCode: "X", ErrorMsg: "fail fast"}
+		}
+		return subagent.Result{OK: true, Result: "ok:" + c.prompt}
+	})
+	v, err := runScript(t, "rda", 2, leaf, `
+const p = agent("bad", {vendor: "v"});
+await agent("good", {vendor: "v"}); // the bad leaf rejects while this awaits
+try {
+    await p;
+    return { caught: false };
+} catch (e) {
+    return { caught: true };
+}
+`)
+	if err != nil {
+		t.Fatalf("run: %v (a later-handled rejection must not fail the run)", err)
+	}
+	if m := wantMap(t, v); m["caught"] != true {
+		t.Errorf("caught = %v, want true", m["caught"])
+	}
+}
+
+// TestNoProgressDetection: a script awaiting a promise nothing can ever settle fails
+// explicitly instead of hanging the engine forever.
+func TestNoProgressDetection(t *testing.T) {
+	rec := &recorder{}
+	_, err := runScript(t, "rnp", 2, echoLeaf(rec), `await new Promise(() => {}); return {};`)
+	if err == nil || !strings.Contains(err.Error(), "nothing will ever settle") {
+		t.Fatalf("err = %v, want the no-progress failure", err)
+	}
+}
+
+// TestDeterminismLockdown: the nondeterministic surface throws (or is absent) BEFORE
+// any user statement could observe it — Date / Math.random / eval / Function / the
+// prototype-constructor escape / timers / console / require.
+func TestDeterminismLockdown(t *testing.T) {
+	rec := &recorder{}
+	v, err := runScript(t, "rdl", 1, echoLeaf(rec), `
+const threw = (f) => { try { f(); return false; } catch (e) { return true; } };
+return {
+    dateThrows: threw(() => Date.now()),
+    newDateThrows: threw(() => new Date()),
+    randomThrows: threw(() => Math.random()),
+    noEval: typeof eval === "undefined",
+    noFunction: typeof Function === "undefined",
+    ctorSealed: threw(() => (function () {}).constructor("return 1")()),
+    asyncCtorSealed: threw(() => (async function () {}).constructor("return 1")),
+    noSetTimeout: typeof setTimeout === "undefined",
+    noConsole: typeof console === "undefined",
+    noRequire: typeof require === "undefined",
+};
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	m := wantMap(t, v)
+	for _, k := range []string{"dateThrows", "newDateThrows", "randomThrows", "noEval", "noFunction", "ctorSealed", "asyncCtorSealed", "noSetTimeout", "noConsole", "noRequire"} {
+		if m[k] != true {
+			t.Errorf("%s = %v, want true", k, m[k])
+		}
+	}
+}
+
+// TestAgentNonFiniteNumberRejected: Infinity/NaN numerics would corrupt the budget
+// arithmetic (Inf reserved − Inf released = NaN) — rejected at the option boundary.
+func TestAgentNonFiniteNumberRejected(t *testing.T) {
+	rec := &recorder{}
+	for _, src := range []string{
+		`return await agent("p", {vendor: "v", timeout: Infinity});`,
+		`return await agent("p", {vendor: "v", max_budget_usd: 0/0});`,
+	} {
+		_, err := runScript(t, "rnf", 2, echoLeaf(rec), src)
+		if err == nil || !strings.Contains(err.Error(), "finite") {
+			t.Errorf("err = %v, want a finite-number rejection for %q", err, src)
+		}
+	}
+}
+
+// TestDateDeterministicEntryPoints: explicit-value Date construction, parse, and UTC
+// stay usable (they are pure functions of their inputs); only the wall-clock entry
+// points throw.
+func TestDateDeterministicEntryPoints(t *testing.T) {
+	rec := &recorder{}
+	v, err := runScript(t, "rdd", 1, echoLeaf(rec), `
+const threw = (f) => { try { f(); return false; } catch (e) { return true; } };
+return {
+    iso: new Date(0).toISOString(),
+    parsed: Date.parse("1970-01-02T00:00:00.000Z"),
+    utc: Date.UTC(1970, 0, 2),
+    nowThrows: threw(() => Date.now()),
+    arglessThrows: threw(() => new Date()),
+};
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	m := wantMap(t, v)
+	if s := strField(t, m, "iso"); s != "1970-01-01T00:00:00.000Z" {
+		t.Errorf("iso = %q", s)
+	}
+	if n := intField(t, m, "parsed"); n != 86400000 {
+		t.Errorf("parsed = %v, want 86400000", n)
+	}
+	if n := intField(t, m, "utc"); n != 86400000 {
+		t.Errorf("utc = %v, want 86400000", n)
+	}
+	if m["nowThrows"] != true || m["arglessThrows"] != true {
+		t.Errorf("wall-clock entry points must throw: %v", m)
+	}
+}
+
+// TestWorkflowArgsCapabilityFree: child args cross as a JSON clone, so a parent can't
+// smuggle its real `workflow` function past the one-level guard.
+func TestWorkflowArgsCapabilityFree(t *testing.T) {
+	rec := &recorder{}
+	dir := t.TempDir()
+	child := filepath.Join(dir, "child.js")
+	if err := os.WriteFile(child, []byte(`const meta = {name: "c", description: "d"};
+return { wfType: typeof args.wf, n: args.n };
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	src := `return await workflow(` + strconv.Quote(child) + `, {wf: workflow, n: 1});`
+	v, err := runScript(t, "rcf", 2, echoLeaf(rec), src)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	m := wantMap(t, v)
+	if s := strField(t, m, "wfType"); s != "undefined" {
+		t.Errorf("args.wf crossed the child boundary as %q, want undefined (JSON clone)", s)
+	}
+	if n := intField(t, m, "n"); n != 1 {
+		t.Errorf("plain data should survive the clone, n = %v", n)
+	}
+}
+
+// TestSchemaCanonicalJSSemantics: schema canonicalization follows JS JSON semantics —
+// an undefined-valued member drops — and the Go re-encode sorts keys byte-stably.
+func TestSchemaCanonicalJSSemantics(t *testing.T) {
+	rec := &recorder{}
+	leaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
+		return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"a": 1}`)}
+	})
+	_, err := runScript(t, "rcs", 1, leaf, `
+return await agent("q", {vendor: "v", schema: {required: ["a"], junk: undefined}});
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if c := rec.snapshot()[0]; c.jsonSchema != `{"required":["a"]}` {
+		t.Errorf("JSONSchema = %q, want the undefined member dropped", c.jsonSchema)
+	}
+}
+
+// TestConcurrentPhaseLog: phase()/log() driven from concurrent parallel thunks are
+// loop-serialized — every distinct phase lands on the manifest, none lost.
 func TestConcurrentPhaseLog(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	rec := &recorder{}
@@ -575,14 +807,14 @@ func TestConcurrentPhaseLog(t *testing.T) {
 	runLeaf = echoLeaf(rec)
 	t.Cleanup(func() { runLeaf = old })
 	dir := t.TempDir()
-	script := filepath.Join(dir, "c.star")
-	src := `meta = {"name": "n", "description": "d"}
-def w(i):
-    phase("p%d" % i)
-    log("at %d" % i)
-    return agent("t%d" % i, vendor="v")
-results = parallel([lambda: w(0), lambda: w(1), lambda: w(2), lambda: w(3),
-                    lambda: w(4), lambda: w(5), lambda: w(6), lambda: w(7)])
+	script := filepath.Join(dir, "c.js")
+	src := `const meta = {name: "n", description: "d"};
+const w = async (i) => {
+    phase("p" + i);
+    log("at " + i);
+    return agent("t" + i, {vendor: "v"});
+};
+await parallel([0, 1, 2, 3, 4, 5, 6, 7].map((i) => () => w(i)));
 `
 	if err := os.WriteFile(script, []byte(src), 0o600); err != nil {
 		t.Fatal(err)
@@ -596,7 +828,7 @@ results = parallel([lambda: w(0), lambda: w(1), lambda: w(2), lambda: w(3),
 	}
 	got, _ := subagent.ReadRun(run.RunID)
 	if len(got.Phases) != 8 {
-		t.Errorf("manifest has %d phases, want 8 (no lost update under concurrent AppendRunPhase)", len(got.Phases))
+		t.Errorf("manifest has %d phases, want 8 (no lost update)", len(got.Phases))
 	}
 }
 
@@ -605,13 +837,13 @@ results = parallel([lambda: w(0), lambda: w(1), lambda: w(2), lambda: w(3),
 func TestExecuteFinalizesFailedStatus(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	old := runLeaf
-	runLeaf = func(subagent.Request) subagent.Result {
+	runLeaf = func(context.Context, subagent.Request) subagent.Result {
 		return subagent.Result{OK: false, ErrorCode: "KEY_INVALID", ErrorMsg: "nope"}
 	}
 	t.Cleanup(func() { runLeaf = old })
 	dir := t.TempDir()
-	script := filepath.Join(dir, "f.star")
-	os.WriteFile(script, []byte("meta = {\"name\": \"n\", \"description\": \"d\"}\nx = agent(\"go\", vendor=\"v\")\n"), 0o600)
+	script := filepath.Join(dir, "f.js")
+	os.WriteFile(script, []byte("const meta = {name: \"n\", description: \"d\"};\nreturn await agent(\"go\", {vendor: \"v\"});\n"), 0o600)
 	run, err := Prepare(script)
 	if err != nil {
 		t.Fatal(err)
@@ -628,12 +860,47 @@ func TestExecuteFinalizesFailedStatus(t *testing.T) {
 	}
 }
 
+// TestExecuteStoppedStatusOnCancel: cancelling the run ctx finalizes the manifest
+// "stopped" — never "failed" — for the cooperative signal path.
+func TestExecuteStoppedStatusOnCancel(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	started := make(chan struct{}, 1)
+	old := runLeaf
+	runLeaf = func(ctx context.Context, req subagent.Request) subagent.Result {
+		started <- struct{}{}
+		<-ctx.Done()
+		return subagent.Result{OK: false, ErrorCode: "SUBAGENT_STOPPED", ErrorMsg: "stopped"}
+	}
+	t.Cleanup(func() { runLeaf = old })
+	dir := t.TempDir()
+	script := filepath.Join(dir, "s.js")
+	os.WriteFile(script, []byte("const meta = {name: \"n\", description: \"d\"};\nreturn await agent(\"go\", {vendor: \"v\"});\n"), 0o600)
+	run, err := Prepare(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Execute(ctx, script, run.RunID, Options{}) }()
+	<-started
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Execute did not return after cancel")
+	}
+	got, _ := subagent.ReadRun(run.RunID)
+	if got.Status != "stopped" {
+		t.Errorf("status = %q, want stopped", got.Status)
+	}
+}
+
 // TestExecuteRejectsBadRunID: a path-unsafe run id is refused before the script runs.
 func TestExecuteRejectsBadRunID(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	dir := t.TempDir()
-	script := filepath.Join(dir, "s.star")
-	if err := os.WriteFile(script, []byte(`meta = {"name": "n", "description": "d"}`), 0o600); err != nil {
+	script := filepath.Join(dir, "s.js")
+	if err := os.WriteFile(script, []byte(`const meta = {name: "n", description: "d"};`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := Execute(context.Background(), script, "../evil", Options{}); err == nil {
@@ -641,26 +908,61 @@ func TestExecuteRejectsBadRunID(t *testing.T) {
 	}
 }
 
-// TestExecutePanicFinalizesFailed: a panicking leaf on the top-level thread is recovered
-// by Execute into status=failed + a wrapped error — the process never crashes.
+// TestExecutePanicFinalizesFailed: a panicking leaf is recovered into a rejection and
+// the run finalizes failed — the process never crashes.
 func TestExecutePanicFinalizesFailed(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	old := runLeaf
-	runLeaf = func(subagent.Request) subagent.Result { panic("boom") }
+	runLeaf = func(context.Context, subagent.Request) subagent.Result { panic("boom") }
 	t.Cleanup(func() { runLeaf = old })
 	dir := t.TempDir()
-	script := filepath.Join(dir, "p.star")
-	os.WriteFile(script, []byte("meta = {\"name\": \"n\", \"description\": \"d\"}\nx = agent(\"go\", vendor=\"v\")\n"), 0o600)
+	script := filepath.Join(dir, "p.js")
+	os.WriteFile(script, []byte("const meta = {name: \"n\", description: \"d\"};\nreturn await agent(\"go\", {vendor: \"v\"});\n"), 0o600)
 	run, err := Prepare(script)
 	if err != nil {
 		t.Fatal(err)
 	}
 	err = Execute(context.Background(), script, run.RunID, Options{})
-	if err == nil || !strings.Contains(err.Error(), "panic") {
-		t.Fatalf("expected a recovered panic error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "panicked") {
+		t.Fatalf("expected a recovered leaf panic error, got %v", err)
 	}
 	got, _ := subagent.ReadRun(run.RunID)
 	if got.Status != "failed" {
 		t.Errorf("status = %q, want failed", got.Status)
+	}
+}
+
+// TestExportConstMetaAccepted: the native `export const meta` prefix runs verbatim
+// (the offset-preserving strip), and Prepare reads the meta through it.
+func TestExportConstMetaAccepted(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := t.TempDir()
+	script := filepath.Join(dir, "e.js")
+	src := "export const meta = {name: \"native\", description: \"d\"};\n"
+	if err := os.WriteFile(script, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	run, err := Prepare(script)
+	if err != nil {
+		t.Fatalf("prepare must accept `export const meta`: %v", err)
+	}
+	if run.Name != "native" {
+		t.Errorf("run.Name = %q, want native", run.Name)
+	}
+}
+
+// TestESModulesRejectedExplicitly: real module syntax gets the explicit unsupported
+// error, not a bare parse failure.
+func TestESModulesRejectedExplicitly(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir := t.TempDir()
+	script := filepath.Join(dir, "m.js")
+	src := "import fs from \"fs\";\nconst meta = {name: \"n\", description: \"d\"};\n"
+	if err := os.WriteFile(script, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Prepare(script)
+	if err == nil || !strings.Contains(err.Error(), "ES modules") {
+		t.Fatalf("err = %v, want the explicit ES-modules error", err)
 	}
 }

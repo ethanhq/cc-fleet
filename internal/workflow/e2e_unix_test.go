@@ -5,13 +5,12 @@ package workflow
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"go.starlark.net/starlark"
 
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
@@ -141,84 +140,88 @@ func (e *e2eEnv) execPrompts(t *testing.T) []string {
 
 // comprehensiveScript exercises every runtime feature in ONE run: phase, parallel fan-out,
 // a no-barrier pipeline, a bounded for…break loop, a NESTED-schema leaf, budget accounting,
-// a nested workflow(child.star), a background leaf + wait(), an isolation="worktree" leaf,
-// and log(). Its result globals flow back so the test can assert each path end to end.
-const comprehensiveScript = `meta = {"name": "e2e-full", "description": "every feature, one real-leaf run", "phases": [{"title": "map"}, {"title": "reduce"}]}
+// a nested workflow(child.js), a background leaf (an unawaited agent() promise awaited
+// later), an isolation:"worktree" leaf, and log(). Its returned object flows back so the
+// test can assert each path end to end.
+const comprehensiveScript = `const meta = {name: "e2e-full", description: "every feature, one real-leaf run", phases: [{title: "map"}, {title: "reduce"}]};
 
-log("starting e2e full run")
-phase("map")
+log("starting e2e full run");
+phase("map");
 
-# parallel fan-out: two leaves run concurrently; results collected in order.
-fan = parallel([
-    lambda: agent("alpha", vendor="fake", label="a"),
-    lambda: agent("beta", vendor="fake", label="b"),
-])
+// parallel fan-out: two leaves run concurrently; results collected in order.
+const fan = await parallel([
+    () => agent("alpha", {vendor: "fake", label: "a"}),
+    () => agent("beta", {vendor: "fake", label: "b"}),
+]);
 
-# no-barrier pipeline: one item through one stage.
-chain = pipeline(["gamma"], lambda prev, item, i: agent("stage:" + item, vendor="fake", label="p"))
+// no-barrier pipeline: one item through one stage.
+const chain = await pipeline(["gamma"], (prev, item, i) => agent("stage:" + item, {vendor: "fake", label: "p"}));
 
-# bounded for...break loop (no while): run a leaf per item, stop early at the 2nd.
-loop = []
-for i in ["one", "two", "three"]:
-    loop.append(agent("loop:" + i, vendor="fake"))
-    if len(loop) >= 2:
-        break
+// bounded for...break loop: run a leaf per item, stop early at the 2nd.
+const loop = [];
+for (const i of ["one", "two", "three"]) {
+    loop.push(await agent("loop:" + i, {vendor: "fake"}));
+    if (loop.length >= 2) break;
+}
 
-# schema= leaf with a NESTED schema; the fake returns a conforming object.
-shaped = agent("produce a report", vendor="fake", label="schema", schema={
-    "type": "object",
-    "required": ["summary", "items", "meta"],
-    "properties": {
-        "summary": {"type": "string"},
-        "items": {"type": "array", "items": {
-            "type": "object",
-            "required": ["name", "score"],
-            "properties": {"name": {"type": "string"}, "score": {"type": "integer"}},
+// schema leaf with a NESTED schema; the fake returns a conforming object.
+const shaped = await agent("produce a report", {vendor: "fake", label: "schema", schema: {
+    type: "object",
+    required: ["summary", "items", "meta"],
+    properties: {
+        summary: {type: "string"},
+        items: {type: "array", items: {
+            type: "object",
+            required: ["name", "score"],
+            properties: {name: {type: "string"}, score: {type: "integer"}},
         }},
-        "meta": {"type": "object", "required": ["count"], "properties": {"count": {"type": "integer"}}},
+        meta: {type: "object", required: ["count"], properties: {count: {type: "integer"}}},
     },
-})
+}});
 
-phase("reduce")
+phase("reduce");
 
-# nested workflow whose child sets a result global.
-child = workflow("CHILD_PATH", args={"topic": "delta"})
+// nested workflow whose child returns its leaf's result.
+const child = await workflow("CHILD_PATH", {topic: "delta"});
 
-# background leaf + wait().
-bg = agent("background-epsilon", vendor="fake", label="bg", run_in_background=True)
-bg_result = wait(bg)
+// background leaf: launched unawaited so it runs alongside the worktree leaf below.
+const bg = agent("background-epsilon", {vendor: "fake", label: "bg"});
 
-# worktree-isolated leaf (cwd must be a git repo).
-wt = agent("isolated-zeta", vendor="fake", label="wt", isolation="worktree")
+// worktree-isolated leaf (cwd must be a git repo).
+const wt = await agent("isolated-zeta", {vendor: "fake", label: "wt", isolation: "worktree"});
 
-spent = budget.spent()
+const bg_result = await bg;
 
-# Flatten results into assertable globals.
-fan_ok = len([r for r in fan if r == "LEAF:alpha" or r == "LEAF:beta"])
-chained = chain[0]
-loop_n = len(loop)
-schema_summary = shaped["summary"]
-schema_count = shaped["meta"]["count"]
-schema_first = shaped["items"][0]["name"]
+// Flatten results into one assertable return object.
+return {
+    fan_ok: fan.filter((r) => r === "LEAF:alpha" || r === "LEAF:beta").length,
+    chained: chain[0],
+    loop_n: loop.length,
+    schema_summary: shaped.summary,
+    schema_count: shaped.meta.count,
+    schema_first: shaped.items[0].name,
+    child: child,
+    bg_result: bg_result,
+    wt: wt,
+    spent: budget.spent(),
+};
 `
 
-// childScript is the nested workflow target: it runs one leaf and sets `result`.
-const childScript = `meta = {"name": "child", "description": "nested child run"}
-topic = args["topic"]
-r = agent("child-task:" + topic, vendor="fake", label="child")
-result = r
+// childScript is the nested workflow target: it runs one leaf and returns its result.
+const childScript = `const meta = {name: "child", description: "nested child run"};
+return await agent("child-task:" + args.topic, {vendor: "fake", label: "child"});
 `
 
 // writeComprehensive writes the comprehensive + child scripts into dir and returns the
 // comprehensive path (with CHILD_PATH substituted to the absolute child path).
 func writeComprehensive(t *testing.T, dir string) string {
 	t.Helper()
-	childPath := filepath.Join(dir, "child.star")
+	childPath := filepath.Join(dir, "child.js")
 	if err := os.WriteFile(childPath, []byte(childScript), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	main := strings.Replace(comprehensiveScript, "CHILD_PATH", childPath, 1)
-	mainPath := filepath.Join(dir, "full.star")
+	mainPath := filepath.Join(dir, "full.js")
 	if err := os.WriteFile(mainPath, []byte(main), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -252,12 +255,61 @@ func gitInitRepo(t *testing.T) string {
 	return repo
 }
 
-// runComprehensiveGlobals executes the comprehensive script and returns BOTH the module
-// globals (via eng.run, so they are assertable) AND drives the full Execute on-disk wiring
-// (journal/events/manifest). It does this in one engine instance to avoid double-executing
-// leaves: it constructs the engine like Execute does, runs the body, then finalizes the
-// manifest — i.e. it is Execute, inlined, returning the globals.
-func runComprehensiveGlobals(t *testing.T, env *e2eEnv, runID string, opts Options) (starlark.StringDict, string) {
+// executeInline runs mainPath under runID with the full Execute on-disk wiring
+// (manifest/journal/events) in ONE engine instance AND returns the script's settled
+// value as an exported map (so the run's results are assertable) — i.e. it is Execute,
+// inlined, returning the script's return object. Sharing the on-disk journal makes a
+// repeated call a resume: journaled leaves replay without a vendor exec.
+func executeInline(t *testing.T, runID, mainPath string, opts Options) map[string]interface{} {
+	t.Helper()
+	src, err := os.ReadFile(mainPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	normalized, prog, nerr := normalizeScript(mainPath, src)
+	if nerr != nil {
+		t.Fatalf("normalize: %v", nerr)
+	}
+	meta, merr := extractMeta(prog)
+	if merr != nil {
+		t.Fatalf("meta: %v", merr)
+	}
+	if opts.Concurrency <= 0 {
+		opts.Concurrency = 4
+	}
+	prepared, _ := subagent.ReadRun(runID)
+	leafCtx, cancelLeaves := context.WithCancel(context.Background())
+	defer cancelLeaves()
+	eng := &engine{
+		sched: newScheduler(leafCtx, opts.Concurrency), runID: runID,
+		runCtx: context.Background(), leafCtx: leafCtx, cancelLeaves: cancelLeaves,
+		name: meta.Name, description: meta.Description, startedAt: prepared.StartedAt, phases: metaPhases(meta),
+		persistIO: !opts.NoPersistIO, metaModel: meta.Model, whenToUse: meta.WhenToUse,
+		budgetTotal: opts.BudgetUSD, budgetTokensTotal: opts.BudgetTokens,
+	}
+	if jp, jerr := subagent.RunJournalPath(runID); jerr == nil {
+		eng.journal = loadJournal(jp)
+	}
+	if ep, eerr := subagent.RunEventsPath(runID); eerr == nil {
+		_ = os.Remove(ep)
+		eng.events = newEventWriter(ep)
+	}
+	eng.saveManifest("running", "")
+	v, rerr := eng.run(mainPath, normalized, opts)
+	status, errText := "done", ""
+	if rerr != nil {
+		status, errText = "failed", rerr.Error()
+	}
+	eng.saveManifest(status, errText)
+	if rerr != nil {
+		t.Fatalf("run: %v", rerr)
+	}
+	return wantMap(t, v)
+}
+
+// runComprehensive seeds a git repo + the comprehensive scripts, mints the manifest
+// under runID, and executes via executeInline. Returns the result map + the main path.
+func runComprehensive(t *testing.T, runID string, opts Options) (map[string]interface{}, string) {
 	t.Helper()
 	repo := gitInitRepo(t)
 	mainPath := writeComprehensive(t, repo)
@@ -271,55 +323,14 @@ func runComprehensiveGlobals(t *testing.T, env *e2eEnv, runID string, opts Optio
 	if err := subagent.SaveRun(run); err != nil {
 		t.Fatalf("seed manifest: %v", err)
 	}
-
-	src, err := os.ReadFile(mainPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	meta, err := extractMeta(fileOptions, mainPath, src)
-	if err != nil {
-		t.Fatal(err)
-	}
-	phases := make([]subagent.RunPhase, 0, len(meta.Phases))
-	for _, p := range meta.Phases {
-		phases = append(phases, subagent.RunPhase{Title: p.Title, Detail: p.Detail})
-	}
-	if opts.Concurrency <= 0 {
-		opts.Concurrency = 4
-	}
-	eng := &engine{
-		sched: newScheduler(context.Background(), opts.Concurrency), runID: runID,
-		name: meta.Name, description: meta.Description, startedAt: run.StartedAt, phases: phases,
-		persistIO:   !opts.NoPersistIO,
-		metaModel:   meta.Model,
-		whenToUse:   meta.WhenToUse,
-		budgetTotal: opts.BudgetUSD, budgetTokensTotal: opts.BudgetTokens,
-	}
-	if jp, jerr := subagent.RunJournalPath(runID); jerr == nil {
-		eng.journal = loadJournal(jp)
-	}
-	if ep, eerr := subagent.RunEventsPath(runID); eerr == nil {
-		_ = os.Remove(ep)
-		eng.events = newEventWriter(ep)
-	}
-	eng.saveManifest("running", "")
-	g, rerr := eng.run(mainPath, src, opts)
-	status, errText := "done", ""
-	if rerr != nil {
-		status, errText = "failed", rerr.Error()
-	}
-	eng.saveManifest(status, errText)
-	if rerr != nil {
-		t.Fatalf("run: %v", rerr)
-	}
-	return g, mainPath
+	return executeInline(t, runID, mainPath, opts), mainPath
 }
 
 // --- R4.1 tests -------------------------------------------------------------------------
 
 // TestE2EFullRun is the comprehensive single-run gate: it drives the REAL engine + REAL
-// subagent.Run against the fake claude through EVERY feature, then asserts the result
-// globals, the manifest, the events file (incl. key-safety), the journal, the io files,
+// subagent.Run against the fake claude through EVERY feature, then asserts the returned
+// results, the manifest, the events file (incl. key-safety), the journal, the io files,
 // and the board metrics.
 //
 // Feature coverage map (script → assertion):
@@ -327,49 +338,49 @@ func runComprehensiveGlobals(t *testing.T, env *e2eEnv, runID string, opts Optio
 //   - parallel fan-out                 → fan_ok == 2 (both leaves flowed back)
 //   - pipeline (no-barrier)            → chained == "LEAF:gamma"
 //   - bounded for...break loop         → loop_n == 2
-//   - schema= leaf, NESTED schema      → schema_summary/_count/_first (validated object)
+//   - schema leaf, NESTED schema       → schema_summary/_count/_first (validated object)
 //   - budget                           → spent > 0 (sum of leaf CostUSD)
-//   - nested workflow(child, args=)    → child == "LEAF:child-task:delta"
-//   - background agent + wait()        → bg_result == "LEAF:background-epsilon"
-//   - isolation="worktree" leaf        → wt == "LEAF:isolated-zeta"
+//   - nested workflow(child, args)     → child == "LEAF:child-task:delta"
+//   - unawaited leaf awaited later     → bg_result == "LEAF:background-epsilon"
+//   - isolation:"worktree" leaf        → wt == "LEAF:isolated-zeta"
 //   - log()                            → events file has a "log" record
 //   - persist-io (default on)          → <jobID>.prompt/.answer exist; answer NOT in manifest/events
 //   - board metrics                    → tagged Results carry Usage + CostUSD
 func TestE2EFullRun(t *testing.T) {
 	env := newE2EEnv(t)
 	const runID = "e2e-full"
-	g, _ := runComprehensiveGlobals(t, env, runID, Options{BudgetUSD: 100})
+	m, _ := runComprehensive(t, runID, Options{BudgetUSD: 100})
 
-	// --- result globals flow back -------------------------------------------------------
-	if n, _ := starlark.AsInt32(g["fan_ok"]); n != 2 {
-		t.Errorf("fan_ok = %v, want 2 (both parallel leaves returned the fake result)", g["fan_ok"])
+	// --- the returned results flow back ---------------------------------------------------
+	if n := intField(t, m, "fan_ok"); n != 2 {
+		t.Errorf("fan_ok = %v, want 2 (both parallel leaves returned the fake result)", n)
 	}
-	if s, _ := starlark.AsString(g["chained"]); s != "LEAF:stage:gamma" {
+	if s := strField(t, m, "chained"); s != "LEAF:stage:gamma" {
 		t.Errorf("chained = %q, want LEAF:stage:gamma (pipeline result)", s)
 	}
-	if n, _ := starlark.AsInt32(g["loop_n"]); n != 2 {
-		t.Errorf("loop_n = %v, want 2 (for...break stopped at 2)", g["loop_n"])
+	if n := intField(t, m, "loop_n"); n != 2 {
+		t.Errorf("loop_n = %v, want 2 (for...break stopped at 2)", n)
 	}
-	if s, _ := starlark.AsString(g["schema_summary"]); s != "ok" {
+	if s := strField(t, m, "schema_summary"); s != "ok" {
 		t.Errorf("schema_summary = %q, want ok (validated nested-schema object)", s)
 	}
-	if n, _ := starlark.AsInt32(g["schema_count"]); n != 2 {
-		t.Errorf("schema_count = %v, want 2 (nested meta.count)", g["schema_count"])
+	if n := intField(t, m, "schema_count"); n != 2 {
+		t.Errorf("schema_count = %v, want 2 (nested meta.count)", n)
 	}
-	if s, _ := starlark.AsString(g["schema_first"]); s != "a" {
+	if s := strField(t, m, "schema_first"); s != "a" {
 		t.Errorf("schema_first = %q, want a (nested items[0].name)", s)
 	}
-	if s, _ := starlark.AsString(g["child"]); s != "LEAF:child-task:delta" {
+	if s := strField(t, m, "child"); s != "LEAF:child-task:delta" {
 		t.Errorf("child = %q, want LEAF:child-task:delta (nested workflow result via args)", s)
 	}
-	if s, _ := starlark.AsString(g["bg_result"]); s != "LEAF:background-epsilon" {
-		t.Errorf("bg_result = %q, want LEAF:background-epsilon (background leaf via wait())", s)
+	if s := strField(t, m, "bg_result"); s != "LEAF:background-epsilon" {
+		t.Errorf("bg_result = %q, want LEAF:background-epsilon (unawaited leaf awaited later)", s)
 	}
-	if s, _ := starlark.AsString(g["wt"]); s != "LEAF:isolated-zeta" {
+	if s := strField(t, m, "wt"); s != "LEAF:isolated-zeta" {
 		t.Errorf("wt = %q, want LEAF:isolated-zeta (worktree-isolated leaf)", s)
 	}
-	if f, _ := starlark.AsFloat(g["spent"]); f <= 0 {
-		t.Errorf("budget spent = %v, want > 0 (fake's total_cost_usd accumulated)", g["spent"])
+	if f := floatField(t, m, "spent"); f <= 0 {
+		t.Errorf("budget spent = %v, want > 0 (fake's total_cost_usd accumulated)", f)
 	}
 
 	// --- manifest ends done with the phases --------------------------------------------
@@ -500,18 +511,18 @@ func TestE2EResumeCachedReplay(t *testing.T) {
 	env := newE2EEnv(t)
 	const runID = "e2e-resume"
 
-	g1, mainPath := runComprehensiveGlobals(t, env, runID, Options{BudgetUSD: 100})
+	m1, mainPath := runComprehensive(t, runID, Options{BudgetUSD: 100})
 	first := env.execCount(t)
 	if first == 0 {
 		t.Fatal("first run executed zero leaves")
 	}
 
 	// Resume: same script, same id → 100% cache hits, no new execs.
-	g2 := resumeAt(t, env, runID, mainPath, Options{BudgetUSD: 100})
+	m2 := executeInline(t, runID, mainPath, Options{BudgetUSD: 100})
 	if after := env.execCount(t); after != first {
 		t.Errorf("resume grew the exec log: %d → %d (want no new execs — all journaled)", first, after)
 	}
-	assertSameGlobals(t, g1, g2, "chained", "schema_summary", "child", "bg_result", "wt")
+	assertSameFields(t, m1, m2, "chained", "schema_summary", "child", "bg_result", "wt")
 
 	// Edit ONE leaf's prompt (the pipeline stage item) and resume: only that leaf re-runs.
 	edited := strings.Replace(string(mustRead(t, mainPath)), `["gamma"]`, `["gamma2"]`, 1)
@@ -519,16 +530,16 @@ func TestE2EResumeCachedReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := env.execCount(t)
-	g3 := resumeAt(t, env, runID, mainPath, Options{BudgetUSD: 100})
+	m3 := executeInline(t, runID, mainPath, Options{BudgetUSD: 100})
 	delta := env.execCount(t) - before
 	if delta != 1 {
 		t.Errorf("editing one leaf re-ran %d leaves, want exactly 1", delta)
 	}
-	if s, _ := starlark.AsString(g3["chained"]); s != "LEAF:stage:gamma2" {
+	if s := strField(t, m3, "chained"); s != "LEAF:stage:gamma2" {
 		t.Errorf("edited pipeline result = %q, want LEAF:stage:gamma2", s)
 	}
-	// The unedited globals are still served identically from the journal.
-	assertSameGlobals(t, g1, g3, "schema_summary", "child", "wt")
+	// The unedited results are still served identically from the journal.
+	assertSameFields(t, m1, m3, "schema_summary", "child", "wt")
 }
 
 // TestE2ECrashRecovery simulates a crash: a PARTIAL run (a few leaves journaled, the rest
@@ -589,9 +600,9 @@ func TestE2ECrashRecovery(t *testing.T) {
 // the test first forces the manifest back to "running" with EnginePID 0 to model a
 // foreground run that lost its terminal, then asserts the flip to stopped.
 func TestE2EStop(t *testing.T) {
-	env := newE2EEnv(t)
+	newE2EEnv(t)
 	const runID = "e2e-stop"
-	_, _ = runComprehensiveGlobals(t, env, runID, Options{BudgetUSD: 100})
+	_, _ = runComprehensive(t, runID, Options{BudgetUSD: 100})
 
 	// Model a still-"running" foreground run (EnginePID deliberately 0 → nothing to reap).
 	run, err := subagent.ReadRun(runID)
@@ -625,61 +636,29 @@ func bareSlimKey(t *testing.T, vendor, prompt string) string {
 	return journalKey(vendor, "", prompt, "", "", subagent.ProfileSlim, tools, false, true)
 }
 
-// --- shared resume helpers --------------------------------------------------------------
+// --- shared assertion helpers -------------------------------------------------------------
 
-// resumeAt re-executes mainPath under runID via the same Execute-equivalent engine wiring,
-// sharing the on-disk journal (so journaled leaves replay), and returns the module globals.
-func resumeAt(t *testing.T, env *e2eEnv, runID, mainPath string, opts Options) starlark.StringDict {
+// floatField reads a numeric result field as float64 (integral numbers export as int64).
+func floatField(t *testing.T, m map[string]interface{}, name string) float64 {
 	t.Helper()
-	src, err := os.ReadFile(mainPath)
-	if err != nil {
-		t.Fatal(err)
+	switch n := m[name].(type) {
+	case float64:
+		return n
+	case int64:
+		return float64(n)
 	}
-	meta, err := extractMeta(fileOptions, mainPath, src)
-	if err != nil {
-		t.Fatal(err)
-	}
-	phases := make([]subagent.RunPhase, 0, len(meta.Phases))
-	for _, p := range meta.Phases {
-		phases = append(phases, subagent.RunPhase{Title: p.Title, Detail: p.Detail})
-	}
-	if opts.Concurrency <= 0 {
-		opts.Concurrency = 4
-	}
-	prepared, _ := subagent.ReadRun(runID)
-	eng := &engine{
-		sched: newScheduler(context.Background(), opts.Concurrency), runID: runID,
-		name: meta.Name, description: meta.Description, startedAt: prepared.StartedAt, phases: phases,
-		persistIO: !opts.NoPersistIO, metaModel: meta.Model, whenToUse: meta.WhenToUse,
-		budgetTotal: opts.BudgetUSD, budgetTokensTotal: opts.BudgetTokens,
-	}
-	if jp, jerr := subagent.RunJournalPath(runID); jerr == nil {
-		eng.journal = loadJournal(jp)
-	}
-	if ep, eerr := subagent.RunEventsPath(runID); eerr == nil {
-		_ = os.Remove(ep)
-		eng.events = newEventWriter(ep)
-	}
-	eng.saveManifest("running", "")
-	g, rerr := eng.run(mainPath, src, opts)
-	status, errText := "done", ""
-	if rerr != nil {
-		status, errText = "failed", rerr.Error()
-	}
-	eng.saveManifest(status, errText)
-	if rerr != nil {
-		t.Fatalf("resume run: %v", rerr)
-	}
-	return g
+	t.Fatalf("field %q is %T (%v), want number", name, m[name], m[name])
+	return 0
 }
 
-func assertSameGlobals(t *testing.T, a, b starlark.StringDict, names ...string) {
+// assertSameFields asserts the named result fields are identical across two runs (the
+// journaled-replay byte-stability check).
+func assertSameFields(t *testing.T, a, b map[string]interface{}, names ...string) {
 	t.Helper()
 	for _, n := range names {
-		sa, _ := starlark.AsString(a[n])
-		sb, _ := starlark.AsString(b[n])
-		if sa != sb {
-			t.Errorf("global %q changed across resume: %q vs %q", n, sa, sb)
+		av, bv := fmt.Sprint(a[n]), fmt.Sprint(b[n])
+		if av != bv {
+			t.Errorf("result %q changed across resume: %q vs %q", n, av, bv)
 		}
 	}
 }

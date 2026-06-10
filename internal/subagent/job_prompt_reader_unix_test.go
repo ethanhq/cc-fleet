@@ -3,6 +3,7 @@
 package subagent
 
 import (
+	"context"
 	"errors"
 	"io"
 	"os"
@@ -50,7 +51,7 @@ exit 0
 		err:     errors.New("forced: pipe closed"),
 	}
 
-	res := Run(Request{
+	res := Run(context.Background(), Request{
 		Vendor:       "glm",
 		PromptReader: reader,
 		Background:   true,
@@ -133,7 +134,7 @@ exit 0
 	}
 	t.Cleanup(func() { materializePromptFn = origMat })
 
-	res := Run(Request{
+	res := Run(context.Background(), Request{
 		Vendor:       "glm",
 		PromptReader: strings.NewReader("any prompt body; reader type is not *os.File"),
 		Background:   true,

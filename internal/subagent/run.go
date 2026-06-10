@@ -161,11 +161,12 @@ func ValidateRunID(id string) error { return ids.ValidateJobID(id) }
 
 // runSidecarExts are the per-run sidecar files that live next to a manifest
 // (runs/<id>.json) and belong to the same run: the content-hash journal, the
-// live-event channel, and the saved script (for restart). removeRun and the orphan
-// sweep treat them as one unit with the manifest, so reaping a run reaps its whole
-// on-disk footprint. (Per-LEAF io — prompt/answer — is leaf-scoped under subagent-jobs
-// and reaped by removeJob, not here.)
-var runSidecarExts = []string{".journal", ".events", ".star"}
+// live-event channel, and the saved script (for restart — .js, plus the pre-JS
+// engine's .star so an old run still reaps whole). removeRun and the orphan sweep
+// treat them as one unit with the manifest, so reaping a run reaps its whole on-disk
+// footprint. (Per-LEAF io — prompt/answer — is leaf-scoped under subagent-jobs and
+// reaped by removeJob, not here.)
+var runSidecarExts = []string{".journal", ".events", ".js", ".star"}
 
 // runSidecarPath returns runs/<id><ext>, validating the id first (it becomes a path
 // component). Centralizes every per-run sidecar path so GC reaps them with the manifest.
@@ -210,9 +211,15 @@ func WithRunLock(runID string, fn func() error) error {
 	return config.WithFlock(path, fn)
 }
 
-// RunScriptPath returns the saved-script path runs/<id>.star — the run's source,
+// RunScriptPath returns the saved-script path runs/<id>.js — the run's source,
 // persisted so a stopped run can be restarted (resumed).
-func RunScriptPath(runID string) (string, error) { return runSidecarPath(runID, ".star") }
+func RunScriptPath(runID string) (string, error) { return runSidecarPath(runID, ".js") }
+
+// LegacyRunScriptPath returns the pre-JS-engine saved-script path runs/<id>.star.
+// Only ever read: its existence (with no .js beside it) marks a run recorded by the
+// retired Starlark engine, which restart/save refuse with an explicit engine-changed
+// error instead of a JS parse failure.
+func LegacyRunScriptPath(runID string) (string, error) { return runSidecarPath(runID, ".star") }
 
 // ReadRun loads a manifest by id. runID is validated first because it becomes a
 // filesystem path component (guards against a "../" escape via the CLI/status path).

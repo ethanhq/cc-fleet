@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -205,7 +206,7 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 				}
 			}
 
-			res := subagent.Run(req)
+			res := subagent.Run(context.Background(), req)
 			return reportSubagent(res, asJSON)
 		},
 	}

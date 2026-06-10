@@ -1,6 +1,7 @@
 package subagent
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -163,7 +164,7 @@ func TestClassify(t *testing.T) {
 		}
 	})
 
-	t.Run("error_max_turns subtype → subagent failed (review fix #3)", func(t *testing.T) {
+	t.Run("error_max_turns subtype → subagent failed", func(t *testing.T) {
 		js := `{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":8,"errors":[{"message":"max turns"}]}`
 		res := classify(req, "m", []byte(js), nil, 1, false, true)
 		if res.ErrorCode != ErrCodeFailed {
@@ -261,7 +262,7 @@ func TestClassify(t *testing.T) {
 func TestRun_UnknownVendor(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
-	res := Run(Request{Vendor: "nope", Prompt: "hi", JSON: true})
+	res := Run(context.Background(), Request{Vendor: "nope", Prompt: "hi", JSON: true})
 	if res.OK || res.ErrorCode != ErrCodeUnknownVendor {
 		t.Fatalf("want UNKNOWN_VENDOR, got OK=%v code=%s", res.OK, res.ErrorCode)
 	}

@@ -8,20 +8,25 @@ import (
 	"sync"
 	"testing"
 
-	"go.starlark.net/starlark"
-
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
 // newEngineFor builds an engine bound to runID with its on-disk journal loaded — the
 // real resume substrate (a fresh engine per "invocation", sharing the journal file).
+// resolveProfile is pinned to identity so the default-slim leaf shape (and any journal
+// key) never depends on the host claude version.
 func newEngineFor(t *testing.T, runID string, concurrency int) *engine {
 	t.Helper()
+	oldR := resolveProfile
+	resolveProfile = func(requested string) (string, string) { return requested, "" }
+	t.Cleanup(func() { resolveProfile = oldR })
 	jp, err := subagent.RunJournalPath(runID)
 	if err != nil {
 		t.Fatalf("journal path: %v", err)
 	}
-	return &engine{sched: newScheduler(context.Background(), concurrency), runID: runID, journal: loadJournal(jp)}
+	eng := newTestEngine(context.Background(), runID, concurrency)
+	eng.journal = loadJournal(jp)
+	return eng
 }
 
 // TestResumeServesJournaledLeavesNoReexec: a second invocation of the same script under
@@ -35,9 +40,13 @@ func TestResumeServesJournaledLeavesNoReexec(t *testing.T) {
 	t.Cleanup(func() { runLeaf = old })
 
 	const runID = "resume-1"
-	src := `r = [agent("a", vendor="v"), agent("b", vendor="v"), agent("c", vendor="v")]`
+	src := `return { r: [
+    await agent("a", {vendor: "v"}),
+    await agent("b", {vendor: "v"}),
+    await agent("c", {vendor: "v"}),
+] };`
 
-	g1, err := newEngineFor(t, runID, 4).run("r.star", src, Options{})
+	v1, err := newEngineFor(t, runID, 4).run("r.js", []byte(src), Options{})
 	if err != nil {
 		t.Fatalf("pass1: %v", err)
 	}
@@ -45,17 +54,17 @@ func TestResumeServesJournaledLeavesNoReexec(t *testing.T) {
 		t.Fatalf("pass1 leaf calls = %d, want 3", n)
 	}
 
-	g2, err := newEngineFor(t, runID, 4).run("r.star", src, Options{})
+	v2, err := newEngineFor(t, runID, 4).run("r.js", []byte(src), Options{})
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	if n := len(rec.prompts()); n != 3 {
 		t.Errorf("cumulative leaf calls after resume = %d, want 3 (all served from the journal)", n)
 	}
-	l1, l2 := wantStringList(t, g1, "r"), wantStringList(t, g2, "r")
+	l1, l2 := listField(t, wantMap(t, v1), "r"), listField(t, wantMap(t, v2), "r")
 	for i := range l1 {
-		if asStr(t, l1[i]) != asStr(t, l2[i]) {
-			t.Errorf("result[%d] changed across resume: %q vs %q", i, asStr(t, l1[i]), asStr(t, l2[i]))
+		if strAt(t, l1, i) != strAt(t, l2, i) {
+			t.Errorf("result[%d] changed across resume: %q vs %q", i, strAt(t, l1, i), strAt(t, l2, i))
 		}
 	}
 }
@@ -72,15 +81,18 @@ func TestFreshRunDuplicateCallsBothExecute(t *testing.T) {
 	t.Cleanup(func() { runLeaf = old })
 
 	// Three identical serial calls in one fresh run.
-	g, err := newEngineFor(t, "dup-1", 1).run("d.star",
-		`r = [agent("same", vendor="v"), agent("same", vendor="v"), agent("same", vendor="v")]`, Options{})
+	v, err := newEngineFor(t, "dup-1", 1).run("d.js", []byte(`return { r: [
+    await agent("same", {vendor: "v"}),
+    await agent("same", {vendor: "v"}),
+    await agent("same", {vendor: "v"}),
+] };`), Options{})
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if n := len(rec.prompts()); n != 3 {
 		t.Errorf("duplicate calls executed %d times, want 3 (no within-run memoization)", n)
 	}
-	if l := wantStringList(t, g, "r"); len(l) != 3 {
+	if l := listField(t, wantMap(t, v), "r"); len(l) != 3 {
 		t.Fatalf("got %d results, want 3", len(l))
 	}
 }
@@ -95,16 +107,16 @@ func TestResumeEditedLeafReruns(t *testing.T) {
 	t.Cleanup(func() { runLeaf = old })
 
 	const runID = "resume-2"
-	if _, err := newEngineFor(t, runID, 4).run("r.star",
-		`r = [agent("a", vendor="v"), agent("b", vendor="v")]`, Options{}); err != nil {
+	if _, err := newEngineFor(t, runID, 4).run("r.js", []byte(
+		`return { r: [await agent("a", {vendor: "v"}), await agent("b", {vendor: "v"})] };`), Options{}); err != nil {
 		t.Fatalf("pass1: %v", err)
 	}
 	if n := len(rec.prompts()); n != 2 {
 		t.Fatalf("pass1 calls = %d, want 2", n)
 	}
 	// Edit leaf b → b2; a is unchanged.
-	if _, err := newEngineFor(t, runID, 4).run("r.star",
-		`r = [agent("a", vendor="v"), agent("b2", vendor="v")]`, Options{}); err != nil {
+	if _, err := newEngineFor(t, runID, 4).run("r.js", []byte(
+		`return { r: [await agent("a", {vendor: "v"}), await agent("b2", {vendor: "v"})] };`), Options{}); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	if n := len(rec.prompts()); n != 3 {
@@ -129,19 +141,22 @@ func TestResumeDuplicateKeyCrashRecovery(t *testing.T) {
 
 	const runID = "resume-dup"
 	jp, _ := subagent.RunJournalPath(runID)
-	// The leaves are pinned profile="full" so the seeded key carries no slim shape (and no
+	// The leaves are pinned profile "full" so the seeded key carries no slim shape (and no
 	// host-claude-version dependence).
 	loadJournal(jp).append(journalKey("v", "", "same", "", "", "", nil, false, false), "ok:same") // 1 of 3 done before the kill
 
-	g, err := newEngineFor(t, runID, 1).run("d.star",
-		`r = [agent("same", vendor="v", profile="full"), agent("same", vendor="v", profile="full"), agent("same", vendor="v", profile="full")]`, Options{})
+	v, err := newEngineFor(t, runID, 1).run("d.js", []byte(`return { r: [
+    await agent("same", {vendor: "v", profile: "full"}),
+    await agent("same", {vendor: "v", profile: "full"}),
+    await agent("same", {vendor: "v", profile: "full"}),
+] };`), Options{})
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	if n := len(rec.prompts()); n != 2 {
 		t.Errorf("dup-key crash recovery executed %d leaves, want 2 (1 cached + the 2 unrun re-run)", n)
 	}
-	if l := wantStringList(t, g, "r"); len(l) != 3 {
+	if l := listField(t, wantMap(t, v), "r"); len(l) != 3 {
 		t.Fatalf("got %d results, want 3", len(l))
 	}
 }
@@ -159,11 +174,14 @@ func TestResumeCrashRecoveryPartialJournal(t *testing.T) {
 	jp, _ := subagent.RunJournalPath(runID)
 	// Seed the journal as if the run finished "a" then was killed (key MUST match the
 	// engine's: vendor "v", model "", prompt "a", no schema; the leaves are pinned
-	// profile="full" so the key carries no slim shape).
+	// profile "full" so the key carries no slim shape).
 	loadJournal(jp).append(journalKey("v", "", "a", "", "", "", nil, false, false), "ok:a")
 
-	g, err := newEngineFor(t, runID, 4).run("r.star",
-		`r = [agent("a", vendor="v", profile="full"), agent("b", vendor="v", profile="full"), agent("c", vendor="v", profile="full")]`, Options{})
+	v, err := newEngineFor(t, runID, 4).run("r.js", []byte(`return { r: [
+    await agent("a", {vendor: "v", profile: "full"}),
+    await agent("b", {vendor: "v", profile: "full"}),
+    await agent("c", {vendor: "v", profile: "full"}),
+] };`), Options{})
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -175,8 +193,8 @@ func TestResumeCrashRecoveryPartialJournal(t *testing.T) {
 			t.Error("leaf a was re-executed despite being journaled")
 		}
 	}
-	if l := wantStringList(t, g, "r"); asStr(t, l[0]) != "ok:a" {
-		t.Errorf("cached a result = %q, want ok:a", asStr(t, l[0]))
+	if l := listField(t, wantMap(t, v), "r"); strAt(t, l, 0) != "ok:a" {
+		t.Errorf("cached a result = %q, want ok:a", strAt(t, l, 0))
 	}
 }
 
@@ -204,21 +222,21 @@ func TestResumeFailedLeafNotCached(t *testing.T) {
 	t.Cleanup(func() { runLeaf = old })
 
 	const runID = "resume-4"
-	src := `r = parallel([lambda: agent("flaky", vendor="v")])` // failure → None, not journaled
+	src := `return { r: await parallel([() => agent("flaky", {vendor: "v"})]) };` // failure → null, not journaled
 
-	g1, err := newEngineFor(t, runID, 2).run("r.star", src, Options{})
+	v1, err := newEngineFor(t, runID, 2).run("r.js", []byte(src), Options{})
 	if err != nil {
 		t.Fatalf("pass1: %v", err)
 	}
-	if l := wantStringList(t, g1, "r"); l[0] != starlark.None {
-		t.Fatalf("failed leaf should degrade to None, got %v", l[0])
+	if l := listField(t, wantMap(t, v1), "r"); l[0] != nil {
+		t.Fatalf("failed leaf should degrade to null, got %v", l[0])
 	}
-	g2, err := newEngineFor(t, runID, 2).run("r.star", src, Options{})
+	v2, err := newEngineFor(t, runID, 2).run("r.js", []byte(src), Options{})
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	if l := wantStringList(t, g2, "r"); asStr(t, l[0]) != "ok:flaky" {
-		t.Error("a previously-failed leaf must re-run on resume (no cache), not stay None")
+	if l := listField(t, wantMap(t, v2), "r"); l[0] == nil || strAt(t, l, 0) != "ok:flaky" {
+		t.Error("a previously-failed leaf must re-run on resume (no cache), not stay null")
 	}
 	if n := len(rec.prompts()); n != 2 {
 		t.Errorf("flaky should have run twice (fail, then succeed on resume), got %d", n)
@@ -239,10 +257,10 @@ func TestResumeSchemaCorruptCacheFallsThrough(t *testing.T) {
 	t.Cleanup(func() { runLeaf = old })
 
 	const runID = "resume-corrupt"
-	src := `res = agent("q", vendor="v", schema={"required": ["answer"]})
-ans = res["answer"]`
+	src := `const res = await agent("q", {vendor: "v", schema: {required: ["answer"]}});
+return { ans: res.answer };`
 
-	if _, err := newEngineFor(t, runID, 1).run("r.star", src, Options{}); err != nil {
+	if _, err := newEngineFor(t, runID, 1).run("r.js", []byte(src), Options{}); err != nil {
 		t.Fatalf("pass1: %v", err)
 	}
 	if n := len(rec.prompts()); n != 1 {
@@ -260,15 +278,15 @@ ans = res["answer"]`
 		t.Fatal(err)
 	}
 
-	g, err := newEngineFor(t, runID, 1).run("r.star", src, Options{})
+	v, err := newEngineFor(t, runID, 1).run("r.js", []byte(src), Options{})
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	if n := len(rec.prompts()); n != 2 {
 		t.Errorf("a corrupt schema cache must re-run the leaf: calls = %d, want 2", n)
 	}
-	if i, _ := starlark.AsInt32(g["ans"]); i != 9 {
-		t.Errorf("re-run produced ans = %v, want 9", g["ans"])
+	if n := intField(t, wantMap(t, v), "ans"); n != 9 {
+		t.Errorf("re-run produced ans = %v, want 9", n)
 	}
 }
 
@@ -291,11 +309,14 @@ func TestLaunchResumeWiring(t *testing.T) {
 	old := runLeaf
 	runLeaf = echoLeaf(rec)
 	t.Cleanup(func() { runLeaf = old })
+	oldR := resolveProfile
+	resolveProfile = func(requested string) (string, string) { return requested, "" }
+	t.Cleanup(func() { resolveProfile = oldR })
 	ctx := context.Background()
 
 	dir := t.TempDir()
-	script := filepath.Join(dir, "w.star")
-	if err := os.WriteFile(script, []byte("meta = {\"name\": \"n\", \"description\": \"d\"}\nx = agent(\"a\", vendor=\"v\")\n"), 0o600); err != nil {
+	script := filepath.Join(dir, "w.js")
+	if err := os.WriteFile(script, []byte("const meta = {name: \"n\", description: \"d\"};\nawait agent(\"a\", {vendor: \"v\"});\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -335,25 +356,25 @@ func TestResumeSchemaLeafReplaysWithoutExec(t *testing.T) {
 	t.Cleanup(func() { runLeaf = old })
 
 	const runID = "resume-5"
-	src := `res = agent("q", vendor="v", schema={"required": ["answer"]})
-ans = res["answer"]`
+	src := `const res = await agent("q", {vendor: "v", schema: {required: ["answer"]}});
+return { ans: res.answer };`
 
-	g1, err := newEngineFor(t, runID, 2).run("r.star", src, Options{})
+	v1, err := newEngineFor(t, runID, 2).run("r.js", []byte(src), Options{})
 	if err != nil {
 		t.Fatalf("pass1: %v", err)
 	}
-	if i, _ := starlark.AsInt32(g1["ans"]); i != 5 {
-		t.Fatalf("ans = %v, want 5", g1["ans"])
+	if n := intField(t, wantMap(t, v1), "ans"); n != 5 {
+		t.Fatalf("ans = %v, want 5", n)
 	}
 	if n := len(rec.prompts()); n != 1 {
 		t.Fatalf("pass1 calls = %d, want 1", n)
 	}
-	g2, err := newEngineFor(t, runID, 2).run("r.star", src, Options{})
+	v2, err := newEngineFor(t, runID, 2).run("r.js", []byte(src), Options{})
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	if i, _ := starlark.AsInt32(g2["ans"]); i != 5 {
-		t.Errorf("resumed ans = %v, want 5 (re-validated from cache)", g2["ans"])
+	if n := intField(t, wantMap(t, v2), "ans"); n != 5 {
+		t.Errorf("resumed ans = %v, want 5 (re-validated from cache)", n)
 	}
 	if n := len(rec.prompts()); n != 1 {
 		t.Errorf("schema leaf re-executed on resume: calls = %d, want 1", n)
@@ -372,21 +393,21 @@ func TestResumeSchemaPreV2TextReplay(t *testing.T) {
 
 	const runID = "resume-prev2"
 	jp, _ := subagent.RunJournalPath(runID)
-	// The leaf is pinned profile="full" so the seeded key carries no slim shape (and no
+	// The leaf is pinned profile "full" so the seeded key carries no slim shape (and no
 	// host-claude-version dependence). The value is the old-style fenced text JSON.
 	loadJournal(jp).append(journalKey("v", "", "q", `{"required":["answer"]}`, "", "full", nil, false, false),
 		"```json\n{\"answer\": 5}\n```")
 
-	g, err := newEngineFor(t, runID, 1).run("r.star",
-		`res = agent("q", vendor="v", profile="full", schema={"required": ["answer"]})
-ans = res["answer"]`, Options{})
+	v, err := newEngineFor(t, runID, 1).run("r.js", []byte(
+		`const res = await agent("q", {vendor: "v", profile: "full", schema: {required: ["answer"]}});
+return { ans: res.answer };`), Options{})
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
 	if n := len(rec.prompts()); n != 0 {
 		t.Errorf("a pre-v2 cached schema leaf re-executed: calls = %d, want 0", n)
 	}
-	if i, _ := starlark.AsInt32(g["ans"]); i != 5 {
-		t.Errorf("replayed ans = %v, want 5", g["ans"])
+	if n := intField(t, wantMap(t, v), "ans"); n != 5 {
+		t.Errorf("replayed ans = %v, want 5", n)
 	}
 }

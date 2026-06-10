@@ -19,12 +19,12 @@ import (
 // engine of cross-invocation resume. On `workflow run --resume <id>` (or any re-run
 // reusing the id) a leaf whose content key is journaled returns its cached result
 // WITHOUT a vendor exec; only un-journaled leaves (new, edited, or failed-last-time)
-// run. Because Starlark bans the clock/PRNG, the same script+args produce the same
+// run. Because the runtime bans the clock/PRNG, the same script+args produce the same
 // keys, so an unchanged re-run is ~100% cache hits and a killed run resumes by
 // replaying the leaves that finished before the kill.
 //
-// Every access is under the engine GIL — lookup before a leaf's exec, append after
-// runBlocking re-locks — so `seen` needs no separate lock and appends never interleave.
+// Every access happens on the engine loop — lookup in agent(), append in a completion's
+// state half — so `seen` needs no separate lock and appends never interleave.
 // All methods are nil-receiver-safe: an engine constructed without a journal (the leaf
 // unit tests) simply never caches.
 //
@@ -88,7 +88,7 @@ func loadJournal(path string) *journal {
 
 // lookup returns (and CONSUMES) the next cached result for key — FIFO, matching the
 // order the leaves originally completed. An empty/absent queue is a miss, so once a
-// key's prior-run results are exhausted, further duplicate calls re-run. GIL-held
+// key's prior-run results are exhausted, further duplicate calls re-run. Loop-held
 // callers only (so the pop never races); nil-safe.
 func (j *journal) lookup(key string) (string, bool) {
 	if j == nil {
@@ -106,7 +106,7 @@ func (j *journal) lookup(key string) (string, bool) {
 // close — each line independently flushed, so a crash leaves a clean prefix). It does
 // NOT update `seen`: the in-memory cache is the prior-run snapshot, so a later resume
 // (which reloads the file) picks this up, but the CURRENT run's own duplicate calls do
-// not memoize against it. GIL-held callers only, so appends never interleave. Best-effort
+// not memoize against it. Loop-held callers only, so appends never interleave. Best-effort
 // like the manifest writes: a write hiccup leaves the result unjournaled (a later resume
 // just re-runs that leaf), it never fails the run. Nil-safe.
 func (j *journal) append(key, result string) {
@@ -201,11 +201,11 @@ func removeJournalKey(path, key string) (bool, error) {
 // serve a result produced under the old config.
 // In practice a resume reuses the run id moments later under stable config; after a
 // deliberate vendor-config change, start a fresh run (or the "v1" scheme prefix can be
-// bumped). schemaJSON is the deterministic json.encode of the schema (go.starlark.net
-// canonicalizes it → stable).
+// bumped). schemaJSON is the schema's canonical JSON (the VM's stringify + a sorted-key
+// Go re-encode → stable bytes).
 //
 // Each field is LENGTH-PREFIXED (8-byte big-endian) rather than separated by a sentinel
-// byte: a prompt is an arbitrary Starlark string that may itself contain any byte, so a
+// byte: a prompt is an arbitrary script string that may itself contain any byte, so a
 // sentinel-only framing (vendor\x00model\x00prompt…) could collide across field
 // boundaries; length-prefixing makes the preimage unambiguous for any content.
 func journalKey(vendor, model, prompt, schemaJSON, isolation, effProfile string, tools []string, noSkills, mcp bool) string {

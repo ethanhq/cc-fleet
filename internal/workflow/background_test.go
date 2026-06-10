@@ -2,148 +2,181 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
-
-	"go.starlark.net/starlark"
 
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
-// TestBackgroundAwait: agent(run_in_background=True) returns a handle immediately (the
-// leaf launches detached), and wait() blocks for the result(s) — both a list of handles
-// and a single handle.
-func TestBackgroundAwait(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+// TestBackgroundLaunchAndAwait: an unawaited agent() promise is the background form —
+// the leaf launches immediately and runs detached from script flow; awaiting the saved
+// promise later yields its result, and a direct await still works alongside.
+func TestBackgroundLaunchAndAwait(t *testing.T) {
 	rec := &recorder{}
-	leaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
-		// The background LAUNCH returns a job handle (running), not the result.
-		return subagent.Result{OK: true, JobID: "job-" + c.prompt, Status: "running"}
-	})
-	old := runLeaf
-	runLeaf = leaf
-	t.Cleanup(func() { runLeaf = old })
-	oldS := statusForFn
-	statusForFn = func(jobID string) subagent.Result {
-		return subagent.Result{OK: true, Status: "done", Result: "ans:" + jobID, CostUSD: 0.1}
-	}
-	t.Cleanup(func() { statusForFn = oldS })
-
-	g, err := runScript(t, "bg", 4, leaf, `
-h1 = agent("a", vendor="v", run_in_background=True)
-h2 = agent("b", vendor="v", run_in_background=True)
-both = wait([h1, h2])
-one = wait(agent("c", vendor="v", run_in_background=True))
+	v, err := runScript(t, "bg", 4, echoLeaf(rec), `
+const p1 = agent("a", {vendor: "v"});
+const p2 = agent("b", {vendor: "v"});
+const thenable = typeof p1.then === "function";
+const both = [await p1, await p2];
+const one = await agent("c", {vendor: "v"});
+return { thenable, both, one };
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	got := wantStringList(t, g, "both")
-	if len(got) != 2 || asStr(t, got[0]) != "ans:job-a" || asStr(t, got[1]) != "ans:job-b" {
-		t.Errorf("wait([h1,h2]) = %v, want [ans:job-a ans:job-b]", got)
+	m := wantMap(t, v)
+	if m["thenable"] != true {
+		t.Error("agent() must return a promise the script can hold and await later")
 	}
-	if asStr(t, g["one"]) != "ans:job-c" {
-		t.Errorf("wait(single) = %v, want ans:job-c", g["one"])
+	both := listField(t, m, "both")
+	if len(both) != 2 || strAt(t, both, 0) != "ok:a" || strAt(t, both, 1) != "ok:b" {
+		t.Errorf("awaited saved promises = %v, want [ok:a ok:b]", both)
 	}
-	// Three background launches (a, b, c) went through the leaf.
+	if s := strField(t, m, "one"); s != "ok:c" {
+		t.Errorf("one = %q, want ok:c", s)
+	}
 	if n := len(rec.prompts()); n != 3 {
-		t.Errorf("background launches = %d, want 3", n)
+		t.Errorf("leaf execs = %d, want 3", n)
 	}
 }
 
-// TestBackgroundSchemaRejected: schema= with run_in_background=True is an error (a
-// background leaf's result is read back from its job file, and the structured payload
-// is in-process only).
-func TestBackgroundSchemaRejected(t *testing.T) {
-	rec := &recorder{}
-	_, err := runScript(t, "bgs", 2, echoLeaf(rec),
-		`x = agent("q", vendor="v", schema={"required": ["a"]}, run_in_background=True)`)
-	if err == nil || !strings.Contains(err.Error(), "run_in_background") {
-		t.Errorf("expected a schema+background rejection, got %v", err)
-	}
-}
-
-// TestBackgroundWaitTwiceNoDoubleCount: a second wait() on the same handle returns the
-// cached result without re-polling, double-counting cost, or re-journaling.
-func TestBackgroundWaitTwiceNoDoubleCount(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+// TestBackgroundSchemaResult: a schema leaf composes with the background form — the
+// validated structured payload arrives when the saved promise is awaited.
+func TestBackgroundSchemaResult(t *testing.T) {
 	rec := &recorder{}
 	leaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
-		return subagent.Result{OK: true, JobID: "j1", Status: "running"}
+		if c.prompt == "q" {
+			return subagent.Result{OK: true, StructuredOutput: json.RawMessage(`{"a": 7}`)}
+		}
+		return subagent.Result{OK: true, Result: "ok:" + c.prompt}
 	})
-	old := runLeaf
-	runLeaf = leaf
-	t.Cleanup(func() { runLeaf = old })
-	var polls int32
-	oldS := statusForFn
-	statusForFn = func(string) subagent.Result {
-		atomic.AddInt32(&polls, 1)
-		return subagent.Result{OK: true, Status: "done", Result: "ans", CostUSD: 0.5}
-	}
-	t.Cleanup(func() { statusForFn = oldS })
-
-	eng := &engine{sched: newScheduler(context.Background(), 2), runID: "bgw", budgetTotal: 100}
-	g, err := eng.run("bgw.star", `
-h = agent("a", vendor="v", run_in_background=True)
-r1 = wait(h)
-r2 = wait(h)
-sp = budget.spent()
-`, Options{})
+	v, err := runScript(t, "bgs", 2, leaf, `
+const p = agent("q", {vendor: "v", schema: {required: ["a"]}});
+await agent("other", {vendor: "v"});
+const r = await p;
+return { a: r.a };
+`)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	if asStr(t, g["r1"]) != "ans" || asStr(t, g["r2"]) != "ans" {
-		t.Errorf("both waits should return ans, got %v / %v", g["r1"], g["r2"])
+	if n := intField(t, wantMap(t, v), "a"); n != 7 {
+		t.Errorf("a = %v, want 7 (the structured payload)", n)
 	}
-	if n := atomic.LoadInt32(&polls); n != 1 {
-		t.Errorf("status polled %d times, want 1 (second wait served from the resolved handle)", n)
-	}
-	if f, _ := starlark.AsFloat(g["sp"]); f != 0.5 {
-		t.Errorf("budget spent = %v, want 0.5 (cost counted once, not per wait)", g["sp"])
+	if n := len(rec.prompts()); n != 2 {
+		t.Errorf("leaf execs = %d, want 2", n)
 	}
 }
 
-// TestBackgroundWaitHonorsCancel: wait() on a never-finishing background job returns
-// promptly with a cancellation error when the run ctx is cancelled, rather than hanging.
-func TestBackgroundWaitHonorsCancel(t *testing.T) {
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+// TestDoubleAwaitNoDoubleCharge: awaiting the same leaf promise twice returns the same
+// settled value with ONE exec and ONE budget charge — a promise settles once.
+func TestDoubleAwaitNoDoubleCharge(t *testing.T) {
 	rec := &recorder{}
-	leaf := fakeLeaf(rec, func(c leafCall) subagent.Result {
-		return subagent.Result{OK: true, JobID: "j1", Status: "running"}
-	})
+	eng := budgetEngine(t, "bgw", 2, costLeaf(rec, 0.5))
+	eng.budgetTotal = 100
+	v, err := eng.run("bgw.js", []byte(`
+const p = agent("a", {vendor: "v"});
+const r1 = await p;
+const r2 = await p;
+return { same: r1 === r2, r1, sp: budget.spent() };
+`), Options{})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	m := wantMap(t, v)
+	if m["same"] != true {
+		t.Error("both awaits must observe the same settled value")
+	}
+	if s := strField(t, m, "r1"); s != "ok:a" {
+		t.Errorf("r1 = %q, want ok:a", s)
+	}
+	if f := budgetFloat(t, m, "sp"); f != 0.5 {
+		t.Errorf("budget spent = %v, want 0.5 (cost counted once, not per await)", f)
+	}
+	if n := len(rec.prompts()); n != 1 {
+		t.Errorf("leaf execs = %d, want 1 (second await served from the settled promise)", n)
+	}
+}
+
+// TestAwaitBackgroundHonorsCancel: a script awaiting a never-finishing background leaf
+// returns promptly as a stop when the run ctx is cancelled — the leaf's exec ctx dies
+// and the run finalizes "stopped", not a hang.
+func TestAwaitBackgroundHonorsCancel(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	started := make(chan struct{}, 1)
+	leaf := func(ctx context.Context, req subagent.Request) subagent.Result {
+		started <- struct{}{}
+		<-ctx.Done()
+		return subagent.Result{OK: false, ErrorCode: "SUBAGENT_STOPPED", ErrorMsg: "stopped"}
+	}
 	old := runLeaf
 	runLeaf = leaf
 	t.Cleanup(func() { runLeaf = old })
-	oldS := statusForFn
-	statusForFn = func(string) subagent.Result { return subagent.Result{OK: true, Status: "running"} } // never terminal
-	t.Cleanup(func() { statusForFn = oldS })
 
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // already cancelled
-	eng := &engine{sched: newScheduler(ctx, 2), runID: "bgc"}
-	_, err := eng.run("bgc.star", `
-h = agent("a", vendor="v", run_in_background=True)
-r = wait(h)
-`, Options{})
-	if err == nil || !strings.Contains(err.Error(), "cancelled") {
-		t.Fatalf("wait() must abort on cancellation, got %v", err)
+	eng := newTestEngine(ctx, "bgc", 2)
+	done := make(chan error, 1)
+	go func() {
+		_, err := eng.run("bgc.js", []byte(`const p = agent("a", {vendor: "v"}); return await p;`), Options{})
+		done <- err
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "run stopped") {
+			t.Errorf("err = %v, want a run-stopped error", err)
+		}
+		if !eng.stopped {
+			t.Error("eng.stopped not set — the manifest would finalize failed, not stopped")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return after cancel — possible hang")
 	}
 }
 
-// TestBgDeadline_Backstop: a background leaf with NO timeout= (0 or negative) gets the default backstop
-// deadline so an awaited leaf can never poll forever; an explicit timeout still wins. (The deadline's
-// enforcement — overrun → reap → SUBAGENT_TIMEOUT — is exercised by TestBackgroundTimeout.)
-func TestBgDeadline_Backstop(t *testing.T) {
-	now := time.Now()
-	if got := bgDeadline(now, 0); got != now.Add(defaultBgBackstop) {
-		t.Fatalf("timeout=0 must use the backstop, got +%v", got.Sub(now))
+// TestBackgroundOmittedTimeoutDelegates: a background leaf without timeout reaches the
+// exec with Timeout 0 — the subagent sync default bounds it there; the engine adds no
+// backstop of its own.
+func TestBackgroundOmittedTimeoutDelegates(t *testing.T) {
+	rec := &recorder{}
+	_, err := runScript(t, "bgd", 2, echoLeaf(rec), `
+const p = agent("a", {vendor: "v"});
+await p;
+return {};
+`)
+	if err != nil {
+		t.Fatalf("run: %v", err)
 	}
-	if got := bgDeadline(now, -1); got != now.Add(defaultBgBackstop) {
-		t.Fatalf("a negative timeout must use the backstop, got +%v", got.Sub(now))
+	if c := rec.snapshot()[0]; c.timeout != 0 {
+		t.Errorf("omitted timeout = %v, want 0 (the subagent sync default applies at exec)", c.timeout)
 	}
-	if got := bgDeadline(now, 10); got != now.Add(10*time.Second) {
-		t.Fatalf("an explicit timeout must win, got +%v", got.Sub(now))
+}
+
+// TestBackgroundJournalsAtCompletion: a background leaf journals when it completes even
+// if the script never awaits it — a later invocation under the same run id serves BOTH
+// leaves from the journal with zero re-exec.
+func TestBackgroundJournalsAtCompletion(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	rec := &recorder{}
+	old := runLeaf
+	runLeaf = echoLeaf(rec)
+	t.Cleanup(func() { runLeaf = old })
+
+	const runID = "bgj"
+	src := `agent("a", {vendor: "v"});
+return await agent("b", {vendor: "v"});`
+	if _, err := newEngineFor(t, runID, 2).run("bgj.js", []byte(src), Options{}); err != nil {
+		t.Fatalf("pass1: %v", err)
+	}
+	if n := len(rec.prompts()); n != 2 {
+		t.Fatalf("pass1 execs = %d, want 2", n)
+	}
+	if _, err := newEngineFor(t, runID, 2).run("bgj.js", []byte(src), Options{}); err != nil {
+		t.Fatalf("pass2: %v", err)
+	}
+	if n := len(rec.prompts()); n != 2 {
+		t.Errorf("pass2 execs = %d, want 2 (the never-awaited leaf journaled at completion)", n)
 	}
 }

@@ -9,6 +9,16 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
+// metaFromSource normalizes + parses a script body and extracts its `const meta`.
+func metaFromSource(t *testing.T, src string) (scriptMeta, error) {
+	t.Helper()
+	_, prog, err := normalizeScript("t.js", []byte(src))
+	if err != nil {
+		t.Fatalf("normalize: %v", err)
+	}
+	return extractMeta(prog)
+}
+
 func TestExtractMeta(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -18,7 +28,7 @@ func TestExtractMeta(t *testing.T) {
 	}{
 		{
 			name: "valid with phases",
-			src:  `meta = {"name": "build", "description": "do it", "phases": [{"title": "plan", "detail": "scope"}, {"title": "ship"}]}`,
+			src:  `const meta = {name: "build", description: "do it", phases: [{title: "plan", detail: "scope"}, {title: "ship"}]};`,
 			check: func(t *testing.T, m scriptMeta) {
 				if m.Name != "build" || m.Description != "do it" {
 					t.Errorf("name/desc = %q/%q", m.Name, m.Description)
@@ -29,23 +39,24 @@ func TestExtractMeta(t *testing.T) {
 			},
 		},
 		{
-			name:  "bool/None/negative values are literals",
-			src:   `meta = {"name": "n", "description": "d", "x": True, "y": None, "z": -3}`,
+			name:  "bool/null/negative values are literals",
+			src:   `const meta = {name: "n", description: "d", x: true, y: null, z: -3};`,
 			check: func(t *testing.T, m scriptMeta) {},
 		},
-		{name: "missing name", src: `meta = {"description": "d"}`, wantErr: true},
-		{name: "empty name", src: `meta = {"name": "", "description": "d"}`, wantErr: true},
-		{name: "missing description", src: `meta = {"name": "n"}`, wantErr: true},
-		{name: "no meta at all", src: `x = 1`, wantErr: true},
-		{name: "meta is not a dict", src: `meta = "hello"`, wantErr: true},
-		{name: "name references a variable (not literal)", src: `V = "n"` + "\n" + `meta = {"name": V, "description": "d"}`, wantErr: true},
-		{name: "value is a call (not literal)", src: `meta = {"name": "n", "description": str(1)}`, wantErr: true},
-		{name: "phases not a list", src: `meta = {"name": "n", "description": "d", "phases": "plan"}`, wantErr: true},
-		{name: "phase entry without title", src: `meta = {"name": "n", "description": "d", "phases": [{"detail": "x"}]}`, wantErr: true},
+		{name: "missing name", src: `const meta = {description: "d"};`, wantErr: true},
+		{name: "empty name", src: `const meta = {name: "", description: "d"};`, wantErr: true},
+		{name: "missing description", src: `const meta = {name: "n"};`, wantErr: true},
+		{name: "no meta at all", src: `const x = 1;`, wantErr: true},
+		{name: "meta is not an object", src: `const meta = "hello";`, wantErr: true},
+		{name: "name references a variable (not literal)", src: `const V = "n";` + "\n" + `const meta = {name: V, description: "d"};`, wantErr: true},
+		{name: "value is a call (not literal)", src: `const meta = {name: "n", description: String(1)};`, wantErr: true},
+		{name: "computed key (not literal)", src: `const meta = {name: "n", ["descr" + "iption"]: "d"};`, wantErr: true},
+		{name: "phases not an array", src: `const meta = {name: "n", description: "d", phases: "plan"};`, wantErr: true},
+		{name: "phase entry without title", src: `const meta = {name: "n", description: "d", phases: [{detail: "x"}]};`, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			m, err := extractMeta(fileOptions, "t.star", tc.src)
+			m, err := metaFromSource(t, tc.src)
 			if tc.wantErr {
 				if err == nil {
 					t.Fatalf("expected an error, got meta %+v", m)
@@ -62,20 +73,22 @@ func TestExtractMeta(t *testing.T) {
 	}
 }
 
-// TestPhaseDedupAgainstMeta (review F2): phase() must dedup against the FULL manifest
-// phase set, including the titles minted from static meta — so a faithful script that
-// declares phases in meta AND calls phase() for them never creates a duplicate row.
+// TestPhaseDedupAgainstMeta: phase() must dedup against the FULL manifest phase set,
+// including the titles minted from static meta — so a faithful script that declares
+// phases in meta AND calls phase() for them never creates a duplicate row.
 func TestPhaseDedupAgainstMeta(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	old := runLeaf
-	runLeaf = func(subagent.Request) subagent.Result { return subagent.Result{OK: true, Result: "ok"} }
+	runLeaf = func(context.Context, subagent.Request) subagent.Result {
+		return subagent.Result{OK: true, Result: "ok"}
+	}
 	t.Cleanup(func() { runLeaf = old })
 
 	dir := t.TempDir()
-	script := filepath.Join(dir, "wf.star")
-	src := `meta = {"name": "n", "description": "d", "phases": [{"title": "plan"}, {"title": "build"}]}
-phase("plan")
-phase("ship")
+	script := filepath.Join(dir, "wf.js")
+	src := `const meta = {name: "n", description: "d", phases: [{title: "plan"}, {title: "build"}]};
+phase("plan");
+phase("ship");
 `
 	if err := os.WriteFile(script, []byte(src), 0o600); err != nil {
 		t.Fatal(err)

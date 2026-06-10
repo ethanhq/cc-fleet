@@ -10,15 +10,15 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
-// TestAgentSlimKwargPlumbing: profile=/tools=/skills=/mcp= reach the leaf Request — the
+// TestAgentSlimOptionPlumbing: profile/tools/skills/mcp reach the leaf Request — the
 // REQUESTED profile (Run re-resolves the effective one), the canonicalized (dedupe+sort)
-// tool set, the inverted NoSkills toggle, and an explicit mcp= of either value (an
-// explicit False beats slim's inherit default).
-func TestAgentSlimKwargPlumbing(t *testing.T) {
+// tool set, the inverted NoSkills toggle, and an explicit mcp of either value (an
+// explicit false beats slim's inherit default).
+func TestAgentSlimOptionPlumbing(t *testing.T) {
 	rec := &recorder{}
 	_, err := runScript(t, "slimp", 2, echoLeaf(rec), `
-x = agent("p", vendor="v", profile="slim", tools=["Read", "Bash", "Read"][:2], skills=False, mcp=True)
-y = agent("p2", vendor="v", profile="slim", mcp=False)
+await agent("p", {vendor: "v", profile: "slim", tools: ["Read", "Bash", "Read"].slice(0, 2), skills: false, mcp: true});
+await agent("p2", {vendor: "v", profile: "slim", mcp: false});
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -35,13 +35,13 @@ y = agent("p2", vendor="v", profile="slim", mcp=False)
 		t.Errorf("Tools = %v, want [Bash Read] (canonicalized dedupe+sort)", c.tools)
 	}
 	if !c.noSkills {
-		t.Error("skills=False must set NoSkills=true")
+		t.Error("skills: false must set NoSkills=true")
 	}
 	if !c.mcp {
-		t.Error("mcp=True must set MCP=true")
+		t.Error("mcp: true must set MCP=true")
 	}
 	if byPrompt["p2"].mcp {
-		t.Error("explicit mcp=False on slim must set MCP=false (beats the inherit default)")
+		t.Error("explicit mcp: false on slim must set MCP=false (beats the inherit default)")
 	}
 }
 
@@ -53,9 +53,9 @@ y = agent("p2", vendor="v", profile="slim", mcp=False)
 func TestAgentSlimDefaults(t *testing.T) {
 	rec := &recorder{}
 	_, err := runScript(t, "slimd", 2, echoLeaf(rec), `
-a = agent("a", vendor="v")
-b = agent("b", vendor="v", profile="slim-ro")
-c = agent("c", vendor="v", profile="full")
+await agent("a", {vendor: "v"});
+await agent("b", {vendor: "v", profile: "slim-ro"});
+await agent("c", {vendor: "v", profile: "full"});
 `)
 	if err != nil {
 		t.Fatalf("run: %v", err)
@@ -80,28 +80,28 @@ c = agent("c", vendor="v", profile="full")
 }
 
 // TestAgentSlimValidationErrors: every front-loaded slim validation rejects with a
-// Starlark error (no leaf exec) — refinements with full (mcp= by PRESENCE, either
-// value), a bad profile, and a bad tool.
+// thrown error (no leaf exec) — refinements with full (mcp by PRESENCE, either value),
+// a bad profile, and a bad tool.
 func TestAgentSlimValidationErrors(t *testing.T) {
 	cases := []struct {
 		name, src, want string
 	}{
-		{"tools-with-full", `agent("p", vendor="v", profile="full", tools=["Read"])`, "slim-only"},
-		{"skills-with-full", `agent("p", vendor="v", profile="full", skills=False)`, "slim-only"},
-		{"mcp-with-full", `agent("p", vendor="v", profile="full", mcp=True)`, "slim-only"},
-		{"mcp-false-with-full", `agent("p", vendor="v", profile="full", mcp=False)`, "slim-only"},
-		{"bad-profile", `agent("p", vendor="v", profile="turbo")`, "unknown prompt profile"},
-		{"unknown-tool", `agent("p", vendor="v", profile="slim", tools=["Nope"])`, "unknown tool"},
-		{"duplicate-tool", `agent("p", vendor="v", profile="slim", tools=["Read", "Read"])`, "duplicate tool"},
-		{"skill-with-skills-off", `agent("p", vendor="v", profile="slim", tools=["Read", "Skill"], skills=False)`, "contradictory with skills disabled"},
-		{"bad-tools-type", `agent("p", vendor="v", profile="slim", tools="Read")`, "must be a list"},
-		{"bad-profile-type", `agent("p", vendor="v", profile=7)`, "must be a string"},
-		{"bad-mcp-type", `agent("p", vendor="v", profile="slim", mcp=7)`, "must be a bool"},
+		{"tools-with-full", `agent("p", {vendor: "v", profile: "full", tools: ["Read"]})`, "slim-only"},
+		{"skills-with-full", `agent("p", {vendor: "v", profile: "full", skills: false})`, "slim-only"},
+		{"mcp-with-full", `agent("p", {vendor: "v", profile: "full", mcp: true})`, "slim-only"},
+		{"mcp-false-with-full", `agent("p", {vendor: "v", profile: "full", mcp: false})`, "slim-only"},
+		{"bad-profile", `agent("p", {vendor: "v", profile: "turbo"})`, "unknown prompt profile"},
+		{"unknown-tool", `agent("p", {vendor: "v", profile: "slim", tools: ["Nope"]})`, "unknown tool"},
+		{"duplicate-tool", `agent("p", {vendor: "v", profile: "slim", tools: ["Read", "Read"]})`, "duplicate tool"},
+		{"skill-with-skills-off", `agent("p", {vendor: "v", profile: "slim", tools: ["Read", "Skill"], skills: false})`, "contradictory with skills disabled"},
+		{"bad-tools-type", `agent("p", {vendor: "v", profile: "slim", tools: "Read"})`, "must be an array"},
+		{"bad-profile-type", `agent("p", {vendor: "v", profile: 7})`, "must be a string"},
+		{"bad-mcp-type", `agent("p", {vendor: "v", profile: "slim", mcp: 7})`, "must be a boolean"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := &recorder{}
-			_, err := runScript(t, "slimv", 2, echoLeaf(rec), "x = "+tc.src)
+			_, err := runScript(t, "slimv", 2, echoLeaf(rec), "return await "+tc.src+";")
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want one containing %q", err, tc.want)
 			}
@@ -133,7 +133,7 @@ func TestAgentSlimDowngradeLogsAndKeysFull(t *testing.T) {
 	runLeaf = echoLeaf(rec)
 	t.Cleanup(func() { runLeaf = old })
 
-	_, script := writeScript(t, `x = agent("q", vendor="v", profile="slim")`)
+	_, script := writeScript(t, `await agent("q", {vendor: "v", profile: "slim"});`)
 	run, err := Prepare(script)
 	if err != nil {
 		t.Fatal(err)
@@ -190,7 +190,7 @@ func TestSchemaAbsentStructuredOutputFails(t *testing.T) {
 		return subagent.Result{OK: true, Result: `{"answer": 5}`}
 	})
 	_, err := runScript(t, "slimso", 1, leaf,
-		`x = agent("q", vendor="v", schema={"required": ["answer"]})`)
+		`return await agent("q", {vendor: "v", schema: {required: ["answer"]}});`)
 	if err == nil || !strings.Contains(err.Error(), "structured_output") {
 		t.Fatalf("err = %v, want a no-structured_output failure", err)
 	}
@@ -211,7 +211,7 @@ func TestSchemaJournalsStructuredPayload(t *testing.T) {
 	})
 	t.Cleanup(func() { runLeaf = old })
 
-	_, script := writeScript(t, `x = agent("q", vendor="v", schema={"required": ["answer"]})`)
+	_, script := writeScript(t, `await agent("q", {vendor: "v", schema: {required: ["answer"]}});`)
 	run, err := Prepare(script)
 	if err != nil {
 		t.Fatal(err)
@@ -224,8 +224,12 @@ func TestSchemaJournalsStructuredPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read journal: %v", err)
 	}
+	line := string(data)
+	if i := strings.IndexByte(line, '\n'); i >= 0 {
+		line = line[:i]
+	}
 	var e journalEntry
-	if err := json.Unmarshal([]byte(firstLine(data)), &e); err != nil {
+	if err := json.Unmarshal([]byte(line), &e); err != nil {
 		t.Fatalf("parse journal line: %v", err)
 	}
 	if !strings.Contains(e.Result, `{"answer":7}`) || strings.Contains(e.Result, "prose words") {

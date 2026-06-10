@@ -16,9 +16,9 @@ import (
 )
 
 // savedWorkflowsDirName holds NAMED, reusable workflows under ConfigDir — distinct from the ephemeral
-// per-run runs/<id>.star. A user saves a run from the board (s + a name), and a later invocation
-// re-runs it by name (workflow run --saved <name>). Each <name> has a <name>.star (the script, copied
-// from the run) and a <name>.json (metadata). The .star is workflow LOGIC — no secret (keys flow only
+// per-run runs/<id>.js. A user saves a run from the board (s + a name), and a later invocation
+// re-runs it by name (workflow run --saved <name>). Each <name> has a <name>.js (the script, copied
+// from the run) and a <name>.json (metadata). The script is workflow LOGIC — no secret (keys flow only
 // via apiKeyHelper) — so 0600 is content-privacy, not key-safety.
 const savedWorkflowsDirName = "workflows"
 
@@ -62,9 +62,10 @@ func savedPath(name, ext string) (string, error) {
 	return filepath.Join(dir, name+ext), nil
 }
 
-// SaveWorkflow copies a run's saved script (runs/<runID>.star) to a NAMED, reusable workflow
-// (workflows/<name>.star) plus its metadata, overwriting an existing same-name save (re-save). It
-// errors if the run has no saved script. sessionID + description are recorded for discovery.
+// SaveWorkflow copies a run's saved script (runs/<runID>.js) to a NAMED, reusable workflow
+// (workflows/<name>.js) plus its metadata, overwriting an existing same-name save (re-save). It
+// errors if the run has no saved script — explicitly so for a pre-JS-engine (.star) run, whose
+// script the current runtime can't execute. sessionID + description are recorded for discovery.
 func SaveWorkflow(runID, name, sessionID, description string) error {
 	src, err := RunScriptPath(runID)
 	if err != nil {
@@ -72,6 +73,9 @@ func SaveWorkflow(runID, name, sessionID, description string) error {
 	}
 	data, rerr := os.ReadFile(src)
 	if rerr != nil {
+		if legacyRunScriptExists(runID) {
+			return fmt.Errorf("subagent: run %s predates the JavaScript workflow engine; its Starlark script can't be saved — start a fresh run", runID)
+		}
 		return fmt.Errorf("subagent: run %s has no saved script to save: %w", runID, rerr)
 	}
 	dir, derr := savedWorkflowsDir()
@@ -81,11 +85,11 @@ func SaveWorkflow(runID, name, sessionID, description string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
-	star, err := savedPath(name, ".star")
+	script, err := savedPath(name, ".js")
 	if err != nil {
 		return err
 	}
-	if err := fileutil.AtomicWrite(star, data, 0o600); err != nil {
+	if err := fileutil.AtomicWrite(script, data, 0o600); err != nil {
 		return err
 	}
 	meta, _ := json.MarshalIndent(SavedWorkflow{
@@ -96,17 +100,34 @@ func SaveWorkflow(runID, name, sessionID, description string) error {
 	return fileutil.AtomicWrite(jsonPath, meta, 0o600)
 }
 
-// SavedWorkflowScript returns a saved workflow's .star path, erroring if the name is invalid or absent.
-// Used by `workflow run --saved <name>`.
+// SavedWorkflowScript returns a saved workflow's .js path, erroring if the name is invalid or
+// absent — explicitly so for a workflow saved by the pre-JS (Starlark) engine, whose script the
+// current runtime can't execute. Used by `workflow run --saved <name>`.
 func SavedWorkflowScript(name string) (string, error) {
-	star, err := savedPath(name, ".star")
+	script, err := savedPath(name, ".js")
 	if err != nil {
 		return "", err
 	}
-	if _, serr := os.Stat(star); serr != nil {
+	if _, serr := os.Stat(script); serr != nil {
+		if legacy, lerr := savedPath(name, ".star"); lerr == nil {
+			if _, sterr := os.Stat(legacy); sterr == nil {
+				return "", fmt.Errorf("subagent: workflow %q was saved by the retired Starlark engine and can't run on the JavaScript runtime", name)
+			}
+		}
 		return "", fmt.Errorf("subagent: no saved workflow named %q", name)
 	}
-	return star, nil
+	return script, nil
+}
+
+// legacyRunScriptExists reports whether a run carries only the retired Starlark engine's
+// .star script sidecar.
+func legacyRunScriptExists(runID string) bool {
+	lp, err := LegacyRunScriptPath(runID)
+	if err != nil {
+		return false
+	}
+	_, serr := os.Stat(lp)
+	return serr == nil
 }
 
 // ListSavedWorkflows reads the saved-workflows dir, newest-first by SavedAt. A missing dir → (nil, nil);

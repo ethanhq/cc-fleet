@@ -9,11 +9,22 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
+// pinIdentityProfile pins resolveProfile to identity for the test, so the default-slim
+// leaf shape never depends on the host claude version.
+func pinIdentityProfile(t *testing.T) {
+	t.Helper()
+	old := resolveProfile
+	resolveProfile = func(requested string) (string, string) { return requested, "" }
+	t.Cleanup(func() { resolveProfile = old })
+}
+
 // TestPoolBoundsConcurrentExecs: concurrent vendor EXECS never exceed the pool, even with
-// many elements — the slot (held only across a leaf's exec) is the meaningful, deadlock-free
-// bound on real vendor processes.
+// many elements — the slot (acquired in each leaf goroutine, held only across its exec) is
+// the meaningful, deadlock-free bound on real vendor processes; a full pool queues leaf
+// goroutines without ever stalling the script loop.
 func TestPoolBoundsConcurrentExecs(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	pinIdentityProfile(t)
 	rec := &recorder{}
 	release := make(chan struct{})
 	started := make(chan struct{}, 4096)
@@ -36,10 +47,15 @@ func TestPoolBoundsConcurrentExecs(t *testing.T) {
 	t.Cleanup(func() { runLeaf = old })
 
 	const pool = 3
-	eng := &engine{sched: newScheduler(context.Background(), pool), runID: "pb"}
+	eng := newTestEngine(context.Background(), "pb", pool)
 	done := make(chan struct{})
 	go func() {
-		_, _ = eng.run("pb.star", `r = parallel([lambda: agent("x", vendor="v") for _ in range(30)])`, Options{})
+		_, _ = eng.run("pb.js", []byte(`
+const thunks = [];
+for (let i = 0; i < 30; i++) thunks.push(() => agent("x", {vendor: "v"}));
+await parallel(thunks);
+return {};
+`), Options{})
 		close(done)
 	}()
 	for i := 0; i < pool; i++ {
@@ -61,19 +77,22 @@ func TestPoolBoundsConcurrentExecs(t *testing.T) {
 // nested orchestration, so the inner leaves can always get the one slot.
 func TestNestedParallelNoDeadlock(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	pinIdentityProfile(t)
 	rec := &recorder{}
 	old := runLeaf
 	runLeaf = echoLeaf(rec)
 	t.Cleanup(func() { runLeaf = old })
 
-	eng := &engine{sched: newScheduler(context.Background(), 1), runID: "nd"}
+	eng := newTestEngine(context.Background(), "nd", 1)
 	done := make(chan struct{})
 	go func() {
-		_, _ = eng.run("nd.star", `
-r = parallel([
-    lambda: parallel([lambda: agent("a", vendor="v"), lambda: agent("b", vendor="v")]),
-    lambda: parallel([lambda: agent("c", vendor="v"), lambda: agent("d", vendor="v")]),
-])`, Options{})
+		_, _ = eng.run("nd.js", []byte(`
+await parallel([
+    () => parallel([() => agent("a", {vendor: "v"}), () => agent("b", {vendor: "v"})]),
+    () => parallel([() => agent("c", {vendor: "v"}), () => agent("d", {vendor: "v"})]),
+]);
+return {};
+`), Options{})
 		close(done)
 	}()
 	select {
@@ -86,22 +105,32 @@ r = parallel([
 	}
 }
 
-// TestAcceptsLargeList: a parallel larger than the old per-list cap RUNS (excess queues)
-// rather than erroring; every element gets a result (the lifetime cap turns over-cap agents
-// into None).
+// TestAcceptsLargeList: a parallel far larger than the pool RUNS (excess queues) rather
+// than erroring; every element gets a result (the lifetime cap turns over-cap agents
+// into null).
 func TestAcceptsLargeList(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	pinIdentityProfile(t)
 	rec := &recorder{}
 	old := runLeaf
 	runLeaf = echoLeaf(rec)
 	t.Cleanup(func() { runLeaf = old })
+	// Skip the queued-placeholder disk writes — 1500 leaves would mint 1000 job files.
+	oldMint := mintQueuedLeaf
+	mintQueuedLeaf = func(subagent.Request, string) string { return "" }
+	t.Cleanup(func() { mintQueuedLeaf = oldMint })
 
-	eng := &engine{sched: newScheduler(context.Background(), 8), runID: "ll"}
-	g, err := eng.run("ll.star", `r = parallel([lambda: agent("x", vendor="v") for _ in range(1500)])`, Options{})
+	eng := newTestEngine(context.Background(), "ll", 8)
+	v, err := eng.run("ll.js", []byte(`
+const thunks = [];
+for (let i = 0; i < 1500; i++) thunks.push(() => agent("x", {vendor: "v"}));
+const r = await parallel(thunks);
+return { r };
+`), Options{})
 	if err != nil {
 		t.Fatalf("a 1500-element parallel must run, not error: %v", err)
 	}
-	if got := wantStringList(t, g, "r"); len(got) != 1500 {
+	if got := listField(t, wantMap(t, v), "r"); len(got) != 1500 {
 		t.Errorf("got %d results, want 1500", len(got))
 	}
 	if n := len(rec.prompts()); n > maxLifetimeAgents {

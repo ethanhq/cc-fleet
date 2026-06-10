@@ -3,6 +3,7 @@
 package subagent
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -57,7 +58,7 @@ func TestLaunchBackground_CleanupOnWriteMetaFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { killProcessGroup = origKill })
 
-	res := Run(Request{Vendor: "glm", Prompt: "hi", JSON: true, Background: true})
+	res := Run(context.Background(), Request{Vendor: "glm", Prompt: "hi", JSON: true, Background: true})
 	if res.OK {
 		t.Fatalf("Run(background) should fail when writeMeta fails; got OK=true")
 	}
@@ -136,7 +137,7 @@ exit 0
 
 	// Caller deliberately requests text output — we MUST still force JSON
 	// internally.
-	res := Run(Request{
+	res := Run(context.Background(), Request{
 		Vendor:       "glm",
 		Prompt:       "hi",
 		OutputFormat: "text",
@@ -208,7 +209,7 @@ exit 1
 	// Caller deliberately requests text output but background=true. StatusFor
 	// must classify the envelope and return failed, NOT treat the JSON-on-stdout
 	// as a text-mode success.
-	res := Run(Request{
+	res := Run(context.Background(), Request{
 		Vendor:       "glm",
 		Prompt:       "hi",
 		OutputFormat: "text",

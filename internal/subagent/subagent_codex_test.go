@@ -1,6 +1,7 @@
 package subagent
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -56,7 +57,7 @@ added_at        = 2026-06-08T05:00:00Z
 	}
 	t.Cleanup(func() { ensureVendorProxy = codexproxy.EnsureForVendor })
 
-	res := Run(Request{Vendor: "codex", Prompt: "hi", JSON: true})
+	res := Run(context.Background(), Request{Vendor: "codex", Prompt: "hi", JSON: true})
 	if res.OK || res.ErrorCode != ErrCodeProxyUnavailable {
 		t.Fatalf("want CODEX_PROXY_UNAVAILABLE, got ok=%v code=%s msg=%s", res.OK, res.ErrorCode, res.ErrorMsg)
 	}

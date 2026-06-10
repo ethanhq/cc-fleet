@@ -118,7 +118,7 @@ func TestPruneRunsSparesLiveDeletesDead(t *testing.T) {
 	// The seam reports the LIVE run's detached-engine argv for any pid, so EngineAlive matches only the
 	// run whose id is "live"; "crashed" (same pid, different id) and "terminal" (pid 0) read as not-alive.
 	reuseGuardArgv = func(int) ([]string, bool) {
-		return []string{"cc-fleet", "workflow", "run", "x.star", "--run-id", "live"}, true
+		return []string{"cc-fleet", "workflow", "run", "x.js", "--run-id", "live"}, true
 	}
 	runs := []WorkflowRun{
 		{RunID: "live", StartedAt: "2026-01-01T00:00:00Z", Status: "running", EnginePID: self},

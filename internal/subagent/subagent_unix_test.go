@@ -147,7 +147,7 @@ added_at        = 2026-05-24T05:00:00Z
 		t.Fatal(err)
 	}
 
-	res := Run(Request{Vendor: "glm", Prompt: "hi", JSON: true})
+	res := Run(context.Background(), Request{Vendor: "glm", Prompt: "hi", JSON: true})
 	// The bundled fallback must engage: no FINGERPRINT_MISSING, and the binary
 	// resolved (no FINGERPRINT_STALE either, since the fake claude is on PATH).
 	if res.ErrorCode == ErrCodeFingerprintMissing || res.ErrorCode == ErrCodeFingerprintStale {

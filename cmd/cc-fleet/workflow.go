@@ -175,7 +175,7 @@ agent to surface it in the agent panel.`,
 	return cmd
 }
 
-// newWorkflowRunCmd builds `cc-fleet workflow run <script.star>` — execute a Starlark
+// newWorkflowRunCmd builds `cc-fleet workflow run <script.js>` — execute a JavaScript
 // orchestration script. By default it mints the run, re-execs cc-fleet as a detached
 // child that runs the engine off the launching process, and prints the bare run id
 // (so the main session is never blocked for the run's duration). --foreground runs
@@ -197,13 +197,13 @@ func newWorkflowRunCmd() *cobra.Command {
 		asJSON         bool
 	)
 	cmd := &cobra.Command{
-		Use:   "run <script.star>",
-		Short: "Run a Starlark workflow script (orchestrates vendor subagents off the main context)",
-		Long: `Run a Starlark workflow script that fans out vendor subagents. The script's
-plan executes in a cc-fleet process, NOT the main Claude context: it declares a meta
-dict and calls agent()/parallel()/pipeline()/phase()/log(). By default the run is
-launched detached and this prints the bare run id; poll it with 'workflow status' or
-watch the board. --foreground runs inline to completion instead.`,
+		Use:   "run <script.js>",
+		Short: "Run a JavaScript workflow script (orchestrates vendor subagents off the main context)",
+		Long: `Run a JavaScript workflow script that fans out vendor subagents. The script's
+plan executes in a cc-fleet process, NOT the main Claude context: it declares
+const meta = {...} and awaits agent()/parallel()/pipeline() with phase()/log().
+By default the run is launched detached and this prints the bare run id; poll it
+with 'workflow status' or watch the board. --foreground runs inline to completion instead.`,
 		Args:          cobra.MaximumNArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -243,9 +243,9 @@ watch the board. --foreground runs inline to completion instead.`,
 				}
 			}
 			// SIGINT (Ctrl-C on a --foreground run) and SIGTERM (a kill of the detached
-			// child, e.g. by teardown) cancel the run: queued leaves stop launching and
-			// the manifest is finalized off "running" instead of being stranded. An
-			// in-flight leaf still drains to its own per-agent timeout.
+			// child, e.g. by teardown) cancel the run: queued leaves stop launching,
+			// in-flight leaf execs die promptly (their ctx descends from this one), and
+			// the manifest finalizes "stopped" instead of being stranded on "running".
 			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 			defer stop()
 

@@ -10,7 +10,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
-// TestWorktreeIsolationWiring (seam): isolation='worktree' creates a worktree, runs the
+// TestWorktreeIsolationWiring (seam): isolation: 'worktree' creates a worktree, runs the
 // leaf with cwd = its path, and tears it down after — via the createWorktreeFn seam (no
 // real git needed).
 func TestWorktreeIsolationWiring(t *testing.T) {
@@ -31,7 +31,7 @@ func TestWorktreeIsolationWiring(t *testing.T) {
 	}
 	t.Cleanup(func() { createWorktreeFn = oldW })
 
-	if _, err := runScript(t, "wt", 2, leaf, `x = agent("edit", vendor="v", isolation="worktree")`); err != nil {
+	if _, err := runScript(t, "wt", 2, leaf, `await agent("edit", {vendor: "v", isolation: "worktree"});`); err != nil {
 		t.Fatalf("run: %v", err)
 	}
 	if gotDir != "/tmp/fake-wt" {
@@ -42,16 +42,17 @@ func TestWorktreeIsolationWiring(t *testing.T) {
 	}
 }
 
-// TestWorktreeRejections: a bad isolation value, and worktree + background, are errors.
+// TestWorktreeRejections: a bad isolation value is an error, and run_in_background is not
+// an option (background = an unawaited agent() promise) — passing it fails loudly.
 func TestWorktreeRejections(t *testing.T) {
 	rec := &recorder{}
 	if _, err := runScript(t, "wtb1", 2, echoLeaf(rec),
-		`x = agent("q", vendor="v", isolation="docker")`); err == nil || !strings.Contains(err.Error(), "isolation must be") {
+		`return await agent("q", {vendor: "v", isolation: "docker"});`); err == nil || !strings.Contains(err.Error(), "isolation must be") {
 		t.Errorf("bad isolation value should error, got %v", err)
 	}
 	if _, err := runScript(t, "wtb2", 2, echoLeaf(rec),
-		`x = agent("q", vendor="v", isolation="worktree", run_in_background=True)`); err == nil || !strings.Contains(err.Error(), "not supported with run_in_background") {
-		t.Errorf("worktree+background should error, got %v", err)
+		`return await agent("q", {vendor: "v", isolation: "worktree", run_in_background: true});`); err == nil || !strings.Contains(err.Error(), "unknown option") {
+		t.Errorf("run_in_background should be rejected as an unknown option, got %v", err)
 	}
 }
 
@@ -93,16 +94,21 @@ func TestWorktreeRealGit(t *testing.T) {
 	runLeaf = leaf
 	t.Cleanup(func() { runLeaf = old })
 
-	g, err := runScript(t, "wtgit", 2, leaf,
-		`r = parallel([lambda: agent("a", vendor="v", isolation="worktree"), lambda: agent("b", vendor="v", isolation="worktree")])`)
+	g, err := runScript(t, "wtgit", 2, leaf, `
+const r = await parallel([
+    () => agent("a", {vendor: "v", isolation: "worktree"}),
+    () => agent("b", {vendor: "v", isolation: "worktree"}),
+]);
+return { r };
+`)
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
-	got := wantStringList(t, g, "r")
+	got := listField(t, wantMap(t, g), "r")
 	if len(got) != 2 {
 		t.Fatalf("got %d results, want 2", len(got))
 	}
-	d0, d1 := asStr(t, got[0]), asStr(t, got[1])
+	d0, d1 := strAt(t, got, 0), strAt(t, got, 1)
 	if d0 == d1 || d0 == "" || d1 == "" {
 		t.Errorf("worktree leaves must get DISTINCT worktrees, got %q and %q", d0, d1)
 	}

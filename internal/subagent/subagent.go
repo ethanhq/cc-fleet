@@ -95,8 +95,10 @@ var ensureVendorProxy = codexproxy.EnsureForVendor
 
 // Run executes the full subagent pipeline and returns a structured Result. Like
 // Spawn it NEVER returns a Go error — every failure path produces a Result.
-// It builds its own timeout context (self-contained, like Spawn).
-func Run(req Request) Result {
+// Its hard deadline derives from parent (the workflow engine's per-leaf cancel
+// handle; the CLI lane passes context.Background()): a cancelled parent kills the
+// exec promptly and classifies as a stop, not a failure. nil falls back to Background.
+func Run(parent context.Context, req Request) Result {
 	// 0. Validate the prompt profile + slim refinements front-loaded, BEFORE any
 	//    exec or side effect (mirrors the CLI's front-loaded check; the workflow
 	//    engine never reaches here with bad args). Refinements (tools / skills-off
@@ -264,10 +266,25 @@ func Run(req Request) Result {
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	stdout, stderr, exitCode, runErr := runClaude(ctx, fp.BinaryPath, argv, env, req.PromptReader, req.WorkingDir, act)
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
+
+	// A cancelled parent (the workflow engine aborting its run) is a STOP, not a
+	// failure or a timeout — classify it ahead of everything else so the job
+	// finalizes "stopped" (the deferred finalizeSyncJob maps ErrCodeStopped).
+	if !timedOut && parent.Err() != nil {
+		res = fail(ErrCodeStopped, "run stopped while the leaf was executing", req.Vendor, "")
+		res.LeadSessionID = req.LeadSessionID
+		res.RunID, res.Phase, res.Label = req.RunID, req.Phase, req.Label
+		res.PromptProfile, res.SlimDowngrade = effective, downgrade
+		res.ExitCode = exitCode
+		return res
+	}
 
 	// A genuine deadline wins over an overflow that fired during the kill (the
 	// task ran too long is the dominant cause). Otherwise an over-cap child

@@ -12,8 +12,8 @@ import (
 func writeScript(t *testing.T, body string) (dir, path string) {
 	t.Helper()
 	dir = t.TempDir()
-	path = filepath.Join(dir, "s.star")
-	src := "meta = {\"name\": \"n\", \"description\": \"d\"}\n" + body + "\n"
+	path = filepath.Join(dir, "s.js")
+	src := "const meta = {name: \"n\", description: \"d\"};\n" + body + "\n"
 	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -37,7 +37,7 @@ func TestPersistIOPlumbing(t *testing.T) {
 			old := runLeaf
 			runLeaf = echoLeaf(rec)
 			t.Cleanup(func() { runLeaf = old })
-			_, script := writeScript(t, `x = agent("hello", vendor="v")`)
+			_, script := writeScript(t, `await agent("hello", {vendor: "v"});`)
 			run, err := Prepare(script)
 			if err != nil {
 				t.Fatal(err)
@@ -57,7 +57,7 @@ func TestPersistIOPlumbing(t *testing.T) {
 }
 
 // TestMetaModelFallbackAndWhenToUse: meta.model is the default model for agents that omit
-// model= (and reaches the leaf request), an explicit model= overrides it, and
+// model (and reaches the leaf request), an explicit model overrides it, and
 // meta.whenToUse lands on the manifest.
 func TestMetaModelFallbackAndWhenToUse(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -65,10 +65,10 @@ func TestMetaModelFallbackAndWhenToUse(t *testing.T) {
 	old := runLeaf
 	runLeaf = echoLeaf(rec)
 	t.Cleanup(func() { runLeaf = old })
-	script := filepath.Join(t.TempDir(), "m.star")
-	full := `meta = {"name": "n", "description": "d", "model": "meta-default", "whenToUse": "for audits"}
-a = agent("uses default", vendor="v")
-b = agent("overrides", vendor="v", model="explicit")
+	script := filepath.Join(t.TempDir(), "m.js")
+	full := `const meta = {name: "n", description: "d", model: "meta-default", whenToUse: "for audits"};
+await agent("uses default", {vendor: "v"});
+await agent("overrides", {vendor: "v", model: "explicit"});
 `
 	if err := os.WriteFile(script, []byte(full), 0o600); err != nil {
 		t.Fatal(err)
@@ -95,7 +95,7 @@ b = agent("overrides", vendor="v", model="explicit")
 	}
 }
 
-// TestEnginePIDAndScriptPersisted: Launch persists runs/<id>.star (for restart), and a
+// TestEnginePIDAndScriptPersisted: Launch persists runs/<id>.js (for restart), and a
 // DETACHED-style Execute (opts.RunID set) records EnginePID so `workflow stop` can reap
 // it; a foreground run (opts.RunID empty) records no pid.
 func TestEnginePIDAndScriptPersisted(t *testing.T) {
@@ -104,7 +104,7 @@ func TestEnginePIDAndScriptPersisted(t *testing.T) {
 	old := runLeaf
 	runLeaf = echoLeaf(rec)
 	t.Cleanup(func() { runLeaf = old })
-	_, script := writeScript(t, `x = agent("hi", vendor="v")`)
+	_, script := writeScript(t, `await agent("hi", {vendor: "v"});`)
 
 	id, err := Launch(context.Background(), script, Options{}, true) // foreground
 	if err != nil {
@@ -112,7 +112,7 @@ func TestEnginePIDAndScriptPersisted(t *testing.T) {
 	}
 	sp, _ := subagent.RunScriptPath(id)
 	if _, serr := os.Stat(sp); serr != nil {
-		t.Errorf(".star not persisted at Launch: %v", serr)
+		t.Errorf(".js not persisted at Launch: %v", serr)
 	}
 	if got, _ := subagent.ReadRun(id); got.EnginePID != 0 {
 		t.Errorf("foreground run recorded EnginePID=%d, want 0 (not stop-reapable)", got.EnginePID)

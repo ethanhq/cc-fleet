@@ -1,24 +1,31 @@
 package workflow
 
 import (
+	"context"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
-	"go.starlark.net/starlark"
+	"github.com/dop251/goja"
 
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
+// ensureLeafProxy ensures the codex conversion daemon for a codex provider before a
+// leaf executes (a no-op for every other vendor). A seam so tests never start a daemon.
+var ensureLeafProxy = codexproxy.EnsureForVendorName
+
 // engine holds the per-run state the builtins close over. It is the single
 // authoritative writer of the run manifest — name/description/startedAt are fixed at
 // Execute, phases + currentPhase accumulate as the script announces them, and every
-// phase()/finalize OVERWRITES the whole manifest from this state. All fields are only
-// read/written by a builtin (or Execute's finalize), and every builtin runs while its
-// goroutine holds the GIL, so they need no separate lock (the GIL serializes access).
+// phase()/finalize OVERWRITES the whole manifest from this state. Every field is
+// read/written only on the engine loop (loop.go) — the one goroutine that runs JS and
+// the state callbacks — so none of it needs a lock; leaf goroutines see only a
+// plain-data leafSpec and the post() channel.
 type engine struct {
 	sched        *scheduler
 	runID        string
@@ -29,21 +36,21 @@ type engine struct {
 	currentPhase string
 	// journal is the run's content-hash result cache (resume). Nil-safe: an engine
 	// built without one (the leaf unit tests) simply never caches. Read/written only
-	// under the GIL (lookup before a leaf's exec; append after runBlocking re-locks).
+	// on the loop (lookup in agent(), append in a completion's state half).
 	journal *journal
-	// events is the run's live-event channel that `workflow watch` renders. Nil-safe. Emitted
-	// only under the GIL — the seq counter needs no atomic and lines never interleave. One-way
-	// producer→watcher; never read back by the engine, never feeds journalKey.
+	// events is the run's live-event channel that `workflow watch` renders. Nil-safe.
+	// Emitted only on the loop — the seq counter needs no atomic and lines never
+	// interleave. One-way producer→watcher; never read back, never feeds journalKey.
 	events    *eventWriter
 	groupSeq  int    // monotonic id source for parallel/pipeline/workflow group brackets
 	persistIO bool   // persist each leaf's prompt+answer for the board's inline detail (default on; --no-persist-io off)
 	enginePID int    // os.Getpid() of the DETACHED engine — recorded so `workflow stop` can reap it
-	metaModel string // meta.model: default model for agents that omit model= (applied before journalKey)
+	metaModel string // meta.model: default model for agents that omit model (applied before journalKey)
 	whenToUse string // meta.whenToUse: display/board text
 	sessionID string // parent Claude session (board grouping); seeded from the manifest, re-persisted every save
 	cwd       string // launching project dir (board run header); seeded from the manifest, re-persisted every save
 	argsJSON  string // --args-json, re-persisted so a restart resumes with the SAME args (else leaf keys shift)
-	// Budget accounting, GIL-protected. A cap (<=0 = uncapped) trips on the FIRST of two
+	// Budget accounting, loop-protected. A cap (<=0 = uncapped) trips on the FIRST of two
 	// counters to breach: USD (an Anthropic list-price ESTIMATE — claude's own metering, not
 	// the third-party vendor's actual charge) and tokens (Usage.InputTokens+OutputTokens, the
 	// exact vendor-neutral ceiling). *Spent accumulates each completed leaf's real cost; *Reserved
@@ -58,13 +65,30 @@ type engine struct {
 	budgetTokensSpent    int64
 	budgetTokensReserved int64
 	// Slim version-gate result, resolved ONCE per engine by effProfileFor: fingerprint
-	// load + binary detection are too expensive to pay per leaf under the GIL (with slim
-	// the default, every bare leaf resolves — per-leaf resolution would serialize the
-	// whole fanout), and a single resolution keeps one run's journal keys on ONE
-	// effective shape even if the host claude changes mid-run.
+	// load + binary detection are too expensive to pay per leaf (with slim the default,
+	// every bare leaf resolves), and a single resolution keeps one run's journal keys on
+	// ONE effective shape even if the host claude changes mid-run.
 	gateOnce   sync.Once
 	gateOK     bool
 	gateReason string
+
+	// The loop machinery (loop.go): vm + cbs + loopDone are shared with leaf goroutines
+	// (the channel/done handoff only); everything else is loop-owned.
+	vm            *goja.Runtime
+	cbs           chan leafCB
+	loopDone      chan struct{}
+	inflight      int  // leaves spawned but not yet completed
+	aborted       bool // drain state-only; no more JS runs
+	stopped       bool // the run ctx was cancelled (finalizes "stopped", not "failed")
+	runCtx        context.Context
+	leafCtx       context.Context // child of runCtx; cancelled on abort → leaf execs die promptly
+	cancelLeaves  context.CancelFunc
+	unhandled     map[*goja.Promise]goja.Value // rejected-with-no-handler set (handled-set semantics)
+	jsonParse     goja.Callable
+	jsonStringify goja.Callable
+	errCtor       *goja.Object
+	nestedStub    goja.Value // the child scripts' `workflow` parameter: throws the one-level guard
+	workflowFn    goja.Value // the top script's `workflow` parameter: jsWorkflow
 }
 
 // effProfileFor maps a REQUESTED prompt profile to the effective one, consulting the
@@ -83,163 +107,228 @@ func (e *engine) effProfileFor(requested string) (string, string) {
 	return requested, ""
 }
 
-// builtins returns the predeclared environment exposed to a workflow script. It
-// mirrors the native Workflow API; the only shape differences are agent()'s vendor=
-// parameter and Starlark syntax. `args` is predeclared when --args-json was given.
-func (e *engine) builtins(opts Options) starlark.StringDict {
-	env := starlark.StringDict{
-		"agent":    starlark.NewBuiltin("agent", e.agent),
-		"parallel": starlark.NewBuiltin("parallel", e.parallel),
-		"pipeline": starlark.NewBuiltin("pipeline", e.pipeline),
-		"phase":    starlark.NewBuiltin("phase", e.phase),
-		"log":      starlark.NewBuiltin("log", e.log),
-		// `wait` is cc-fleet's name for native's await() — Starlark RESERVES `await` as a
-		// keyword, so the script-facing builtin must use a legal identifier.
-		"wait":     starlark.NewBuiltin("wait", e.await),
-		"workflow": starlark.NewBuiltin("workflow", e.workflow),
-		"budget":   budgetValue{e: e},
-	}
-	if opts.ArgsJSON != "" {
-		// Decode --args-json into `args` on the not-yet-concurrent top-level thread.
-		// Best-effort: a bad value just leaves `args` absent.
-		th := e.sched.newThread("workflow:args")
-		if v, err := starlark.Call(th, jsonDecode, starlark.Tuple{starlark.String(opts.ArgsJSON)}, nil); err == nil {
-			v.Freeze() // immutable, like a frozen global — script-side mutation is a clean error
-			env["args"] = v
+// bootstrapJS runs once at VM setup, before any user statement: it installs the
+// deterministic lockdown (the wall-clock Date entry points and Math.random throw; the
+// Function-constructor escape on the three function prototypes is sealed — deleting the
+// Function global alone leaves `(function(){}).constructor("…")` compiling code) and
+// defines parallel/pipeline in JS over the host bracket hooks — Promise composition is
+// the natural expression of their barrier / no-barrier contracts. The host object is
+// deleted right after; user scripts can't reach it.
+const bootstrapJS = `(function (host) {
+	"use strict";
+	const unavailable = (name) => () => {
+		throw new Error(name + " is unavailable: workflow scripts are deterministic — pass timestamps or randomness in via args");
+	};
+	// Date keeps its deterministic entry points (an explicit-value construction,
+	// parse, UTC) and throws only where the wall clock would leak in.
+	const RealDate = Date;
+	const NoClock = function (...a) {
+		if (a.length === 0) {
+			unavailable("new Date() with no arguments")();
 		}
+		return new RealDate(...a);
+	};
+	NoClock.prototype = RealDate.prototype;
+	NoClock.parse = RealDate.parse;
+	NoClock.UTC = RealDate.UTC;
+	NoClock.now = unavailable("Date.now()");
+	globalThis.Date = NoClock;
+	Math.random = unavailable("Math.random()");
+	const seal = (proto) => Object.defineProperty(proto, "constructor", { value: undefined, writable: false, configurable: false });
+	seal(Object.getPrototypeOf(function () {}));
+	seal(Object.getPrototypeOf(async function () {}));
+	seal(Object.getPrototypeOf(function* () {}));
+	globalThis.parallel = (thunks) => {
+		if (!Array.isArray(thunks)) throw new TypeError("parallel: expected an array of functions (thunks)");
+		if (thunks.length > host.maxFanout) throw new RangeError("parallel: more than " + host.maxFanout + " elements - split the work into smaller batches");
+		const gid = host.groupOpen("parallel");
+		const one = (t) => {
+			try {
+				if (typeof t !== "function") throw new TypeError("parallel: element is not a function");
+				return Promise.resolve(t()).catch(() => null);
+			} catch (e) {
+				return Promise.resolve(null);
+			}
+		};
+		return Promise.all(thunks.map(one)).then((res) => { host.groupClose(gid); return res; });
+	};
+	globalThis.pipeline = (items, ...stages) => {
+		if (!Array.isArray(items)) throw new TypeError("pipeline: expected an array of items");
+		if (stages.length === 0) throw new TypeError("pipeline: needs items and at least one stage");
+		if (items.length > host.maxFanout) throw new RangeError("pipeline: more than " + host.maxFanout + " elements - split the work into smaller batches");
+		const gid = host.groupOpen("pipeline");
+		const one = async (item, index) => {
+			let prev = item;
+			for (const stage of stages) prev = await stage(prev, item, index);
+			return prev;
+		};
+		return Promise.all(items.map((item, i) => one(item, i).catch(() => null))).then((res) => { host.groupClose(gid); return res; });
+	};
+})(__wfhost);`
+
+// setupVM builds the engine's goja Runtime: the script-facing globals (agent / phase /
+// log / budget / parallel / pipeline via bootstrap), the determinism lockdown, the
+// rejection tracker, and the cached JSON.parse / Error handles. Called once per run,
+// before any script statement executes.
+func (e *engine) setupVM() error {
+	vm := goja.New()
+	vm.SetMaxCallStackSize(1024)
+	e.vm = vm
+	e.cbs = make(chan leafCB, 64)
+	e.loopDone = make(chan struct{})
+	e.unhandled = map[*goja.Promise]goja.Value{}
+	vm.SetPromiseRejectionTracker(func(p *goja.Promise, op goja.PromiseRejectionOperation) {
+		switch op {
+		case goja.PromiseRejectionReject:
+			e.unhandled[p] = p.Result()
+		case goja.PromiseRejectionHandle:
+			delete(e.unhandled, p)
+		}
+	})
+	vm.Set("agent", e.jsAgent)
+	vm.Set("phase", e.jsPhase)
+	vm.Set("log", e.jsLog)
+	vm.Set("budget", newBudgetObject(vm, e))
+	host := vm.NewObject()
+	_ = host.Set("groupOpen", func(ty string) string { return e.emitGroupOpen(ty) })
+	_ = host.Set("groupClose", func(gid string) { e.emitGroupClose(gid) })
+	_ = host.Set("maxFanout", maxFanoutElements)
+	vm.Set("__wfhost", host)
+	if _, err := vm.RunString(bootstrapJS); err != nil {
+		return fmt.Errorf("workflow: bootstrap: %w", err)
 	}
-	return env
+	glob := vm.GlobalObject()
+	_ = glob.Delete("__wfhost")
+	_ = glob.Delete("eval")
+	_ = glob.Delete("Function")
+	jsonObj, ok := vm.Get("JSON").(*goja.Object)
+	if !ok {
+		return fmt.Errorf("workflow: bootstrap: no JSON global")
+	}
+	parse, ok := goja.AssertFunction(jsonObj.Get("parse"))
+	if !ok {
+		return fmt.Errorf("workflow: bootstrap: no JSON.parse")
+	}
+	e.jsonParse = parse
+	stringify, ok := goja.AssertFunction(jsonObj.Get("stringify"))
+	if !ok {
+		return fmt.Errorf("workflow: bootstrap: no JSON.stringify")
+	}
+	e.jsonStringify = stringify
+	errCtor, ok := vm.Get("Error").(*goja.Object)
+	if !ok {
+		return fmt.Errorf("workflow: bootstrap: no Error global")
+	}
+	e.errCtor = errCtor
+	e.nestedStub = vm.ToValue(func(call goja.FunctionCall) goja.Value {
+		panic(e.newError("workflow: nested workflows are one level deep only"))
+	})
+	e.workflowFn = vm.ToValue(e.jsWorkflow)
+	return nil
 }
 
-// agent runs ONE vendor subagent leaf and blocks the calling Starlark thread until
-// it returns. On a leaf failure it RAISES a Starlark error (faithful to native: a
-// bare top-level agent() aborts the run; parallel/pipeline recover the error into a
-// None at that index). With schema= the leaf runs with --json-schema (claude injects
-// and enforces a forced StructuredOutput tool call); the returned payload is
-// validated against the schema as a client backstop — an absent or invalid payload
-// fails the leaf (no retry). The prompt is fed via stdin (PromptReader), never argv.
-// Entered + returns with the GIL held; the GIL is released only for the blocking
-// exec + slot wait (via runBlocking).
-func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	var (
-		prompt       string
-		vendor       string
-		modelVal     starlark.Value
-		schemaVal    starlark.Value
-		labelVal     starlark.Value
-		phaseVal     starlark.Value
-		timeoutVal   starlark.Value
-		budgetVal    starlark.Value
-		turnsVal     starlark.Value
-		bgVal        starlark.Value
-		isolationVal starlark.Value
-		profileVal   starlark.Value
-		toolsVal     starlark.Value
-		skillsVal    starlark.Value
-		mcpVal       starlark.Value
-	)
-	// Every optional is unpacked as a Value so an explicit None (the documented
-	// "omitted" default) is accepted rather than rejected by Starlark's strict typing;
-	// the opt* helpers coerce None → zero. timeout/max_budget_usd also accept int OR
-	// float so a script can write the natural timeout=120 / max_budget_usd=1.
-	if err := starlark.UnpackArgs(b.Name(), args, kwargs,
-		"prompt", &prompt,
-		"vendor", &vendor,
-		"model?", &modelVal,
-		"schema?", &schemaVal,
-		"label?", &labelVal,
-		"phase?", &phaseVal,
-		"timeout?", &timeoutVal,
-		"max_budget_usd?", &budgetVal,
-		"max_turns?", &turnsVal,
-		"run_in_background?", &bgVal,
-		"isolation?", &isolationVal,
-		"profile?", &profileVal,
-		"tools?", &toolsVal,
-		"skills?", &skillsVal,
-		"mcp?", &mcpVal,
-	); err != nil {
-		return nil, err
+// newError builds a JS Error value with a clean message — what a Go builtin panics
+// with to throw a catchable script exception, and what a completion rejects with.
+func (e *engine) newError(format string, a ...any) goja.Value {
+	msg := fmt.Sprintf(format, a...)
+	obj, err := e.vm.New(e.errCtor, e.vm.ToValue(msg))
+	if err != nil {
+		return e.vm.ToValue(msg)
 	}
+	return obj
+}
+
+// resolved returns an already-fulfilled Promise — the journal cache-hit path.
+func (e *engine) resolved(v goja.Value) goja.Value {
+	p, res, _ := e.vm.NewPromise()
+	res(v)
+	return e.vm.ToValue(p)
+}
+
+// promiseSettle carries a leaf promise's resolving functions to its completion's js
+// half without naming their goja signatures.
+type promiseSettle struct {
+	resolve func(goja.Value)
+	reject  func(goja.Value)
+}
+
+// leafSpec snapshots everything a leaf goroutine needs — plain Go data captured on the
+// loop, so the goroutine never touches the VM or the engine state.
+type leafSpec struct {
+	vendor, model, prompt, phase, label string
+	key, schemaJSON, isolation, profile string
+	tools                               []string
+	noSkills, mcp                       bool
+	timeoutSec, maxBudget               float64
+	maxTurns                            int
+	usdEst                              float64
+	tokEst                              int64
+}
+
+// agentOptKeys is the agent() options contract; an unknown key throws — a weak model's
+// typo'd option must fail loudly, not silently no-op.
+var agentOptKeys = map[string]bool{
+	"vendor": true, "model": true, "schema": true, "label": true, "phase": true,
+	"timeout": true, "max_budget_usd": true, "max_turns": true,
+	"isolation": true, "profile": true, "tools": true, "skills": true, "mcp": true,
+}
+
+// jsAgent runs ONE vendor subagent leaf and returns a Promise that settles with its
+// result. Argument errors, the budget gate, and the lifetime cap THROW synchronously
+// (faithful to native — and a throwing thunk inside parallel/pipeline degrades to
+// null); a leaf failure REJECTS the promise. With schema the leaf runs with
+// --json-schema (claude injects and enforces a forced StructuredOutput tool call); the
+// returned payload is validated against the schema as a client backstop — an absent or
+// invalid payload rejects (no retry). The prompt is fed via stdin (PromptReader), never
+// argv. Runs on the loop: everything up to the goroutine spawn — the journal lookup,
+// the budget gate→reserve, the lifetime admit — is atomic with every other builtin.
+func (e *engine) jsAgent(call goja.FunctionCall) goja.Value {
+	prompt, ok := call.Argument(0).Export().(string)
+	if !ok {
+		panic(e.newError("agent: prompt must be a string"))
+	}
+	o := e.agentOpts(call.Argument(1))
+	vendor := o.str("vendor")
 	if vendor == "" {
-		return nil, fmt.Errorf("agent: vendor= is required")
+		panic(e.newError("agent: opts.vendor is required"))
 	}
-	runInBackground := bgVal != nil && bgVal != starlark.None && bool(bgVal.Truth())
-	isolation, err := optString(isolationVal, "isolation")
-	if err != nil {
-		return nil, err
-	}
+	isolation := o.str("isolation")
 	if isolation != "" && isolation != "worktree" {
-		return nil, fmt.Errorf("agent: isolation must be 'worktree' (or omitted), got %q", isolation)
+		panic(e.newError("agent: isolation must be 'worktree' (or omitted), got %q", isolation))
 	}
-	if isolation == "worktree" && runInBackground {
-		return nil, fmt.Errorf("agent: isolation='worktree' is not supported with run_in_background=True")
-	}
-	model, err := optString(modelVal, "model")
-	if err != nil {
-		return nil, err
-	}
-	label, err := optString(labelVal, "label")
-	if err != nil {
-		return nil, err
-	}
-	phaseArg, err := optString(phaseVal, "phase")
-	if err != nil {
-		return nil, err
-	}
-	timeoutSec, err := optFloat(timeoutVal, "timeout")
-	if err != nil {
-		return nil, err
-	}
-	maxBudget, err := optFloat(budgetVal, "max_budget_usd")
-	if err != nil {
-		return nil, err
-	}
-	maxTurns, err := optInt(turnsVal, "max_turns")
-	if err != nil {
-		return nil, err
-	}
-	profile, err := optStringDefault(profileVal, "profile", subagent.ProfileSlim)
-	if err != nil {
-		return nil, err
-	}
-	tools, err := optStringList(toolsVal, "tools")
-	if err != nil {
-		return nil, err
-	}
-	skills, err := optBoolDefault(skillsVal, "skills", true)
-	if err != nil {
-		return nil, err
-	}
-	mcp, mcpPresent, err := optBool(mcpVal, "mcp")
-	if err != nil {
-		return nil, err
-	}
-	// Front-load the same slim validation the bare-CLI path uses, surfaced as Starlark
-	// errors (consistent with the other kwarg errors above): the profile enum, the
+	model := o.str("model")
+	label := o.str("label")
+	phaseArg := o.str("phase")
+	timeoutSec := o.num("timeout")
+	maxBudget := o.num("max_budget_usd")
+	maxTurns := o.integer("max_turns")
+	profile := o.strDefault("profile", subagent.ProfileSlim)
+	tools := o.strList("tools")
+	skills := o.boolDefault("skills", true)
+	mcp, mcpPresent := o.boolean("mcp")
+	// Front-load the same slim validation the bare-CLI path uses, surfaced as thrown
+	// errors (consistent with the other option errors above): the profile enum, the
 	// slim-only refinements rejected when combined with full, and tool canonicalization.
 	if perr := subagent.ValidateProfile(profile); perr != nil {
-		return nil, fmt.Errorf("agent: %w", perr)
+		panic(e.newError("agent: %v", perr))
 	}
 	isFull := profile == "" || profile == subagent.ProfileFull
 	if isFull && (len(tools) > 0 || !skills || mcpPresent) {
-		return nil, fmt.Errorf("agent: tools= / skills= / mcp= are slim-only; they require profile='slim' or 'slim-ro'")
+		panic(e.newError("agent: tools / skills / mcp are slim-only; they require profile: 'slim' or 'slim-ro'"))
 	}
 	canonTools, err := canonicalizeTools(tools)
 	if err != nil {
-		return nil, fmt.Errorf("agent: %w", err)
+		panic(e.newError("agent: %v", err))
 	}
 	if err := subagent.ValidateToolsSkills(canonTools, !skills); err != nil {
-		return nil, fmt.Errorf("agent: %w", err)
+		panic(e.newError("agent: %v", err))
 	}
 
-	// CONVERT-UNDER-LOCK: snapshot every Starlark input into Go data while the GIL is
-	// held, before releasing it for the blocking exec.
 	phaseTag := phaseArg
 	if phaseTag == "" {
 		phaseTag = e.currentPhase
 	}
-	// meta.model is the default model for agents that omit model=. Apply it BEFORE the
+	// meta.model is the default model for agents that omit model. Apply it BEFORE the
 	// journal key so the key reflects the EFFECTIVE model the leaf will use.
 	if model == "" {
 		model = e.metaModel
@@ -250,7 +339,7 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 	// key. The gate is resolved once per engine (effProfileFor).
 	effProfile, downgrade := e.effProfileFor(profile)
 	// Resolve the EFFECTIVE tool set against the effective profile BEFORE keying: an
-	// explicit tools= when given, else the profile default (DefaultSlimTools, canonicalized).
+	// explicit tools when given, else the profile default (DefaultSlimTools, canonicalized).
 	// Folding the resolved set — and passing the SAME set to the leaf via Request.Tools —
 	// keeps keying and execution from diverging (a bare slim leaf keys with nil tools while
 	// running DefaultSlimTools otherwise). For a full effective profile the slim fields don't
@@ -259,28 +348,22 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 	if (effProfile == subagent.ProfileSlim || effProfile == subagent.ProfileSlimRO) && len(keyTools) == 0 {
 		keyTools, err = subagent.CanonicalizeTools(subagent.DefaultSlimTools(effProfile, !skills))
 		if err != nil {
-			return nil, fmt.Errorf("agent: %w", err)
+			panic(e.newError("agent: %v", err))
 		}
 	}
-	// MCP per-profile default, resolved in the same pre-keying window as the tool
-	// set: an explicit mcp= wins; else slim inherits the host config (native
-	// generic parity) and slim-ro stays strict. Inert for an effective-full
-	// profile (not folded into the key, not emitted in the argv).
+	// MCP per-profile default, resolved in the same pre-keying window as the tool set: an
+	// explicit mcp wins; else slim inherits the host config (native generic parity) and
+	// slim-ro stays strict. Inert for an effective-full profile (not folded, not emitted).
 	if !mcpPresent {
 		mcp = effProfile == subagent.ProfileSlim
 	}
 	var schemaJSON string
-	if schemaVal != nil && schemaVal != starlark.None {
-		sj, serr := encodeSchema(thread, schemaVal)
+	if sv := o.val("schema"); sv != nil {
+		sj, serr := e.canonicalSchemaJSON(sv)
 		if serr != nil {
-			return nil, fmt.Errorf("agent: schema: %w", serr)
+			panic(e.newError("agent: schema: %v", serr))
 		}
 		schemaJSON = sj
-	}
-	if runInBackground && schemaJSON != "" {
-		// A background leaf's result is read back from its job file at await time, and
-		// the structured payload is in-process only — so schema= isn't offered for it.
-		return nil, fmt.Errorf("agent: schema= is not supported with run_in_background=True")
 	}
 
 	// Log the version-gate downgrade BEFORE the journal lookup, so it is visible even when
@@ -290,368 +373,260 @@ func (e *engine) agent(thread *starlark.Thread, b *starlark.Builtin, args starla
 		e.logf("agent(%s): %s; running full", vendor, downgrade)
 	}
 
-	// Resume replay: a journaled leaf returns its cached result with NO vendor exec, NO
-	// slot, and NO lifetime-admit — a cache hit is free. The key spans the result's full
-	// determinant (vendor / model / base prompt / schema / effective slim shape). A schema
-	// leaf re-decodes + re-validates the cached raw answer (deterministic: it passed before).
+	// Resume replay: a journaled leaf returns an already-resolved promise with NO vendor
+	// exec, NO slot, and NO lifetime-admit — a cache hit is free. The key spans the
+	// result's full determinant (vendor / model / base prompt / schema / effective slim
+	// shape). A schema leaf re-decodes + re-validates the cached raw answer
+	// (deterministic: it passed before); a corrupt/hand-edited entry that fails falls
+	// through to re-run the leaf rather than abort the run.
 	key := journalKey(vendor, model, prompt, schemaJSON, isolation, effProfile, keyTools, !skills, mcp)
-	if cached, ok := e.journal.lookup(key); ok {
-		if runInBackground {
-			// A resolved handle: await() returns the cached result without spawning.
-			return &bgHandle{resolved: true, cached: cached, key: key, vendor: vendor, model: model, phase: phaseTag, label: label}, nil
-		}
+	if cached, hit := e.journal.lookup(key); hit {
 		if schemaJSON == "" {
 			e.emitLeaf("cached", phaseTag, label, vendor, model)
-			return starlark.String(cached), nil
+			return e.resolved(e.vm.ToValue(cached))
 		}
-		// A schema leaf re-decodes + re-validates its cached raw answer (deterministic:
-		// it passed before). If a corrupt/hand-edited journal entry fails to validate,
-		// fall through to re-run the leaf rather than abort the run.
-		if v, verr := decodeAndValidate(thread, cached, schemaVal); verr == nil {
+		if v, verr := e.replyToJS(cached, schemaJSON); verr == nil {
 			e.emitLeaf("cached", phaseTag, label, vendor, model)
-			return v, nil
+			return e.resolved(v)
 		}
-	}
-
-	// For a codex provider, ensure the conversion daemon is up just before the leaf
-	// executes — AFTER the journal cache-hit return (a cached leaf needs no daemon)
-	// and after argument validation (an invalid call must not start one), but BEFORE
-	// the budget gate so the gate→reserve step stays GIL-atomic (runBlocking releases
-	// the GIL, which must not happen between gate and reserve). A no-op for non-codex.
-	var proxyErr error
-	e.sched.runBlocking(func() { proxyErr = codexproxy.EnsureForVendorName(vendor) })
-	if proxyErr != nil {
-		return nil, fmt.Errorf("agent(%s): codex proxy unavailable: %w", vendor, proxyErr)
 	}
 
 	// Budget gate: a real exec is about to spend, so refuse once a cap would be breached.
-	// Placed AFTER the journal lookup (a cache hit is free and never blocked) and BEFORE the
-	// bg branch + admit/slot. A leaf RESERVES a pessimistic per-leaf estimate against each cap
-	// so a concurrent fan-out admits against spent+reserved — not spent alone — and can't
-	// overshoot the cap by the whole in-flight set; the estimate reconciles to real on completion.
-	// The USD estimate over-counts a typical leaf (its own max_budget_usd wins when larger); the
-	// token estimate is the flat per-leaf floor. The gate→reserve is GIL-held (atomic), so a
-	// parallel fan-out's leaves serialize through it. First cap to trip aborts.
+	// Placed AFTER the journal lookup (a cache hit is free and never blocked). A leaf
+	// RESERVES a pessimistic per-leaf estimate against each cap so a concurrent fan-out
+	// admits against spent+reserved — not spent alone — and can't overshoot the cap by the
+	// whole in-flight set; the estimate reconciles to real on completion. The USD estimate
+	// over-counts a typical leaf (its own max_budget_usd wins when larger); the token
+	// estimate is the flat per-leaf floor. Gate→reserve runs uninterrupted on the loop, so
+	// a parallel fan-out's leaves serialize through it. First cap to trip aborts.
 	usdEst := defaultLeafEstimate
 	if maxBudget > usdEst {
 		usdEst = maxBudget
 	}
 	tokEst := int64(defaultLeafTokenEstimate)
 	if e.budgetWouldExceed(usdEst, tokEst) {
-		return nil, e.budgetExceededErr()
+		panic(e.newError("%v", e.budgetExceededErr()))
 	}
-
-	// Background leaf: launch detached, return a handle (NO live-pool slot; result is journaled at
-	// await time). launchBg does its own lifetime admit AND owns the reservation lifecycle — it
-	// reserves before the launch and carries the estimate on the handle so resolveHandle releases
-	// (and charges real) at await; a launch failure releases there.
-	if runInBackground {
-		return e.launchBg(vendor, model, prompt, phaseTag, label, key, timeoutSec, maxBudget, maxTurns,
-			usdEst, tokEst, slimReq{profile: profile, tools: keyTools, noSkills: !skills, mcp: mcp})
-	}
-
 	if !e.sched.admit() {
-		return nil, fmt.Errorf("agent: run exceeded the %d-leaf lifetime cap", maxLifetimeAgents)
+		panic(e.newError("agent: run exceeded the %d-leaf lifetime cap", maxLifetimeAgents))
 	}
-
-	// Reserve this sync leaf's estimate (GIL-held, atomic with the gate above), then register the
-	// release defer — placed AFTER the reservation so it never over-releases a cache-hit/bg return,
-	// and it runs GIL-held on the unwind (like the slot defer below), covering EVERY exit beyond
-	// here (slot-fail, worktree-fail, leaf-fail, schema-invalid, panic, success). Success charges
-	// real BEFORE returning, so the defer then frees only the estimate.
 	e.budgetReserve(usdEst, tokEst)
-	defer e.budgetRelease(usdEst, tokEst)
 
-	// Mint a queued placeholder (PID=0) so the board shows this leaf as a queued ◌ row WHILE it
-	// waits for a pool slot; subagent.Run reuses this id, flipping the same job queued→running→
-	// terminal as one file. The mint writes a file, so it runs GIL-released (like the slot wait).
-	var queuedJobID string
-	e.sched.runBlocking(func() {
-		queuedJobID = mintQueuedLeaf(subagent.Request{
-			Vendor: vendor, RunID: e.runID, Phase: phaseTag, Label: label,
-			JournalKey: key, PersistIO: e.persistIO, PromptProfile: profile,
-		}, model)
-	})
-	// Guarantee the reused job ends terminal: unless a success return sets leafDone, this defer
-	// finalizes it FAILED on EVERY other exit (slot-cancel, worktree-fail, pre-flight vendor fail,
-	// schema-invalid, panic) — so a queued placeholder never lingers and a schema-invalid "done"
-	// attempt is corrected. leafErr carries a real failure's error class (preserved); else canonical.
-	leafDone := false
-	var leafErr subagent.Result
+	p, resolve, reject := e.vm.NewPromise()
+	settle := promiseSettle{
+		resolve: func(v goja.Value) { resolve(v) },
+		reject:  func(v goja.Value) { reject(v) },
+	}
+	e.inflight++
+	go e.runLeafAsync(leafSpec{
+		vendor: vendor, model: model, prompt: prompt, phase: phaseTag, label: label,
+		key: key, schemaJSON: schemaJSON, isolation: isolation, profile: profile,
+		tools: keyTools, noSkills: !skills, mcp: mcp,
+		timeoutSec: timeoutSec, maxBudget: maxBudget, maxTurns: maxTurns,
+		usdEst: usdEst, tokEst: tokEst,
+	}, settle)
+	return e.vm.ToValue(p)
+}
+
+// runLeafAsync is the leaf goroutine: it runs the leaf to a single (res, preErr)
+// outcome — recovering a leaf panic into a failure so a thunk's leaf can never crash
+// the process — and posts ONE completion back to the loop. It touches no engine state;
+// the completion's state half (on the loop) settles budgets, journal, events, and the
+// queued-job correction.
+func (e *engine) runLeafAsync(spec leafSpec, settle promiseSettle) {
+	jobID, res, preErr := e.execLeaf(spec)
+	e.completeLeaf(spec, jobID, res, settle, preErr)
+}
+
+func (e *engine) execLeaf(spec leafSpec) (jobID string, res subagent.Result, preErr error) {
 	defer func() {
-		if !leafDone {
-			subagent.FinalizeQueuedLeafFailed(queuedJobID, leafErr)
+		if r := recover(); r != nil {
+			res = subagent.Result{}
+			preErr = fmt.Errorf("agent(%s): leaf panicked: %v", spec.vendor, r)
 		}
 	}()
-
-	// Acquire a pool slot with the GIL released, so waiting for a slot never pins the
-	// interpreter. The slot is held ONLY across this leaf's actual exec and released right
-	// after — never across nested parallel/pipeline/workflow inside an element — so nesting
-	// can't deadlock on a slot a parent branch is sitting on. Only register the release
-	// defer AFTER a successful acquire.
-	acquired := false
-	e.sched.runBlocking(func() { acquired = e.sched.acquireSlot() })
-	if !acquired {
-		return nil, fmt.Errorf("agent: run cancelled before launch")
+	// Mint a queued placeholder (PID=0) so the board shows this leaf as a queued ◌ row
+	// WHILE it waits for a pool slot; subagent.Run reuses this id, flipping the same job
+	// queued→running→terminal as one file.
+	jobID = mintQueuedLeaf(subagent.Request{
+		Vendor: spec.vendor, RunID: e.runID, Phase: spec.phase, Label: spec.label,
+		JournalKey: spec.key, PersistIO: e.persistIO, PromptProfile: spec.profile,
+	}, spec.model)
+	if perr := ensureLeafProxy(spec.vendor); perr != nil {
+		return jobID, subagent.Result{}, fmt.Errorf("agent(%s): codex proxy unavailable: %v", spec.vendor, perr)
+	}
+	// Acquire a pool slot; the slot is held ONLY across this leaf's actual exec and
+	// released right after — never across anything a script branch nests — so nesting
+	// can't deadlock on a slot a parent branch is sitting on.
+	if !e.sched.acquireSlot() {
+		return jobID, subagent.Result{}, fmt.Errorf("agent: run cancelled before launch")
 	}
 	defer e.sched.releaseSlot()
-
 	// Worktree isolation: run the leaf with cwd = a fresh git worktree, torn down on
 	// return (success, failure, or panic).
-	// Created with the GIL RELEASED (it shells out to git); GIL re-held on return.
-	var workDir string
-	if isolation == "worktree" {
-		var cleanup func()
-		var werr error
-		e.sched.runBlocking(func() { workDir, cleanup, werr = createWorktreeFn(e.runID) })
+	workDir := ""
+	if spec.isolation == "worktree" {
+		dir, cleanup, werr := createWorktreeFn(e.runID)
 		if werr != nil {
-			e.emitLeaf("failed", phaseTag, label, vendor, model)
-			return nil, fmt.Errorf("agent: %w", werr)
+			return jobID, subagent.Result{}, fmt.Errorf("agent: %v", werr)
 		}
 		defer cleanup()
+		workDir = dir
 	}
-
-	e.emitLeaf("launch", phaseTag, label, vendor, model)
-	req := subagent.Request{
-		Vendor:         vendor,
-		Model:          model,
-		PromptReader:   strings.NewReader(prompt), // stdin, not argv
-		JSON:           true,                      // force inner json → res.Result is the answer text
-		Timeout:        time.Duration(timeoutSec * float64(time.Second)),
-		MaxTurns:       maxTurns,
-		MaxBudgetUSD:   maxBudget,
+	e.post(leafCB{state: func() {
+		e.emitLeaf("launch", spec.phase, spec.label, spec.vendor, spec.model)
+	}})
+	res = runLeaf(e.leafCtx, subagent.Request{
+		Vendor:         spec.vendor,
+		Model:          spec.model,
+		PromptReader:   strings.NewReader(spec.prompt), // stdin, not argv
+		JSON:           true,                           // force inner json → res.Result is the answer text
+		Timeout:        time.Duration(spec.timeoutSec * float64(time.Second)),
+		MaxTurns:       spec.maxTurns,
+		MaxBudgetUSD:   spec.maxBudget,
 		RunID:          e.runID,
-		Phase:          phaseTag,
-		Label:          label,
-		JobID:          queuedJobID, // reuse the queued placeholder: one job, queued→running→terminal
-		Attempt:        1,           // single exec — a schema mismatch is terminal, never a retry
-		JournalKey:     key,         // persisted so the board can restart THIS leaf (invalidate + resume)
+		Phase:          spec.phase,
+		Label:          spec.label,
+		JobID:          jobID, // reuse the queued placeholder: one job, queued→running→terminal
+		Attempt:        1,     // single exec — a schema mismatch is terminal, never a retry
+		JournalKey:     spec.key,
 		PersistIO:      e.persistIO,
 		StreamActivity: e.persistIO, // sync leaf streams tool/usage activity for the board (gated like PersistIO)
-		IOPrompt:       prompt,      // persisted only when PersistIO (subagent gates)
-		WorkingDir:     workDir,     // empty unless isolation='worktree'
+		IOPrompt:       spec.prompt, // persisted only when PersistIO (subagent gates)
+		WorkingDir:     workDir,     // empty unless isolation: 'worktree'
 		// Slim profile: Run re-resolves the EFFECTIVE profile (its own version gate); the
-		// REQUESTED profile is passed here, the engine's effProfile only keys + logs above.
-		PromptProfile: profile,
-		Tools:         keyTools, // the resolved key set — the leaf execs exactly what was keyed
-		NoSkills:      !skills,
-		MCP:           mcp,
-		JSONSchema:    schemaJSON,
+		// REQUESTED profile is passed here, the engine's effProfile only keys + logs.
+		PromptProfile: spec.profile,
+		Tools:         spec.tools, // the resolved key set — the leaf execs exactly what was keyed
+		NoSkills:      spec.noSkills,
+		MCP:           spec.mcp,
+		JSONSchema:    spec.schemaJSON,
+	})
+	return jobID, res, nil
+}
+
+// completeLeaf posts the leaf's one completion. The state half (always runs, on the
+// loop) settles the in-flight count, budgets, journal, events, and the queued-job
+// correction: unless the leaf fully succeeded — schema validated when one was asked —
+// the reused job is finalized FAILED, so a queued placeholder never lingers and a
+// schema-invalid "done" attempt is corrected. The js half settles the promise and is
+// skipped once the run is aborted.
+func (e *engine) completeLeaf(spec leafSpec, jobID string, res subagent.Result, settle promiseSettle, preErr error) {
+	var out struct {
+		err     error
+		payload string
+		schema  bool
 	}
-	var res subagent.Result
-	e.sched.runBlocking(func() { res = runLeaf(req) })
-	if !res.OK {
-		leafErr = res // a pre-flight fail (no Run registration) keeps its real error class on the job
-		e.emitLeaf("failed", phaseTag, label, vendor, model)
-		return nil, fmt.Errorf("agent(%s): %s: %s", vendor, res.ErrorCode, res.ErrorMsg)
+	state := func() {
+		e.inflight--
+		e.budgetRelease(spec.usdEst, spec.tokEst)
+		if preErr != nil {
+			subagent.FinalizeQueuedLeafFailed(jobID, res)
+			e.emitLeaf("failed", spec.phase, spec.label, spec.vendor, spec.model)
+			out.err = preErr
+			return
+		}
+		if !res.OK {
+			// A pre-flight fail (no Run registration) keeps its real error class on the job.
+			subagent.FinalizeQueuedLeafFailed(jobID, res)
+			e.emitLeaf("failed", spec.phase, spec.label, spec.vendor, spec.model)
+			out.err = fmt.Errorf("agent(%s): %s: %s", spec.vendor, res.ErrorCode, res.ErrorMsg)
+			return
+		}
+		// Book the exec's real cost: USD (claude's list-price estimate) + tokens
+		// (input+output). The reservation was freed above; charging keeps spent+reserved
+		// monotonic for concurrent gates.
+		e.budgetCharge(res.CostUSD, leafTokens(res))
+		if spec.schemaJSON == "" {
+			e.journal.append(spec.key, res.Result)
+			e.emitLeaf("done", spec.phase, spec.label, spec.vendor, spec.model)
+			out.payload = res.Result
+			return
+		}
+		// Schema leaf: claude enforced that the StructuredOutput tool was CALLED; the
+		// client validation below is the backstop for a weak vendor filling it invalidly.
+		// An OK envelope WITHOUT the payload (e.g. a max_turns-starved leaf) is a failure
+		// — never a prose-JSON fallback. Validation failure is terminal: an identical
+		// re-run reproduces it at full leaf cost.
+		if len(res.StructuredOutput) == 0 {
+			subagent.FinalizeQueuedLeafFailed(jobID, subagent.Result{})
+			e.emitLeaf("failed", spec.phase, spec.label, spec.vendor, spec.model)
+			out.err = fmt.Errorf("agent(%s): schema: no structured_output in the result envelope (the StructuredOutput call costs turns — raise max_turns)", spec.vendor)
+			return
+		}
+		if _, verr := decodeAndValidate(string(res.StructuredOutput), spec.schemaJSON); verr != nil {
+			subagent.FinalizeQueuedLeafFailed(jobID, subagent.Result{})
+			e.emitLeaf("failed", spec.phase, spec.label, spec.vendor, spec.model)
+			out.err = fmt.Errorf("agent(%s): schema not satisfied: %v", spec.vendor, verr)
+			return
+		}
+		e.journal.append(spec.key, string(res.StructuredOutput))
+		e.emitLeaf("done", spec.phase, spec.label, spec.vendor, spec.model)
+		out.payload, out.schema = string(res.StructuredOutput), true
 	}
-	// Book the exec's real cost under the GIL: USD (claude's list-price estimate) +
-	// tokens (input+output). The reservation is freed by the defer at return; charging
-	// before it keeps spent+reserved monotonic for concurrent gates.
-	e.budgetCharge(res.CostUSD, leafTokens(res))
-	if schemaJSON == "" {
-		leafDone = true // subagent.Run finalized this job done; keep it
-		e.journal.append(key, res.Result)
-		e.emitLeaf("done", phaseTag, label, vendor, model)
-		return starlark.String(res.Result), nil
+	js := func() {
+		if out.err != nil {
+			settle.reject(e.newError("%v", out.err))
+			return
+		}
+		if !out.schema {
+			settle.resolve(e.vm.ToValue(out.payload))
+			return
+		}
+		v, perr := e.jsonParse(goja.Undefined(), e.vm.ToValue(stripCodeFence(out.payload)))
+		if perr != nil {
+			settle.reject(e.newError("agent(%s): schema payload is not valid JSON: %v", spec.vendor, perr))
+			return
+		}
+		settle.resolve(v)
 	}
-	// Schema leaf: claude enforced that the StructuredOutput tool was CALLED; the
-	// client validation below is the backstop for a weak vendor filling it
-	// invalidly. An OK envelope WITHOUT the payload (e.g. a max_turns-starved
-	// leaf) is a failure — never a prose-JSON fallback. Validation failure is
-	// terminal: an identical re-run reproduces it at full leaf cost. leafDone stays
-	// false on both paths, so the deferred finalize corrects the job Run marked done.
-	if len(res.StructuredOutput) == 0 {
-		e.emitLeaf("failed", phaseTag, label, vendor, model)
-		return nil, fmt.Errorf("agent(%s): schema: no structured_output in the result envelope (the StructuredOutput call costs turns — raise max_turns)", vendor)
+	e.post(leafCB{state: state, js: js})
+}
+
+// jsonClone deep-copies a JS value through the VM's stringify→parse pair, yielding pure
+// data with JS JSON semantics (undefined/function/symbol members drop; a top-level
+// non-serializable value or a cycle errors). Loop-held caller.
+func (e *engine) jsonClone(v goja.Value) (goja.Value, error) {
+	sv, err := e.jsonStringify(goja.Undefined(), v)
+	if err != nil {
+		return nil, err
 	}
-	v, verr := decodeAndValidate(thread, string(res.StructuredOutput), schemaVal)
-	if verr != nil {
-		e.emitLeaf("failed", phaseTag, label, vendor, model)
-		return nil, fmt.Errorf("agent(%s): schema not satisfied: %v", vendor, verr)
+	s, ok := sv.Export().(string)
+	if !ok {
+		return nil, fmt.Errorf("value is not JSON-serializable")
 	}
-	leafDone = true
-	e.journal.append(key, string(res.StructuredOutput))
-	e.emitLeaf("done", phaseTag, label, vendor, model)
+	return e.jsonParse(goja.Undefined(), e.vm.ToValue(s))
+}
+
+// replyToJS validates a (cached) schema reply Go-side, then materializes it as a plain
+// JS value via the VM's own JSON.parse. Loop-held caller.
+func (e *engine) replyToJS(raw, schemaJSON string) (goja.Value, error) {
+	if _, err := decodeAndValidate(raw, schemaJSON); err != nil {
+		return nil, err
+	}
+	v, err := e.jsonParse(goja.Undefined(), e.vm.ToValue(stripCodeFence(raw)))
+	if err != nil {
+		return nil, fmt.Errorf("reply is not valid JSON: %v", err)
+	}
 	return v, nil
 }
 
-// optString coerces an optional string kwarg to a Go string; omitted (nil) or an
-// explicit None is "". Accepting None lets a script copy the documented signature
-// (model=None, label=None, …) verbatim instead of tripping Starlark's strict typing.
-func optString(v starlark.Value, name string) (string, error) {
-	if v == nil || v == starlark.None {
-		return "", nil
-	}
-	s, ok := starlark.AsString(v)
-	if !ok {
-		return "", fmt.Errorf("agent: %s must be a string, got %s", name, v.Type())
-	}
-	return s, nil
-}
-
-// optFloat coerces an optional numeric kwarg (Int or Float) to a float64; omitted (nil)
-// or None is 0. Lets a script write the natural timeout=120 / max_budget_usd=1 (ints) as
-// well as floats or None, despite Starlark's strict UnpackArgs typing.
-func optFloat(v starlark.Value, name string) (float64, error) {
-	if v == nil || v == starlark.None {
-		return 0, nil
-	}
-	f, ok := starlark.AsFloat(v)
-	if !ok {
-		return 0, fmt.Errorf("agent: %s must be a number, got %s", name, v.Type())
-	}
-	return f, nil
-}
-
-// optInt coerces an optional integer kwarg to an int; omitted (nil) or None is 0.
-func optInt(v starlark.Value, name string) (int, error) {
-	if v == nil || v == starlark.None {
-		return 0, nil
-	}
-	i, ierr := starlark.AsInt32(v)
-	if ierr != nil {
-		return 0, fmt.Errorf("agent: %s must be an integer, got %s", name, v.Type())
-	}
-	return i, nil
-}
-
-// optStringDefault coerces an optional string kwarg, falling back to def when omitted
-// (nil) or None — so a non-empty documented default (profile='slim') is applied without
-// a separate empty check.
-func optStringDefault(v starlark.Value, name, def string) (string, error) {
-	if v == nil || v == starlark.None {
-		return def, nil
-	}
-	s, ok := starlark.AsString(v)
-	if !ok {
-		return "", fmt.Errorf("agent: %s must be a string, got %s", name, v.Type())
-	}
-	return s, nil
-}
-
-// optBoolDefault coerces an optional bool kwarg, falling back to def when omitted (nil)
-// or None — so skills= (default true) reads its documented default when the script
-// omits it.
-func optBoolDefault(v starlark.Value, name string, def bool) (bool, error) {
-	if v == nil || v == starlark.None {
-		return def, nil
-	}
-	b, ok := v.(starlark.Bool)
-	if !ok {
-		return false, fmt.Errorf("agent: %s must be a bool, got %s", name, v.Type())
-	}
-	return bool(b), nil
-}
-
-// optBool coerces an explicit bool kwarg, reporting presence: omitted (nil) or
-// None is (false, false) — so mcp= reads its per-profile default only when the
-// script truly didn't choose.
-func optBool(v starlark.Value, name string) (val, present bool, err error) {
-	if v == nil || v == starlark.None {
-		return false, false, nil
-	}
-	b, ok := v.(starlark.Bool)
-	if !ok {
-		return false, false, fmt.Errorf("agent: %s must be a bool, got %s", name, v.Type())
-	}
-	return bool(b), true, nil
-}
-
-// optStringList coerces an optional list-of-string kwarg to a Go slice; omitted (nil) or
-// None is nil. Every element must be a string.
-func optStringList(v starlark.Value, name string) ([]string, error) {
-	if v == nil || v == starlark.None {
-		return nil, nil
-	}
-	lst, ok := v.(*starlark.List)
-	if !ok {
-		return nil, fmt.Errorf("agent: %s must be a list of strings, got %s", name, v.Type())
-	}
-	out := make([]string, 0, lst.Len())
-	for i := 0; i < lst.Len(); i++ {
-		s, ok := starlark.AsString(lst.Index(i))
-		if !ok {
-			return nil, fmt.Errorf("agent: %s[%d] must be a string, got %s", name, i, lst.Index(i).Type())
-		}
-		out = append(out, s)
-	}
-	return out, nil
-}
-
-// canonicalizeTools validates + canonicalizes an explicit tools= set (dedupe + sort) so
-// caller order never changes the journal key; an empty set stays nil (the profile default
-// applies in subagent.Run). Delegates to the single canonical validator so the engine and
-// bare-CLI paths reject identically.
-func canonicalizeTools(names []string) ([]string, error) {
-	if len(names) == 0 {
-		return nil, nil
-	}
-	return subagent.CanonicalizeTools(names)
-}
-
-// parallel runs every thunk concurrently, one goroutine + fresh thread each, and
-// returns a list of results (None where a thunk raised or panicked). It is a BARRIER
-// — it blocks until all thunks finish.
-func (e *engine) parallel(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	var list starlark.Value
-	if err := starlark.UnpackPositionalArgs(b.Name(), args, kwargs, 1, &list); err != nil {
-		return nil, err
-	}
-	thunks, err := frozenSlice(list, b.Name())
-	if err != nil {
-		return nil, err
-	}
-	// Bracket the fan-out with group-open/close events (GIL-held, before/after fanout) so
-	// `workflow watch` shows it as a bracketed group (▸ open … ◂ close) in the live stream —
-	// every leaf event lands between this group's open and close, without threading a group id
-	// through the hot fanout path.
-	gid := e.emitGroupOpen("parallel")
-	results := make([]starlark.Value, len(thunks))
-	e.fanout(thread, len(thunks), func(i int, th *starlark.Thread) {
-		results[i] = e.callOrNone(th, thunks[i], nil)
-	})
-	e.emitGroupClose(gid)
-	return starlark.NewList(results), nil
-}
-
-// pipeline runs each item through all stages independently with NO inter-stage
-// barrier (item A can be in stage 3 while B is in stage 1). Each stage is called
-// stage(prev, item, index); a stage error/panic drops that item to None and skips
-// its remaining stages. Returns the per-item final results.
-func (e *engine) pipeline(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	if len(kwargs) > 0 {
-		return nil, fmt.Errorf("pipeline: takes no keyword arguments")
-	}
-	if len(args) < 2 {
-		return nil, fmt.Errorf("pipeline: needs items and at least one stage")
-	}
-	items, err := frozenSlice(args[0], b.Name())
-	if err != nil {
-		return nil, err
-	}
-	stages := make([]starlark.Value, 0, len(args)-1)
-	for _, s := range args[1:] {
-		s.Freeze()
-		stages = append(stages, s)
-	}
-	gid := e.emitGroupOpen("pipeline")
-	results := make([]starlark.Value, len(items))
-	e.fanout(thread, len(items), func(i int, th *starlark.Thread) {
-		results[i] = e.runPipelineItem(th, items[i], i, stages)
-	})
-	e.emitGroupClose(gid)
-	return starlark.NewList(results), nil
-}
-
-// phase sets the run's current phase (used to tag agents that don't pass phase=) and
+// jsPhase sets the run's current phase (used to tag agents that don't pass phase) and
 // records the title on the manifest in first-seen order (live board ordering).
-// Best-effort: a manifest hiccup never fails the run. GIL-held, so the in-memory
+// Best-effort: a manifest hiccup never fails the run. Loop-held, so the in-memory
 // phase update and the full manifest overwrite are serialized.
-func (e *engine) phase(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	var title, detail string
-	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "title", &title, "detail?", &detail); err != nil {
-		return nil, err
+func (e *engine) jsPhase(call goja.FunctionCall) goja.Value {
+	title, ok := call.Argument(0).Export().(string)
+	if !ok {
+		panic(e.newError("phase: title must be a string"))
+	}
+	detail := ""
+	if v := call.Argument(1); !goja.IsUndefined(v) && !goja.IsNull(v) {
+		d, ok := v.Export().(string)
+		if !ok {
+			panic(e.newError("phase: detail must be a string"))
+		}
+		detail = d
 	}
 	e.currentPhase = title
 	// Dedup-append against the full in-memory phase set (titles declared in static
@@ -669,18 +644,32 @@ func (e *engine) phase(thread *starlark.Thread, b *starlark.Builtin, args starla
 	}
 	e.saveManifest("running", "")
 	e.events.emit(EventRecord{Kind: "phase", Phase: title, Msg: detail})
-	return starlark.None, nil
+	return goja.Undefined()
+}
+
+// jsLog writes a narrator line to stderr (diagnostic — discarded when the run is
+// detached, visible with --foreground) AND emits a live-event record that `workflow
+// watch` renders. stdout stays clean for the run id the launcher prints; the stderr
+// stream itself is not persisted.
+func (e *engine) jsLog(call goja.FunctionCall) goja.Value {
+	msg, ok := call.Argument(0).Export().(string)
+	if !ok {
+		panic(e.newError("log: msg must be a string"))
+	}
+	fmt.Fprintln(os.Stderr, "[workflow] "+msg)
+	e.events.emit(EventRecord{Kind: "log", Msg: msg})
+	return goja.Undefined()
 }
 
 // emitLeaf records a leaf transition (launch/done/failed/cached) on the live-event
-// channel. GIL-held callers only; nil-safe via the writer.
+// channel. Loop-held callers only; nil-safe via the writer.
 func (e *engine) emitLeaf(status, phase, label, vendor, model string) {
 	e.events.emit(EventRecord{Kind: "leaf", Status: status, Phase: phase, Label: label, Vendor: vendor, Model: model})
 }
 
 // logf is the engine-internal narrator: a formatted line to stderr plus a `log`
 // live-event, the same surface the log() builtin exposes to scripts. Used for the slim
-// version-gate downgrade notice. GIL-held callers only.
+// version-gate downgrade notice. Loop-held callers only.
 func (e *engine) logf(format string, a ...any) {
 	msg := fmt.Sprintf(format, a...)
 	fmt.Fprintln(os.Stderr, "[workflow] "+msg)
@@ -688,11 +677,11 @@ func (e *engine) logf(format string, a ...any) {
 }
 
 // emitGroupOpen records the start of a parallel/pipeline/workflow group and returns its
-// id; emitGroupClose records its end. `workflow watch` brackets the group in its live stream
-// by seq order: every event between an open and its matching close belongs to that group, and
-// nested groups (e.g. a parallel inside a pipeline stage) bracket by order — so no group id
-// has to be threaded through fanout/callOrNone. GIL-held callers only (open before
-// fanout, close after it joins).
+// id; emitGroupClose records its end. `workflow watch` brackets the group in its live
+// stream by seq order: every event between an open and its matching close belongs to
+// that group, and nested groups bracket by order. The open runs in the builtin (before
+// any element executes); the close runs in the group promise's settlement reaction —
+// both on the loop.
 func (e *engine) emitGroupOpen(groupType string) string {
 	e.groupSeq++
 	gid := fmt.Sprintf("g%d", e.groupSeq)
@@ -706,9 +695,8 @@ func (e *engine) emitGroupClose(gid string) {
 
 // saveManifest overwrites the run manifest from the engine's authoritative in-memory
 // state (errText is recorded only on a failed finalize). Best-effort: a write hiccup
-// never fails the run. It is called by phase() under the GIL during the run, and by
-// Execute's pre-run stamp + deferred finalize when no leaf goroutine is live — so
-// manifest writes never race.
+// never fails the run. Loop-held callers only (plus Execute's pre-run stamp + deferred
+// finalize, when the loop is not running) — manifest writes never race.
 func (e *engine) saveManifest(status, errText string) {
 	_ = subagent.SaveRun(subagent.WorkflowRun{
 		RunID:       e.runID,
@@ -734,118 +722,173 @@ func (e *engine) saveManifest(status, errText string) {
 	})
 }
 
-// log writes a narrator line to stderr (diagnostic — discarded when the run is detached,
-// visible with --foreground) AND emits a live-event record that `workflow watch` renders.
-// stdout stays clean for the run id the launcher prints; the stderr stream itself is not
-// persisted.
-func (e *engine) log(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
-	var msg string
-	if err := starlark.UnpackArgs(b.Name(), args, kwargs, "msg", &msg); err != nil {
-		return nil, err
+// canonicalizeTools validates + canonicalizes an explicit tools set (dedupe + sort) so
+// caller order never changes the journal key; an empty set stays nil (the profile
+// default applies in subagent.Run). Delegates to the single canonical validator so the
+// engine and bare-CLI paths reject identically.
+func canonicalizeTools(names []string) ([]string, error) {
+	if len(names) == 0 {
+		return nil, nil
 	}
-	fmt.Fprintln(os.Stderr, "[workflow] "+msg)
-	e.events.emit(EventRecord{Kind: "log", Msg: msg})
-	return starlark.None, nil
+	return subagent.CanonicalizeTools(names)
 }
 
-// fanout releases the GIL, runs work(i, thread) on a fresh goroutine + thread for each
-// i in [0,n), waits for all, then re-acquires the GIL. work runs with the GIL HELD
-// (each goroutine acquires it for its starlark.Call) and stores its own result. The
-// GIL is released for the whole wait so the goroutines can acquire it; on return it is
-// re-acquired so the interpreter resumes single-threaded.
-func (e *engine) fanout(parent *starlark.Thread, n int, work func(i int, th *starlark.Thread)) {
-	// Propagate the nested-workflow marker to the goroutine threads so a workflow() call
-	// from a NESTED run's parallel/pipeline branch is still caught by the one-level guard.
-	nested := parent != nil && parent.Local(nestedLocalKey) != nil
-	// Each element gets its own goroutine; the pool SLOT is taken inside agent() for the
-	// actual (uncached) leaf exec and released right after — NOT held across the element's
-	// whole branch. That is what makes nesting deadlock-free: a parallel/pipeline/workflow
-	// INSIDE an element doesn't sit on a slot while its own leaves wait for one. Concurrent
-	// vendor execs are still pool-bounded (the slot); a large list just queues as cheap
-	// slot-blocked goroutines (frozenSlice's maxFanoutElements bounds the list). A
-	// branch-held permit (true acquire-then-go) was rejected: it deadlocks when both
-	// branches of a parallel nest another parallel that needs a slot the parents hold.
-	var wg sync.WaitGroup
-	e.sched.unlock()
-	for i := 0; i < n; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			th := e.sched.newThread(fmt.Sprintf("workflow:%s:%d", e.runID, i))
-			if nested {
-				th.SetLocal(nestedLocalKey, true)
-			}
-			work(i, th)
-		}(i)
-	}
-	wg.Wait()
-	e.sched.lock()
+// jsOpts wraps the agent() options object for strict field reads: an absent, undefined,
+// or null field reads as the documented default; a wrong type throws, mirroring the old
+// kwarg errors; an unknown key throws (agentOptKeys).
+type jsOpts struct {
+	e   *engine
+	obj *goja.Object
 }
 
-// callOrNone calls fn(args...) under the GIL, returning its result, or None on a
-// Starlark error OR a recovered Go panic (faithful: a failed parallel/pipeline branch
-// degrades to None). It locks the GIL for the Call and unlocks in a defer; because
-// runBlocking keeps the GIL held across any panic-unwind, that single unlock is always
-// correct.
-func (e *engine) callOrNone(th *starlark.Thread, fn starlark.Value, args starlark.Tuple) (out starlark.Value) {
-	out = starlark.None
-	e.sched.lock()
-	defer func() {
-		_ = recover() // a panicking leaf/thunk → None, run survives
-		e.sched.unlock()
-	}()
-	if v, err := starlark.Call(th, fn, args, nil); err == nil {
-		out = v
+func (e *engine) agentOpts(v goja.Value) jsOpts {
+	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+		return jsOpts{e: e}
 	}
-	return out
-}
-
-// runPipelineItem threads one item through the stages, GIL-held, stopping at the first
-// stage that errors/panics (→ None). Mirrors callOrNone's GIL + recover discipline.
-func (e *engine) runPipelineItem(th *starlark.Thread, item starlark.Value, index int, stages []starlark.Value) (out starlark.Value) {
-	out = starlark.None
-	e.sched.lock()
-	defer func() {
-		_ = recover()
-		e.sched.unlock()
-	}()
-	prev := item
-	idx := starlark.MakeInt(index)
-	for _, stage := range stages {
-		v, err := starlark.Call(th, stage, starlark.Tuple{prev, item, idx}, nil)
-		if err != nil {
-			return starlark.None
-		}
-		prev = v
-	}
-	out = prev
-	return out
-}
-
-// frozenSlice snapshots an iterable into a Go slice AND freezes each element, under
-// the GIL. Two distinct guarantees: the GIL is what makes execution -race clean (one
-// goroutine in the interpreter at a time, even for unfrozen shared globals); freezing
-// each snapshotted thunk/item adds DETERMINISM — a thunk that (transitively, via a
-// captured cell) mutates shared state fails deterministically to a "cannot mutate
-// frozen" error → None, rather than producing an interleaved result. The element count
-// is capped at maxFanoutElements only to bound the results slice against a pathological
-// list; concurrent vendor EXECS are bounded by the pool slot (held only inside agent()
-// across a leaf's exec), and the per-run lifetime cap is the real ceiling on leaf execs.
-func frozenSlice(v starlark.Value, fname string) ([]starlark.Value, error) {
-	it, ok := v.(starlark.Iterable)
+	obj, ok := v.(*goja.Object)
 	if !ok {
-		return nil, fmt.Errorf("%s: expected an iterable, got %s", fname, v.Type())
+		panic(e.newError("agent: opts must be an object, got %s", jsTypeName(v)))
 	}
-	iter := it.Iterate()
-	defer iter.Done()
-	var out []starlark.Value
-	var x starlark.Value
-	for iter.Next(&x) {
-		if len(out) >= maxFanoutElements {
-			return nil, fmt.Errorf("%s: more than %d elements — split the work into smaller batches", fname, maxFanoutElements)
+	for _, k := range obj.Keys() {
+		if !agentOptKeys[k] {
+			panic(e.newError("agent: unknown option %q", k))
 		}
-		x.Freeze()
-		out = append(out, x)
 	}
-	return out, nil
+	return jsOpts{e: e, obj: obj}
+}
+
+// val returns the named option, or nil when absent / undefined / null (the documented
+// "omitted" forms — a script may copy the signature's `model: null` verbatim).
+func (o jsOpts) val(name string) goja.Value {
+	if o.obj == nil {
+		return nil
+	}
+	v := o.obj.Get(name)
+	if v == nil || goja.IsUndefined(v) || goja.IsNull(v) {
+		return nil
+	}
+	return v
+}
+
+func (o jsOpts) str(name string) string {
+	v := o.val(name)
+	if v == nil {
+		return ""
+	}
+	s, ok := v.Export().(string)
+	if !ok {
+		panic(o.e.newError("agent: %s must be a string, got %s", name, jsTypeName(v)))
+	}
+	return s
+}
+
+func (o jsOpts) strDefault(name, def string) string {
+	v := o.val(name)
+	if v == nil {
+		return def
+	}
+	s, ok := v.Export().(string)
+	if !ok {
+		panic(o.e.newError("agent: %s must be a string, got %s", name, jsTypeName(v)))
+	}
+	return s
+}
+
+// num coerces a numeric option to float64 (int64 and float64 exports both accepted, so
+// a script writes the natural timeout: 120 or max_budget_usd: 1.5). Non-finite values
+// are rejected — an Infinity reservation would corrupt the budget arithmetic.
+func (o jsOpts) num(name string) float64 {
+	v := o.val(name)
+	if v == nil {
+		return 0
+	}
+	switch n := v.Export().(type) {
+	case int64:
+		return float64(n)
+	case float64:
+		if math.IsNaN(n) || math.IsInf(n, 0) {
+			panic(o.e.newError("agent: %s must be a finite number", name))
+		}
+		return n
+	}
+	panic(o.e.newError("agent: %s must be a number, got %s", name, jsTypeName(v)))
+}
+
+func (o jsOpts) integer(name string) int {
+	v := o.val(name)
+	if v == nil {
+		return 0
+	}
+	n, ok := v.Export().(int64)
+	if !ok {
+		panic(o.e.newError("agent: %s must be an integer, got %s", name, jsTypeName(v)))
+	}
+	return int(n)
+}
+
+func (o jsOpts) boolDefault(name string, def bool) bool {
+	v := o.val(name)
+	if v == nil {
+		return def
+	}
+	b, ok := v.Export().(bool)
+	if !ok {
+		panic(o.e.newError("agent: %s must be a boolean, got %s", name, jsTypeName(v)))
+	}
+	return b
+}
+
+// boolean reads an explicit boolean option, reporting presence — so mcp reads its
+// per-profile default only when the script truly didn't choose.
+func (o jsOpts) boolean(name string) (val, present bool) {
+	v := o.val(name)
+	if v == nil {
+		return false, false
+	}
+	b, ok := v.Export().(bool)
+	if !ok {
+		panic(o.e.newError("agent: %s must be a boolean, got %s", name, jsTypeName(v)))
+	}
+	return b, true
+}
+
+func (o jsOpts) strList(name string) []string {
+	v := o.val(name)
+	if v == nil {
+		return nil
+	}
+	lst, ok := v.Export().([]interface{})
+	if !ok {
+		panic(o.e.newError("agent: %s must be an array of strings, got %s", name, jsTypeName(v)))
+	}
+	out := make([]string, 0, len(lst))
+	for i, el := range lst {
+		s, ok := el.(string)
+		if !ok {
+			panic(o.e.newError("agent: %s[%d] must be a string", name, i))
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// jsTypeName names a JS value's type for error messages.
+func jsTypeName(v goja.Value) string {
+	switch t := v.Export().(type) {
+	case nil:
+		return "null"
+	case bool:
+		return "boolean"
+	case int64, float64:
+		return "number"
+	case string:
+		return "string"
+	case []interface{}:
+		return "array"
+	case map[string]interface{}:
+		return "object"
+	default:
+		_ = t
+		return "function"
+	}
 }
