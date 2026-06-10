@@ -29,12 +29,17 @@ func Serve(port int, protocol, upstreamURL, ref string) error {
 	}
 	// codex gates /v1/messages on the handshake secret (its OAuth bearer lives
 	// only here); an openai-* daemon takes the real key per request, so it needs
-	// none. Read it lock-free: EnsureDaemon created it under the global secret
-	// lock before spawning this daemon. A manual `serve` falls back to creating it.
+	// none. The create-once runs under the global secret lock on every path that
+	// may be the first creator: a manual `serve` racing a first-time EnsureDaemon
+	// must not interleave two creations.
 	var secret string
 	if protocol == config.ProtocolCodexOAuth {
-		if secret, err = loadOrCreateSecret(); err != nil {
-			return err
+		if lerr := withSecretLock(func() error {
+			var serr error
+			secret, serr = loadOrCreateSecret()
+			return serr
+		}); lerr != nil {
+			return lerr
 		}
 	}
 	srv := newServer(up, protocol, secret)
