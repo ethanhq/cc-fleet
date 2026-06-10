@@ -29,6 +29,7 @@ var (
 	faintStyle      = lipgloss.NewStyle().Foreground(lipgloss.Color("241"))
 	contentStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("245")) // board body text — softer than the bright default, above faint
 	liveStyle       = lipgloss.NewStyle().Foreground(lipgloss.Color("252")) // active (done/running) labels + the answer body — bright, below the frame
+	modalBodyStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("255")) // centered-modal body text — full contrast; a modal floats over the board and must outshine it
 	borderStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("255")) // master-detail box frame — the strongest line (near-white, like native)
 	sessionHdrStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("39"))
 	teamHdrStyle    = lipgloss.NewStyle().Bold(true) // team section header (flush-left bold title)
@@ -2913,7 +2914,7 @@ func (m Model) renderCodexAuthBox() string {
 	var lines []string
 	body := func(s string) {
 		for _, l := range wrapTo(s, w) {
-			lines = append(lines, contentStyle.Render(l))
+			lines = append(lines, modalBodyStyle.Render(l))
 		}
 	}
 	switch m.codexAuthStage {
@@ -2932,7 +2933,7 @@ func (m Model) renderCodexAuthBox() string {
 		}
 		for i, opt := range opts {
 			sel := i == m.codexSourceCursor
-			st := contentStyle
+			st := modalBodyStyle
 			if sel {
 				st = selectedStyle
 			}
@@ -2949,7 +2950,7 @@ func (m Model) renderCodexAuthBox() string {
 	case codexAuthDevice:
 		if m.codexAuth != nil {
 			lines = append(lines,
-				contentStyle.Render("Open this URL and enter the code:"), "",
+				modalBodyStyle.Render("Open this URL and enter the code:"), "",
 				"  "+selectedStyle.Render(m.codexAuth.VerifyURL),
 				"  code: "+selectedStyle.Render(m.codexAuth.UserCode), "",
 				faintStyle.Render("waiting for authorization…"))

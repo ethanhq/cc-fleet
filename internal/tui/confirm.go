@@ -276,9 +276,9 @@ func (m Model) renderConfirmBox() string {
 			resultStyle.Render(strings.Join(wrapTo(m.confirm.result, w), "\n")),
 			faintStyle.Render("press any key"))
 	case modalRunning:
-		body = liveStyle.Render(m.confirm.busy)
+		body = modalBodyStyle.Render(m.confirm.busy)
 	default: // modalAsk
-		promptStyle := liveStyle
+		promptStyle := modalBodyStyle
 		if m.confirm.danger {
 			promptStyle = errStyle // a heavy delete warns in red
 		}
