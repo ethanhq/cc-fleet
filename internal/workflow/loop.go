@@ -50,7 +50,6 @@ func (e *engine) post(cb leafCB) {
 // fulfilled run — a leaf failure the script silently dropped is still a failure
 // (handled-set semantics: a rejection awaited later is removed before this check).
 func (e *engine) drive(prom *goja.Promise) (goja.Value, error) {
-	defer close(e.loopDone)
 	for {
 		settled := prom.State() != goja.PromiseStatePending
 		if settled && e.inflight == 0 {
@@ -108,6 +107,21 @@ func (e *engine) drive(prom *goja.Promise) (goja.Value, error) {
 func (e *engine) abort() {
 	e.aborted = true
 	e.cancelLeaves()
+}
+
+// drainLeaves cancels and consumes every in-flight leaf state-only — the abnormal-exit
+// twin of drive's aborted drain, for paths where the script promise never materialized
+// (an Interrupt mid-body, a body that produced no promise). Without it a leaf spawned
+// before the abort would strand its job file as `queued` forever.
+func (e *engine) drainLeaves() {
+	if e.inflight == 0 {
+		return
+	}
+	e.abort()
+	for e.inflight > 0 {
+		cb := <-e.cbs
+		cb.state()
+	}
 }
 
 func (e *engine) runCB(cb leafCB) {

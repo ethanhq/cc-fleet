@@ -260,6 +260,9 @@ func (e *engine) run(scriptPath string, src []byte, opts Options) (goja.Value, e
 	if err := e.setupVM(); err != nil {
 		return nil, err
 	}
+	// loopDone marks the loop's end of life on EVERY exit path: it unblocks straggler
+	// post()s and retires the watchdog (an early return that skipped it would leak both).
+	defer close(e.loopDone)
 	// Interrupt any JS busy on the loop when the run ctx dies — the cooperative-stop
 	// path for a script spinning in pure JS (the loop's select can't see ctx while a
 	// callback runs). The watchdog dies with the loop.
@@ -285,14 +288,18 @@ func (e *engine) run(scriptPath string, src []byte, opts Options) (goja.Value, e
 	pv, callErr := fn(goja.Undefined(), e.workflowFn, e.argsValue(opts))
 	if callErr != nil {
 		// An async body converts a sync throw into a rejection, so an error here is
-		// uncatchable — an Interrupt from the watchdog means the run was stopped.
+		// uncatchable — an Interrupt from the watchdog means the run was stopped. The
+		// body may have spawned leaves before dying mid-statement: drain them so their
+		// jobs finalize (stopped-class) instead of stranding as queued.
 		if e.runCtx.Err() != nil {
 			e.stopped = true
 		}
+		e.drainLeaves()
 		return nil, callErr
 	}
 	prom, ok := pv.Export().(*goja.Promise)
 	if !ok {
+		e.drainLeaves()
 		return nil, fmt.Errorf("workflow: script body did not produce a promise")
 	}
 	return e.drive(prom)

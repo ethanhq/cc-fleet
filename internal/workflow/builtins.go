@@ -457,9 +457,12 @@ func (e *engine) execLeaf(spec leafSpec) (jobID string, res subagent.Result, pre
 	}
 	// Acquire a pool slot; the slot is held ONLY across this leaf's actual exec and
 	// released right after — never across anything a script branch nests — so nesting
-	// can't deadlock on a slot a parent branch is sitting on.
+	// can't deadlock on a slot a parent branch is sitting on. A cancel while queued is
+	// a STOP, not a failure: the stopped-class result makes the queued job finalize
+	// "stopped", uniform with an in-flight leaf killed by the same cancel.
 	if !e.sched.acquireSlot() {
-		return jobID, subagent.Result{}, fmt.Errorf("agent: run cancelled before launch")
+		stopped := subagent.Result{ErrorCode: subagent.ErrCodeStopped, ErrorMsg: "run stopped before the leaf launched"}
+		return jobID, stopped, fmt.Errorf("agent: run cancelled before launch")
 	}
 	defer e.sched.releaseSlot()
 	// Worktree isolation: run the leaf with cwd = a fresh git worktree, torn down on
