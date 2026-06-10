@@ -112,6 +112,11 @@ cc-fleet workflow restart "$RUN" --leaf <job>  # re-run a held/running agent in 
 # or watch the board's Dynamic Workflows view: live log, token/cost columns, prompt/answer drill-in.
 # x/r there are level-scoped: run row = the run, Phases pane = the phase, agent pane = the leaf
 # (a held agent shows ▶ until you restart it). --foreground runs inline (debug).
+# `held` in status output = parked by the control plane: an operator paused it (board
+# x, stop --leaf/--phase) or a restart was refused (budget gate); a restart in flight
+# may show it briefly. Not an error/retry/backoff — the run waits on it indefinitely.
+# If held persists across polls, resume it with restart --leaf/--phase or tell the
+# user it is parked; never wait it out.
 # --max-concurrency N overrides the default pool (min(16, cores-2));
 # --budget-usd N caps total spend; --no-persist-io disables the prompt/answer drill-in.
 ```
