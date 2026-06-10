@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/models"
 	"github.com/ethanhq/cc-fleet/internal/panevis"
 	"github.com/ethanhq/cc-fleet/internal/secrets"
@@ -273,14 +274,18 @@ func TestAddFormTypingAndSubmitDispatches(t *testing.T) {
 		t.Fatal("submit should set loading=true")
 	}
 
-	m, _ = step(t, m, opDoneMsg{verb: "add", name: Templates[0].Name})
-	if m.screen != screenResult || m.resultErr {
-		t.Fatalf("after success: screen=%d resultErr=%v, want screenResult+false", m.screen, m.resultErr)
+	m, cmd = step(t, m, opDoneMsg{verb: "add", name: Templates[0].Name})
+	if m.screen != screenList || m.confirm == nil || m.confirm.resultErr || cmd == nil {
+		t.Fatalf("success should pop a green info modal over the reloading list: screen=%d confirmOpen=%v cmd=%v",
+			m.screen, m.confirm != nil, cmd)
 	}
-	// Any key returns to the Model Providers list (not a menu).
+	if !strings.Contains(m.confirm.result, "OK") {
+		t.Fatalf("outcome line = %q, want an OK line", m.confirm.result)
+	}
+	// Any key dismisses the outcome; the list stays.
 	m, _ = press(t, m, "enter")
-	if m.screen != screenList {
-		t.Fatalf("result -> any key should return to the list, screen = %d", m.screen)
+	if m.screen != screenList || m.confirm != nil {
+		t.Fatalf("dismiss should keep the list, screen=%d confirmOpen=%v", m.screen, m.confirm != nil)
 	}
 }
 
@@ -505,32 +510,88 @@ func TestCombine1MAndOffToEmpty(t *testing.T) {
 	}
 }
 
-// TestDeleteFromListConfirmAndCancel: d on a highlighted vendor row opens the
-// confirm; n returns to the list, y dispatches the remove.
+// TestDeleteFromListConfirmAndCancel: d on a highlighted vendor row opens the centered
+// confirm modal over the list; Cancel (the default) closes it in place, Confirm
+// dispatches the remove and the outcome pops as an info modal over the list.
 func TestDeleteFromListConfirmAndCancel(t *testing.T) {
 	mk := func() Model {
 		m := withVendors(t, userops.VendorView{Name: "kimi", Enabled: true})
-		m, _ = press(t, m, "d") // delete highlighted vendor -> confirm
+		m, _ = press(t, m, "d") // delete highlighted vendor -> confirm modal
 		return m
 	}
 
 	m := mk()
-	if m.screen != screenRemoveConfirm || m.removeName != "kimi" {
-		t.Fatalf("screen=%d removeName=%q, want removeConfirm+kimi", m.screen, m.removeName)
+	if m.screen != screenList || m.confirm == nil {
+		t.Fatalf("screen=%d confirmOpen=%v, want modal open over screenList", m.screen, m.confirm != nil)
 	}
-	m, _ = press(t, m, "n")
-	if m.screen != screenList {
-		t.Fatalf("n should cancel back to the list, screen = %d", m.screen)
+	if m.confirm.kind != confirmRemoveVendor || m.confirm.id != "kimi" {
+		t.Fatalf("modal kind=%q id=%q, want remove-vendor + kimi", m.confirm.kind, m.confirm.id)
+	}
+	if !strings.Contains(m.View(), "Remove kimi?") {
+		t.Fatalf("modal prompt missing from view")
+	}
+	// The modal traps list keys: d again must not re-open / mutate anything.
+	m, _ = press(t, m, "d")
+	if m.confirm == nil || m.confirm.cursor != 0 {
+		t.Fatalf("d while modal open should be swallowed")
+	}
+	m, _ = press(t, m, "enter") // Cancel is the default cursor
+	if m.confirm != nil || m.screen != screenList {
+		t.Fatalf("enter on Cancel should close the modal in place, confirmOpen=%v screen=%d", m.confirm != nil, m.screen)
 	}
 
 	m = mk()
-	m, cmd := press(t, m, "y")
-	if cmd == nil || !m.loading {
-		t.Fatalf("y should dispatch remove cmd + set loading, cmd=%v loading=%v", cmd, m.loading)
+	m, _ = press(t, m, "right") // -> Confirm
+	m, cmd := press(t, m, "enter")
+	if cmd == nil || !m.loading || m.confirm != nil {
+		t.Fatalf("confirm should dispatch remove cmd + set loading + close, cmd=%v loading=%v confirmOpen=%v", cmd, m.loading, m.confirm != nil)
 	}
 	m, _ = step(t, m, opDoneMsg{verb: "remove", name: "kimi", err: errors.New("boom")})
-	if m.screen != screenResult || !m.resultErr {
-		t.Fatalf("failed op: screen=%d resultErr=%v, want screenResult+true", m.screen, m.resultErr)
+	if m.screen != screenList || m.confirm == nil || !m.confirm.resultErr {
+		t.Fatalf("failed op should pop a red info modal over the list: screen=%d confirmOpen=%v", m.screen, m.confirm != nil)
+	}
+}
+
+// TestDeleteGatedWhileMutationInFlight: d opens no new ask while a mutation is loading —
+// its outcome modal would find the new ask open and be silently swallowed.
+func TestDeleteGatedWhileMutationInFlight(t *testing.T) {
+	m := withVendors(t, userops.VendorView{Name: "kimi", Enabled: true})
+	m.loading = true
+	m, _ = press(t, m, "d")
+	if m.confirm != nil {
+		t.Fatal("d during an in-flight mutation must not open a modal")
+	}
+}
+
+// TestManageKeysGatedWhileMutationInFlight: the manage-keys descent is blocked while a
+// submit is in flight — a key confirm opened in that window would swallow the pending
+// outcome modal.
+func TestManageKeysGatedWhileMutationInFlight(t *testing.T) {
+	m := withVendors(t, userops.VendorView{
+		Name: "glm", BaseURL: "https://api.example/anthropic",
+		ModelsEndpoint: "https://api.example/v1/models", DefaultModel: "m", Enabled: true,
+	})
+	m, _ = press(t, m, "enter") // edit form
+	for i := 0; i < len(m.form.fields) && m.form.focusedKey() != "manage_keys"; i++ {
+		m, _ = press(t, m, "down")
+	}
+	m.loading = true
+	m, cmd := press(t, m, "enter")
+	if m.screen == screenKeys || cmd != nil {
+		t.Fatalf("manage-keys during an in-flight mutation must not open, screen=%d cmd=%v", m.screen, cmd)
+	}
+}
+
+// TestRemoveCodexPromptStatesLoginCleanup: the remove prompt for a codex provider names
+// the login teardown (and ~/.codex safety) instead of the file-secret wording.
+func TestRemoveCodexPromptStatesLoginCleanup(t *testing.T) {
+	m := withVendors(t, userops.VendorView{Name: "codex", Enabled: true, Protocol: config.ProtocolCodexOAuth})
+	m, _ = press(t, m, "d")
+	if m.confirm == nil {
+		t.Fatalf("d should open the remove modal")
+	}
+	if !strings.Contains(m.confirm.prompt, "codex login") || !strings.Contains(m.confirm.prompt, "~/.codex") {
+		t.Fatalf("codex remove prompt = %q, want login-cleanup wording", m.confirm.prompt)
 	}
 }
 
@@ -1671,7 +1732,9 @@ func TestBoardSurfacesHideShowResult(t *testing.T) {
 		t.Fatalf("a failed hide should pop a red info modal, got %+v", m.confirm)
 	}
 	out := m.View()
-	for _, want := range []string{"hide", "alice", panevis.ErrTmuxFailed, "break-pane failed", "check tmux"} {
+	// The outcome line wraps to the modal width, so assert fragments that survive a
+	// wrap point rather than the full sentence.
+	for _, want := range []string{"hide", "alice", panevis.ErrTmuxFailed, "break-pane", "tmux"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the info modal should surface the failure %q:\n%s", want, out)
 		}
@@ -1722,7 +1785,7 @@ func TestViewsRenderForEveryScreen(t *testing.T) {
 	// Smoke test: every screen must render a non-empty frame without panic.
 	screens := []screen{
 		screenList, screenSpawn, screenPickTemplate,
-		screenForm, screenModelPick, screenRemoveConfirm, screenResult, screenKeys,
+		screenForm, screenModelPick, screenKeys, screenCodexAuth,
 	}
 	for _, s := range screens {
 		m := NewModel()
@@ -1731,8 +1794,6 @@ func TestViewsRenderForEveryScreen(t *testing.T) {
 		m.teammates = []teardown.Teammate{{Name: "a", Team: "t1", Vendor: "v", Model: "m", PaneID: "%1", PID: 1}}
 		m.screen = s
 		m.form = newAddForm(Templates[0])
-		m.removeName = "x"
-		m.result = "done"
 		m.modelList = []models.Model{{ID: "x", OwnedBy: "y"}}
 		m.keyVendor = "x"
 		m.keys = []secrets.KeyEntry{{Label: "key1", Key: "sk-abcdef-123", Enabled: true}}
@@ -1876,15 +1937,83 @@ func TestKeyManagerEditKeyReplacesValueNoPrefill(t *testing.T) {
 		t.Fatalf("edit input prefilled with %q, want empty", got)
 	}
 	m, _ = step(t, m, keyMsg("sk-new-999"))
-	m, cmd := press(t, m, "enter")
+	m, cmd := press(t, m, "enter") // opens the replace confirm, no commit yet
+	if cmd != nil || m.confirm == nil || m.confirm.kind != confirmReplaceKey {
+		t.Fatalf("enter should open the replace modal without saving, cmd=%v kind=%q", cmd, modalKind(m))
+	}
+	if m.keys[0].Key != "sk-old-111" {
+		t.Fatal("value must not change before the confirm")
+	}
+	m, _ = press(t, m, "right")
+	m, cmd = press(t, m, "enter")
 	if cmd == nil {
-		t.Fatal("committing an edit should dispatch a save cmd")
+		t.Fatal("confirming the replace should dispatch a save cmd")
 	}
 	if m.keys[0].Key != "sk-new-999" {
 		t.Fatalf("edited key = %q, want sk-new-999", m.keys[0].Key)
 	}
 	if m.keys[0].Label != "a" || !m.keys[0].Enabled {
-		t.Fatalf("edit should preserve label/enabled: %+v", m.keys[0])
+		t.Fatalf("edit should preserve label/enabled: label=%q enabled=%v", m.keys[0].Label, m.keys[0].Enabled)
+	}
+	if m.keyEditing || m.confirm != nil {
+		t.Fatalf("confirm should end the edit and close the modal")
+	}
+}
+
+// modalKind reads the open modal's kind without dumping the struct (arg may hold a key).
+func modalKind(m Model) string {
+	if m.confirm == nil {
+		return "<nil>"
+	}
+	return m.confirm.kind
+}
+
+// TestKeyReplaceCancelReturnsToInput: Cancel on the replace modal drops back into the
+// still-populated password input; typing while the modal is open never reaches it.
+func TestKeyReplaceCancelReturnsToInput(t *testing.T) {
+	m := keysModel(t, "glm", "off",
+		secrets.KeyEntry{Label: "a", Key: "sk-old-111", Enabled: true})
+	m, _ = press(t, m, "e")
+	m, _ = step(t, m, keyMsg("sk-new-999"))
+	m, _ = press(t, m, "enter") // replace modal opens
+	if m.confirm == nil {
+		t.Fatal("enter should open the replace modal")
+	}
+	m, _ = step(t, m, keyMsg("xxx")) // trapped: must not reach the input
+	if got := m.keyInput.Value(); got != "sk-new-999" {
+		t.Fatalf("input mutated under the modal: %q", got)
+	}
+	m, _ = press(t, m, "enter") // Cancel (default cursor)
+	if m.confirm != nil || !m.keyEditing {
+		t.Fatalf("cancel should close the modal and return to the edit, confirmOpen=%v editing=%v", m.confirm != nil, m.keyEditing)
+	}
+	if got := m.keyInput.Value(); got != "sk-new-999" {
+		t.Fatalf("input lost its value across the cancel: %q", got)
+	}
+	if m.keys[0].Key != "sk-old-111" {
+		t.Fatal("cancel must not change the stored key")
+	}
+}
+
+// TestKeyReplaceMismatchEndsEdit: a keyset refresh that replaces the target under the
+// open modal makes the confirm a no-op (identity check) and ends the edit.
+func TestKeyReplaceMismatchEndsEdit(t *testing.T) {
+	m := keysModel(t, "glm", "off",
+		secrets.KeyEntry{Label: "a", Key: "sk-old-111", Enabled: true})
+	m, _ = press(t, m, "e")
+	m, _ = step(t, m, keyMsg("sk-new-999"))
+	m, _ = press(t, m, "enter")
+	m, _ = step(t, m, keysetMsg{keys: []secrets.KeyEntry{{Label: "a", Key: "sk-other-222", Enabled: true}}})
+	m, _ = press(t, m, "right")
+	m, cmd := press(t, m, "enter")
+	if cmd != nil {
+		t.Fatal("a mismatched confirm must not save")
+	}
+	if m.keys[0].Key != "sk-other-222" {
+		t.Fatalf("mismatched confirm replaced a key: %q", m.keys[0].Key)
+	}
+	if m.keyEditing || m.confirm != nil || m.keyErr == "" {
+		t.Fatalf("mismatch should end the edit + surface keyErr, editing=%v confirmOpen=%v err=%q", m.keyEditing, m.confirm != nil, m.keyErr)
 	}
 }
 
@@ -1895,14 +2024,78 @@ func TestKeyManagerDeleteKeyAndClamp(t *testing.T) {
 	)
 	m, _ = press(t, m, "down") // cursor 1 = key b
 	m, cmd := press(t, m, "d")
+	if cmd != nil || m.confirm == nil || m.confirm.kind != confirmDeleteKey {
+		t.Fatalf("d should open the delete modal without saving, cmd=%v kind=%q", cmd, modalKind(m))
+	}
+	if m.confirm.danger {
+		t.Fatal("deleting one of two enabled keys is not a danger ask")
+	}
+	if len(m.keys) != 2 {
+		t.Fatal("nothing may be deleted before the confirm")
+	}
+	m, _ = press(t, m, "right")
+	m, cmd = press(t, m, "enter")
 	if cmd == nil {
-		t.Fatal("delete should dispatch a save cmd")
+		t.Fatal("confirming the delete should dispatch a save cmd")
 	}
 	if len(m.keys) != 1 || m.keys[0].Label != "a" {
-		t.Fatalf("after delete: keys=%+v, want [a]", m.keys)
+		t.Fatalf("after delete: %d keys, first label %q, want 1 + a", len(m.keys), m.keys[0].Label)
 	}
 	if m.keyCursor != 1 { // now the Add row (len==1)
 		t.Fatalf("cursor = %d, want 1 (clamped onto the Add row)", m.keyCursor)
+	}
+}
+
+// TestKeyDeleteCancelKeepsKey: enter on the default Cancel closes the modal and keeps
+// the key; the list keys stay trapped while the modal is open.
+func TestKeyDeleteCancelKeepsKey(t *testing.T) {
+	m := keysModel(t, "glm", "off",
+		secrets.KeyEntry{Label: "a", Key: "sk-aaa", Enabled: true},
+		secrets.KeyEntry{Label: "b", Key: "sk-bbb", Enabled: true},
+	)
+	m, _ = press(t, m, "d")
+	m, _ = press(t, m, "d") // trapped — must not splice or stack a second modal
+	if m.confirm == nil || len(m.keys) != 2 {
+		t.Fatalf("d under the modal should be swallowed, confirmOpen=%v keys=%d", m.confirm != nil, len(m.keys))
+	}
+	m, cmd := press(t, m, "enter") // Cancel
+	if cmd != nil || m.confirm != nil || len(m.keys) != 2 {
+		t.Fatalf("cancel should keep both keys, cmd=%v confirmOpen=%v keys=%d", cmd, m.confirm != nil, len(m.keys))
+	}
+}
+
+// TestKeyDeleteLastEnabledIsDanger: deleting the only enabled key warns in the danger
+// frame and names the consequence.
+func TestKeyDeleteLastEnabledIsDanger(t *testing.T) {
+	m := keysModel(t, "glm", "off",
+		secrets.KeyEntry{Label: "a", Key: "sk-aaa", Enabled: true},
+		secrets.KeyEntry{Label: "b", Key: "sk-bbb", Enabled: false},
+	)
+	m, _ = press(t, m, "d") // cursor 0 = the only enabled key
+	if m.confirm == nil || !m.confirm.danger {
+		t.Fatalf("deleting the last enabled key should be a danger ask, confirm=%v", m.confirm != nil)
+	}
+	if !strings.Contains(m.confirm.prompt, "last enabled key") {
+		t.Fatalf("danger prompt = %q, want last-enabled wording", m.confirm.prompt)
+	}
+}
+
+// TestKeyDeleteMismatchIsNoOp: a keyset refresh under the open modal fails the identity
+// check — nothing is deleted.
+func TestKeyDeleteMismatchIsNoOp(t *testing.T) {
+	m := keysModel(t, "glm", "off",
+		secrets.KeyEntry{Label: "a", Key: "sk-aaa", Enabled: true},
+		secrets.KeyEntry{Label: "b", Key: "sk-bbb", Enabled: true},
+	)
+	m, _ = press(t, m, "d") // targets key a
+	m, _ = step(t, m, keysetMsg{keys: []secrets.KeyEntry{
+		{Label: "a", Key: "sk-ccc", Enabled: true},
+		{Label: "b", Key: "sk-bbb", Enabled: true},
+	}})
+	m, _ = press(t, m, "right")
+	m, cmd := press(t, m, "enter")
+	if cmd != nil || len(m.keys) != 2 || m.keyErr == "" {
+		t.Fatalf("mismatched delete must no-op + surface keyErr, cmd=%v keys=%d err=%q", cmd, len(m.keys), m.keyErr)
 	}
 }
 
@@ -2053,6 +2246,16 @@ func TestAsyncMsg_NonOwningScreenDrop(t *testing.T) {
 	}
 	if m.modelsErr != nil {
 		t.Fatalf("non-owning screen overwrote modelsErr = %v", m.modelsErr)
+	}
+}
+
+// TestAsyncMsg_PaneVisOffBoardDrop: a hide/show outcome landing after the user left the
+// board is dropped — it must not open its info modal over a hub screen.
+func TestAsyncMsg_PaneVisOffBoardDrop(t *testing.T) {
+	m := withVendors(t, userops.VendorView{Name: "glm"})
+	m, _ = step(t, m, paneVisMsg{res: panevis.Result{OK: true, Action: "hide", Name: "alice"}})
+	if m.confirm != nil {
+		t.Fatal("an off-board paneVisMsg must not open a modal on the hub")
 	}
 }
 
@@ -2266,8 +2469,10 @@ func TestKeyMgr_DeleteFailureReloadsFromDisk(t *testing.T) {
 		secrets.KeyEntry{Label: "b", Key: "sk-bbb", Enabled: true},
 	)
 
-	m, _ = press(t, m, "down") // cursor 1 = key b
-	m, _ = press(t, m, "d")    // delete key b in memory
+	m, _ = press(t, m, "down")  // cursor 1 = key b
+	m, _ = press(t, m, "d")     // delete modal opens
+	m, _ = press(t, m, "right") // -> Confirm
+	m, _ = press(t, m, "enter") // delete key b in memory
 	if len(m.keys) != 1 {
 		t.Fatalf("delete: m.keys len = %d, want 1", len(m.keys))
 	}

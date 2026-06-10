@@ -660,7 +660,11 @@ func (f form) viewLines(width int) []string {
 			if fld.choiceIdx >= 0 && fld.choiceIdx < len(fld.choices) {
 				val = fld.choices[fld.choiceIdx]
 			}
-			lines = append(lines, " "+keyCell+"  "+contentStyle.Render("‹ "+val+" ›"))
+			st := contentStyle
+			if fld.key == "permission" {
+				st = permModeStyle(val) // the Claude permission-indicator palette
+			}
+			lines = append(lines, " "+keyCell+"  "+st.Render("‹ "+val+" ›"))
 		case fieldAction:
 			// Value-column action label; enter on it is handled by the parent
 			// model (e.g. open the key manager).

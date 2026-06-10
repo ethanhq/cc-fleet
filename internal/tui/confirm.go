@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -24,18 +25,19 @@ const (
 	modalResult                    // the outcome is shown; any key dismisses
 )
 
-// confirmModal is the centered overlay on the board — the single home for every transient prompt and
-// outcome the board surfaces. It confirms a destructive or disruptive action (delete a run / ended
-// team / job, clear a session's finished, stop or restart a run/agent) via the Cancel / Confirm
-// buttons (←/→, cursor starts on Cancel, the safe default; no esc), then,
-// for an async action, stays open through a modalRunning stage until its outcome lands. A bare
-// outcome with no preceding question (a control result, a hide/show or pin failure) opens straight in
-// modalResult via withInfo. Any key dismisses a result.
+// confirmModal is the centered overlay shared by the Agents Board and the provider hub — the single
+// home for every transient prompt and outcome they surface. It confirms a destructive or disruptive
+// action (delete a run / ended team / job, clear a session's finished, stop or restart a run/agent,
+// remove a provider, delete or replace an API key) via the Cancel / Confirm buttons (←/→, cursor
+// starts on Cancel, the safe default; no esc), then, for an async action, stays open through a
+// modalRunning stage until its outcome lands. A bare outcome with no preceding question (a control
+// result, a hide/show or pin failure) opens straight in modalResult via withInfo. Any key dismisses
+// a result.
 type confirmModal struct {
 	prompt    string
-	kind      string // confirmRun | confirmTeam | confirmJob | confirmClear | confirmStop | confirmRestart | confirmRestartAgent | confirmSession
-	id        string // the run / team / job / session id the action targets
-	arg       string // extra action input — the leaf journal key for confirmRestartAgent
+	kind      string // one of the confirm* kind constants below
+	id        string // the action's target: a run / team / job / session id, a vendor name, or a key index
+	arg       string // extra action input — the leaf journal key (restart-agent) or the targeted key's current value (delete-key / replace-key; identity only, never rendered)
 	cursor    int    // 0 = Cancel (default), 1 = Confirm
 	danger    bool   // a heavy/irreversible ask — the ask frame + prompt warn in red, not amber
 	phase     modalPhase
@@ -53,6 +55,9 @@ const (
 	confirmRestart      = "restart"
 	confirmRestartAgent = "restart-agent"
 	confirmSession      = "session"
+	confirmRemoveVendor = "remove-vendor"
+	confirmDeleteKey    = "delete-key"
+	confirmReplaceKey   = "replace-key"
 )
 
 // confirmAmber is the modal's confirm-phase accent: the border AND the Cancel/Confirm buttons share
@@ -157,6 +162,38 @@ func (m Model) runConfirmed() (tea.Model, tea.Cmd) {
 	case confirmJob:
 		m.confirm = nil
 		return m, deleteJobCmd(c.id, m.boardEpoch)
+	case confirmRemoveVendor:
+		m.confirm = nil
+		m.loading = true
+		return m, removeVendorCmd(c.id)
+	case confirmDeleteKey:
+		// The keyset can refresh while the modal is open, so the target is re-validated
+		// by identity (index + the key value captured at open) before the splice.
+		m.confirm = nil
+		idx, err := strconv.Atoi(c.id)
+		if err != nil || idx < 0 || idx >= len(m.keys) || m.keys[idx].Key != c.arg {
+			m.keyErr = "key list changed; nothing deleted"
+			return m, nil
+		}
+		m.keys = append(m.keys[:idx], m.keys[idx+1:]...)
+		if m.keyCursor > len(m.keys) {
+			m.keyCursor = len(m.keys)
+		}
+		return m, m.saveKeysetCmd()
+	case confirmReplaceKey:
+		// Same identity re-validation as the delete; a vanished target also ends the
+		// edit — committing the typed value into a refreshed list could hit the wrong row.
+		m.confirm = nil
+		idx, err := strconv.Atoi(c.id)
+		if err != nil || idx < 0 || idx >= len(m.keys) || m.keys[idx].Key != c.arg {
+			m.keyEditing = false
+			m.keyErr = "key list changed; nothing replaced"
+			return m, nil
+		}
+		m.keys[idx].Key = strings.TrimSpace(m.keyInput.Value())
+		m.keyEditing = false
+		m.keyErr = ""
+		return m, m.saveKeysetCmd()
 	}
 	m.confirm = nil
 	return m, nil
@@ -206,6 +243,12 @@ func (m Model) confirmBorder() lipgloss.Color {
 // renderConfirmBox is the modal's bordered content per phase: the colored outcome (modalResult), the
 // in-flight busy label (modalRunning), or the prompt over the Cancel / Confirm buttons (modalAsk).
 func (m Model) renderConfirmBox() string {
+	// Long prompts and outcome lines (the hub's consequence-stating asks, a failed-op
+	// message) wrap to the modal's width budget; the board's one-liners pass through.
+	w := 56
+	if m.width > 0 && m.width-12 < w {
+		w = m.width - 12
+	}
 	var body string
 	switch m.confirm.phase {
 	case modalResult:
@@ -214,7 +257,7 @@ func (m Model) renderConfirmBox() string {
 			resultStyle = errStyle
 		}
 		body = lipgloss.JoinVertical(lipgloss.Center,
-			resultStyle.Render(m.confirm.result),
+			resultStyle.Render(strings.Join(wrapTo(m.confirm.result, w), "\n")),
 			faintStyle.Render("press any key"))
 	case modalRunning:
 		body = liveStyle.Render(m.confirm.busy)
@@ -224,7 +267,7 @@ func (m Model) renderConfirmBox() string {
 			promptStyle = errStyle // a heavy delete warns in red
 		}
 		body = lipgloss.JoinVertical(lipgloss.Center,
-			promptStyle.Render(m.confirm.prompt),
+			promptStyle.Render(strings.Join(wrapTo(m.confirm.prompt, w), "\n")),
 			"",
 			confirmButtons(m.confirm.cursor, m.confirmBorder()))
 	}

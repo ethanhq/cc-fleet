@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
+	"github.com/ethanhq/cc-fleet/internal/permmode"
 	"github.com/ethanhq/cc-fleet/internal/pinned"
 	"github.com/ethanhq/cc-fleet/internal/secrets"
 	"github.com/ethanhq/cc-fleet/internal/sessiontitle"
@@ -40,6 +41,23 @@ var (
 // footer renders a dim key-hint line.
 func footer(s string) string { return faintStyle.Render(s) }
 
+// permModeStyle colors a run-permission value the way Claude Code's own permission-mode
+// indicator does: plan teal, acceptEdits violet, auto amber, bypassPermissions the error
+// red; default/off stay in the plain body color.
+func permModeStyle(mode string) lipgloss.Style {
+	switch mode {
+	case permmode.Plan:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("66"))
+	case permmode.AcceptEdits:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("141"))
+	case permmode.Auto:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+	case permmode.BypassPermissions:
+		return errStyle
+	}
+	return contentStyle
+}
+
 // View satisfies tea.Model.
 func (m Model) View() string {
 	if m.quitting {
@@ -47,7 +65,11 @@ func (m Model) View() string {
 	}
 	switch m.screen {
 	case screenList:
-		return m.viewList()
+		s := m.viewList()
+		if m.confirm != nil {
+			s = overlayCenter(s, m.renderConfirmBox(), m.width) // remove-provider confirm
+		}
+		return s
 	case screenSpawn:
 		s := m.viewSpawn()
 		switch {
@@ -63,12 +85,12 @@ func (m Model) View() string {
 		return m.viewForm()
 	case screenModelPick:
 		return m.viewModelPick()
-	case screenRemoveConfirm:
-		return m.viewRemoveConfirm()
-	case screenResult:
-		return m.viewResult()
 	case screenKeys:
-		return m.viewKeys()
+		s := m.viewKeys()
+		if m.confirm != nil {
+			s = overlayCenter(s, m.renderConfirmBox(), m.width) // key delete/replace confirm
+		}
+		return s
 	case screenSetup:
 		return m.viewSetup()
 	case screenSetupTmux:
@@ -274,7 +296,7 @@ func vendorDetailLines(v userops.VendorView, rightW int) []string {
 	detailField(&lines, "strong", resolvedSlot(v.StrongModel, v.DefaultModel), rightW)
 	detailField(&lines, "fast", resolvedSlot(v.FastModel, v.DefaultModel), rightW)
 	detailField(&lines, "effort", orOff(v.Effort), rightW)
-	detailField(&lines, "run perm", orOff(v.DefaultPerm), rightW)
+	detailFieldStyled(&lines, "run perm", orOff(v.DefaultPerm), rightW, permModeStyle(v.DefaultPerm))
 	detailField(&lines, "cache", vendorCacheFig(v), rightW)
 	key := v.SecretBackend
 	if v.SecretRef != "" {
@@ -371,11 +393,18 @@ func (m Model) vendorFlowView(ctx, ctxRight, active, rightTitle, hint string, ri
 // viewForm renders the add/edit form inside the hub box: the rail stays put, the right
 // pane is the form, the header carries the form title and the footer its key hints.
 func (m Model) viewForm() string {
+	return m.formBase(m.form.intro)
+}
+
+// formBase renders the form chrome with the given footer hint. The codex login modal
+// overlays this base with a blank hint — the form's own hints would advertise keys the
+// modal has trapped.
+func (m Model) formBase(hint string) string {
 	active, rightTitle := "+", "add provider"
 	if m.formMode == modeEdit {
 		active, rightTitle = m.editName, "edit "+trunc(m.editName, 20)
 	}
-	return m.vendorFlowView(m.form.title, "", active, rightTitle, m.form.intro,
+	return m.vendorFlowView(m.form.title, "", active, rightTitle, hint,
 		func(rightW int) []string { return m.form.viewLines(rightW) })
 }
 
@@ -2279,6 +2308,12 @@ func (m Model) entityDetailLines(rightW int) []string {
 // detailField renders one "key  value" card line set, wrapping a long value to the pane
 // (continuation lines indent under the value column) — the card never truncates a field.
 func detailField(lines *[]string, k, v string, rightW int) {
+	detailFieldStyled(lines, k, v, rightW, contentStyle)
+}
+
+// detailFieldStyled is detailField with a caller-chosen value style (e.g. the
+// permission-mode color on the run-perm row).
+func detailFieldStyled(lines *[]string, k, v string, rightW int, style lipgloss.Style) {
 	if v == "" {
 		v = "—"
 	}
@@ -2287,7 +2322,7 @@ func detailField(lines *[]string, k, v string, rightW int) {
 		if fi > 0 {
 			key = strings.Repeat(" ", 8)
 		}
-		*lines = append(*lines, " "+faintStyle.Render(key)+"  "+contentStyle.Render(w))
+		*lines = append(*lines, " "+faintStyle.Render(key)+"  "+style.Render(w))
 	}
 }
 
@@ -2848,67 +2883,94 @@ func (m Model) addItemDetail() []string {
 	}
 }
 
+// viewCodexAuth renders the codex login flow as a centered modal over the still-populated
+// add form; the base's footer hint is blanked so it can't advertise keys the modal traps.
 func (m Model) viewCodexAuth() string {
-	if m.codexAuthStage == codexAuthChooseSource {
-		return m.vendorFlowView("Add codex provider · source", "", "+", "codex login",
-			"r reuse · s separate login · esc cancel", func(rightW int) []string {
-				detected := "A codex subscription is signed in on this system"
-				if m.codexAuthAccount != "" {
-					detected += " (account " + m.codexAuthAccount + ")"
-				}
-				return []string{
-					contentStyle.Render(detected + "."), "",
-					contentStyle.Render("  r  reuse it — no separate login needed"),
-					contentStyle.Render("  s  log in separately — cc-fleet keeps its own login"),
-				}
-			})
-	}
-	if m.codexAuthStage == codexAuthDevice {
-		return m.vendorFlowView("Add codex provider · authorize", "", "+", "device login",
-			"esc cancel", func(rightW int) []string {
-				var lines []string
-				if m.codexAuth != nil {
-					lines = append(lines,
-						contentStyle.Render("Open this URL and enter the code:"), "",
-						"  "+selectedStyle.Render(m.codexAuth.VerifyURL),
-						"  code: "+selectedStyle.Render(m.codexAuth.UserCode), "",
-						faintStyle.Render("  waiting for authorization…"))
-				} else {
-					lines = append(lines, faintStyle.Render("  starting device login…"))
-				}
-				if m.codexAuthErr != "" {
-					lines = append(lines, "", errStyle.Render("  "+m.codexAuthErr))
-				}
-				return lines
-			})
-	}
-	return m.vendorFlowView("Add codex provider · consent", "", "+", "account risk",
-		"enter accept · esc cancel", func(rightW int) []string {
-			var lines []string
-			for _, seg := range strings.Split(codexproxy.RiskNotice, "\n") {
-				for _, w := range wrapTo(seg, rightW-2) {
-					lines = append(lines, contentStyle.Render(w))
-				}
-			}
-			lines = append(lines, "", faintStyle.Render("enter starts the device-code login · esc cancels"))
-			if m.codexAuthErr != "" {
-				lines = append(lines, "", errStyle.Render(m.codexAuthErr))
-			}
-			return lines
-		})
+	return overlayCenter(m.formBase(""), m.renderCodexAuthBox(), m.width)
 }
 
-func (m Model) viewRemoveConfirm() string {
-	return m.vendorFlowView("Remove provider", "", m.removeName, "confirm "+trunc(m.removeName, 18),
-		"y confirm · n/esc cancel", func(rightW int) []string {
-			msg := "Remove " + m.removeName +
-				" from vendors.toml, delete its profile, and (for file backend) its secret?"
-			var lines []string
-			for _, w := range wrapTo(msg, rightW-2) {
-				lines = append(lines, contentStyle.Render(w))
+// renderCodexAuthBox is the codex login modal's bordered body, branched on the stage:
+// the committing wait, the source choice, the risk-notice consent, or the device-code
+// display with its polling line. Stage key hints live inside the box; a login error
+// appends in red and re-tints the border.
+func (m Model) renderCodexAuthBox() string {
+	// Inner width budget: wide enough that the fixed verify URL never wraps (38 cols),
+	// capped so the box stays a modal on wide terminals.
+	w := m.width - 12
+	if w < 40 {
+		w = 40
+	}
+	if w > 64 {
+		w = 64
+	}
+	var lines []string
+	body := func(s string) {
+		for _, l := range wrapTo(s, w) {
+			lines = append(lines, contentStyle.Render(l))
+		}
+	}
+	switch m.codexAuthStage {
+	case codexAuthCommitting:
+		lines = append(lines, faintStyle.Render("adding provider…"))
+	case codexAuthChooseSource:
+		detected := "A codex subscription is signed in on this system"
+		if m.codexAuthAccount != "" {
+			detected += " (account " + m.codexAuthAccount + ")"
+		}
+		body(detected + ".")
+		lines = append(lines, "")
+		opts := []string{
+			"reuse it — no separate login needed",
+			"log in separately — cc-fleet keeps its own login",
+		}
+		for i, opt := range opts {
+			sel := i == m.codexSourceCursor
+			st := contentStyle
+			if sel {
+				st = selectedStyle
 			}
-			return lines
-		})
+			for j, l := range wrapTo(opt, w-2) {
+				marker := "  "
+				if sel && j == 0 {
+					marker = cursorStyle.Render("> ")
+				}
+				lines = append(lines, marker+st.Render(l))
+			}
+		}
+		lines = append(lines, "",
+			faintStyle.Render("↑/↓ move · enter select · esc cancel"))
+	case codexAuthDevice:
+		if m.codexAuth != nil {
+			lines = append(lines,
+				contentStyle.Render("Open this URL and enter the code:"), "",
+				"  "+selectedStyle.Render(m.codexAuth.VerifyURL),
+				"  code: "+selectedStyle.Render(m.codexAuth.UserCode), "",
+				faintStyle.Render("waiting for authorization…"))
+		} else {
+			lines = append(lines, faintStyle.Render("starting device login…"))
+		}
+		lines = append(lines, "", faintStyle.Render("esc cancel"))
+	default: // codexAuthConsent
+		for _, seg := range strings.Split(codexproxy.RiskNotice, "\n") {
+			body(seg)
+		}
+		lines = append(lines, "", faintStyle.Render("enter starts the device-code login · esc cancels"))
+	}
+	if m.codexAuthErr != "" {
+		lines = append(lines, "")
+		for _, l := range wrapTo(m.codexAuthErr, w) {
+			lines = append(lines, errStyle.Render(l))
+		}
+	}
+	border := confirmAmber
+	if m.codexAuthErr != "" {
+		border = lipgloss.Color("203")
+	}
+	return lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(border).
+		Padding(0, 3).
+		Render(strings.Join(lines, "\n"))
 }
 
 // tmuxOptions are the two choices on the tmux setup screen, in cursor order
@@ -2976,25 +3038,6 @@ func (m Model) viewSetup() string {
 	b.WriteString(renderSetupOptions(setupOptions, m.setupCursor))
 	b.WriteString("\n" + footer("↑/↓ move · enter select · esc skip"))
 	return b.String()
-}
-
-func (m Model) viewResult() string {
-	return m.vendorFlowView("", "", "", "result", "press any key to return",
-		func(rightW int) []string {
-			mark, style := "✓ ", okStyle
-			if m.resultErr {
-				mark, style = "✗ ", errStyle
-			}
-			var lines []string
-			for fi, w := range wrapTo(m.result, rightW-4) {
-				if fi == 0 {
-					lines = append(lines, style.Render(mark+w))
-				} else {
-					lines = append(lines, style.Render("  "+w))
-				}
-			}
-			return lines
-		})
 }
 
 func (m Model) viewModelPick() string {

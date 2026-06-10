@@ -2,13 +2,38 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/config"
+	"github.com/ethanhq/cc-fleet/internal/permmode"
 	"github.com/ethanhq/cc-fleet/internal/userops"
 )
+
+// The run-permission value colors mirror Claude Code's own permission-mode indicator;
+// default/off stay in the plain body color.
+func TestPermModeStyleMapping(t *testing.T) {
+	want := map[string]lipgloss.Color{
+		permmode.Plan:              "66",
+		permmode.AcceptEdits:       "141",
+		permmode.Auto:              "214",
+		permmode.BypassPermissions: "203",
+	}
+	for mode, c := range want {
+		if got := permModeStyle(mode).GetForeground(); got != c {
+			t.Errorf("permModeStyle(%s) = %v, want %v", mode, got, c)
+		}
+	}
+	for _, plain := range []string{"off", permmode.Default, ""} {
+		if got := permModeStyle(plain).GetForeground(); got != contentStyle.GetForeground() {
+			t.Errorf("permModeStyle(%q) = %v, want the plain body color", plain, got)
+		}
+	}
+}
 
 // Flat-picker item indices (cursor walks the selectable rows across all groups).
 func firstOpenAIIdx() int { return len(Templates) + 1 } // after the Anthropic seeds + their Custom
@@ -94,6 +119,15 @@ func TestAddPicker_CodexRowNoSourceGoesToConsent(t *testing.T) {
 	m, cmd := press(t, m, "enter")               // submit -> commit the row first
 	if cmd == nil || m.codexCommittedName == "" {
 		t.Fatalf("no-source codex submit must commit first: cmd=%v committed=%q", cmd, m.codexCommittedName)
+	}
+	// The committing stage owns the screen for the async add: the form can no longer
+	// be escaped or repopulated, so the login modal's underlay stays the submitted form.
+	if m.screen != screenCodexAuth || m.codexAuthStage != codexAuthCommitting {
+		t.Fatalf("submit must park on committing: screen=%d stage=%d", m.screen, m.codexAuthStage)
+	}
+	m, cmd = press(t, m, "esc") // trapped — no abandon, no form
+	if cmd != nil || m.screen != screenCodexAuth || m.codexCommittedName == "" {
+		t.Fatalf("keys during committing must be swallowed: cmd=%v screen=%d", cmd, m.screen)
 	}
 	m, _ = step(t, m, opDoneMsg{verb: "add", name: m.codexCommittedName}) // add landed -> consent
 	if m.screen != screenCodexAuth || m.codexAuthStage != codexAuthConsent {
@@ -221,8 +255,8 @@ func TestCodexAbandonCancelsAndDropsStalePoll(t *testing.T) {
 	if ctx.Err() == nil {
 		t.Fatal("abandon must cancel the session context so an in-flight poll cannot persist a token")
 	}
-	// The in-flight poll's stale-epoch result must be dropped — no success screen.
-	if m2, _ := step(t, m, codexAuthPollMsg{epoch: 3, done: true}); m2.screen == screenResult {
+	// The in-flight poll's stale-epoch result must be dropped — no success outcome.
+	if m2, _ := step(t, m, codexAuthPollMsg{epoch: 3, done: true}); m2.screen != screenCodexAuth || m2.confirm != nil {
 		t.Fatal("a stale-epoch poll-done after abandon must be dropped, not shown as success")
 	}
 }
@@ -240,14 +274,106 @@ func TestCodexChooseSourceBranches(t *testing.T) {
 		m.codexAddRef = codexproxy.SecretRef
 		return m
 	}
-	if m, cmd := press(t, base(), "r"); cmd == nil || !m.loading || m.codexPendingAdd != nil || m.codexCommittedName != "" {
-		t.Fatalf("reuse must commit with no follow-up login: cmd=%v loading=%v pending=%v committed=%q", cmd, m.loading, m.codexPendingAdd, m.codexCommittedName)
+	// enter on the default cursor (0 = reuse) commits with no follow-up login.
+	if m, cmd := press(t, base(), "enter"); cmd == nil || !m.loading || m.codexPendingAdd != nil || m.codexCommittedName != "" || m.codexAuthStage != codexAuthCommitting {
+		t.Fatalf("reuse must commit with no follow-up login and park on committing: cmd=%v loading=%v pending=%v committed=%q stage=%d",
+			cmd, m.loading, m.codexPendingAdd, m.codexCommittedName, m.codexAuthStage)
 	}
-	if m, cmd := press(t, base(), "s"); cmd == nil || m.codexPendingAdd != nil || m.codexCommittedName != "codex" {
-		t.Fatalf("separate login must commit the row first and mark it: cmd=%v pending=%v committed=%q", cmd, m.codexPendingAdd, m.codexCommittedName)
+	// ↓ then enter (cursor 1 = separate login) commits the row first and marks it.
+	m := base()
+	m, _ = press(t, m, "down")
+	if m.codexSourceCursor != 1 {
+		t.Fatalf("down should move the source cursor to 1, got %d", m.codexSourceCursor)
+	}
+	m, _ = press(t, m, "down") // clamped at the last option
+	if m.codexSourceCursor != 1 {
+		t.Fatalf("down past the end should clamp, got %d", m.codexSourceCursor)
+	}
+	m, cmd := press(t, m, "enter")
+	if cmd == nil || m.codexPendingAdd != nil || m.codexCommittedName != "codex" || m.codexAuthStage != codexAuthCommitting {
+		t.Fatalf("separate login must commit the row first, mark it, and park on committing: cmd=%v pending=%v committed=%q stage=%d",
+			cmd, m.codexPendingAdd, m.codexCommittedName, m.codexAuthStage)
 	}
 	if m, _ := press(t, base(), "esc"); m.screen != screenForm || m.codexPendingAdd != nil {
 		t.Fatalf("esc must return to the form and drop the pending add: screen=%d", m.screen)
+	}
+}
+
+// A failed add during the committing stage falls through to the failure modal exactly
+// like any other failed op — no consent detour, marker cleared.
+func TestCodexCommittingFailureRoutesToResult(t *testing.T) {
+	m := NewModel()
+	m.screen = screenCodexAuth
+	m.codexAuthStage = codexAuthCommitting
+	m.codexCommittedName = "codex"
+	m.loading = true
+	m, _ = step(t, m, opDoneMsg{verb: "add", name: "codex", err: errors.New("boom")})
+	if m.screen != screenList || m.confirm == nil || !m.confirm.resultErr || m.codexCommittedName != "" {
+		t.Fatalf("failed committing add: screen=%d confirmOpen=%v committed=%q, want list+red modal+cleared",
+			m.screen, m.confirm != nil, m.codexCommittedName)
+	}
+}
+
+// An opDoneMsg from an earlier, unrelated op (a stale dispatch) arriving during a marked
+// codex commit is dropped outright — the user stays parked on committing (so a second
+// codex commit can never overwrite the marker) and only the committed add's own result
+// drives the flow.
+func TestCodexCommittingIgnoresUnrelatedOpDone(t *testing.T) {
+	m := NewModel()
+	m.screen = screenCodexAuth
+	m.codexAuthStage = codexAuthCommitting
+	m.codexCommittedName = "codex"
+	m.loading = true
+	m, _ = step(t, m, opDoneMsg{verb: "add", name: "other"})
+	if m.screen != screenCodexAuth || m.codexAuthStage != codexAuthCommitting || !m.loading {
+		t.Fatalf("an unrelated result must be dropped, not leave committing: screen=%d stage=%d loading=%v",
+			m.screen, m.codexAuthStage, m.loading)
+	}
+	if m.codexCommittedName != "codex" {
+		t.Fatalf("an unrelated result cleared the marker: %q", m.codexCommittedName)
+	}
+	m, _ = step(t, m, opDoneMsg{verb: "add", name: "codex"})
+	if m.screen != screenCodexAuth || m.codexAuthStage != codexAuthConsent {
+		t.Fatalf("the committed add's result must route to consent: screen=%d stage=%d", m.screen, m.codexAuthStage)
+	}
+	// The guard covers the whole marked flow: a stale unrelated result arriving on the
+	// consent (or device) stage is dropped the same way.
+	m, _ = step(t, m, opDoneMsg{verb: "add", name: "other"})
+	if m.screen != screenCodexAuth || m.codexAuthStage != codexAuthConsent || m.codexCommittedName != "codex" {
+		t.Fatalf("an unrelated result on consent must be dropped: screen=%d stage=%d marker=%q",
+			m.screen, m.codexAuthStage, m.codexCommittedName)
+	}
+}
+
+// The codex login renders as a centered modal over the form base: the device stage shows
+// the verify URL + user code inside the box, the consent stage the risk notice, and the
+// base's footer no longer advertises the form's own keys.
+func TestCodexAuthModalContent(t *testing.T) {
+	m := NewModel()
+	m.screen = screenCodexAuth
+	m.form = newAddForm(Templates[0])
+	m.codexAuthStage = codexAuthDevice
+	m.codexAuth = &codexproxy.LoginSession{VerifyURL: "https://auth.openai.com/codex/device", UserCode: "ABCD-1234"}
+	out := m.View()
+	for _, want := range []string{"https://auth.openai.com/codex/device", "ABCD-1234", "waiting for authorization…"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("device modal missing %q", want)
+		}
+	}
+	if strings.Contains(out, "enter on [Add] submits") {
+		t.Fatal("the form footer must be blanked under the login modal")
+	}
+
+	m.codexAuthStage = codexAuthConsent
+	m.codexAuth = nil
+	out = m.View()
+	if !strings.Contains(out, "device-code login") {
+		t.Fatal("consent modal missing the risk/consent hint")
+	}
+
+	m.codexAuthStage = codexAuthCommitting
+	if out = m.View(); !strings.Contains(out, "adding provider…") {
+		t.Fatal("committing modal missing its wait line")
 	}
 }
 

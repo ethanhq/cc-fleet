@@ -10,6 +10,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,12 +43,10 @@ const (
 	screenPickTemplate
 	screenForm
 	screenModelPick
-	screenRemoveConfirm
-	screenResult
 	screenKeys      // EDIT form → "Manage API keys →": per-vendor multi-key manager
 	screenSetupTmux // first-run tmux setup nudge; shown before agent-teams/hub
 	screenSetup     // first-run agent-teams setup nudge; shown before the hub
-	screenCodexAuth // CLI-auth → codex: consent → device-code login
+	screenCodexAuth // CLI-auth → codex: committing → consent → device-code login, modal-rendered
 )
 
 // addCategory is the provider class a picker row belongs to.
@@ -66,6 +65,7 @@ const (
 	codexAuthConsent      codexAuthStage = iota // risk notice; enter accepts
 	codexAuthDevice                             // device-code shown; polling for authorization
 	codexAuthChooseSource                       // a subscription is detected: reuse it or log in separately
+	codexAuthCommitting                         // the add is committing; all keys trapped until opDoneMsg routes on
 )
 
 // formMode records whether the active form is an add or an edit so submit
@@ -130,6 +130,7 @@ type Model struct {
 	codexAddRef        string
 	codexCommittedName string // committed-but-not-yet-logged-in codex row; rolled back on abandon
 	codexAuthAccount   string // detected cli-ride account, shown on the source-choice stage
+	codexSourceCursor  int    // source-choice selection: 0 reuse the detected login, 1 log in separately
 
 	// Agents Board (screenSpawn): live teammates, workflow runs, and async subagent
 	// jobs in one master-detail board. asMode re-roots the levels (projects → sessions →
@@ -259,9 +260,6 @@ type Model struct {
 	// (default_model / strong_model / fast_model). Empty falls back to default_model.
 	pickerTarget string
 
-	// Remove confirmation target.
-	removeName string
-
 	// Key manager (screenKeys), reached from the EDIT form's "Manage API keys →"
 	// action. keys holds the in-memory key set — full keys live here but the view
 	// renders ONLY secrets.MaskKey. keyCursor ranges over [0, len(keys)] (the last
@@ -276,10 +274,6 @@ type Model struct {
 	keyEditing  bool
 	keyRotation string
 	keyErr      string
-
-	// Result screen contents.
-	result    string
-	resultErr bool
 
 	// First-run setup nudges. setupCursor/tmuxCursor select an option on the
 	// agent-teams / tmux screens respectively. setupMsg, once non-empty, replaces
@@ -914,8 +908,11 @@ func (m Model) anyLeafRunning() bool {
 // paneVisMsg carries the outcome of an inline hide/show so the board can surface
 // a failure (its code/reason/suggestion) instead of silently relying on the next
 // refresh to show an unchanged HIDDEN column. Its handler pops an info modal and
-// then reloads the board to reflect the new state.
+// then reloads the board to reflect the new state. Owned by screenSpawn so a
+// result landing after the user left the board can't pop a stale modal on the hub.
 type paneVisMsg struct{ res panevis.Result }
+
+func (paneVisMsg) owningScreen() screen { return screenSpawn }
 
 // hideTeammateCmd hides the selected teammate row's pane and reports the
 // panevis.Result so the board can surface success/failure; the result handler
@@ -1079,7 +1076,7 @@ func removeVendorCmd(name string) tea.Cmd {
 
 // codexRollbackDoneMsg reports a finished abandon-rollback (a codex row removed after
 // its login was cancelled). Distinct from opDoneMsg so the cancel lands quietly on the
-// provider list rather than a "remove OK" result screen; epoch-tagged so a stale one
+// provider list rather than a "remove OK" outcome modal; epoch-tagged so a stale one
 // can't disturb a newer attempt.
 type codexRollbackDoneMsg struct{ epoch int }
 
@@ -1496,25 +1493,37 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case opDoneMsg:
-		m.loading = false
-		// A codex row committed ahead of its login (see submitAddCodex) now routes to the
-		// device-code login instead of a result screen; a failed add clears the marker.
-		if msg.verb == "add" && msg.err == nil && m.codexCommittedName != "" {
-			m.screen = screenCodexAuth
-			m.codexAuthStage = codexAuthConsent
-			m.codexAuthErr = ""
+		// While a marked codex login flow owns the screen (committing, consent, or
+		// device), a stale result from an earlier, unrelated op is dropped outright:
+		// yanking the user to an outcome modal would free them to start another codex
+		// commit and overwrite the single marker, silently orphaning the first row
+		// without login or rollback. Only the committed add's own result moves the
+		// flow; only its failure clears the marker.
+		if m.screen == screenCodexAuth && m.codexCommittedName != "" &&
+			!(msg.verb == "add" && msg.name == m.codexCommittedName) {
 			return m, nil
 		}
-		m.codexCommittedName = ""
-		m.screen = screenResult
-		if msg.err != nil {
-			m.resultErr = true
-			m.result = fmt.Sprintf("%s %q failed:\n\n%v", msg.verb, msg.name, msg.err)
-		} else {
-			m.resultErr = false
-			m.result = fmt.Sprintf("%s %q: OK", msg.verb, msg.name)
+		m.loading = false
+		if msg.verb == "add" && m.codexCommittedName != "" && msg.name == m.codexCommittedName {
+			if msg.err == nil {
+				m.screen = screenCodexAuth
+				m.codexAuthStage = codexAuthConsent
+				m.codexAuthErr = ""
+				return m, nil
+			}
+			m.codexCommittedName = ""
 		}
-		return m, nil
+		// The outcome pops as an info modal over the list (green ok / red failure, any
+		// key dismisses) while the list reloads underneath — loading stays false so the
+		// previous frame, not a bare "loading…", is the underlay.
+		m.screen = screenList
+		line := fmt.Sprintf("%s %q: OK", msg.verb, msg.name)
+		isErr := false
+		if msg.err != nil {
+			line = fmt.Sprintf("%s %q failed: %v", msg.verb, msg.name, msg.err)
+			isErr = true
+		}
+		return m.withInfo(line, isErr), loadVendors
 
 	case codexAuthBegunMsg:
 		// Drop a begin from a prior login attempt (esc then re-enter starts a new
@@ -1543,7 +1552,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.done {
 			// The provider row was already committed before the login (see
-			// submitAddCodex); the login just filled its credential, so report success.
+			// submitAddCodex); the login just filled its credential, so report success
+			// as an info modal over the reloading list.
 			if m.codexAuthCancel != nil {
 				m.codexAuthCancel()
 				m.codexAuthCancel, m.codexAuthCtx = nil, nil
@@ -1552,10 +1562,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			name := m.codexCommittedName
 			m.codexCommittedName = ""
 			m.loading = false
-			m.screen = screenResult
-			m.resultErr = false
-			m.result = fmt.Sprintf("add %q: OK", name)
-			return m, nil
+			m.screen = screenList
+			return m.withInfo(fmt.Sprintf("add %q: OK", name), false), loadVendors
 		}
 		return m, codexAuthTickCmd(m.codexAuthEpoch, m.codexAuth.Interval())
 
@@ -1628,10 +1636,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateForm(msg)
 		case screenModelPick:
 			return m.updateModelPick(msg)
-		case screenRemoveConfirm:
-			return m.updateRemoveConfirm(msg)
-		case screenResult:
-			return m.updateResult(msg)
 		case screenKeys:
 			return m.updateKeys(msg)
 		case screenSetup:
@@ -1646,18 +1650,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // toList returns to the Model Providers list (the hub) and reloads it — after an
-// add/edit/remove the content changed, and a plain cancel just re-reads.
+// add/edit/remove the content changed, and a plain cancel just re-reads. Any open
+// hub modal is dropped with the screen it overlaid.
 func (m Model) toList() (tea.Model, tea.Cmd) {
 	m.screen = screenList
 	m.loading = true
+	m.confirm = nil
 	return m, loadVendors
 }
 
 // updateList drives the Model Providers hub. The cursor ranges over [0, len(vendors)];
 // the final index is the synthetic "+ Add provider…" row. →/enter edits the
 // highlighted provider (or opens the add wizard on the Add row); d deletes it
-// (with a confirm); tab switches to the Agents Board; q/esc quit.
+// (via a confirm modal); tab switches to the Agents Board; q/esc quit.
 func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.confirm != nil {
+		return m.updateConfirm(msg) // the remove-confirm modal traps focus until resolved
+	}
 	addRow := len(m.vendors) // index of the trailing "+ Add provider…" row
 	switch msg.String() {
 	case "q", "esc":
@@ -1709,9 +1718,18 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.screen = screenForm
 		return m, textinput.Blink
 	case "d":
-		if m.vendorCursor < addRow { // a vendor row, not the Add row
-			m.removeName = m.vendors[m.vendorCursor].Name
-			m.screen = screenRemoveConfirm
+		// No new ask while a mutation is in flight: its outcome modal would find this
+		// one open and be silently swallowed (withInfo never clobbers an open modal).
+		if m.vendorCursor < addRow && !m.loading { // a vendor row, not the Add row
+			v := m.vendors[m.vendorCursor]
+			// State the real consequences per class: a codex remove tears down cc-fleet's
+			// own login (when unreferenced), never ~/.codex; a file-backend remove drops
+			// the secret + key store.
+			prompt := "Remove " + v.Name + "? Deletes its config row, profile, and (file backend) its secret + key store."
+			if v.Protocol == config.ProtocolCodexOAuth {
+				prompt = "Remove " + v.Name + "? Deletes its profile and cc-fleet's codex login (if unused elsewhere); ~/.codex is untouched."
+			}
+			return m.openConfirm(confirmRemoveVendor, v.Name, prompt)
 		}
 	}
 	return m, nil
@@ -3052,25 +3070,28 @@ func (m Model) updateCodexAuth(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.codexPendingAdd = nil
 			m.screen = screenForm
 			return m, textinput.Blink
-		case "r", "enter", "y":
-			// Reuse the detected subscription: commit the row as-is (the daemon rides
-			// ~/.codex; no separate login, so no token write and no rollback).
+		case "up", "k":
+			if m.codexSourceCursor > 0 {
+				m.codexSourceCursor--
+			}
+		case "down", "j":
+			if m.codexSourceCursor < 1 {
+				m.codexSourceCursor++
+			}
+		case "enter":
+			// Commit the cursored choice: reuse rides ~/.codex (no token write, no
+			// rollback); separate login commits the row first and marks it for the
+			// login — same ordering as the no-source path. Either way the committing
+			// stage traps keys until opDoneMsg routes on.
 			if m.codexPendingAdd == nil {
 				return m.toList()
 			}
 			req := *m.codexPendingAdd
 			m.codexPendingAdd = nil
-			m.loading = true
-			return m, addVendorCmd(req)
-		case "s", "l":
-			// Log in separately (cc-fleet's own login overrides the ride): commit the row
-			// first, then log in — same ordering as the no-source path.
-			if m.codexPendingAdd == nil {
-				return m.toList()
+			if m.codexSourceCursor == 1 {
+				m.codexCommittedName = req.Name
 			}
-			req := *m.codexPendingAdd
-			m.codexPendingAdd = nil
-			m.codexCommittedName = req.Name
+			m.codexAuthStage = codexAuthCommitting
 			m.loading = true
 			return m, addVendorCmd(req)
 		}
@@ -3096,6 +3117,10 @@ func (m Model) updateCodexAuth(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if s := msg.String(); s == "esc" || s == "q" {
 			return m.codexAbandonLogin()
 		}
+	case codexAuthCommitting:
+		// The add is committing (a short flocked local write); every key is trapped so
+		// the underlying form can't change until opDoneMsg routes to consent or result.
+		return m, nil
 	}
 	return m, nil
 }
@@ -3183,8 +3208,11 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.toList()
 	}
 	// Enter (or →, the descend key) on the "Manage API keys →" action row (edit
-	// form only) opens the per-vendor key manager and loads its key set.
-	if (msg.String() == "enter" || msg.String() == "right") && m.formMode == modeEdit && m.form.focusedKey() == "manage_keys" {
+	// form only) opens the per-vendor key manager and loads its key set. Not while a
+	// submit is in flight: a key confirm opened in that window would swallow the
+	// pending outcome modal (withInfo never clobbers an open modal).
+	if (msg.String() == "enter" || msg.String() == "right") && m.formMode == modeEdit &&
+		m.form.focusedKey() == "manage_keys" && !m.loading {
 		m.screen = screenKeys
 		m.keyVendor = m.editName
 		m.keyCursor = 0
@@ -3296,22 +3324,6 @@ func (m Model) filteredModels() []models.Model {
 	return out
 }
 
-func (m Model) updateRemoveConfirm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "y", "Y":
-		m.loading = true
-		return m, removeVendorCmd(m.removeName)
-	case "n", "N", "esc", "q", "left":
-		return m.toList()
-	}
-	return m, nil
-}
-
-// updateResult returns to the Model Providers list on any key press.
-func (m Model) updateResult(_ tea.KeyMsg) (tea.Model, tea.Cmd) {
-	return m.toList()
-}
-
 // setupOptionCount is the number of choices on the agent-teams setup screen
 // (enable / already-set-up / not-now).
 const setupOptionCount = 3
@@ -3419,8 +3431,12 @@ func tmuxInstallNote() string {
 // updateKeys drives the key manager. While the password input is active
 // (keyEditing) keystrokes edit the new key value; otherwise the cursor walks
 // the key rows + the trailing "+ Add key…" row and the action keys mutate the
-// set. esc returns to the EDIT form.
+// set. esc returns to the EDIT form. The modal trap precedes the input
+// delegation: a delete/replace confirm freezes the input behind it.
 func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.confirm != nil {
+		return m.updateConfirm(msg)
+	}
 	if m.keyEditing {
 		return m.updateKeyInput(msg)
 	}
@@ -3458,19 +3474,44 @@ func (m Model) updateKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "d":
 		if m.keyCursor < addRow {
-			m.keys = append(m.keys[:m.keyCursor], m.keys[m.keyCursor+1:]...)
-			if m.keyCursor > len(m.keys) {
-				m.keyCursor = len(m.keys)
+			idx := m.keyCursor
+			prompt := "Delete key " + m.keyLabel(idx) + "?"
+			danger := false
+			if m.keys[idx].Enabled && countEnabled(m.keys) == 1 {
+				prompt += " It is the last enabled key — " + m.keyVendor + " will have no usable key."
+				danger = true
 			}
-			return m, m.saveKeysetCmd()
+			// Built inline: the captured key value in arg is the delete's identity check
+			// (labels are optional and non-unique); it is never rendered.
+			m.confirm = &confirmModal{
+				kind:   confirmDeleteKey,
+				id:     strconv.Itoa(idx),
+				arg:    m.keys[idx].Key,
+				prompt: prompt,
+				danger: danger,
+			}
+			return m, nil
 		}
 	}
 	return m, nil
 }
 
+// countEnabled returns how many keys in the set are enabled.
+func countEnabled(ks []secrets.KeyEntry) int {
+	n := 0
+	for _, e := range ks {
+		if e.Enabled {
+			n++
+		}
+	}
+	return n
+}
+
 // updateKeyInput handles the add/edit password input. enter commits a non-empty
-// value (append for add, replace for edit) and saves; esc cancels back to the
-// list without changes. The typed value is never rendered in plaintext.
+// value: an add appends and saves directly; an edit first confirms through the
+// replace modal (the current value is unrecoverable) — the input stays alive and
+// frozen behind it, so Cancel drops back into it. esc cancels back to the list
+// without changes. The typed value is never rendered in plaintext.
 func (m Model) updateKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
@@ -3488,12 +3529,23 @@ func (m Model) updateKeyInput(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// SaveKeySet writes keys.json — keys[0] was seeded from the legacy key).
 			m.keys = append(m.keys, secrets.KeyEntry{Key: val, Enabled: true})
 			m.keyCursor = len(m.keys) - 1
-		} else if m.keyEditIdx < len(m.keys) {
-			m.keys[m.keyEditIdx].Key = val
+			m.keyEditing = false
+			m.keyErr = ""
+			return m, m.saveKeysetCmd()
 		}
-		m.keyEditing = false
-		m.keyErr = ""
-		return m, m.saveKeysetCmd()
+		if m.keyEditIdx >= len(m.keys) {
+			// The keyset refreshed under the edit and the target row is gone.
+			m.keyEditing = false
+			m.keyErr = "key list changed; nothing replaced"
+			return m, nil
+		}
+		m.confirm = &confirmModal{
+			kind:   confirmReplaceKey,
+			id:     strconv.Itoa(m.keyEditIdx),
+			arg:    m.keys[m.keyEditIdx].Key,
+			prompt: "Replace key " + m.keyLabel(m.keyEditIdx) + "? The current value cannot be recovered.",
+		}
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.keyInput, cmd = m.keyInput.Update(msg)
@@ -3663,18 +3715,23 @@ func (m Model) submitAddCodex() (tea.Model, tea.Cmd) {
 	case "cli-ride":
 		// A codex subscription is signed in on the system; let the user reuse it or log
 		// in separately rather than silently riding ~/.codex. The choice is made before
-		// the row is committed; only the separate-login branch then writes a login.
+		// the row is committed; only the separate-login choice then writes a login.
 		m.codexPendingAdd = &req
 		m.codexAuthAccount = st.Account
 		m.screen = screenCodexAuth
 		m.codexAuthStage = codexAuthChooseSource
+		m.codexSourceCursor = 0
 		return m, nil
 	default: // "none" — no source; commit the row, then log in
 		// Commit the provider row (vendors lock) BEFORE the login writes its token (token
 		// lock), so a concurrent remove's referenced-check always sees the committed row
 		// and never unlinks the fresh login. opDoneMsg routes to the login once the row
-		// is in; abandoning the login rolls the row back.
+		// is in; abandoning the login rolls the row back. The committing stage owns the
+		// screen meanwhile, so the form can't be escaped or repopulated mid-commit — the
+		// login modal's underlay stays the form that was submitted.
 		m.codexCommittedName = req.Name
+		m.screen = screenCodexAuth
+		m.codexAuthStage = codexAuthCommitting
 		m.loading = true
 		return m, addVendorCmd(req)
 	}
