@@ -107,8 +107,8 @@ type Model struct {
 	vendorsErr   error
 	vendorCursor int
 	// defaultProvider is the CONFIGURED default provider ("" = unset, then a sole
-	// enabled provider serves implicitly as "auto"). Drives the ★ badge's
-	// configured/auto wording and whether `*` sets fresh vs switches.
+	// enabled provider serves implicitly as "auto"). Drives the "default" label's
+	// configured/auto/disabled wording and whether `s` sets fresh vs switches.
 	defaultProvider string
 
 	// Add-wizard: the single grouped picker (cursor over the flat selectable rows)
@@ -1320,16 +1320,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case vendorsMsg:
 		m.loading = false
+		// Remember which provider the cursor was on so a re-sort (e.g. after setting a
+		// default hoists it to the top) keeps focus on the SAME provider, not whatever
+		// now sits at that index. The Add row (cursor == len) stays positional.
+		var cursorName string
+		if m.vendorCursor < len(m.vendors) {
+			cursorName = m.vendors[m.vendorCursor].Name
+		}
 		m.vendors = msg.vendors
 		m.defaultProvider = msg.defaultProvider
-		// Group the list by wire class (stable, so the name order within a class
-		// that List returns is preserved).
+		// The default provider sorts to the top; the rest group by wire class (stable,
+		// so the name order within a class that List returns is preserved).
 		sort.SliceStable(m.vendors, func(i, j int) bool {
+			if m.vendors[i].Default != m.vendors[j].Default {
+				return m.vendors[i].Default
+			}
 			return vendorClassRank(m.vendors[i].Protocol) < vendorClassRank(m.vendors[j].Protocol)
 		})
 		m.vendorsErr = msg.err
-		// The cursor may also rest on the trailing "+ Add provider…" row at index
-		// len(vendors); clamp to that, not len-1.
+		// Re-anchor to the remembered provider; fall back to the clamped index (incl.
+		// the trailing "+ Add provider…" row at len(vendors)).
+		if cursorName != "" {
+			for i, v := range m.vendors {
+				if v.Name == cursorName {
+					m.vendorCursor = i
+					break
+				}
+			}
+		}
 		if m.vendorCursor > len(m.vendors) {
 			m.vendorCursor = len(m.vendors)
 		}
@@ -1817,15 +1835,18 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			return m.openConfirm(confirmRemoveVendor, v.Name, prompt)
 		}
-	case "*":
-		// Set / switch / clear the default provider. A fresh set (none pinned, or the
-		// row is only the sole-enabled "auto") acts immediately; switching away from a
-		// pinned default or clearing the pinned row confirms first.
+	case "s":
+		// Set / switch / clear the default provider. Clearing the pinned row is always
+		// allowed (even if disabled); SETTING a disabled provider is refused — it can't
+		// serve as the default. A fresh set acts immediately; switching away from a
+		// pinned default confirms first.
 		if m.vendorCursor < addRow && !m.loading {
 			v := m.vendors[m.vendorCursor]
 			switch {
 			case m.defaultProvider == v.Name:
 				return m.openConfirm(confirmUnsetDefault, v.Name, "Clear "+v.Name+" as the default provider?")
+			case !v.Enabled:
+				return m.withInfo(v.Name+" is disabled — enable it first to make it the default", true), nil
 			case m.defaultProvider != "":
 				return m.openConfirm(confirmSwitchDefault, v.Name,
 					"Switch the default provider from "+m.defaultProvider+" to "+v.Name+"?")

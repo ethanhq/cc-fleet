@@ -190,12 +190,22 @@ func (m Model) viewList() string {
 			state = "disabled"
 		}
 		right = state + " · " + vendorCacheFig(v)
+		switch {
+		case v.Default:
+			right += " · " + noteStyle.Render("default")
+		case v.Name == m.defaultProvider: // pinned but not effective (disabled)
+			right += " · " + faintStyle.Render("default (disabled)")
+		}
 	}
 	leftLines, cursorVisualLine := m.providerRail(m.vendorCursor, func(i int, v userops.VendorView) string {
 		marker := "  "
+		// The default provider's dot is yellow; otherwise green (enabled) / hollow (disabled).
 		dot := okStyle.Render("●")
-		if !v.Enabled {
+		switch {
+		case !v.Enabled:
 			dot = faintStyle.Render("○")
+		case v.Default:
+			dot = noteStyle.Render("●")
 		}
 		name := trunc(v.Name, 22)
 		switch {
@@ -207,11 +217,7 @@ func (m Model) viewList() string {
 		default:
 			name = faintStyle.Render(name)
 		}
-		badge := ""
-		if v.Default {
-			badge = " " + noteStyle.Render("★")
-		}
-		return "  " + marker + dot + " " + name + badge
+		return "  " + marker + dot + " " + name
 	})
 	if len(m.vendors) == 0 {
 		leftLines = append(leftLines, faintStyle.Render("  (none yet)"))
@@ -245,7 +251,7 @@ func (m Model) viewList() string {
 	pad := strings.Repeat(" ", boardMargin)
 	return indentBox(title+"\n\n"+headerSummaryLine(left, right, m.boardInner()), boardMargin) +
 		"\n" + m.headerRule() + "\n" + indentBox(board, boardMargin) +
-		"\n" + pad + footer("↑/↓ move · →/⏎ edit · * default · d delete · tab agents board · q quit")
+		"\n" + pad + footer("↑/↓ move · →/⏎ edit · s default · d delete · tab agents board · q quit")
 }
 
 // vendorCacheFig is a vendor's models-cache figure: "N models[ (stale)]".
@@ -278,14 +284,18 @@ func vendorDetailLines(v userops.VendorView, rightW int, configuredDefault strin
 	if v.DefaultModel != "" {
 		status += liveStyle.Render(" · " + trunc(v.DefaultModel, 28))
 	}
-	// The default-provider badge: ★ default when pinned, ★ default (auto) when this
-	// is the sole enabled provider serving implicitly.
-	if v.Default {
-		label := "★ default"
+	// The default-provider marker: "default" when this is the effective default
+	// (or "default (auto)" when it's the sole enabled provider serving implicitly),
+	// and a faint "default (disabled)" when it is pinned but currently disabled.
+	switch {
+	case v.Default:
+		label := "default"
 		if configuredDefault != v.Name {
-			label = "★ default (auto)"
+			label = "default (auto)"
 		}
 		status += noteStyle.Render(" · " + label)
+	case v.Name == configuredDefault:
+		status += faintStyle.Render(" · default (disabled)")
 	}
 	// Pad the Note body to the same reserve the edit form uses (fieldNoteReserve), so
 	// the Config block sits at the same row here and in edit — entering edit doesn't
@@ -338,9 +348,22 @@ func railSeparator(leftW int) string {
 // rails stay identical.
 func (m Model) providerRail(activeIdx int, row func(i int, v userops.VendorView) string) ([]string, int) {
 	var lines []string
-	prevRank := -1
 	activeLine := -1
-	for i, v := range m.vendors {
+	// The effective default is sorted to index 0; render it under its own "Default
+	// provider" header ABOVE the class groups (matching their header style) so hoisting
+	// it never splits its class into two headers, then group the rest normally.
+	start := 0
+	if len(m.vendors) > 0 && m.vendors[0].Default {
+		lines = append(lines, "  "+faintStyle.Render("Default provider"))
+		if activeIdx == 0 {
+			activeLine = len(lines)
+		}
+		lines = append(lines, row(0, m.vendors[0]), "")
+		start = 1
+	}
+	prevRank := -1
+	for i := start; i < len(m.vendors); i++ {
+		v := m.vendors[i]
 		if r := vendorClassRank(v.Protocol); r != prevRank {
 			if prevRank != -1 {
 				lines = append(lines, "")
@@ -369,9 +392,13 @@ func (m Model) vendorFlowView(ctx, ctxRight, active, rightTitle, hint string, ri
 		}
 	}
 	leftLines, activeLine := m.providerRail(activeVendorIdx, func(i int, v userops.VendorView) string {
+		// Same dot scheme as the list rail: default = yellow, enabled = green, disabled = hollow.
 		dot := okStyle.Render("●")
-		if !v.Enabled {
+		switch {
+		case !v.Enabled:
 			dot = faintStyle.Render("○")
+		case v.Default:
+			dot = noteStyle.Render("●")
 		}
 		name := trunc(v.Name, 22)
 		if v.Name == active {

@@ -83,6 +83,7 @@ type form struct {
 	intro      string
 	submit     string // submit button label, e.g. "Add" / "Save"
 	statusNote string // optional banner above the fields (e.g. the codex login source)
+	isDefault  bool   // this provider is the effective default → the status line notes it
 	fields     []formField
 	focus      int    // 0..len(fields)-1 = a field; len(fields) = the submit button
 	err        string // validation message shown beneath the form
@@ -213,10 +214,11 @@ func newEditForm(v userops.VendorView) form {
 		fields = append(fields, formField{key: "manage_keys", label: "Manage API keys →", kind: fieldAction})
 	}
 	f := form{
-		title:  "Edit provider: " + v.Name,
-		intro:  "↑/↓ move rows · → 1M toggle · space toggles · enter on [Save] submits · esc cancels",
-		submit: "Save",
-		fields: fields,
+		title:     "Edit provider: " + v.Name,
+		intro:     "↑/↓ move rows · → 1M toggle · space toggles · enter on [Save] submits · esc cancels",
+		submit:    "Save",
+		isDefault: v.Default,
+		fields:    fields,
 	}
 	f.setFocus(0)
 	return f
@@ -592,6 +594,9 @@ func (f form) viewLines(width int) []string {
 		}
 		if dm := f.value("default_model"); dm != "" {
 			status += liveStyle.Render(" · " + trunc(dm, 28))
+		}
+		if f.isDefault {
+			status += noteStyle.Render(" · default")
 		}
 		lines = append(lines, status, "")
 		break
