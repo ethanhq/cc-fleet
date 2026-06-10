@@ -161,7 +161,7 @@ type Result struct {
 	// Async / background job fields. Present on --background launch and
 	// subagent-status / subagent-gc results.
 	JobID      string `json:"job_id,omitempty"`
-	Status     string `json:"status,omitempty"` // running | done | failed
+	Status     string `json:"status,omitempty"` // queued | running | held | done | failed | stopped
 	OutputFile string `json:"output_file,omitempty"`
 	PID        int    `json:"pid,omitempty"`
 	StartedAt  string `json:"started_at,omitempty"`

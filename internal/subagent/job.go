@@ -414,6 +414,19 @@ func StatusFor(jobID string) Result {
 		}
 	}
 
+	// A held leaf is parked by a leaf-stop directive (kill-and-HOLD): its script frame is
+	// live in the engine, no process runs, and no terminal cache exists. Classify by the
+	// meta status BEFORE the PID fallthrough, which would misread PID=0 as queued.
+	if meta.Status == "held" {
+		return Result{
+			OK: true, JobID: jobID, Status: "held",
+			Vendor: meta.Vendor, Model: meta.Model, StartedAt: meta.StartedAt,
+			LeadSessionID: meta.LeadSessionID, RunID: meta.RunID, Phase: meta.Phase, Label: meta.Label,
+			JournalKey: meta.JournalKey, PromptProfile: meta.PromptProfile, SlimDowngrade: meta.SlimDowngrade,
+			Attempt: meta.Attempt,
+		}
+	}
+
 	// PID<=0 with no cached result = no terminal signal yet (a queued placeholder before its pool
 	// slot). Report it queued — PID is the authority, not the Status string — so the dead-classify
 	// path below never reads its empty capture as a done/failed leaf.
@@ -844,13 +857,15 @@ func purgeRunManifests(jobsDir string, runningRuns map[string]bool) {
 // PID-reuse guard at a fixture tree instead of the live /proc.
 var procRoot = "/proc"
 
-// queuedPlaceholder reports whether meta is a workflow queued placeholder the engine minted before
-// the leaf got a pool slot (PID=0, Status="queued", no process yet). GC/PurgeJobs treat it as live —
-// mirroring StatusFor's queued branch — so a `subagent-gc --older-than 0s` (which clears done entries)
-// can't remove an active not-yet-started leaf out from under the engine. It flips to running
-// (registerSyncJob) or terminal (finalize) shortly; a crashed engine's orphan is reaped by run prune/rm.
+// queuedPlaceholder reports whether meta is a workflow leaf with no process by design: a queued
+// placeholder the engine minted before the leaf got a pool slot, or a HELD leaf parked by a
+// leaf-stop directive. GC/PurgeJobs treat both as live — mirroring StatusFor's queued/held
+// branches — so a `subagent-gc --older-than 0s` (which clears done entries) can't remove an
+// active leaf out from under the engine. A queued one flips to running (registerSyncJob) or
+// terminal (finalize) shortly; a held one waits for its restart; a crashed engine's orphan is
+// reaped by run prune/rm (plus the engine's stale-hold sweep at resume).
 func queuedPlaceholder(meta jobMeta) bool {
-	return meta.Status == "queued" && meta.PID == 0
+	return (meta.Status == "queued" || meta.Status == "held") && meta.PID == 0
 }
 
 // processAlive reports whether pid is alive AND (when settingsPath is known)
@@ -1143,6 +1158,54 @@ func FinalizeQueuedLeafFailed(jobID string, res Result) {
 	finalizeSyncJob(jobID, res)
 }
 
+// HoldLeaf parks a leaf's job in the NONTERMINAL `held` status (kill-and-HOLD): meta
+// Status="held" with PID/PGID cleared, so StatusFor's held branch — not the PID
+// fallthrough — classifies it. The engine flips the meta BEFORE cancelling the attempt;
+// finalizeSyncJob then SUPPRESSES the killed attempt's terminal cache, so no terminal
+// cache ever exists during a hold and GC keeps treating the job as live. No-op for an
+// empty id or an unreadable meta.
+func HoldLeaf(jobID string) {
+	if jobID == "" {
+		return
+	}
+	dir, err := jobsDir()
+	if err != nil {
+		return
+	}
+	meta, err := readMeta(dir, jobID)
+	if err != nil {
+		return
+	}
+	meta.Status = "held"
+	meta.PID, meta.PGID = 0, 0
+	_ = writeMetaFn(dir, meta)
+}
+
+// RequeueLeaf flips a held leaf's job back to a queued placeholder for its next attempt
+// (restart): Status="queued", PID=0, Attempt=attempt, with the terminal sidecars dropped
+// (the same clean-slate rule as registerSyncJob's reuse path) so the board re-reads the
+// row as queued ◌ immediately. registerSyncJob re-registers it when the attempt execs.
+func RequeueLeaf(jobID string, attempt int) {
+	if jobID == "" {
+		return
+	}
+	dir, err := jobsDir()
+	if err != nil {
+		return
+	}
+	meta, err := readMeta(dir, jobID)
+	if err != nil {
+		return
+	}
+	meta.Status = "queued"
+	meta.PID, meta.PGID = 0, 0
+	meta.Attempt = attempt
+	for _, ext := range []string{".result.json", ".answer", ".activity"} {
+		_ = os.Remove(filepath.Join(dir, jobID+ext))
+	}
+	_ = writeMetaFn(dir, meta)
+}
+
 // finalizeSyncJob flips a sync job from running → done/failed by writing a
 // SANITIZED terminal result cache: status + vendor/model/started + the SAFE
 // metrics (Usage / cost / turns / duration — claude's own metering, which the
@@ -1197,9 +1260,21 @@ func finalizeSyncJob(jobID string, res Result) {
 	case res.OK:
 		cached.Status = "done"
 	case res.ErrorCode == ErrCodeStopped:
-		cached.Status = "stopped" // a `workflow stop` reap — terminal, but not a failure
+		cached.Status = "stopped" // a stop reap / leaf-stop kill — terminal, but not a failure
 	default:
 		cached.Status = "failed"
+	}
+	// A held meta marks a leaf-stop directive in flight (HoldLeaf ran before the kill).
+	// The killed attempt's stopped-class finalize is SUPPRESSED — a terminal cache during
+	// a hold would hand GC an authoritative "finished" for a live frame. Any other
+	// outcome beat the kill (success-wins / a genuine failure): write its cache and
+	// normalize the meta to match, so no stale held meta survives a settle.
+	if meta.Status == "held" {
+		if cached.Status == "stopped" {
+			return
+		}
+		meta.Status = cached.Status
+		_ = writeMetaFn(dir, meta)
 	}
 	if data, merr := json.Marshal(cached); merr == nil {
 		_ = os.WriteFile(filepath.Join(dir, jobID+".result.json"), data, 0o600)

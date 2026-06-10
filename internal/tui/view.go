@@ -497,8 +497,8 @@ func (m Model) renderAsFooter() string {
 }
 
 // statusDot maps a leaf/run/phase status to a colored glyph: done ✔ (green), running ● (accent),
-// failed ● (err), stopped ■ (faint — a stop is neutral, not a failure), cached ○ (faint),
-// queued/unknown ◌ (faint hollow).
+// failed ● (err), held ‖ (amber — parked by a leaf stop, waiting for its restart), stopped ■
+// (faint — a stop is neutral, not a failure), cached ○ (faint), queued/unknown ◌ (faint hollow).
 func statusDot(status string) string {
 	switch status {
 	case "done":
@@ -507,6 +507,8 @@ func statusDot(status string) string {
 		return cursorStyle.Render("●")
 	case "failed":
 		return errStyle.Render("●")
+	case "held":
+		return noteStyle.Render("‖")
 	case "stopped":
 		return faintStyle.Render("■")
 	case "cached":
@@ -521,7 +523,7 @@ func statusDot(status string) string {
 // this with selectedStyle (focus precedence), so labelStyle applies to non-cursored rows only.
 func labelStyle(status string) lipgloss.Style {
 	switch status {
-	case "done", "running", "failed", "stopped":
+	case "done", "running", "failed", "stopped", "held":
 		return liveStyle
 	default: // "" (queued/not-started) / "cached"
 		return faintStyle
@@ -550,6 +552,8 @@ func statusLabel(status string) string {
 		return okStyle.Render("✔ " + humanStatus(status))
 	case "failed":
 		return statusDot(status) + " " + errStyle.Render(humanStatus(status))
+	case "held":
+		return statusDot(status) + " " + noteStyle.Render(humanStatus(status))
 	case "stopped":
 		return statusDot(status) + " " + faintStyle.Render(humanStatus(status))
 	default:
@@ -1242,6 +1246,9 @@ func wrapTo(s string, w int) []string {
 // Done shows turns, stopped is neutral, a failure shows its error class, queued/running stay in progress.
 func (m Model) renderOutcome(j subagent.Result) string {
 	switch {
+	case j.Status == "held":
+		// MUST precede the OK branch: a held StatusFor result carries OK=true.
+		return noteStyle.Render("held — restart this agent to resume")
 	case j.Status == "running" || j.Status == "queued" || j.Status == "":
 		return faintStyle.Render("Still running…") // queued has OK=true but isn't done — keep it in-progress
 	case j.OK || j.Status == "done":
