@@ -85,6 +85,34 @@ func TestHoldNormalizedOnSuccessWins(t *testing.T) {
 	}
 }
 
+// TestNormalizeHeldLeaf: a pre-mark that lost its race (the directive landed after the
+// terminal cache) is cleared to the cache's status; with no cache it is left alone.
+func TestNormalizeHeldLeaf(t *testing.T) {
+	jobID := mintHeldFixture(t)
+	NormalizeHeldLeaf(jobID) // no cache → no-op
+	if res := StatusFor(jobID); res.Status != "held" {
+		t.Fatalf("status = %q, want held (no cache to restore from)", res.Status)
+	}
+	dir, _ := jobsDir()
+	if err := os.WriteFile(filepath.Join(dir, jobID+".result.json"), []byte(`{"ok":true,"status":"done"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	NormalizeHeldLeaf(jobID)
+	raw, err := os.ReadFile(filepath.Join(dir, jobID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var meta struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(raw, &meta); err != nil {
+		t.Fatal(err)
+	}
+	if meta.Status != "done" {
+		t.Errorf("meta status = %q, want done (normalized to the cache)", meta.Status)
+	}
+}
+
 // TestRequeueLeaf: restart flips a held leaf back to a queued placeholder at the next
 // attempt, with the terminal sidecars dropped.
 func TestRequeueLeaf(t *testing.T) {

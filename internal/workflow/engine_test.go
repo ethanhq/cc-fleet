@@ -24,6 +24,7 @@ type leafCall struct {
 	timeout                                    time.Duration
 	maxBudget                                  float64
 	maxTurns                                   int
+	attempt                                    int
 	persistIO                                  bool
 	ioPrompt                                   string
 	workingDir                                 string
@@ -71,6 +72,7 @@ func fakeLeaf(r *recorder, respond func(leafCall) subagent.Result) func(context.
 		c := leafCall{
 			vendor: req.Vendor, prompt: prompt, runID: req.RunID, phase: req.Phase, label: req.Label,
 			model: req.Model, timeout: req.Timeout, maxBudget: req.MaxBudgetUSD, maxTurns: req.MaxTurns,
+			attempt:   req.Attempt,
 			persistIO: req.PersistIO, ioPrompt: req.IOPrompt, workingDir: req.WorkingDir,
 			promptProfile: req.PromptProfile, tools: req.Tools, noSkills: req.NoSkills, mcp: req.MCP,
 			jsonSchema: req.JSONSchema,
@@ -94,8 +96,9 @@ func echoLeaf(r *recorder) func(context.Context, subagent.Request) subagent.Resu
 func newTestEngine(ctx context.Context, runID string, concurrency int) *engine {
 	leafCtx, cancel := context.WithCancel(ctx)
 	return &engine{
-		sched: newScheduler(leafCtx, concurrency), runID: runID,
+		sched: newScheduler(concurrency), runID: runID,
 		runCtx: ctx, leafCtx: leafCtx, cancelLeaves: cancel,
+		cbs: make(chan leafCB, 64), loopDone: make(chan struct{}), ctl: map[string]*leafCtl{},
 	}
 }
 

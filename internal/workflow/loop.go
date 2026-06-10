@@ -102,10 +102,13 @@ func (e *engine) drive(prom *goja.Promise) (goja.Value, error) {
 	return prom.Result(), nil
 }
 
-// abort flips the loop into state-only draining and cancels every in-flight leaf's
-// exec ctx; the Interrupt watchdog (run) separately kills any JS busy mid-callback.
+// abort flips the loop into state-only draining, releases every HELD leaf (a held leaf
+// has no goroutine to post a completion — without the release the drain would wait on
+// inflight forever), and cancels every in-flight attempt's exec ctx; the Interrupt
+// watchdog (run) separately kills any JS busy mid-callback.
 func (e *engine) abort() {
 	e.aborted = true
+	e.releaseHeld()
 	e.cancelLeaves()
 }
 

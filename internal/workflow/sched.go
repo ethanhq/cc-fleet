@@ -27,15 +27,14 @@ const maxFanoutElements = 100_000
 // the engine loop (loop.go).
 type scheduler struct {
 	slots   chan struct{}
-	ctx     context.Context
 	spawned atomic.Int64
 }
 
-func newScheduler(ctx context.Context, concurrency int) *scheduler {
+func newScheduler(concurrency int) *scheduler {
 	if concurrency < 1 {
 		concurrency = 1
 	}
-	return &scheduler{slots: make(chan struct{}, concurrency), ctx: ctx}
+	return &scheduler{slots: make(chan struct{}, concurrency)}
 }
 
 // defaultConcurrency is max(1, min(16, cores-2)) — floored so 1–2-core hosts can't
@@ -51,19 +50,19 @@ func defaultConcurrency() int {
 	return n
 }
 
-// acquireSlot blocks for a pool slot, honoring run cancellation. Returns false if the
-// leaf ctx is cancelled before a slot is obtained. The upfront ctx check means that
-// once the run is aborting no NEW leaf launches (even if a slot is momentarily free);
-// a leaf already in flight is bounded by its own exec ctx. Called from leaf goroutines
-// only — never the loop, so a full pool can never stall script execution.
-func (s *scheduler) acquireSlot() bool {
-	if s.ctx.Err() != nil {
+// acquireSlot blocks for a pool slot, honoring cancellation of ctx — the ATTEMPT's
+// ctx, a child of the run's leaf ctx, so both a run abort and a single leaf's stop
+// directive wake the wait. The upfront check means a cancelled attempt never launches
+// even if a slot is momentarily free. Called from leaf goroutines only — never the
+// loop, so a full pool can never stall script execution.
+func (s *scheduler) acquireSlot(ctx context.Context) bool {
+	if ctx.Err() != nil {
 		return false
 	}
 	select {
 	case s.slots <- struct{}{}:
 		return true
-	case <-s.ctx.Done():
+	case <-ctx.Done():
 		return false
 	}
 }

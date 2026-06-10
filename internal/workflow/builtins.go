@@ -84,6 +84,7 @@ type engine struct {
 	leafCtx       context.Context // child of runCtx; cancelled on abort → leaf execs die promptly
 	cancelLeaves  context.CancelFunc
 	unhandled     map[*goja.Promise]goja.Value // rejected-with-no-handler set (handled-set semantics)
+	ctl           map[string]*leafCtl          // jobID → directive state (loop-owned; the control plane's target map)
 	jsonParse     goja.Callable
 	jsonStringify goja.Callable
 	errCtor       *goja.Object
@@ -174,8 +175,6 @@ func (e *engine) setupVM() error {
 	vm := goja.New()
 	vm.SetMaxCallStackSize(1024)
 	e.vm = vm
-	e.cbs = make(chan leafCB, 64)
-	e.loopDone = make(chan struct{})
 	e.unhandled = map[*goja.Promise]goja.Value{}
 	vm.SetPromiseRejectionTracker(func(p *goja.Promise, op goja.PromiseRejectionOperation) {
 		switch op {
@@ -412,74 +411,91 @@ func (e *engine) jsAgent(call goja.FunctionCall) goja.Value {
 	}
 	e.budgetReserve(usdEst, tokEst)
 
-	p, resolve, reject := e.vm.NewPromise()
-	settle := promiseSettle{
-		resolve: func(v goja.Value) { resolve(v) },
-		reject:  func(v goja.Value) { reject(v) },
-	}
-	e.inflight++
-	go e.runLeafAsync(leafSpec{
+	spec := leafSpec{
 		vendor: vendor, model: model, prompt: prompt, phase: phaseTag, label: label,
 		key: key, schemaJSON: schemaJSON, isolation: isolation, profile: profile,
 		tools: keyTools, noSkills: !skills, mcp: mcp,
 		timeoutSec: timeoutSec, maxBudget: maxBudget, maxTurns: maxTurns,
 		usdEst: usdEst, tokEst: tokEst,
-	}, settle)
+	}
+	// Mint the queued placeholder ON the loop (one small file write, the same class as
+	// the on-loop journal/manifest writes) so the control plane can address the leaf by
+	// job id from the moment it exists; the attempt goroutines reuse the id.
+	jobID := mintQueuedLeaf(subagent.Request{
+		Vendor: vendor, RunID: e.runID, Phase: phaseTag, Label: label,
+		JournalKey: key, PersistIO: e.persistIO, PromptProfile: profile,
+	}, model)
+	p, resolve, reject := e.vm.NewPromise()
+	h := &leafCtl{
+		spec: spec,
+		settle: promiseSettle{
+			resolve: func(v goja.Value) { resolve(v) },
+			reject:  func(v goja.Value) { reject(v) },
+		},
+		gen: 1,
+	}
+	if jobID != "" {
+		e.ctl[jobID] = h // "" (a mint hiccup / the test stub) → uncontrollable, still runs
+	}
+	e.inflight++
+	e.spawnAttempt(jobID, h)
 	return e.vm.ToValue(p)
 }
 
-// runLeafAsync is the leaf goroutine: it runs the leaf to a single (res, preErr)
-// outcome — recovering a leaf panic into a failure so a thunk's leaf can never crash
-// the process — and posts ONE completion back to the loop. It touches no engine state;
-// the completion's state half (on the loop) settles budgets, journal, events, and the
-// queued-job correction.
-func (e *engine) runLeafAsync(spec leafSpec, settle promiseSettle) {
-	jobID, res, preErr := e.execLeaf(spec)
-	e.completeLeaf(spec, jobID, res, settle, preErr)
+// spawnAttempt launches one attempt of a leaf: a fresh cancellable ctx (the stop
+// directive's kill handle) under the run's leaf ctx, and the goroutine that runs the
+// exec and posts the attempt's completion. Loop-held caller.
+func (e *engine) spawnAttempt(jobID string, h *leafCtl) {
+	ctx, cancel := context.WithCancel(e.leafCtx)
+	h.cancel = cancel
+	h.execStarted = false
+	gen := h.gen
+	go func() {
+		res, preErr := e.execLeaf(ctx, jobID, h, h.spec)
+		e.completeAttempt(jobID, gen, h, res, preErr)
+	}()
 }
 
-func (e *engine) execLeaf(spec leafSpec) (jobID string, res subagent.Result, preErr error) {
+// execLeaf is one attempt's goroutine body: it runs the leaf to a single (res, preErr)
+// outcome — recovering a leaf panic into a failure so a thunk's leaf can never crash
+// the process. It touches no engine state; the attempt's completion (on the loop)
+// dispatches directives and settles budgets, journal, events, and the job correction.
+func (e *engine) execLeaf(ctx context.Context, jobID string, h *leafCtl, spec leafSpec) (res subagent.Result, preErr error) {
 	defer func() {
 		if r := recover(); r != nil {
 			res = subagent.Result{}
 			preErr = fmt.Errorf("agent(%s): leaf panicked: %v", spec.vendor, r)
 		}
 	}()
-	// Mint a queued placeholder (PID=0) so the board shows this leaf as a queued ◌ row
-	// WHILE it waits for a pool slot; subagent.Run reuses this id, flipping the same job
-	// queued→running→terminal as one file.
-	jobID = mintQueuedLeaf(subagent.Request{
-		Vendor: spec.vendor, RunID: e.runID, Phase: spec.phase, Label: spec.label,
-		JournalKey: spec.key, PersistIO: e.persistIO, PromptProfile: spec.profile,
-	}, spec.model)
 	if perr := ensureLeafProxy(spec.vendor); perr != nil {
-		return jobID, subagent.Result{}, fmt.Errorf("agent(%s): codex proxy unavailable: %v", spec.vendor, perr)
+		return subagent.Result{}, fmt.Errorf("agent(%s): codex proxy unavailable: %v", spec.vendor, perr)
 	}
-	// Acquire a pool slot; the slot is held ONLY across this leaf's actual exec and
+	// Acquire a pool slot; the slot is held ONLY across this attempt's actual exec and
 	// released right after — never across anything a script branch nests — so nesting
 	// can't deadlock on a slot a parent branch is sitting on. A cancel while queued is
-	// a STOP, not a failure: the stopped-class result makes the queued job finalize
-	// "stopped", uniform with an in-flight leaf killed by the same cancel.
-	if !e.sched.acquireSlot() {
+	// a STOP, not a failure: the stopped-class result holds the leaf (a directive) or
+	// finalizes it "stopped" (a run abort), uniform with a killed in-flight attempt.
+	if !e.sched.acquireSlot(ctx) {
 		stopped := subagent.Result{ErrorCode: subagent.ErrCodeStopped, ErrorMsg: "run stopped before the leaf launched"}
-		return jobID, stopped, fmt.Errorf("agent: run cancelled before launch")
+		return stopped, fmt.Errorf("agent: run cancelled before launch")
 	}
 	defer e.sched.releaseSlot()
-	// Worktree isolation: run the leaf with cwd = a fresh git worktree, torn down on
+	// Worktree isolation: run the attempt with cwd = a fresh git worktree, torn down on
 	// return (success, failure, or panic).
 	workDir := ""
 	if spec.isolation == "worktree" {
 		dir, cleanup, werr := createWorktreeFn(e.runID)
 		if werr != nil {
-			return jobID, subagent.Result{}, fmt.Errorf("agent: %v", werr)
+			return subagent.Result{}, fmt.Errorf("agent: %v", werr)
 		}
 		defer cleanup()
 		workDir = dir
 	}
 	e.post(leafCB{state: func() {
+		h.execStarted = true // a pre-exec restart directive is a no-op; from here it kills
 		e.emitLeaf("launch", spec.phase, spec.label, spec.vendor, spec.model)
 	}})
-	res = runLeaf(e.leafCtx, subagent.Request{
+	res = runLeaf(ctx, subagent.Request{
 		Vendor:         spec.vendor,
 		Model:          spec.model,
 		PromptReader:   strings.NewReader(spec.prompt), // stdin, not argv
@@ -490,8 +506,8 @@ func (e *engine) execLeaf(spec leafSpec) (jobID string, res subagent.Result, pre
 		RunID:          e.runID,
 		Phase:          spec.phase,
 		Label:          spec.label,
-		JobID:          jobID, // reuse the queued placeholder: one job, queued→running→terminal
-		Attempt:        1,     // single exec — a schema mismatch is terminal, never a retry
+		JobID:          jobID, // reuse the minted job: one row, queued→running→held/terminal across attempts
+		Attempt:        h.gen,
 		JournalKey:     spec.key,
 		PersistIO:      e.persistIO,
 		StreamActivity: e.persistIO, // sync leaf streams tool/usage activity for the board (gated like PersistIO)
@@ -505,45 +521,93 @@ func (e *engine) execLeaf(spec leafSpec) (jobID string, res subagent.Result, pre
 		MCP:           spec.mcp,
 		JSONSchema:    spec.schemaJSON,
 	})
-	return jobID, res, nil
+	return res, nil
 }
 
-// completeLeaf posts the leaf's one completion. The state half (always runs, on the
-// loop) settles the in-flight count, budgets, journal, events, and the queued-job
-// correction: unless the leaf fully succeeded — schema validated when one was asked —
-// the reused job is finalized FAILED, so a queued placeholder never lingers and a
-// schema-invalid "done" attempt is corrected. The js half settles the promise and is
-// skipped once the run is aborted.
-func (e *engine) completeLeaf(spec leafSpec, jobID string, res subagent.Result, settle promiseSettle, preErr error) {
+// completeAttempt posts one attempt's completion. The state half (always runs, on the
+// loop) is the ctl-aware DISPATCHER: it consults the leaf's armed directive FIRST —
+// hold and respawn keep the in-flight count and the frame's reservation — and only the
+// final-settle path does the terminal accounting (journal, events, job correction,
+// release) and arms the js half, which settles the promise (skipped once the run is
+// aborted). Success-wins: an OK result (or a genuine non-stopped failure under a
+// restart) means the attempt finished before the kill landed — the directive is dropped
+// and narrated, never applied to a result that already exists.
+func (e *engine) completeAttempt(jobID string, gen int, h *leafCtl, res subagent.Result, preErr error) {
 	var out struct {
 		err     error
 		payload string
 		schema  bool
+		settle  bool
 	}
+	spec := h.spec
 	state := func() {
-		e.inflight--
-		e.budgetRelease(spec.usdEst, spec.tokEst)
+		if gen != h.gen {
+			e.logf("control: leaf %s attempt %d completed after attempt %d superseded it; dropped", jobID, gen, h.gen)
+			return
+		}
+		stoppedClass := res.ErrorCode == subagent.ErrCodeStopped
+		if !e.aborted && h.pending != "" {
+			directive := h.pending
+			h.pending = ""
+			switch {
+			case directive == "stop" && (stoppedClass || !res.OK):
+				// The kill (or a failure dying under it) took effect: HOLD. The meta is
+				// already held (pre-marked) and the terminal cache suppressed; the
+				// promise stays unsettled and inflight/reservation are kept.
+				h.held = true
+				h.cancel = nil
+				e.emitLeaf("held", spec.phase, spec.label, spec.vendor, spec.model)
+				return
+			case directive == "restart" && (stoppedClass || !res.OK):
+				if e.budgetWouldExceed(0, 0) {
+					e.logf("control: leaf %s restart refused — %v; the leaf stays held", jobID, e.budgetExceededErr())
+					h.held = true
+					h.cancel = nil
+					e.emitLeaf("held", spec.phase, spec.label, spec.vendor, spec.model)
+					return
+				}
+				if !e.sched.admit() {
+					e.logf("control: leaf %s restart refused — the %d-leaf lifetime cap is exhausted; the leaf stays held", jobID, maxLifetimeAgents)
+					h.held = true
+					h.cancel = nil
+					e.emitLeaf("held", spec.phase, spec.label, spec.vendor, spec.model)
+					return
+				}
+				h.gen++
+				subagent.RequeueLeaf(jobID, h.gen)
+				e.spawnAttempt(jobID, h)
+				return
+			default:
+				// success-wins: the real outcome stands. finalizeSyncJob normalized a
+				// pre-mark it observed; a directive that landed AFTER the finalize left
+				// a held meta under the terminal cache — clear it (cache-first).
+				subagent.NormalizeHeldLeaf(jobID)
+				e.logf("control: leaf %s finished before the %s applied; result kept", jobID, directive)
+			}
+		}
+		defer e.releaseLeaf(jobID, h)
 		if preErr != nil {
 			subagent.FinalizeQueuedLeafFailed(jobID, res)
-			e.emitLeaf("failed", spec.phase, spec.label, spec.vendor, spec.model)
+			e.emitLeaf(failureEventStatus(res), spec.phase, spec.label, spec.vendor, spec.model)
 			out.err = preErr
 			return
 		}
 		if !res.OK {
 			// A pre-flight fail (no Run registration) keeps its real error class on the job.
 			subagent.FinalizeQueuedLeafFailed(jobID, res)
-			e.emitLeaf("failed", spec.phase, spec.label, spec.vendor, spec.model)
+			e.emitLeaf(failureEventStatus(res), spec.phase, spec.label, spec.vendor, spec.model)
 			out.err = fmt.Errorf("agent(%s): %s: %s", spec.vendor, res.ErrorCode, res.ErrorMsg)
 			return
 		}
 		// Book the exec's real cost: USD (claude's list-price estimate) + tokens
-		// (input+output). The reservation was freed above; charging keeps spent+reserved
-		// monotonic for concurrent gates.
+		// (input+output). The frame's reservation is freed by releaseLeaf above;
+		// charging keeps spent+reserved monotonic for concurrent gates.
 		e.budgetCharge(res.CostUSD, leafTokens(res))
 		if spec.schemaJSON == "" {
 			e.journal.append(spec.key, res.Result)
 			e.emitLeaf("done", spec.phase, spec.label, spec.vendor, spec.model)
 			out.payload = res.Result
+			out.settle = true
 			return
 		}
 		// Schema leaf: claude enforced that the StructuredOutput tool was CALLED; the
@@ -566,24 +630,38 @@ func (e *engine) completeLeaf(spec leafSpec, jobID string, res subagent.Result, 
 		e.journal.append(spec.key, string(res.StructuredOutput))
 		e.emitLeaf("done", spec.phase, spec.label, spec.vendor, spec.model)
 		out.payload, out.schema = string(res.StructuredOutput), true
+		out.settle = true
 	}
 	js := func() {
 		if out.err != nil {
-			settle.reject(e.newError("%v", out.err))
+			h.settle.reject(e.newError("%v", out.err))
+			return
+		}
+		if !out.settle {
 			return
 		}
 		if !out.schema {
-			settle.resolve(e.vm.ToValue(out.payload))
+			h.settle.resolve(e.vm.ToValue(out.payload))
 			return
 		}
 		v, perr := e.jsonParse(goja.Undefined(), e.vm.ToValue(stripCodeFence(out.payload)))
 		if perr != nil {
-			settle.reject(e.newError("agent(%s): schema payload is not valid JSON: %v", spec.vendor, perr))
+			h.settle.reject(e.newError("agent(%s): schema payload is not valid JSON: %v", spec.vendor, perr))
 			return
 		}
-		settle.resolve(v)
+		h.settle.resolve(v)
 	}
 	e.post(leafCB{state: state, js: js})
+}
+
+// failureEventStatus maps a failed attempt's result class to its board event: a
+// stopped-class kill is "stopped" (terminal-only vocabulary — a hold emits "held"
+// upstream instead), everything else "failed".
+func failureEventStatus(res subagent.Result) string {
+	if res.ErrorCode == subagent.ErrCodeStopped {
+		return "stopped"
+	}
+	return "failed"
 }
 
 // jsonClone deep-copies a JS value through the VM's stringify→parse pair, yielding pure

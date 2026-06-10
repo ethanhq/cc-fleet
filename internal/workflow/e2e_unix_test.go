@@ -281,8 +281,9 @@ func executeInline(t *testing.T, runID, mainPath string, opts Options) map[strin
 	leafCtx, cancelLeaves := context.WithCancel(context.Background())
 	defer cancelLeaves()
 	eng := &engine{
-		sched: newScheduler(leafCtx, opts.Concurrency), runID: runID,
+		sched: newScheduler(opts.Concurrency), runID: runID,
 		runCtx: context.Background(), leafCtx: leafCtx, cancelLeaves: cancelLeaves,
+		cbs: make(chan leafCB, 64), loopDone: make(chan struct{}), ctl: map[string]*leafCtl{},
 		name: meta.Name, description: meta.Description, startedAt: prepared.StartedAt, phases: metaPhases(meta),
 		persistIO: !opts.NoPersistIO, metaModel: meta.Model, whenToUse: meta.WhenToUse,
 		budgetTotal: opts.BudgetUSD, budgetTokensTotal: opts.BudgetTokens,

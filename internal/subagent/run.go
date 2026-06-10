@@ -166,7 +166,7 @@ func ValidateRunID(id string) error { return ids.ValidateJobID(id) }
 // treat them as one unit with the manifest, so reaping a run reaps its whole on-disk
 // footprint. (Per-LEAF io — prompt/answer — is leaf-scoped under subagent-jobs and
 // reaped by removeJob, not here.)
-var runSidecarExts = []string{".journal", ".events", ".js", ".star"}
+var runSidecarExts = []string{".journal", ".events", ".ctl", ".js", ".star"}
 
 // runSidecarPath returns runs/<id><ext>, validating the id first (it becomes a path
 // component). Centralizes every per-run sidecar path so GC reaps them with the manifest.
@@ -210,6 +210,10 @@ func WithRunLock(runID string, fn func() error) error {
 	}
 	return config.WithFlock(path, fn)
 }
+
+// RunCtlPath returns the control-plane path runs/<id>.ctl — the NDJSON command file a
+// CLI/board writer appends leaf directives to and the live engine polls.
+func RunCtlPath(runID string) (string, error) { return runSidecarPath(runID, ".ctl") }
 
 // RunScriptPath returns the saved-script path runs/<id>.js — the run's source,
 // persisted so a stopped run can be restarted (resumed).

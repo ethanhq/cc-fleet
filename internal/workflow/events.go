@@ -16,7 +16,7 @@ import (
 type EventRecord struct {
 	Seq    int64  `json:"seq"`
 	Kind   string `json:"kind"`             // phase | log | leaf | group-open | group-close
-	Status string `json:"status,omitempty"` // leaf: launch | done | failed | cached
+	Status string `json:"status,omitempty"` // leaf: launch | done | failed | cached | held | stopped
 	Phase  string `json:"phase,omitempty"`
 	Label  string `json:"label,omitempty"`
 	Vendor string `json:"vendor,omitempty"`

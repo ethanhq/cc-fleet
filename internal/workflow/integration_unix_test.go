@@ -90,8 +90,9 @@ return {
 	leafCtx, cancelLeaves := context.WithCancel(context.Background())
 	defer cancelLeaves()
 	eng := &engine{
-		sched: newScheduler(leafCtx, 4), runID: run.RunID,
+		sched: newScheduler(4), runID: run.RunID,
 		runCtx: context.Background(), leafCtx: leafCtx, cancelLeaves: cancelLeaves,
+		cbs: make(chan leafCB, 64), loopDone: make(chan struct{}), ctl: map[string]*leafCtl{},
 		name: run.Name, description: run.Description, startedAt: run.StartedAt, phases: run.Phases,
 	}
 	v, err := eng.run(wf, src, Options{})

@@ -1181,6 +1181,54 @@ func HoldLeaf(jobID string) {
 	_ = writeMetaFn(dir, meta)
 }
 
+// ReleaseHeldLeafStopped terminal-stops a HELD leaf (the run is aborting and nothing
+// will ever wake it): the meta leaves `held` FIRST — otherwise finalizeSyncJob's hold
+// suppression would swallow the stopped cache this release exists to write.
+func ReleaseHeldLeafStopped(jobID, msg string) {
+	if jobID == "" {
+		return
+	}
+	dir, err := jobsDir()
+	if err != nil {
+		return
+	}
+	meta, err := readMeta(dir, jobID)
+	if err != nil {
+		return
+	}
+	meta.Status = "stopped"
+	_ = writeMetaFn(dir, meta)
+	finalizeSyncJob(jobID, fail(ErrCodeStopped, msg, meta.Vendor, ""))
+}
+
+// NormalizeHeldLeaf clears a held pre-mark that lost its race: the directive landed
+// after the attempt's finalize had already cached a terminal outcome, so the hold never
+// took effect. Cache-first — with no terminal cache there is nothing truer to restore
+// and the meta is left alone (the live engine still owns that leaf).
+func NormalizeHeldLeaf(jobID string) {
+	if jobID == "" {
+		return
+	}
+	dir, err := jobsDir()
+	if err != nil {
+		return
+	}
+	meta, err := readMeta(dir, jobID)
+	if err != nil || meta.Status != "held" {
+		return
+	}
+	data, cerr := os.ReadFile(filepath.Join(dir, jobID+".result.json"))
+	if cerr != nil {
+		return
+	}
+	var r Result
+	if json.Unmarshal(data, &r) != nil || r.Status == "" {
+		return
+	}
+	meta.Status = r.Status
+	_ = writeMetaFn(dir, meta)
+}
+
 // RequeueLeaf flips a held leaf's job back to a queued placeholder for its next attempt
 // (restart): Status="queued", PID=0, Attempt=attempt, with the terminal sidecars dropped
 // (the same clean-slate rule as registerSyncJob's reuse path) so the board re-reads the
@@ -1204,6 +1252,46 @@ func RequeueLeaf(jobID string, attempt int) {
 		_ = os.Remove(filepath.Join(dir, jobID+ext))
 	}
 	_ = writeMetaFn(dir, meta)
+}
+
+// NormalizeStaleHolds sweeps a run's member jobs at engine start: a meta still `held`
+// from a PRIOR invocation (a kill-9'd engine ran no abort walk) is finalized terminal
+// `stopped` when no result cache exists — holds are never persisted, and the resume
+// re-runs that leaf from the journal — or, under a terminal cache (a hard kill between
+// the cache write and the settle normalization), the meta alone is normalized to the
+// cache's status. Cache-first: the sweep never terminalizes a leaf whose cache says it
+// finished.
+func NormalizeStaleHolds(runID string) {
+	dir, err := jobsDir()
+	if err != nil {
+		return
+	}
+	entries, rerr := os.ReadDir(dir)
+	if rerr != nil {
+		return
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".result.json") {
+			continue
+		}
+		jobID := strings.TrimSuffix(name, ".json")
+		meta, merr := readMeta(dir, jobID)
+		if merr != nil || meta.RunID != runID || meta.Status != "held" {
+			continue
+		}
+		if data, cerr := os.ReadFile(filepath.Join(dir, jobID+".result.json")); cerr == nil {
+			var r Result
+			if json.Unmarshal(data, &r) == nil && r.Status != "" {
+				meta.Status = r.Status
+				_ = writeMetaFn(dir, meta)
+				continue
+			}
+		}
+		meta.Status = "stopped" // ahead of the finalize so the suppression branch can't fire
+		_ = writeMetaFn(dir, meta)
+		finalizeSyncJob(jobID, fail(ErrCodeStopped, "run restarted while the leaf was held", meta.Vendor, ""))
+	}
 }
 
 // finalizeSyncJob flips a sync job from running → done/failed by writing a

@@ -54,7 +54,7 @@ so they group into one run tree on the board. List runs and inspect a run's jobs
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
-	cmd.AddCommand(newWorkflowNewCmd(), newWorkflowListCmd(), newWorkflowStatusCmd(), newWorkflowRunCmd(), newWorkflowStopCmd(), newWorkflowWatchCmd(), newWorkflowSavedCmd(), newWorkflowRmCmd(), newWorkflowPruneCmd())
+	cmd.AddCommand(newWorkflowNewCmd(), newWorkflowListCmd(), newWorkflowStatusCmd(), newWorkflowRunCmd(), newWorkflowStopCmd(), newWorkflowRestartCmd(), newWorkflowWatchCmd(), newWorkflowSavedCmd(), newWorkflowRmCmd(), newWorkflowPruneCmd())
 	return cmd
 }
 
@@ -113,6 +113,63 @@ func newWorkflowPruneCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit a machine-readable JSON envelope")
+	return cmd
+}
+
+// newWorkflowRestartCmd builds `cc-fleet workflow restart <run-id> [--leaf <job-id>]`:
+// on a LIVE run, --leaf re-runs one held/in-flight agent in place via the control plane
+// (a whole live run is stopped first instead — restarting it under a live engine would
+// race one journal); on a finished run it is the keyed restart — the whole run, or the
+// --leaf agent's journal key (its result drops, the resume re-runs it plus anything
+// downstream whose input shifted).
+func newWorkflowRestartCmd() *cobra.Command {
+	var leaf string
+	var asJSON bool
+	cmd := &cobra.Command{
+		Use:           "restart <run-id>",
+		Short:         "Restart a finished workflow run, or one of its agents (--leaf, live or finished)",
+		Args:          cobra.ExactArgs(1),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			runID := args[0]
+			run, rerr := subagent.ReadRun(runID)
+			if rerr != nil {
+				return reportWorkflowErr(rerr, asJSON)
+			}
+			if run.Status == "running" {
+				if leaf == "" {
+					return reportWorkflowErr(fmt.Errorf("workflow: run %s is live — restart a single agent with --leaf, or stop the run first", runID), asJSON)
+				}
+				if err := workflow.SendLeafCommand(runID, "restart", leaf); err != nil {
+					return reportWorkflowErr(err, asJSON)
+				}
+				if asJSON {
+					return emitWorkflow(workflowEnvelope{OK: true, RunID: runID, Status: "running"})
+				}
+				fmt.Printf("restart sent for agent %s of %s\n", leaf, runID)
+				return nil
+			}
+			key := ""
+			if leaf != "" {
+				res := subagent.StatusFor(leaf)
+				if res.JournalKey == "" {
+					return reportWorkflowErr(fmt.Errorf("workflow: agent %s has no journal key; cannot scope the restart", leaf), asJSON)
+				}
+				key = res.JournalKey
+			}
+			if err := workflow.Restart(cmd.Context(), runID, key); err != nil {
+				return reportWorkflowErr(err, asJSON)
+			}
+			if asJSON {
+				return emitWorkflow(workflowEnvelope{OK: true, RunID: runID, Status: "running"})
+			}
+			fmt.Printf("restarted %s\n", runID)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&leaf, "leaf", "", "Restart just this agent (job id)")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit a machine-readable JSON envelope")
 	return cmd
 }
@@ -470,14 +527,28 @@ func newWorkflowStatusCmd() *cobra.Command {
 // cmdline reuse guard) and mark the manifest stopped. Restart it with `workflow run
 // <script> --resume <run-id>` (the journal makes the replay cheap).
 func newWorkflowStopCmd() *cobra.Command {
+	var leaf string
 	var asJSON bool
 	cmd := &cobra.Command{
 		Use:           "stop <run-id>",
-		Short:         "Stop a running workflow run (reap its engine + in-flight leaves)",
+		Short:         "Stop a running workflow run, or just one of its agents (--leaf)",
 		Args:          cobra.ExactArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// --leaf scopes the stop to ONE agent via the live control plane: the engine
+			// kills that leaf's attempt and HOLDS it (the run keeps running; restart the
+			// leaf to resume it). No run lock — the engine's poller owns the application.
+			if leaf != "" {
+				if err := workflow.SendLeafCommand(args[0], "stop", leaf); err != nil {
+					return reportWorkflowErr(err, asJSON)
+				}
+				if asJSON {
+					return emitWorkflow(workflowEnvelope{OK: true, RunID: args[0], Status: "running"})
+				}
+				fmt.Printf("stop sent for agent %s of %s (it holds until you restart it)\n", leaf, args[0])
+				return nil
+			}
 			// Serialize stop against a concurrent restart/resume of the same run via the per-run
 			// execution lock (so a stop can't race the pre-launch pid window into skipping the kill).
 			var run subagent.WorkflowRun
@@ -496,6 +567,7 @@ func newWorkflowStopCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&leaf, "leaf", "", "Stop just this agent (job id) and hold it in place")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit a machine-readable JSON envelope")
 	return cmd
 }

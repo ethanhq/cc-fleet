@@ -182,8 +182,9 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 	leafCtx, cancelLeaves := context.WithCancel(ctx)
 	defer cancelLeaves()
 	eng := &engine{
-		sched: newScheduler(leafCtx, concurrency), runID: runID,
+		sched: newScheduler(concurrency), runID: runID,
 		runCtx: ctx, leafCtx: leafCtx, cancelLeaves: cancelLeaves,
+		cbs: make(chan leafCB, 64), loopDone: make(chan struct{}), ctl: map[string]*leafCtl{},
 		name: meta.Name, description: meta.Description, startedAt: startedAt, phases: phases,
 		persistIO:         !opts.NoPersistIO, // the board's inline prompt/answer detail is default-on
 		enginePID:         detachedEnginePID(opts),
@@ -218,10 +219,24 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 		_ = os.Remove(ep)
 		eng.events = newEventWriter(ep)
 	}
+	// A prior invocation killed mid-hold leaves `held` metas behind (no abort walk ran);
+	// normalize them BEFORE this invocation runs — holds are never persisted.
+	subagent.NormalizeStaleHolds(runID)
+	// The control plane: truncate stale directives BEFORE the manifest says `running`
+	// (a writer gates on that status — commands meant for the prior invocation must
+	// never apply to this one, and ones issued for THIS one must never be lost), then
+	// stamp, then start the poller.
+	ctlPath, ctlErr := subagent.RunCtlPath(runID)
+	if ctlErr == nil {
+		_ = os.Remove(ctlPath)
+	}
 	// Stamp the manifest once up front: records EnginePID (so `workflow stop` can reap
 	// this process), flips a resumed run to "running", and refreshes UpdatedAt from the
 	// start (GC recency) — before the first leaf, closing the mint→first-leaf window.
 	eng.saveManifest("running", "")
+	if ctlErr == nil {
+		eng.startCtlPoller(ctlPath)
+	}
 
 	defer func() {
 		if r := recover(); r != nil {
