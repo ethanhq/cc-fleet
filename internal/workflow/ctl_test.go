@@ -368,3 +368,63 @@ func TestResumeDropsStaleHold(t *testing.T) {
 		t.Errorf("stale held leaf = %q, want stopped (holds are never persisted)", res.Status)
 	}
 }
+
+// TestPhaseStopParksAndRestartResumes (W-phase-live): a phase stop holds the title's
+// running member AND parks a member minted into the phase afterwards (before its first
+// exec); the phase restart wakes both and the run completes.
+func TestPhaseStopParksAndRestartResumes(t *testing.T) {
+	rec := &recorder{}
+	g := newGateLeaf(rec)
+	eng, vals, errs := ctlHarness(t, "wpl", 2, g.run, `
+phase("p1");
+const a = agent("a", {vendor: "v", label: "leaf-a"});
+const ra = await a;
+const b = await agent("b", {vendor: "v", label: "leaf-b"});
+return [ra, b];`)
+
+	a := jobByLabel(t, "leaf-a", "queued")
+	waitCalled(t, rec, "a")
+	eng.post(leafCB{state: func() { eng.applyPhaseDirective(ctlCommand{Op: "stop-phase", Phase: "p1"}) }})
+	jobByLabel(t, "leaf-a", "held")
+	// Wake ONLY the leaf: it finishes, and the script then mints b INTO the held phase —
+	// b must park before its first exec.
+	g.release("a")
+	directive(eng, "restart", a.JobID)
+	b := jobByLabel(t, "leaf-b", "held")
+	if got := rec.prompts(); len(got) != 2 { // a ran twice; b never executed
+		t.Fatalf("prompts = %v — a parked leaf must not exec", got)
+	}
+	// Phase restart wakes the parked member; first spawn keeps attempt 1.
+	g.release("b")
+	eng.post(leafCB{state: func() { eng.applyPhaseDirective(ctlCommand{Op: "restart-phase", Phase: "p1"}) }})
+	v := <-vals
+	if err := <-errs; err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	got := v.Export().([]interface{})
+	if got[0] != "ok:a#2" || got[1] != "ok:b#1" {
+		t.Fatalf("results = %v, want [ok:a#2 ok:b#1]", got)
+	}
+	if res := subagent.StatusFor(b.JobID); res.Attempt > 1 {
+		t.Errorf("parked leaf woke at attempt %d, want its FIRST attempt", res.Attempt)
+	}
+}
+
+// TestPhaseRestartPlan (W-phase-terminal slice): the keyed phase restart drops the
+// phase's whole key set and honestly names the phases a shared key widens into.
+func TestPhaseRestartPlan(t *testing.T) {
+	leaves := []subagent.Result{
+		{Phase: "p1", JournalKey: "k1"},
+		{Phase: "p1", JournalKey: "k2"},
+		{Phase: "p2", JournalKey: "k1"}, // shares k1 with p1 → widening
+		{Phase: "p3", JournalKey: "k9"},
+		{Phase: "p1", JournalKey: ""}, // a failed leaf: never journaled, re-runs anyway
+	}
+	keys, widened := phaseRestartPlan(leaves, "p1")
+	if !keys["k1"] || !keys["k2"] || len(keys) != 2 {
+		t.Fatalf("keys = %v, want {k1,k2}", keys)
+	}
+	if len(widened) != 1 || widened[0] != "p2" {
+		t.Fatalf("widened = %v, want [p2]", widened)
+	}
+}

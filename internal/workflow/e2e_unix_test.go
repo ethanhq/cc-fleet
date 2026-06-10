@@ -283,7 +283,7 @@ func executeInline(t *testing.T, runID, mainPath string, opts Options) map[strin
 	eng := &engine{
 		sched: newScheduler(opts.Concurrency), runID: runID,
 		runCtx: context.Background(), leafCtx: leafCtx, cancelLeaves: cancelLeaves,
-		cbs: make(chan leafCB, 64), loopDone: make(chan struct{}), ctl: map[string]*leafCtl{},
+		cbs: make(chan leafCB, 64), loopDone: make(chan struct{}), ctl: map[string]*leafCtl{}, heldPhases: map[string]bool{},
 		name: meta.Name, description: meta.Description, startedAt: prepared.StartedAt, phases: metaPhases(meta),
 		persistIO: !opts.NoPersistIO, metaModel: meta.Model, whenToUse: meta.WhenToUse,
 		budgetTotal: opts.BudgetUSD, budgetTokensTotal: opts.BudgetTokens,

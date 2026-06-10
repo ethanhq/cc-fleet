@@ -227,23 +227,21 @@ func TestWfFooters(t *testing.T) {
 	}
 }
 
-// TestWfControlsTargetRun: x/r act on the FOCUSED run even when the cursor's phase has no agents;
-// both open a confirm, and at the Phases level confirming r dispatches a restart that does NOT trip
-// the board reload (the key-precedence regression guard: a run-level r must never set m.loading).
-func TestWfControlsTargetRun(t *testing.T) {
-	runs := []subagent.WorkflowRun{{RunID: "run-1", Name: "r", SessionID: "sX",
+// TestWfControlsTargetPhase: at the Phases level x/r act on the FOCUSED PHASE even when
+// it has no agents yet; both open a phase-scoped confirm, and confirming r dispatches
+// without tripping the board reload (the key-precedence regression guard: r in the
+// drill must never set m.loading).
+func TestWfControlsTargetPhase(t *testing.T) {
+	runs := []subagent.WorkflowRun{{RunID: "run-1", Name: "r", SessionID: "sX", Status: "running",
 		StartedAt: "2026-06-01T00:00:00Z", Phases: []subagent.RunPhase{{Title: "map"}}}}
 	m := drillRun(t, runsModel(t, nil, runs, nil)) // empty phase, no agents
-	// x opens a stop confirm for the focused run even with no agents in the phase.
 	mx, _ := press(t, m, "x")
-	if mx.confirm == nil || mx.confirm.kind != confirmStop || mx.confirm.id != "run-1" {
-		t.Fatalf("x should open a stop confirm for the focused run: %+v", mx.confirm)
+	if mx.confirm == nil || mx.confirm.kind != confirmStopPhase || mx.confirm.id != "run-1" || mx.confirm.arg != "map" {
+		t.Fatalf("x should open a stop confirm for the focused phase: %+v", mx.confirm)
 	}
-	// lowercase r at the Phases level opens a restart confirm (NOT the board reload); confirming it
-	// dispatches a restart, holds the modal in its running phase, and must leave m.loading false.
 	mr, _ := press(t, m, "r")
-	if mr.confirm == nil || mr.confirm.kind != confirmRestart {
-		t.Fatalf("r should open a restart confirm for the focused run: %+v", mr.confirm)
+	if mr.confirm == nil || mr.confirm.kind != confirmRestartPhase {
+		t.Fatalf("r should open a phase restart confirm: %+v", mr.confirm)
 	}
 	mr, _ = press(t, mr, "right")
 	mr, cmd := press(t, mr, "enter")
@@ -251,7 +249,7 @@ func TestWfControlsTargetRun(t *testing.T) {
 		t.Fatal("confirming the restart should dispatch it")
 	}
 	if mr.loading {
-		t.Fatal("a run-level restart must not trigger a board reload (loading set)")
+		t.Fatal("a phase restart must not trigger a board reload (loading set)")
 	}
 	if mr.confirm == nil || mr.confirm.phase != modalRunning {
 		t.Fatalf("a dispatched restart should hold the modal in its running phase: %+v", mr.confirm)
@@ -289,8 +287,8 @@ func TestWfInFlightGuard(t *testing.T) {
 	jobs, runs := oneRun()
 	m := drillRun(t, runsModel(t, jobs, runs, nil))
 	m1, _ := press(t, m, "r")
-	if m1.confirm == nil || m1.confirm.kind != confirmRestart {
-		t.Fatalf("first r should open a restart confirm: %+v", m1.confirm)
+	if m1.confirm == nil || m1.confirm.kind != confirmRestartPhaseKeyed {
+		t.Fatalf("first r should open a keyed phase-restart confirm: %+v", m1.confirm)
 	}
 	m1, _ = press(t, m1, "right")
 	m1, cmd := press(t, m1, "enter")
@@ -306,12 +304,12 @@ func TestWfInFlightGuard(t *testing.T) {
 	if _, cx := press(t, m1, "x"); cx != nil {
 		t.Fatal("x while a restart is in flight must be a no-op")
 	}
-	m2, _ := step(t, m1, workflowCtlMsg{verb: "restart", runID: "run-1", epoch: m1.boardEpoch})
+	m2, _ := step(t, m1, workflowCtlMsg{verb: "restart-phase", runID: "run-1", epoch: m1.boardEpoch})
 	if m2.confirm == nil || m2.confirm.phase != modalResult {
 		t.Fatalf("the completing restart should resolve the modal to a result: %+v", m2.confirm)
 	}
 	m2, _ = press(t, m2, "enter") // dismiss the result
-	if m3, _ := press(t, m2, "r"); m3.confirm == nil || m3.confirm.kind != confirmRestart {
+	if m3, _ := press(t, m2, "r"); m3.confirm == nil || m3.confirm.kind != confirmRestartPhaseKeyed {
 		t.Fatal("after the restart completes (guard cleared), r should open a fresh confirm")
 	}
 }
@@ -336,7 +334,7 @@ func TestWfSaveOutcomeDoesntResolveRestart(t *testing.T) {
 		t.Fatal("a save outcome must not clear the restart's in-flight guard")
 	}
 	// The restart's own outcome resolves it and frees the guard.
-	m, _ = step(t, m, workflowCtlMsg{verb: "restart", runID: "run-1", epoch: m.boardEpoch})
+	m, _ = step(t, m, workflowCtlMsg{verb: "restart-phase", runID: "run-1", epoch: m.boardEpoch})
 	if m.confirm == nil || m.confirm.phase != modalResult {
 		t.Fatalf("the restart outcome should resolve the modal: %+v", m.confirm)
 	}
@@ -680,6 +678,47 @@ func TestWfLeafControls_LiveMatrix(t *testing.T) {
 	m, _ = press(t, withLeaf("done"), "x")
 	if m.confirm == nil || m.confirm.phase != modalResult || !strings.Contains(m.confirm.result, "already finished") {
 		t.Fatalf("done leaf x should pop an info, got %+v", m.confirm)
+	}
+}
+
+// TestWfPhaseControls_Matrix: the Phases pane's x/r scope to the focused phase — live
+// run: stop holds the title's agents (merged-target wording), restart re-runs them in
+// place; finished run: r is the keyed phase restart, naming shared-key widening.
+func TestWfPhaseControls_Matrix(t *testing.T) {
+	phasePane := func(runStatus string, mutate func([]subagent.Result) []subagent.Result) Model {
+		t.Helper()
+		jobs, runs := oneRun()
+		runs[0].Status = runStatus
+		if mutate != nil {
+			jobs = mutate(jobs)
+		}
+		return drillRun(t, runsModel(t, jobs, runs, nil)) // Phases pane
+	}
+	m, _ := press(t, phasePane("running", nil), "x")
+	if m.confirm == nil || m.confirm.kind != confirmStopPhase || !strings.Contains(m.confirm.prompt, "one title = one merged target") {
+		t.Fatalf("live phase x: %+v", m.confirm)
+	}
+	m, _ = press(t, phasePane("running", nil), "r")
+	if m.confirm == nil || m.confirm.kind != confirmRestartPhase || !strings.Contains(m.confirm.prompt, "re-run in place") {
+		t.Fatalf("live phase r: %+v", m.confirm)
+	}
+	m, _ = press(t, phasePane("done", nil), "r")
+	if m.confirm == nil || m.confirm.kind != confirmRestartPhaseKeyed || !strings.Contains(m.confirm.prompt, "from the journal") {
+		t.Fatalf("terminal phase r: %+v", m.confirm)
+	}
+	// A key shared across phases is named in the terminal prompt.
+	widen := func(jobs []subagent.Result) []subagent.Result {
+		jobs[0].JournalKey = "k-shared"
+		return append(jobs, subagent.Result{RunID: jobs[0].RunID, Phase: "other", Label: "twin",
+			JobID: "job-twin", Status: "done", JournalKey: "k-shared", StartedAt: jobs[0].StartedAt})
+	}
+	m, _ = press(t, phasePane("done", widen), "r")
+	if m.confirm == nil || !strings.Contains(m.confirm.prompt, "other") {
+		t.Fatalf("terminal phase r should name the widened phase: %+v", m.confirm)
+	}
+	m, _ = press(t, phasePane("done", nil), "x")
+	if m.confirm == nil || m.confirm.phase != modalResult || !strings.Contains(m.confirm.result, "not live") {
+		t.Fatalf("terminal phase x should pop an info, got %+v", m.confirm)
 	}
 }
 

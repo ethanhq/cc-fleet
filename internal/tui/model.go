@@ -826,6 +826,27 @@ func leafCtlCmd(verb, runID, leafID string, epoch int) tea.Cmd {
 	}
 }
 
+// phaseCtlCmd sends a LIVE phase directive over the run's control plane.
+func phaseCtlCmd(verb, runID, phase string, epoch int) tea.Cmd {
+	op := "stop"
+	if verb == "restart-phase" {
+		op = "restart"
+	}
+	return func() tea.Msg {
+		err := workflow.SendPhaseCommand(runID, op, phase)
+		return workflowCtlMsg{verb: verb, runID: runID, err: err, epoch: epoch}
+	}
+}
+
+// restartPhaseCmd is the keyed phase restart for a TERMINAL run (drops the phase's
+// journal-key set and resumes).
+func restartPhaseCmd(runID, phase string, epoch int) tea.Cmd {
+	return func() tea.Msg {
+		_, err := workflow.RestartPhase(context.Background(), runID, phase)
+		return workflowCtlMsg{verb: "restart-phase", runID: runID, err: err, epoch: epoch}
+	}
+}
+
 // restartCmd restarts a run via workflow.Restart: an empty journalKey resumes the WHOLE run
 // (re-running only un-journaled / failed leaves); a leaf's journalKey additionally drops that leaf's
 // cache so the resume re-runs it (+ any downstream leaf whose input shifted). On a still-running run
@@ -871,6 +892,10 @@ func ctlOutcome(verb, runID string, err error) (string, bool) {
 		return "agent stop sent — it holds (‖) until you restart it", false
 	case "restart-leaf":
 		return "agent restart sent — it re-runs in place", false
+	case "stop-phase":
+		return "phase stop sent — its agents hold (‖) until you restart the phase", false
+	case "restart-phase":
+		return "phase restart sent", false
 	}
 	return fmt.Sprintf("%s %s: ok", verb, runID), false
 }
@@ -887,6 +912,10 @@ func runningVerb(kind string) string {
 		return "stop-leaf"
 	case confirmRestartLeaf:
 		return "restart-leaf"
+	case confirmStopPhase:
+		return "stop-phase"
+	case confirmRestartPhase, confirmRestartPhaseKeyed:
+		return "restart-phase"
 	}
 	return ""
 }
@@ -2656,6 +2685,10 @@ func (m Model) updateWfPhases(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.wfDescend()
 	case "esc", "left":
 		return m.wfAscend()
+	case "x":
+		return m.stopFocusedPhase()
+	case "r":
+		return m.restartFocusedPhase()
 	default:
 		return m.wfControl(msg)
 	}
@@ -2811,6 +2844,90 @@ func (m Model) restartFocusedLeaf() (tea.Model, tea.Cmd) {
 	m.confirm = &confirmModal{kind: confirmRestartAgent, id: g.runID, arg: job.JournalKey,
 		prompt: "Restart just this agent?"}
 	return m, nil
+}
+
+// stopFocusedPhase is the Phases pane's x — scoped to the focused phase title on a
+// LIVE run: every live member holds and future members of the title park (a reused
+// title is ONE merged target). A finished run has nothing to stop.
+func (m Model) stopFocusedPhase() (tea.Model, tea.Cmd) {
+	p, ok := m.focusedPhase()
+	if !ok {
+		return m, nil
+	}
+	g, gok := m.focusedGroup()
+	if !gok {
+		return m, nil
+	}
+	if m.wfBusy(g.runID) {
+		return m, nil
+	}
+	if g.status != "running" {
+		return m.withInfo("the run is not live — nothing to stop", false), nil
+	}
+	m.confirm = &confirmModal{kind: confirmStopPhase, id: g.runID, arg: p.title,
+		prompt: fmt.Sprintf("Stop phase %q? Its agents hold until you restart the phase (one title = one merged target); everything else keeps running.", p.title)}
+	return m, nil
+}
+
+// restartFocusedPhase is the Phases pane's r: on a LIVE run it re-runs the title's held
+// and running members in place (finished members keep their results); on a finished run
+// it is the keyed phase restart, with shared-key widening named in the prompt.
+func (m Model) restartFocusedPhase() (tea.Model, tea.Cmd) {
+	p, ok := m.focusedPhase()
+	if !ok {
+		return m, nil
+	}
+	g, gok := m.focusedGroup()
+	if !gok {
+		return m, nil
+	}
+	if m.wfBusy(g.runID) {
+		return m, nil
+	}
+	if g.status == "running" {
+		m.confirm = &confirmModal{kind: confirmRestartPhase, id: g.runID, arg: p.title,
+			prompt: fmt.Sprintf("Restart phase %q? Its held and running agents re-run in place; finished agents keep their results.", p.title)}
+		return m, nil
+	}
+	prompt := fmt.Sprintf("Re-run phase %q from the journal?", p.title)
+	if widened := m.phaseWidening(g, p.title); len(widened) > 0 {
+		prompt += fmt.Sprintf(" Shared agents widen the re-run into phase(s) %s.", strings.Join(widened, ", "))
+	}
+	m.confirm = &confirmModal{kind: confirmRestartPhaseKeyed, id: g.runID, arg: p.title, prompt: prompt}
+	return m, nil
+}
+
+// phaseWidening names the OTHER phase titles a keyed phase restart would re-run too:
+// identical agent() calls share one content key, and the restart drops whole keys.
+func (m Model) phaseWidening(g runGroup, phase string) []string {
+	keys := map[string]bool{}
+	for _, p := range g.phases {
+		if p.title != phase {
+			continue
+		}
+		for _, j := range p.jobs {
+			if j.JournalKey != "" {
+				keys[j.JournalKey] = true
+			}
+		}
+	}
+	widened := map[string]bool{}
+	for _, p := range g.phases {
+		if p.title == phase {
+			continue
+		}
+		for _, j := range p.jobs {
+			if keys[j.JournalKey] && j.JournalKey != "" {
+				widened[p.title] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(widened))
+	for t := range widened {
+		out = append(out, t)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // stopFocusedLeaf is the agent pane's x — scoped to exactly the focused leaf. A live

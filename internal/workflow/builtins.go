@@ -85,6 +85,7 @@ type engine struct {
 	cancelLeaves  context.CancelFunc
 	unhandled     map[*goja.Promise]goja.Value // rejected-with-no-handler set (handled-set semantics)
 	ctl           map[string]*leafCtl          // jobID → directive state (loop-owned; the control plane's target map)
+	heldPhases    map[string]bool              // phase titles under a stop-phase directive (new members park)
 	jsonParse     goja.Callable
 	jsonStringify goja.Callable
 	errCtor       *goja.Object
@@ -438,6 +439,16 @@ func (e *engine) jsAgent(call goja.FunctionCall) goja.Value {
 		e.ctl[jobID] = h // "" (a mint hiccup / the test stub) → uncontrollable, still runs
 	}
 	e.inflight++
+	// The held-phase registration gate (post-mint, post-cache-lookup: a cached replay
+	// under a held phase still serves — "stop a phase" stops execution, not value flow):
+	// a leaf minted into a held phase parks before its first exec, exactly like a held
+	// leaf, and a phase restart wakes it.
+	if jobID != "" && e.heldPhases[phaseTag] {
+		subagent.HoldLeaf(jobID)
+		h.held = true
+		e.emitLeaf("held", phaseTag, label, vendor, model)
+		return e.vm.ToValue(p)
+	}
 	e.spawnAttempt(jobID, h)
 	return e.vm.ToValue(p)
 }
@@ -448,6 +459,7 @@ func (e *engine) jsAgent(call goja.FunctionCall) goja.Value {
 func (e *engine) spawnAttempt(jobID string, h *leafCtl) {
 	ctx, cancel := context.WithCancel(e.leafCtx)
 	h.cancel = cancel
+	h.spawned = true
 	h.execStarted = false
 	gen := h.gen
 	go func() {

@@ -184,7 +184,7 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 	eng := &engine{
 		sched: newScheduler(concurrency), runID: runID,
 		runCtx: ctx, leafCtx: leafCtx, cancelLeaves: cancelLeaves,
-		cbs: make(chan leafCB, 64), loopDone: make(chan struct{}), ctl: map[string]*leafCtl{},
+		cbs: make(chan leafCB, 64), loopDone: make(chan struct{}), ctl: map[string]*leafCtl{}, heldPhases: map[string]bool{},
 		name: meta.Name, description: meta.Description, startedAt: startedAt, phases: phases,
 		persistIO:         !opts.NoPersistIO, // the board's inline prompt/answer detail is default-on
 		enginePID:         detachedEnginePID(opts),

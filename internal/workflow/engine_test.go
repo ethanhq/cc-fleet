@@ -98,7 +98,7 @@ func newTestEngine(ctx context.Context, runID string, concurrency int) *engine {
 	return &engine{
 		sched: newScheduler(concurrency), runID: runID,
 		runCtx: ctx, leafCtx: leafCtx, cancelLeaves: cancel,
-		cbs: make(chan leafCB, 64), loopDone: make(chan struct{}), ctl: map[string]*leafCtl{},
+		cbs: make(chan leafCB, 64), loopDone: make(chan struct{}), ctl: map[string]*leafCtl{}, heldPhases: map[string]bool{},
 	}
 }
 

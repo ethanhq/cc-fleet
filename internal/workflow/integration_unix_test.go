@@ -92,7 +92,7 @@ return {
 	eng := &engine{
 		sched: newScheduler(4), runID: run.RunID,
 		runCtx: context.Background(), leafCtx: leafCtx, cancelLeaves: cancelLeaves,
-		cbs: make(chan leafCB, 64), loopDone: make(chan struct{}), ctl: map[string]*leafCtl{},
+		cbs: make(chan leafCB, 64), loopDone: make(chan struct{}), ctl: map[string]*leafCtl{}, heldPhases: map[string]bool{},
 		name: run.Name, description: run.Description, startedAt: run.StartedAt, phases: run.Phases,
 	}
 	v, err := eng.run(wf, src, Options{})

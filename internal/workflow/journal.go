@@ -143,10 +143,16 @@ func (j *journal) append(key, result string) {
 // first (a live O_APPEND would race this whole-file replace). Returns whether anything was
 // dropped. Malformed/torn lines are preserved verbatim (loadJournal skips them on reload).
 func removeJournalKey(path, key string) (bool, error) {
+	return removeJournalKeys(path, map[string]bool{key: true})
+}
+
+// removeJournalKeys is the set form removeJournalKey and the phase restart share: one
+// pass, one atomic rewrite, every entry whose key is in the set dropped.
+func removeJournalKeys(path string, keys map[string]bool) (bool, error) {
 	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return false, nil // nothing journaled → the leaf re-runs anyway
+			return false, nil // nothing journaled → the leaves re-run anyway
 		}
 		return false, err
 	}
@@ -157,7 +163,7 @@ func removeJournalKey(path, key string) (bool, error) {
 		line, rerr := r.ReadBytes('\n')
 		if len(line) > 0 {
 			var e journalEntry
-			if json.Unmarshal(line, &e) == nil && e.Key == key {
+			if json.Unmarshal(line, &e) == nil && keys[e.Key] {
 				removed = true // drop this entry
 			} else {
 				kept = append(kept, line...)
@@ -169,7 +175,7 @@ func removeJournalKey(path, key string) (bool, error) {
 	}
 	f.Close()
 	if !removed {
-		return false, nil // key absent → no rewrite needed
+		return false, nil // no key present → no rewrite needed
 	}
 	if werr := fileutil.AtomicWrite(path, kept, 0o600); werr != nil {
 		return false, werr

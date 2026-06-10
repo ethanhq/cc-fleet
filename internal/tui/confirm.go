@@ -54,12 +54,16 @@ const (
 	confirmStop         = "stop"
 	confirmStopLeaf     = "stop-leaf"
 	confirmRestartLeaf  = "restart-leaf"
-	confirmRestart      = "restart"
-	confirmRestartAgent = "restart-agent"
-	confirmSession      = "session"
-	confirmRemoveVendor = "remove-vendor"
-	confirmDeleteKey    = "delete-key"
-	confirmReplaceKey   = "replace-key"
+	confirmStopPhase    = "stop-phase"
+	confirmRestartPhase = "restart-phase"
+	// confirmRestartPhaseKeyed is the TERMINAL-run variant (journal-key drop + resume).
+	confirmRestartPhaseKeyed = "restart-phase-keyed"
+	confirmRestart           = "restart"
+	confirmRestartAgent      = "restart-agent"
+	confirmSession           = "session"
+	confirmRemoveVendor      = "remove-vendor"
+	confirmDeleteKey         = "delete-key"
+	confirmReplaceKey        = "replace-key"
 )
 
 // confirmAmber is the modal's confirm-phase accent: the border AND the Cancel/Confirm buttons share
@@ -155,6 +159,12 @@ func (m Model) runConfirmed() (tea.Model, tea.Cmd) {
 		return m.runAsync(c, "stopping agent…", leafCtlCmd("stop-leaf", c.id, c.arg, m.boardEpoch))
 	case confirmRestartLeaf:
 		return m.runAsync(c, "restarting agent…", leafCtlCmd("restart-leaf", c.id, c.arg, m.boardEpoch))
+	case confirmStopPhase:
+		return m.runAsync(c, "stopping phase…", phaseCtlCmd("stop-phase", c.id, c.arg, m.boardEpoch))
+	case confirmRestartPhase:
+		return m.runAsync(c, "restarting phase…", phaseCtlCmd("restart-phase", c.id, c.arg, m.boardEpoch))
+	case confirmRestartPhaseKeyed:
+		return m.runAsync(c, "restarting phase…", restartPhaseCmd(c.id, c.arg, m.boardEpoch))
 	case confirmRun:
 		m.confirm = nil
 		if m.wfBusy(c.id) {

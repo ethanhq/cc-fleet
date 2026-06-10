@@ -18,8 +18,9 @@ const ctlPollInterval = 250 * time.Millisecond
 // CLI/board writer appends and the engine's poller applies. Op + ids only — no prompts,
 // no keys.
 type ctlCommand struct {
-	Op   string `json:"op"`             // stop | restart
-	Leaf string `json:"leaf,omitempty"` // target job id
+	Op    string `json:"op"`              // stop | restart | stop-phase | restart-phase
+	Leaf  string `json:"leaf,omitempty"`  // target job id (leaf ops)
+	Phase string `json:"phase,omitempty"` // target phase title, "" included (phase ops)
 }
 
 // SendLeafCommand appends a leaf directive to a LIVE run's control file. It validates
@@ -47,6 +48,41 @@ func SendLeafCommand(runID, op, leafID string) error {
 		return err
 	}
 	data, err := json.Marshal(ctlCommand{Op: op, Leaf: leafID})
+	if err != nil {
+		return err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	_, werr := f.Write(append(data, '\n'))
+	return werr
+}
+
+// SendPhaseCommand appends a phase directive to a LIVE run's control file: the leaf
+// atom fanned out over every member of the EXACT title (a reused title is one merged
+// target; "" addresses unphased leaves), with future members of a held phase parking
+// before their first exec.
+func SendPhaseCommand(runID, op, phase string) error {
+	if op != "stop" && op != "restart" {
+		return fmt.Errorf("workflow: unknown phase op %q", op)
+	}
+	if err := subagent.ValidateRunID(runID); err != nil {
+		return fmt.Errorf("workflow: invalid run id: %w", err)
+	}
+	run, err := subagent.ReadRun(runID)
+	if err != nil {
+		return fmt.Errorf("workflow: %w", err)
+	}
+	if run.Status != "running" {
+		return fmt.Errorf("workflow: run %s is not running (phase control needs a live engine; use the keyed phase restart for a finished run)", runID)
+	}
+	path, err := subagent.RunCtlPath(runID)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(ctlCommand{Op: op + "-phase", Phase: phase})
 	if err != nil {
 		return err
 	}
@@ -93,7 +129,11 @@ func (e *engine) startCtlPoller(path string) {
 				if json.Unmarshal(line, &cmd) != nil {
 					continue // a malformed line is dropped; the offset already moved past it
 				}
-				e.post(leafCB{state: func() { e.applyDirective(cmd) }})
+				if cmd.Op == "stop-phase" || cmd.Op == "restart-phase" {
+					e.post(leafCB{state: func() { e.applyPhaseDirective(cmd) }})
+				} else {
+					e.post(leafCB{state: func() { e.applyDirective(cmd) }})
+				}
 			}
 			f.Close()
 		}
@@ -109,6 +149,7 @@ type leafCtl struct {
 	gen         int    // attempt ordinal (== Request.Attempt)
 	pending     string // "" | "stop" | "restart" — armed, consumed by the attempt's completion
 	held        bool
+	spawned     bool // at least one attempt goroutine ran (false = parked by a held phase)
 	execStarted bool // the current attempt acquired its slot (a pre-exec restart is a no-op)
 	released    bool // the frame's budget reservation was released (exactly once)
 	cancel      func()
@@ -128,18 +169,7 @@ func (e *engine) applyDirective(cmd ctlCommand) {
 	}
 	switch cmd.Op {
 	case "stop":
-		if h.held || h.pending == "stop" {
-			return // idempotent
-		}
-		// A stop overrides a pending restart: the user's latest intent is to halt.
-		h.pending = "stop"
-		// Pre-mark the meta held BEFORE the kill: the killed attempt's stopped-class
-		// finalize is suppressed (no terminal cache may exist during a hold), so GC can
-		// never read the job as finished in the kill window.
-		subagent.HoldLeaf(cmd.Leaf)
-		if h.cancel != nil {
-			h.cancel()
-		}
+		e.stopLeafAtom(cmd.Leaf, h)
 	case "restart":
 		switch {
 		case h.held:
@@ -151,12 +181,68 @@ func (e *engine) applyDirective(cmd ctlCommand) {
 		case !h.execStarted:
 			e.logf("control: leaf %s is still queued; restart is a no-op", cmd.Leaf)
 		default:
-			h.pending = "restart"
-			subagent.HoldLeaf(cmd.Leaf) // same suppression window as a stop
-			if h.cancel != nil {
-				h.cancel()
+			e.restartLeafAtom(cmd.Leaf, h)
+		}
+	}
+}
+
+// applyPhaseDirective fans the leaf atom out over the EXACT title's live members and,
+// for a stop, parks the phase so future leaves minted into it hold before their first
+// exec. done/failed members are untouched (their values are consumed).
+func (e *engine) applyPhaseDirective(cmd ctlCommand) {
+	if e.aborted {
+		return
+	}
+	switch cmd.Op {
+	case "stop-phase":
+		e.heldPhases[cmd.Phase] = true
+		for jobID, h := range e.ctl {
+			if h.spec.phase != cmd.Phase {
+				continue
+			}
+			e.stopLeafAtom(jobID, h)
+		}
+	case "restart-phase":
+		delete(e.heldPhases, cmd.Phase)
+		for jobID, h := range e.ctl {
+			if h.spec.phase != cmd.Phase {
+				continue
+			}
+			switch {
+			case h.held:
+				e.wakeLeaf(jobID, h)
+			case h.pending == "stop":
+				h.pending = "restart"
+			case h.execStarted && h.pending == "":
+				e.restartLeafAtom(jobID, h)
 			}
 		}
+	}
+}
+
+// stopLeafAtom arms the kill-and-HOLD directive on one live leaf: pre-mark the meta
+// held BEFORE the kill (the killed attempt's stopped-class finalize is suppressed, so
+// no terminal cache can exist in the kill window for GC to misread), then cancel the
+// attempt. Idempotent on held / already-stopping leaves; overrides a pending restart
+// (the user's latest intent is to halt).
+func (e *engine) stopLeafAtom(jobID string, h *leafCtl) {
+	if h.held || h.pending == "stop" {
+		return
+	}
+	h.pending = "stop"
+	subagent.HoldLeaf(jobID)
+	if h.cancel != nil {
+		h.cancel()
+	}
+}
+
+// restartLeafAtom arms kill-and-retry on one running leaf (the same suppression window
+// as a stop; the completion respawns instead of holding).
+func (e *engine) restartLeafAtom(jobID string, h *leafCtl) {
+	h.pending = "restart"
+	subagent.HoldLeaf(jobID)
+	if h.cancel != nil {
+		h.cancel()
 	}
 }
 
@@ -169,13 +255,17 @@ func (e *engine) wakeLeaf(jobID string, h *leafCtl) {
 		e.logf("control: leaf %s restart refused — %v; the leaf stays held", jobID, e.budgetExceededErr())
 		return
 	}
-	if !e.sched.admit() {
-		e.logf("control: leaf %s restart refused — the %d-leaf lifetime cap is exhausted; the leaf stays held", jobID, maxLifetimeAgents)
-		return
+	// A leaf parked by a held PHASE never ran its first attempt: waking it is that
+	// first spawn (already admitted at agent()), not a retry.
+	if h.spawned {
+		if !e.sched.admit() {
+			e.logf("control: leaf %s restart refused — the %d-leaf lifetime cap is exhausted; the leaf stays held", jobID, maxLifetimeAgents)
+			return
+		}
+		h.gen++
 	}
 	h.held = false
 	h.pending = ""
-	h.gen++
 	subagent.RequeueLeaf(jobID, h.gen)
 	e.spawnAttempt(jobID, h)
 }
