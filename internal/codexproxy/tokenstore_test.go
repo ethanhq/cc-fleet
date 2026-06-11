@@ -30,7 +30,9 @@ func (rt rewriteRT) RoundTrip(req *http.Request) (*http.Response, error) {
 func TestOwnStore_RefreshReloadsRotatedChainFromDisk(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
-	t.Setenv("HOME", t.TempDir())
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome) // windows reads USERPROFILE
 
 	var mu sync.Mutex
 	valid := map[string]bool{"rt-0": true}

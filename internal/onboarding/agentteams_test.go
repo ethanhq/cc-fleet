@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -14,6 +15,7 @@ func cleanAgentTeamsEnv(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // windows reads USERPROFILE
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv(AgentTeamsEnvVar, "")
 	t.Chdir(t.TempDir()) // clean CWD so the project-level probe sees nothing
@@ -90,6 +92,12 @@ func TestAgentTeamsConfigured_ProjectSettings(t *testing.T) {
 
 func TestNeedsAgentTeamsSetup(t *testing.T) {
 	cleanAgentTeamsEnv(t)
+	if runtime.GOOS == "windows" {
+		if NeedsAgentTeamsSetup() {
+			t.Fatal("the teammate-lane nudge must never show on windows")
+		}
+		return
+	}
 	// Unconfigured + never acked → show the nudge.
 	if !NeedsAgentTeamsSetup() {
 		t.Fatal("want true: unconfigured + unacked")
@@ -140,7 +148,7 @@ func TestEnableAgentTeams_CreatesAndIdempotent(t *testing.T) {
 	}
 	// mode 0600
 	info, _ := os.Stat(filepath.Join(home, ".claude", "settings.json"))
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 { // no unix mode bits on windows
 		t.Fatalf("mode = %o, want 0600", info.Mode().Perm())
 	}
 	// second call → already, bytes unchanged

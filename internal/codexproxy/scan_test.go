@@ -13,6 +13,7 @@ import (
 func TestScanDefaultModel(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // windows reads USERPROFILE
 	if got := ScanDefaultModel("fallback"); got != "fallback" {
 		t.Fatalf("absent config.toml: %q", got)
 	}
@@ -31,7 +32,9 @@ func TestScanDefaultModel(t *testing.T) {
 
 func TestChoosePort(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // no daemon state file
-	t.Setenv("HOME", t.TempDir())
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome) // windows reads USERPROFILE
 
 	// A held port (not ours) is rejected when explicitly preferred.
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -65,7 +68,9 @@ func TestChoosePort(t *testing.T) {
 // let two providers collide on one port).
 func TestChoosePort_SkipsAssigned(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("HOME", t.TempDir())
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome) // windows reads USERPROFILE
 
 	base := fmt.Sprintf("http://127.0.0.1:%d/", defaultPortBase)
 	cfg := &config.Config{Version: config.SchemaVersion, Providers: map[string]*config.Provider{

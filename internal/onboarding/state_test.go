@@ -3,6 +3,7 @@ package onboarding
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -41,7 +42,7 @@ func TestState_SaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 { // no unix mode bits on windows
 		t.Fatalf("mode = %o, want 0600", info.Mode().Perm())
 	}
 

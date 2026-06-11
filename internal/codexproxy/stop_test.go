@@ -104,7 +104,9 @@ func TestStopViaShutdownEmptySecretIsFallbackOnly(t *testing.T) {
 
 // loadSecretOnly reads but never creates the secret file.
 func TestLoadSecretOnlyNeverCreates(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome) // windows reads USERPROFILE
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	if got := loadSecretOnly(); got != "" {

@@ -186,7 +186,7 @@ func TestWriteForProvider_FilePerm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
-	if got := info.Mode().Perm(); got != 0o600 {
+	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 { // no unix mode bits on windows
 		t.Fatalf("profile mode = %o, want 0600", got)
 	}
 
@@ -270,7 +270,7 @@ func TestWriteForProvider_HelperBinaryEmpty_UsesExecutable(t *testing.T) {
 	if err := json.Unmarshal(data, &back); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	want := exe + " keyget " + v.Name
+	want := quoteArg(exe) + " keyget " + quoteArg(v.Name)
 	if back.APIKeyHelper != want {
 		t.Fatalf("apiKeyHelper = %q, want %q", back.APIKeyHelper, want)
 	}
@@ -281,12 +281,16 @@ func TestWriteForProvider_OverwriteExisting(t *testing.T) {
 	v := sampleProvider()
 
 	// First write.
-	if _, err := WriteForProvider(v, "/old/path/cc-fleet"); err != nil {
+	oldHelper, newHelper := "/old/path/cc-fleet", "/new/path/cc-fleet"
+	if runtime.GOOS == "windows" {
+		oldHelper, newHelper = `C:\old\cc-fleet.exe`, `C:\new\cc-fleet.exe`
+	}
+	if _, err := WriteForProvider(v, oldHelper); err != nil {
 		t.Fatalf("first WriteForProvider: %v", err)
 	}
 	// Second write with a different helper path so we can prove the file
 	// content actually changed.
-	path, err := WriteForProvider(v, "/new/path/cc-fleet")
+	path, err := WriteForProvider(v, newHelper)
 	if err != nil {
 		t.Fatalf("second WriteForProvider: %v", err)
 	}
@@ -297,7 +301,7 @@ func TestWriteForProvider_OverwriteExisting(t *testing.T) {
 	if !strings.Contains(string(data), "/new/path/cc-fleet keyget deepseek") {
 		t.Fatalf("expected new helper path in file; got:\n%s", data)
 	}
-	if strings.Contains(string(data), "/old/path/cc-fleet") {
+	if strings.Contains(string(data), oldHelper) {
 		t.Fatalf("old helper path leaked into rewritten file:\n%s", data)
 	}
 }

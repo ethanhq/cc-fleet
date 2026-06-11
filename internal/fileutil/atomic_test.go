@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -30,7 +31,7 @@ func TestAtomicWrite_NewFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if st.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 { // no unix mode bits on windows
 		t.Fatalf("mode = %o, want 0o600", st.Mode().Perm())
 	}
 	assertNoOrphanTemp(t, dir, "out.json")
@@ -74,7 +75,7 @@ func TestAtomicWrite_ModeEnforced(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if st.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 { // no unix mode bits on windows
 		t.Fatalf("mode = %o, want 0o600", st.Mode().Perm())
 	}
 }
@@ -91,7 +92,7 @@ func TestAtomicWrite_AlternateMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if st.Mode().Perm() != 0o644 {
+	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o644 { // no unix mode bits on windows
 		t.Fatalf("mode = %o, want 0o644", st.Mode().Perm())
 	}
 }

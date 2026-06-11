@@ -24,6 +24,7 @@ func setupHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // windows reads USERPROFILE
 	t.Setenv("XDG_CONFIG_HOME", "")
 	return home
 }
@@ -783,7 +784,7 @@ func TestUninstall_KeepSecretsDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if _, err := profile.WriteForProvider(v.Providers["glm"], "/usr/bin/cc-fleet"); err != nil {
+	if _, err := profile.WriteForProvider(v.Providers["glm"], testHelperBin()); err != nil {
 		t.Fatalf("WriteForProvider: %v", err)
 	}
 	// Seed fingerprint.json + models-cache.json by writing empty files.
@@ -1044,7 +1045,7 @@ func TestRemove_ConfigSaveFailure_LeavesArtifactsIntact(t *testing.T) {
 	}
 	v := seedProvider(t, "glm")
 	secretPath := seedSecretFile(t, v.SecretRef, "sk-keep")
-	profPath, err := profile.WriteForProvider(v, "/usr/bin/cc-fleet")
+	profPath, err := profile.WriteForProvider(v, testHelperBin())
 	if err != nil {
 		t.Fatalf("WriteForProvider: %v", err)
 	}
@@ -1104,7 +1105,7 @@ func TestRemove_ProfileDeleteFailure_RowAlreadyCommitted(t *testing.T) {
 		t.Fatalf("Init: %v", err)
 	}
 	v := seedProvider(t, "glm")
-	profPath, err := profile.WriteForProvider(v, "/usr/bin/cc-fleet")
+	profPath, err := profile.WriteForProvider(v, testHelperBin())
 	if err != nil {
 		t.Fatalf("WriteForProvider: %v", err)
 	}
@@ -1141,7 +1142,7 @@ func TestRemove_SecretDeleteFailure_RowAlreadyCommitted(t *testing.T) {
 	}
 	v := seedProvider(t, "glm")
 	secretPath := seedSecretFile(t, v.SecretRef, "sk-orphan")
-	if _, err := profile.WriteForProvider(v, "/usr/bin/cc-fleet"); err != nil {
+	if _, err := profile.WriteForProvider(v, testHelperBin()); err != nil {
 		t.Fatalf("WriteForProvider: %v", err)
 	}
 	secretsDir, err := config.SecretsDir()
@@ -1171,4 +1172,13 @@ func TestRemove_SecretDeleteFailure_RowAlreadyCommitted(t *testing.T) {
 	if _, err := os.Stat(secretPath); err != nil {
 		t.Fatalf("secret unexpectedly gone: %v", err)
 	}
+}
+
+// testHelperBin is a platform-absolute helperBinary for profile writes in these
+// tests (a POSIX literal is not absolute on windows).
+func testHelperBin() string {
+	if runtime.GOOS == "windows" {
+		return `C:\fleet\cc-fleet.exe`
+	}
+	return "/usr/bin/cc-fleet"
 }

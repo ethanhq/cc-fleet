@@ -13,7 +13,9 @@ import (
 // setLogin skips the token write (and returns the context error) when its context is
 // already cancelled — so a cancelled/abandoned login never persists an orphan token.
 func TestSetLogin_SkipsOnCancelledContext(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome) // windows reads USERPROFILE
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	s, err := newOwnStore("")
 	if err != nil {
@@ -62,7 +64,9 @@ func TestCredentialFilenameMapping(t *testing.T) {
 // A non-default ref that is not a path-safe identifier is rejected before it can
 // become a token-file / flock name (so a CLI --credential can't escape the dir).
 func TestValidateRef(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome) // windows reads USERPROFILE
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	for _, bad := range []string{"../escape", "a/b", "x\x00y", "a b"} {
 		if _, err := newOwnStore(bad); err == nil {
@@ -117,7 +121,9 @@ func writeStore(t *testing.T, ref, account string) string {
 // Two credentials persist to independent files; a login under one is invisible to the
 // other, and Logout(ref) removes only that ref's file.
 func TestPerCredentialIsolationAndLogout(t *testing.T) {
-	t.Setenv("HOME", t.TempDir()) // no ~/.codex
+	home := t.TempDir()
+	t.Setenv("HOME", home)        // no ~/.codex
+	t.Setenv("USERPROFILE", home) // windows reads USERPROFILE
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	defPath := writeStore(t, SecretRef, "acc-default")
@@ -147,7 +153,9 @@ func TestPerCredentialIsolationAndLogout(t *testing.T) {
 // LogoutIfUnreferenced keeps a credential still claimed by a codex provider (the
 // delete↔re-add race guard) and removes one no longer referenced.
 func TestLogoutIfUnreferenced(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome) // windows reads USERPROFILE
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	cfg := &config.Config{Version: config.SchemaVersion, Providers: map[string]*config.Provider{
@@ -187,6 +195,7 @@ func TestLogoutIfUnreferenced(t *testing.T) {
 func TestStatusReport_CLIRideDefaultOnly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // windows reads USERPROFILE
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	writeCLIAuth(t, home, fakeJWT(map[string]any{"exp": float64(time.Now().Add(time.Hour).Unix())}))
 
@@ -202,7 +211,9 @@ func TestStatusReport_CLIRideDefaultOnly(t *testing.T) {
 // keepToken the token files survive (a login credential) while the locks still go.
 func TestPurge_LegacyAndNamedTokenFiles(t *testing.T) {
 	run := func(t *testing.T, keepToken bool) {
-		t.Setenv("HOME", t.TempDir())
+		fakeHome := t.TempDir()
+		t.Setenv("HOME", fakeHome)
+		t.Setenv("USERPROFILE", fakeHome) // windows reads USERPROFILE
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 		defTok := writeStore(t, SecretRef, "acc")
 		workTok := writeStore(t, "work", "acc")

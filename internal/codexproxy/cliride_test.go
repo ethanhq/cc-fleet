@@ -71,6 +71,7 @@ func authBytes(t *testing.T, home string) []byte {
 func TestCLIRide_ServesUnexpiredTokenReadOnly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // windows reads USERPROFILE
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	access := fakeJWT(map[string]any{"exp": float64(time.Now().Add(time.Hour).Unix())})
@@ -100,6 +101,7 @@ func TestCLIRide_ServesUnexpiredTokenReadOnly(t *testing.T) {
 func TestCLIRide_FallsBackWhenExpired(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // windows reads USERPROFILE
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	access := fakeJWT(map[string]any{"exp": float64(time.Now().Add(-time.Hour).Unix())})
@@ -116,7 +118,9 @@ func TestCLIRide_FallsBackWhenExpired(t *testing.T) {
 
 // With no ~/.codex at all, token() falls straight through to the own chain.
 func TestCLIRide_FallsBackWhenAbsent(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome) // windows reads USERPROFILE
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	rec := &recordRT{}
 	if _, err := rideStore(t, rec).token(context.Background()); !errors.Is(err, ErrReauth) {
@@ -129,6 +133,7 @@ func TestCLIRide_FallsBackWhenAbsent(t *testing.T) {
 func TestCLIRide_OwnLoginTakesPriority(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // windows reads USERPROFILE
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	writeCLIAuth(t, home, fakeJWT(map[string]any{"exp": float64(time.Now().Add(time.Hour).Unix())}))
 
@@ -171,7 +176,9 @@ func TestCLIRide_OwnLoginTakesPriority(t *testing.T) {
 // invalidate(0) is a no-op (the CLI-ride token cannot be refreshed); a non-zero
 // generation forwards to the own chain.
 func TestCLIRide_InvalidateGenDomain(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome) // windows reads USERPROFILE
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	own, err := newOwnStore("")
 	if err != nil {
@@ -210,7 +217,9 @@ func TestStatusReport(t *testing.T) {
 	}
 
 	t.Run("none", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		fakeHome := t.TempDir()
+		t.Setenv("HOME", fakeHome)
+		t.Setenv("USERPROFILE", fakeHome) // windows reads USERPROFILE
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 		st := StatusReport("")
 		if st.CLIRide || st.OwnLogin || st.Active != "none" {
@@ -220,6 +229,7 @@ func TestStatusReport(t *testing.T) {
 	t.Run("ride only", func(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home) // windows reads USERPROFILE
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 		writeCLIAuth(t, home, unexpired())
 		st := StatusReport("")
@@ -228,7 +238,9 @@ func TestStatusReport(t *testing.T) {
 		}
 	})
 	t.Run("own only", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
+		fakeHome := t.TempDir()
+		t.Setenv("HOME", fakeHome)
+		t.Setenv("USERPROFILE", fakeHome) // windows reads USERPROFILE
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 		writeOwn(t)
 		st := StatusReport("")
@@ -239,6 +251,7 @@ func TestStatusReport(t *testing.T) {
 	t.Run("both prefer own", func(t *testing.T) {
 		home := t.TempDir()
 		t.Setenv("HOME", home)
+		t.Setenv("USERPROFILE", home) // windows reads USERPROFILE
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 		writeCLIAuth(t, home, unexpired())
 		writeOwn(t)

@@ -110,7 +110,9 @@ func TestServerHealthzAndModels(t *testing.T) {
 // A live daemon is reused only when its persisted identity matches the requested
 // (protocol, upstream_url); a mismatch is not reused.
 func TestHealthyReusesOnlyOnIdentityMatch(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	t.Setenv("USERPROFILE", fakeHome) // windows reads USERPROFILE
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

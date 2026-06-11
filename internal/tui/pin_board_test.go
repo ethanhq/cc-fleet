@@ -3,6 +3,7 @@ package tui
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -19,6 +20,9 @@ func pinHas(k pinned.Kind, id string) bool {
 // TestBoard_ClearFailsClosedOnPinError: if the pin registry can't be read, the clear must NOT run
 // (a pin-blind sweep could delete pinned records) — it shows a red failure in the modal instead.
 func TestBoard_ClearFailsClosedOnPinError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the error injection (a file as the pin kind-dir) reads as ErrNotExist on windows")
+	}
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", t.TempDir())

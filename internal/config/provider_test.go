@@ -343,6 +343,7 @@ func TestLocations_XDG(t *testing.T) {
 	// errors when neither is set.
 	t.Setenv("XDG_CONFIG_HOME", "/custom/xdg")
 	t.Setenv("HOME", "/home/user")
+	t.Setenv("USERPROFILE", "/home/user") // windows reads USERPROFILE
 	got, err := ConfigDir()
 	if err != nil {
 		t.Fatalf("ConfigDir: %v", err)

@@ -13,7 +13,7 @@ import (
 func TestNestedWorkflowRunsAndReturnsResult(t *testing.T) {
 	rec := &recorder{}
 	dir := t.TempDir()
-	child := filepath.Join(dir, "child.js")
+	child := filepath.ToSlash(filepath.Join(dir, "child.js")) // JS-literal-safe on windows
 	if err := os.WriteFile(child, []byte(`const meta = {name: "c", description: "d"};
 return await agent("child-task:" + args.topic, {provider: "v"});
 `), 0o600); err != nil {
@@ -42,11 +42,11 @@ return await agent("child-task:" + args.topic, {provider: "v"});
 func TestNestedWorkflowDepthGuard(t *testing.T) {
 	rec := &recorder{}
 	dir := t.TempDir()
-	grandchild := filepath.Join(dir, "gc.js")
+	grandchild := filepath.ToSlash(filepath.Join(dir, "gc.js")) // JS-literal-safe on windows
 	os.WriteFile(grandchild, []byte(`const meta = {name: "gc", description: "d"};
 return "deep";
 `), 0o600)
-	child := filepath.Join(dir, "child.js")
+	child := filepath.ToSlash(filepath.Join(dir, "child.js")) // JS-literal-safe on windows
 	os.WriteFile(child, []byte(`const meta = {name: "c", description: "d"};
 return await workflow("`+grandchild+`");
 `), 0o600)
@@ -63,11 +63,11 @@ return await workflow("`+grandchild+`");
 func TestNestedWorkflowGuardIsLexical(t *testing.T) {
 	rec := &recorder{}
 	dir := t.TempDir()
-	grandchild := filepath.Join(dir, "gc.js")
+	grandchild := filepath.ToSlash(filepath.Join(dir, "gc.js")) // JS-literal-safe on windows
 	os.WriteFile(grandchild, []byte(`const meta = {name: "gc", description: "d"};
 return "deep";
 `), 0o600)
-	child := filepath.Join(dir, "child.js")
+	child := filepath.ToSlash(filepath.Join(dir, "child.js")) // JS-literal-safe on windows
 	os.WriteFile(child, []byte(`const meta = {name: "c", description: "d"};
 let msg = "";
 await parallel([async () => { try { await workflow("`+grandchild+`"); } catch (e) { msg = "" + e; } }]);
