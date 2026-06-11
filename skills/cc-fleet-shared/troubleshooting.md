@@ -5,7 +5,7 @@ Read this on a `cc-fleet spawn --json` failure (`ok:false`), or when a spawn ret
 ## Contents
 - Spawn `error_code` dispatch table
 - General rules
-- Self-heal flow (the 6 steps) + worked example
+- Self-heal flow (the 7 steps) + worked example
 
 ---
 
@@ -32,13 +32,17 @@ Dispatch on `error_code` — do **not** parse `error_msg` prose.
 | `PROVIDER_DISABLED` | The provider row has `enabled = false`. | Pick a different provider or tell the user to `cc-fleet edit <provider> --enable`. |
 | `CODEX_PROXY_UNAVAILABLE` | The codex conversion daemon could not start or its loopback port is held by another process. | Tell the user: `cc-fleet codex login` if not logged in; otherwise free the port in the codex `base_url` (or re-add with `cc-fleet codex add --port <n>`). |
 | `CODEX_CLOUDFLARE_BLOCKED` | The ChatGPT backend's edge (Cloudflare) blocked this IP/client — NOT a bad key. | Switch network/IP or retry later; rotating credentials won't help. |
+| `DUPLICATE_NAME` | The `--as` name is already a member of the team. | Pick a fresh name (common on fan-out re-spawns); or teardown the old member first if you mean to replace it. |
+| `BAD_ARGS` | Bad arguments: `--as`/`--team` carries an illegal character (path separator), or both permission-override flags were passed. | Fix the call; don't retry as-is. |
+| `NO_DEFAULT_PROVIDER` / `DEFAULT_PROVIDER_DISABLED` / `DEFAULT_PROVIDER_UNKNOWN` / `CONFIG_LOAD_FAILED` | No provider arg and the default can't be used: none configured / disabled / names a removed provider / providers.toml failed to load. | Apply the provider ask ladder (name a provider or have the user fix `cc-fleet default`); `CONFIG_LOAD_FAILED` → `cc-fleet doctor`. |
+| `UNSUPPORTED_ON_WINDOWS` | The teammate (tmux) lane is not available on Windows — spawn/teardown/hide/show refuse. | Run the work through the subagent or workflow lane (both Windows-native, as is `cc-fleet run`). |
 | (rate-limit class) | Provider returns 429 / rate-limit text in `error_msg`. | Wait 30–60s and retry once; if it persists, switch provider. Don't loop tightly. |
 
 ## General rules
 - One retry max for transient failures (`PROVIDER_UNREACHABLE` after `doctor`, rate-limit class).
 - For config-level failures (`UNKNOWN_PROVIDER`, `KEY_INVALID`, `PROVIDER_DISABLED`), surface to the user and stop — don't re-run blindly.
 - For `FINGERPRINT_MISSING` (corrupt existing cache) and `SPAWN_DID_NOT_SETTLE` (recipe drift on a newer CC), run the self-heal flow before retrying. For `FINGERPRINT_STALE` (no `claude` binary anywhere) the self-heal flow can't help — install/fix Claude Code or PATH, then retry.
-- **Spawn errors ≠ runtime errors.** This table is for `cc-fleet spawn` *failing up front*. A spawn that *succeeds* and then the teammate wedges on a `429` / balance / `401` mid-task produces **no error envelope and no idle notification** — that case is "Watching for stuck provider teammates" in `the /cc-fleet:team skill` (poll `cc-fleet ps --json --check`; never wait open-endedly).
+- **Spawn errors ≠ runtime errors — the dispatch KEYS differ.** Up-front failures carry `error_code` (UPPER_SNAKE, this table). A spawn that *succeeds* and then the teammate wedges on a `429` / balance / `401` mid-task produces **no error envelope and no idle notification** — that case is detected by `cc-fleet ps --json --check`, which reports `error_class` (lower_snake: `insufficient_balance` / `auth` / `rate_limit` / `api_error`) — see "Watching for stuck provider teammates" in `the /cc-fleet:team skill`; never wait open-endedly.
 
 ---
 
@@ -48,7 +52,7 @@ cc-fleet can't invoke the native `Agent` tool itself — only you can. So when t
 
 **This is rare.** cc-fleet ships a bundled default recipe and resolves the binary path live, so a fresh install and a CC version upgrade both "just work" with no probe. You only run this flow on `FINGERPRINT_MISSING` (existing cache corrupt) or `SPAWN_DID_NOT_SETTLE` (a CC newer than the bundled recipe rejected a drifted flag). The flow takes ~15–20s. (macOS: cc-fleet reads the probe's argv via `ps`, not `/proc`; the flow is otherwise identical, and a fresh install never needs it — the bundled recipe covers it.)
 
-### The six steps
+### The seven steps
 ```
 1. DETECT — spawn returned ok:false with error_code in
    {FINGERPRINT_MISSING, SPAWN_DID_NOT_SETTLE}. (FINGERPRINT_STALE is NOT in this

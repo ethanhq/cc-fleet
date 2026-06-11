@@ -483,15 +483,78 @@ func writeSkill(t *testing.T, home, dir string) {
 	}
 }
 
-// TestCheckSkillInstalled_PerLaneAllThree: the three global per-lane skills present → OK.
+// writeSharedDocs drops the full shared-doc set under root/<dir>/.
+func writeSharedDocs(t *testing.T, root, dir string) {
+	t.Helper()
+	d := filepath.Join(root, dir)
+	if err := os.MkdirAll(d, 0o700); err != nil {
+		t.Fatalf("mkdir %s: %v", d, err)
+	}
+	for _, doc := range sharedDocs {
+		if err := os.WriteFile(filepath.Join(d, doc), []byte("# doc"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", doc, err)
+		}
+	}
+}
+
+// TestCheckSkillInstalled_PerLaneAllThree: the three global per-lane skills + the
+// shared docs present → OK.
 func TestCheckSkillInstalled_PerLaneAllThree(t *testing.T) {
 	home := setupHome(t)
 	for _, lane := range skillLanes {
 		writeSkill(t, home, "cc-fleet-"+lane)
 	}
+	writeSharedDocs(t, filepath.Join(home, ".claude", "skills"), sharedDirName)
 	r := CheckSkillInstalled()
 	if r.Status != StatusOK {
 		t.Fatalf("Status = %s, want ok for all three per-lane skills (detail=%s)", r.Status, r.Detail)
+	}
+}
+
+// TestCheckSkillInstalled_SharedDocsMissingWarns: all three lanes present but no
+// shared docs beside them → WARN (every lane links ../cc-fleet-shared/<doc>).
+func TestCheckSkillInstalled_SharedDocsMissingWarns(t *testing.T) {
+	home := setupHome(t)
+	for _, lane := range skillLanes {
+		writeSkill(t, home, "cc-fleet-"+lane)
+	}
+	r := CheckSkillInstalled()
+	if r.Status != StatusWarn || !strings.Contains(r.Detail, "shared") {
+		t.Fatalf("Status = %s detail=%q, want warn naming the missing shared docs", r.Status, r.Detail)
+	}
+}
+
+// TestCheckSkillInstalled_LegacySharedLayoutOK: OLD lane skills (citing shared/)
+// beside a legacy un-namespaced shared/ dir — a self-consistent install — read OK.
+func TestCheckSkillInstalled_LegacySharedLayoutOK(t *testing.T) {
+	home := setupHome(t)
+	for _, lane := range skillLanes {
+		writeSkill(t, home, "cc-fleet-"+lane) // body "# skill" — no cc-fleet-shared/ citation
+	}
+	writeSharedDocs(t, filepath.Join(home, ".claude", "skills"), "shared")
+	r := CheckSkillInstalled()
+	if r.Status != StatusOK {
+		t.Fatalf("Status = %s, want ok for the legacy shared layout (detail=%s)", r.Status, r.Detail)
+	}
+}
+
+// TestCheckSkillInstalled_SkewedSharedWarns: CURRENT lane skills (citing
+// cc-fleet-shared/) beside only the legacy shared/ dir — every link broken —
+// must WARN, not pass on the legacy dir's presence.
+func TestCheckSkillInstalled_SkewedSharedWarns(t *testing.T) {
+	home := setupHome(t)
+	for _, lane := range skillLanes {
+		writeSkill(t, home, "cc-fleet-"+lane)
+	}
+	// The subagent lane cites the namespaced dir (the current skill shape).
+	sub := filepath.Join(home, ".claude", "skills", "cc-fleet-subagent", "SKILL.md")
+	if err := os.WriteFile(sub, []byte("# skill\nsee ../cc-fleet-shared/routing.md"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeSharedDocs(t, filepath.Join(home, ".claude", "skills"), "shared")
+	r := CheckSkillInstalled()
+	if r.Status != StatusWarn || !strings.Contains(r.Detail, "shared") {
+		t.Fatalf("Status = %s detail=%q, want warn for new skills beside only the legacy shared dir", r.Status, r.Detail)
 	}
 }
 
@@ -529,6 +592,7 @@ func TestCheckSkillInstalled_PluginLegacyCacheNoWarn(t *testing.T) {
 	for _, lane := range skillLanes {
 		writeSkill(t, home, "cc-fleet-"+lane)
 	}
+	writeSharedDocs(t, filepath.Join(home, ".claude", "skills"), sharedDirName)
 	// Stale legacy in the plugin cache (an old version dir), NOT under ~/.claude/skills.
 	legacy := filepath.Join(home, ".claude", "plugins", "cache", "ethanhq", "cc-fleet", "0.1.0", "skills", "cc-fleet")
 	if err := os.MkdirAll(legacy, 0o700); err != nil {
@@ -557,6 +621,7 @@ func TestCheckSkillInstalled_PluginPerLane(t *testing.T) {
 			t.Fatalf("write: %v", err)
 		}
 	}
+	writeSharedDocs(t, root, sharedDirName)
 	r := CheckSkillInstalled()
 	if r.Status != StatusOK || !strings.Contains(r.Detail, "plugin") {
 		t.Fatalf("Status = %s detail = %q, want ok + plugin mention", r.Status, r.Detail)

@@ -161,7 +161,7 @@ Supported targets: linux & darwin, amd64 & arm64.
 ## Editing the skills (canonical vs local copy)
 
 The skills' canonical source is **`skills/{subagent,team,workflow}/SKILL.md`** plus the shared
-docs in `skills/shared/` (no SKILL.md there — deliberately not a skill). The repo also has a
+docs in `skills/cc-fleet-shared/` (no SKILL.md there — deliberately not a skill). The repo also has a
 gitignored install copy under `.claude/skills/` that `make skill-sync` refreshes from
 canonical. **Edit only the canonical source**, then run `make skill-sync`;
 `make skill-drift-check` fails if the two diverge.

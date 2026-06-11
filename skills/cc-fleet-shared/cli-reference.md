@@ -114,6 +114,14 @@ cc-fleet ps --json [--check]             List live cc-fleet teammates across all
                                          Empty → ok:true with []. --check adds per-pane
                                          health (status / error_class), redacted.
 
+cc-fleet watch [--check] [--interval] [--timeout]
+                                         Stream a live TEXT snapshot of the whole fleet
+                                         (teammates + subagent jobs + workflow runs) until
+                                         interrupted. NOT a --json command — a human view;
+                                         run it in a backgrounded shell to surface the
+                                         fleet in /tasks. For machine reads use ps /
+                                         subagent-status / workflow status instead.
+
 cc-fleet list --json                     Configured providers + enabled flag + cache
                                          freshness. Use to pick a provider.
 cc-fleet models <provider> --json          Cached model list for provider. Use to pick
@@ -124,7 +132,7 @@ cc-fleet refresh-fingerprint --probe-team <team> --json
                                          Snapshot Claude Code's spawn template from a
                                          live probe teammate (Linux: /proc; macOS: ps).
                                          Used inside the self-heal flow only
-                                         (shared/troubleshooting.md).
+                                         (cc-fleet-shared/troubleshooting.md).
 ```
 
 ---
@@ -140,6 +148,8 @@ cc-fleet spawn [provider]                (provider optional → default provider
   --target <tmux-target>                 tmux session/window/pane.
                                          Default: largest attached session, right split.
   --probe / --no-probe                   Probe provider reachability (3s). Default: --probe.
+  --verify / --no-verify                 Post-spawn settle check (the pane reached a live
+                                         claude). Default: --verify.
   --auto-team / --no-auto-team           Create the team if it doesn't exist. Default: on.
   --lead-session-id <uuid>               Override parent session UUID. Default: team config.
   --permission-mode <mode>               Override inherited permission mode.
@@ -148,7 +158,9 @@ cc-fleet spawn [provider]                (provider optional → default provider
   --json                                 Machine-readable envelope. Always use this.
 ```
 
-**Permission mode (best-effort startup-intent inheritance).** By default a provider teammate inherits the permission mode the **lead session was started with** (e.g. the lead launched with `--dangerously-skip-permissions` or `--permission-mode acceptEdits`), detected from the lead process at spawn time; a lead on `default`/`plan` passes nothing down. Pass `--permission-mode <mode>` or `--dangerously-skip-permissions` to override per spawn (highest precedence; the two override flags are mutually exclusive). The `--json` envelope reports `permission_inheritance`: `"manual"` (you overrode), `"lead-flag"` (took the lead's explicit startup flag), `"lead-default"` (lead had none → none applied), or `"frozen-template"` (couldn't detect the lead → fell back to the bundled recipe's flags). **Limitation:** a permission-mode switch made at **runtime** inside the lead session (after startup) is NOT propagated — only the startup intent is captured.
+**Permission mode (best-effort startup-intent inheritance).** By default a provider teammate inherits the permission mode the **lead session was started with** (e.g. the lead launched with `--dangerously-skip-permissions` or `--permission-mode acceptEdits`), detected from the lead process at spawn time; a lead on `default`/`plan` passes nothing down. Pass `--permission-mode <mode>` or `--dangerously-skip-permissions` to override per spawn (highest precedence; the two override flags are mutually exclusive). The `--json` envelope reports `permission_inheritance`: `"manual"` (you overrode), `"lead-flag"` (took the lead's explicit startup flag), `"lead-default"` (lead had none → none applied), or `"frozen-template"` (couldn't detect the lead → fell back to the bundled recipe's flags).
+
+**A runtime permission-mode switch inside the lead session is NOT propagated** — only the startup intent is captured. Need a different mode mid-session → re-spawn with an explicit `--permission-mode`.
 
 ## Spawn JSON envelope (success)
 ```json
@@ -177,7 +189,7 @@ cc-fleet spawn [provider]                (provider optional → default provider
   "suggestion": "Run cc-fleet doctor"
 }
 ```
-Dispatch on `error_code` (see `shared/troubleshooting.md`), never parse `error_msg`.
+Dispatch on `error_code` (see `cc-fleet-shared/troubleshooting.md`), never parse `error_msg`.
 
 ---
 

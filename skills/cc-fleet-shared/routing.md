@@ -1,6 +1,6 @@
 # Routing — cross-lane arbitration
 
-Shared reference — /cc-fleet:team and /cc-fleet:subagent each link here with one line. Shared docs are cited as shared/<file>.md; paths are relative to the skill's own directory, so from a SKILL.md this file is shared/routing.md (../shared/routing.md from here).
+Shared reference — each lane skill links here with one line.
 
 Three lanes: a long-lived provider teammate (/cc-fleet:team), a one-shot provider subagent (/cc-fleet:subagent), or handle it in the main session (lane 3, below). Multi-phase / dynamic orchestration over many subagents is /cc-fleet:workflow — a lane-2 shape, no team tools needed.
 
@@ -35,4 +35,4 @@ Teammate mode is driven by Claude's native `TeamCreate` / `SendMessage` tools, w
 
 ## No providers configured
 
-If `cc-fleet list --json` returns an empty provider list, no offload lane is possible — tell the user to `cc-fleet add <provider>` first (see shared/providers.md; commands in shared/cli-reference.md).
+If `cc-fleet list --json` returns an empty provider list, no offload lane is possible — tell the user to `cc-fleet add <provider>` first (provider notes are in providers.md, commands in cli-reference.md — both beside this file).

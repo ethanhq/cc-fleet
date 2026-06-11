@@ -38,8 +38,8 @@ archives:
     # a manual `tar xzf` then `cd … && ./install.sh` is clean.
     wrap_in_directory: true
     # The copy-binary installer (release/install.sh) reads skills/<lane>/SKILL.md
-    # and skills/shared/ from next to itself, so the binary, skills tree, and
-    # installer must sit together at the archive root (same layout as the
+    # and skills/cc-fleet-shared/ from next to itself, so the binary, skills tree,
+    # and installer must sit together at the archive root (same layout as the
     # Makefile release-archive staging).
     files:
       - src: skills/subagent/SKILL.md
@@ -48,8 +48,8 @@ archives:
         dst: skills/team/SKILL.md
       - src: skills/workflow/SKILL.md
         dst: skills/workflow/SKILL.md
-      - src: skills/shared/*.md
-        dst: skills/shared
+      - src: skills/cc-fleet-shared/*.md
+        dst: skills/cc-fleet-shared
       - src: release/install.sh
         dst: install.sh
       - src: release/README.md

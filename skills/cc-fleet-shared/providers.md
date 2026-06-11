@@ -1,6 +1,6 @@
 # Provider selection + prompt profiles
 
-Shared cross-lane reference — linked from `/cc-fleet:team`, `/cc-fleet:subagent`, and `/cc-fleet:workflow`. Shared docs are cited as `shared/<file>.md`, resolved relative to the citing skill's own directory — so this file is `shared/providers.md` (`../shared/providers.md` from a SKILL.md). Siblings: `shared/routing.md`, `shared/cli-reference.md`, `shared/troubleshooting.md`.
+Shared cross-lane reference — linked from `/cc-fleet:team`, `/cc-fleet:subagent`, and `/cc-fleet:workflow`. Siblings in this directory: routing.md, cli-reference.md, troubleshooting.md.
 
 ## Contents
 - Picking a provider + model

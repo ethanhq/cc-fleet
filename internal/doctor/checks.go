@@ -298,6 +298,12 @@ func CheckProviderKeys() CheckResult {
 // three; the global install prefixes them, see globalSkillDir).
 var skillLanes = []string{"subagent", "team", "workflow"}
 
+// sharedDirName is the namespaced shared-doc dir the lane skills link
+// (../cc-fleet-shared/<doc>); sharedDocs are the docs every lane depends on.
+const sharedDirName = "cc-fleet-shared"
+
+var sharedDocs = []string{"cli-reference.md", "providers.md", "routing.md", "troubleshooting.md"}
+
 // The skill ships through two channels AND two layouts:
 //   - the per-lane layout (subagent / team / workflow) — the current form, OK only
 //     when ALL THREE are present (a partial install leaves a lane uninvokable);
@@ -317,7 +323,7 @@ func CheckSkillInstalled() CheckResult {
 		r.Detail = err.Error()
 		return r
 	}
-	newWhere := perLaneSkillsPath(cdir)
+	newRoot, newPrefix, newWhere := perLaneSkillsPath(cdir)
 	oldWhere := legacySkillPath(cdir)
 	// Coexistence is only a real conflict for a MANUAL ~/.claude/skills/cc-fleet copy
 	// (Claude Code loads every dir under skills/, so the old router competes). A legacy
@@ -329,6 +335,10 @@ func CheckSkillInstalled() CheckResult {
 		r.Status = StatusWarn
 		r.Detail = "both the per-lane skills and a legacy ~/.claude/skills/cc-fleet skill are installed — the old router competes"
 		r.FixHint = "remove the legacy copy: rm -rf ~/.claude/skills/cc-fleet"
+	case newWhere != "" && !sharedDocsPresent(newRoot, newPrefix):
+		r.Status = StatusWarn
+		r.Detail = "the per-lane skills are installed but the shared docs they link are missing beside them"
+		r.FixHint = "re-run `make install-skill` (or reinstall the plugin) so skills/" + sharedDirName + "/ lands next to the lane skills"
 	case newWhere != "":
 		r.Status = StatusOK
 		r.Detail = newWhere
@@ -343,15 +353,16 @@ func CheckSkillInstalled() CheckResult {
 	return r
 }
 
-// perLaneSkillsPath returns the directory holding the per-lane skills when ALL
-// THREE (subagent / team / workflow) are present under ONE root, else "". The
-// global install prefixes the dirs (cc-fleet-<lane>); the plugin ships them bare
-// under a single <version> root. The all-three-under-one-root check (not three
-// independent globs) means a partial install can't read as healthy.
-func perLaneSkillsPath(cdir string) string {
+// perLaneSkillsPath returns the directory holding the per-lane skills, the lane
+// dir-name prefix in that layout, and a display label, when ALL THREE
+// (subagent / team / workflow) are present under ONE root — else ("", "", "").
+// The global install prefixes the dirs (cc-fleet-<lane>); the plugin ships them
+// bare under a single <version> root. The all-three-under-one-root check (not
+// three independent globs) means a partial install can't read as healthy.
+func perLaneSkillsPath(cdir string) (root, prefix, label string) {
 	// Global: ~/.claude/skills/cc-fleet-<lane>/SKILL.md
-	if allLanesPresent(filepath.Join(cdir, "skills"), "cc-fleet-") {
-		return filepath.Join(cdir, "skills") + " (per-lane)"
+	if skills := filepath.Join(cdir, "skills"); allLanesPresent(skills, "cc-fleet-") {
+		return skills, "cc-fleet-", skills + " (per-lane)"
 	}
 	// Plugin: ~/.claude/plugins/cache/<marketplace>/cc-fleet/<version>/skills/<lane>/SKILL.md.
 	// Glob one lane to enumerate candidate version roots, then require the siblings
@@ -359,15 +370,43 @@ func perLaneSkillsPath(cdir string) string {
 	pattern := filepath.Join(cdir, "plugins", "cache", "*", "cc-fleet", "*", "skills", skillLanes[0], "SKILL.md")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
-		return ""
+		return "", "", ""
 	}
 	for _, m := range matches {
 		skillsRoot := filepath.Dir(filepath.Dir(m)) // .../skills
 		if allLanesPresent(skillsRoot, "") {
-			return skillsRoot + " (plugin, per-lane)"
+			return skillsRoot, "", skillsRoot + " (plugin, per-lane)"
 		}
 	}
-	return ""
+	return "", "", ""
+}
+
+// sharedDocsPresent reports whether every shared doc the INSTALLED lane skills
+// link exists beside them under root. The expected dir is read from the skills
+// themselves: a lane SKILL.md citing cc-fleet-shared/ requires that dir; an
+// older skill set citing shared/ accepts either — so a self-consistent old
+// install reads OK, but new skills beside only the legacy dir (every link
+// broken) read as missing.
+func sharedDocsPresent(root, prefix string) bool {
+	dirs := []string{sharedDirName, "shared"}
+	if data, err := os.ReadFile(filepath.Join(root, prefix+skillLanes[0], "SKILL.md")); err == nil {
+		if strings.Contains(string(data), sharedDirName+"/") {
+			dirs = []string{sharedDirName}
+		}
+	}
+	for _, dir := range dirs {
+		ok := true
+		for _, doc := range sharedDocs {
+			if info, err := os.Stat(filepath.Join(root, dir, doc)); err != nil || info.IsDir() {
+				ok = false
+				break
+			}
+		}
+		if ok {
+			return true
+		}
+	}
+	return false
 }
 
 // allLanesPresent reports whether every skillLane's SKILL.md exists under dir,

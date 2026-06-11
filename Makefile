@@ -11,11 +11,18 @@ SKILL_ROOT ?= $(HOME)/.claude/skills
 # Cross-compile output
 DIST_DIR   := ./dist
 
-# The per-lane skills + the shared docs they link. The plugin ships them bare
-# (skills/<lane>, skills/shared); the global install below prefixes the lane dirs
-# (cc-fleet-<lane>) to avoid generic-name collisions, keeping `shared` unprefixed
-# so the `../shared/...` links resolve in both layouts (sibling dirs).
+# The per-lane skills + the shared docs they link. The plugin ships the lane dirs
+# bare (skills/<lane>); the global install below prefixes them (cc-fleet-<lane>) to
+# avoid generic-name collisions. The shared docs are namespaced at the SOURCE
+# (skills/cc-fleet-shared), so both layouts ship the same collision-free sibling
+# dir and the `../cc-fleet-shared/...` links resolve unchanged in each.
 SKILL_LANES := subagent team workflow
+SKILL_SHARED := cc-fleet-shared
+# The shared doc set, used to recognize a legacy un-namespaced ~/.claude/skills/shared
+# dir as cc-fleet-owned before removing it: every file must match BY NAME and carry a
+# cc-fleet content marker (never delete a dir another tool may own — even one that
+# happens to use the same generic filenames).
+SHARED_DOCS := cli-reference.md providers.md routing.md troubleshooting.md
 
 # Repo-local installed-skill copy (gitignored). `skill-sync` mirrors the canonical
 # skills/ tree here; `skill-drift-check` fails if they diverge.
@@ -40,16 +47,33 @@ install-bin: build
 
 # Install the three per-lane skills (prefixed cc-fleet-<lane>) + the shared docs
 # they link. Removes the legacy single cc-fleet skill first, so the old router
-# can't coexist and compete with the new skills.
+# can't coexist and compete with the new skills. The shared dir is reinstalled
+# clean (a renamed/removed doc must not linger); a legacy un-namespaced shared/
+# dir is migrated away only when it holds nothing but cc-fleet's own docs.
 install-skill:
 	rm -rf $(SKILL_ROOT)/cc-fleet
 	@for lane in $(SKILL_LANES); do \
 	  install -d $(SKILL_ROOT)/cc-fleet-$$lane; \
 	  install -m 0644 skills/$$lane/SKILL.md $(SKILL_ROOT)/cc-fleet-$$lane/SKILL.md; \
 	done
-	install -d $(SKILL_ROOT)/shared
-	install -m 0644 skills/shared/*.md $(SKILL_ROOT)/shared/
-	@echo "Installed the per-lane skills (cc-fleet-{$(shell echo $(SKILL_LANES) | tr ' ' ',')}) + shared to $(SKILL_ROOT)/"
+	rm -rf $(SKILL_ROOT)/$(SKILL_SHARED)
+	install -d $(SKILL_ROOT)/$(SKILL_SHARED)
+	install -m 0644 skills/$(SKILL_SHARED)/*.md $(SKILL_ROOT)/$(SKILL_SHARED)/
+	@if [ -d $(SKILL_ROOT)/shared ]; then \
+	  owned=yes; \
+	  for f in $$(ls -A $(SKILL_ROOT)/shared); do \
+	    case " $(SHARED_DOCS) " in \
+	      *" $$f "*) grep -q cc-fleet "$(SKILL_ROOT)/shared/$$f" 2>/dev/null || owned=no ;; \
+	      *) owned=no ;; \
+	    esac; \
+	  done; \
+	  if [ "$$owned" = yes ]; then \
+	    rm -rf $(SKILL_ROOT)/shared; echo "migrated: removed the legacy $(SKILL_ROOT)/shared (cc-fleet docs only)"; \
+	  else \
+	    echo "note: $(SKILL_ROOT)/shared contains non-cc-fleet files — left in place"; \
+	  fi; \
+	fi
+	@echo "Installed the per-lane skills (cc-fleet-{$(shell echo $(SKILL_LANES) | tr ' ' ',')}) + $(SKILL_SHARED) to $(SKILL_ROOT)/"
 
 # Mirror the canonical skills/ tree into the gitignored repo-local copy (a dev
 # convenience for Claude Code working inside the repo).
@@ -59,8 +83,8 @@ skill-sync:
 	  mkdir -p $(LOCAL_SKILLS)/$$lane; \
 	  cp skills/$$lane/SKILL.md $(LOCAL_SKILLS)/$$lane/SKILL.md; \
 	done
-	@mkdir -p $(LOCAL_SKILLS)/shared
-	@cp skills/shared/*.md $(LOCAL_SKILLS)/shared/
+	@mkdir -p $(LOCAL_SKILLS)/$(SKILL_SHARED)
+	@cp skills/$(SKILL_SHARED)/*.md $(LOCAL_SKILLS)/$(SKILL_SHARED)/
 	@echo "Synced $(LOCAL_SKILLS)/ from canonical skills/"
 
 # Fail if the repo-local copy has drifted from canonical. NOT a Go unit test:
@@ -73,17 +97,29 @@ skill-drift-check:
 	  fi; \
 	  diff -q skills/$$lane/SKILL.md $(LOCAL_SKILLS)/$$lane/SKILL.md || { echo "skill-drift-check: DRIFT in $$lane — run 'make skill-sync'"; exit 1; }; \
 	done
-	@diff -rq skills/shared $(LOCAL_SKILLS)/shared \
+	@diff -rq skills/$(SKILL_SHARED) $(LOCAL_SKILLS)/$(SKILL_SHARED) \
 	  && echo "skill-drift-check: installed copy matches canonical" \
-	  || { echo "skill-drift-check: DRIFT in shared — run 'make skill-sync'"; exit 1; }
+	  || { echo "skill-drift-check: DRIFT in $(SKILL_SHARED) — run 'make skill-sync'"; exit 1; }
 
 # Removes the binary, the ccf symlink, and any skills `make install-skill` placed
-# (the prefixed per-lane dirs + shared, and the legacy cc-fleet dir if present).
-# Config/profile/secret cleanup is the `cc-fleet uninstall` command's job.
+# (the prefixed per-lane + shared dirs, and the legacy cc-fleet dir if present).
+# A legacy un-namespaced shared/ dir is removed only when it holds nothing but
+# cc-fleet's own docs (never delete a dir another tool may own). Config/profile/
+# secret cleanup is the `cc-fleet uninstall` command's job.
 uninstall:
 	rm -f $(PREFIX)/$(BIN_NAME) $(PREFIX)/ccf
-	rm -rf $(SKILL_ROOT)/cc-fleet $(SKILL_ROOT)/shared
+	rm -rf $(SKILL_ROOT)/cc-fleet $(SKILL_ROOT)/$(SKILL_SHARED)
 	@for lane in $(SKILL_LANES); do rm -rf $(SKILL_ROOT)/cc-fleet-$$lane; done
+	@if [ -d $(SKILL_ROOT)/shared ]; then \
+	  owned=yes; \
+	  for f in $$(ls -A $(SKILL_ROOT)/shared); do \
+	    case " $(SHARED_DOCS) " in \
+	      *" $$f "*) grep -q cc-fleet "$(SKILL_ROOT)/shared/$$f" 2>/dev/null || owned=no ;; \
+	      *) owned=no ;; \
+	    esac; \
+	  done; \
+	  if [ "$$owned" = yes ]; then rm -rf $(SKILL_ROOT)/shared; fi; \
+	fi
 	@echo "Removed cc-fleet + ccf (+ skill dirs if installed) from $(PREFIX) / $(SKILL_ROOT)"
 
 test:
@@ -123,12 +159,12 @@ release-archive: cross-compile
 	  mkdir -p "$$stage"; \
 	  cp "$(DIST_DIR)/$(BIN_NAME)-$$plat" "$$stage/$(BIN_NAME)"; \
 	  chmod +x "$$stage/$(BIN_NAME)"; \
-	  mkdir -p "$$stage/skills/shared"; \
+	  mkdir -p "$$stage/skills/$(SKILL_SHARED)"; \
 	  for lane in $(SKILL_LANES); do \
 	    mkdir -p "$$stage/skills/$$lane"; \
 	    cp skills/$$lane/SKILL.md "$$stage/skills/$$lane/SKILL.md"; \
 	  done; \
-	  cp skills/shared/*.md "$$stage/skills/shared/"; \
+	  cp skills/$(SKILL_SHARED)/*.md "$$stage/skills/$(SKILL_SHARED)/"; \
 	  cp release/install.sh "$$stage/install.sh"; \
 	  chmod +x "$$stage/install.sh"; \
 	  cp release/README.md "$$stage/README.md"; \

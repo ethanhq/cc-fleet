@@ -34,6 +34,6 @@ the binary + plugin later.
 |---|---|
 | `cc-fleet` | The prebuilt binary for this platform. |
 | `install.sh` | Copy-binary installer (no build). Skills via the plugin by default; `--skill global` copies the bundled skills, `--skill none` skips them. For a from-source build, clone the repo and run `make install`. |
-| `skills/` | The bundled per-lane skills (`subagent` / `team` / `workflow`) + `shared/` docs — used by `--skill global` (the default install uses the plugin instead). |
+| `skills/` | The bundled per-lane skills (`subagent` / `team` / `workflow`) + `cc-fleet-shared/` docs — used by `--skill global` (the default install uses the plugin instead). |
 
 Full documentation: https://github.com/ethanhq/cc-fleet

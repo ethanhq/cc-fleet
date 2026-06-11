@@ -195,8 +195,30 @@ case "$SKILL_MODE" in
             mkdir -p "${root}/cc-fleet-${lane}"
             cp "${extract}/skills/${lane}/SKILL.md" "${root}/cc-fleet-${lane}/SKILL.md"
         done
-        mkdir -p "${root}/shared"
-        cp "${extract}/skills/shared/"*.md "${root}/shared/"
+        rm -rf "${root}/cc-fleet-shared"
+        mkdir -p "${root}/cc-fleet-shared"
+        cp "${extract}/skills/cc-fleet-shared/"*.md "${root}/cc-fleet-shared/"
+        # Migrate the legacy un-namespaced shared dir, but only when every file is a
+        # known cc-fleet doc BY NAME AND CONTENT — never delete another tool's dir,
+        # even one that happens to use the same generic filenames. (POSIX sh — this
+        # script runs under `sh`.)
+        if [ -d "${root}/shared" ]; then
+            owned=yes
+            for f in "${root}/shared"/* "${root}/shared"/.[!.]* "${root}/shared"/..?*; do
+                [ -e "$f" ] || continue
+                case "$(basename "$f")" in
+                    cli-reference.md|providers.md|routing.md|troubleshooting.md)
+                        grep -q cc-fleet "$f" 2>/dev/null || owned=no ;;
+                    *) owned=no ;;
+                esac
+            done
+            if [ "$owned" = yes ]; then
+                rm -rf "${root}/shared"
+                echo "==> Migrated: removed the legacy ${root}/shared (cc-fleet docs only)"
+            else
+                echo "==> Note: ${root}/shared contains non-cc-fleet files — left in place"
+            fi
+        fi
         echo "==> Installed the per-lane cc-fleet skills (global) to ${root}/"
         ;;
     none)

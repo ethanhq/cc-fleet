@@ -7,11 +7,11 @@ description: Spawn long-lived provider LLM teammates in tmux panes that you mess
 
 Run a third-party provider model as a real Claude Code teammate in a tmux pane: same tool stack and team coordination as a native teammate, LLM backend swapped to the provider. Your main session's own auth stays untouched.
 
-**Wrong lane?** A fire-and-forget one-shot or flat batch → /cc-fleet:subagent; a scripted multi-phase run → /cc-fleet:workflow; full arbitration in shared/routing.md.
+**Wrong lane?** A fire-and-forget one-shot or flat batch → /cc-fleet:subagent; a scripted multi-phase run → /cc-fleet:workflow; full arbitration in cc-fleet-shared/routing.md.
 
-Shared docs are cited as shared/<file>.md (../shared/<file>.md from here).
+When this skill cites `cc-fleet-shared/<file>.md`, OPEN it with the Read tool at `../cc-fleet-shared/<file>.md` relative to this SKILL.md — the cited content is load-bearing, not optional background.
 
-**Precondition — agent-teams must be ON:** check your own tool list for `SendMessage` / `TeamCreate`; absent → do NOT spawn (an unmessageable pane bills the provider with no work) — enablement + fallback in shared/routing.md.
+**Precondition — agent-teams must be ON:** check your own tool list for `SendMessage` / `TeamCreate`; absent → do NOT spawn (an unmessageable pane bills the provider with no work) — enablement + fallback in cc-fleet-shared/routing.md.
 
 ---
 
@@ -26,7 +26,7 @@ Steps 1, 3, 6 are **native tools**; steps 2, 5, 6a are `cc-fleet` via Bash with 
 2. cc-fleet spawn [<provider>] --as <name> --team <team> [--model <slot|id>] --json
    ← Bash; check ok:true, grab .pane_id / .agent_id
    The provider arg is OPTIONAL — omitted, the default provider applies
-   (see "Choosing the provider"). Full flag table: shared/cli-reference.md.
+   (see "The provider ask ladder"). Full flag table: cc-fleet-shared/cli-reference.md.
 
 3. SendMessage({to: "<name>", message: "<task>. When done, send your result
    back with SendMessage."})
@@ -44,11 +44,11 @@ Steps 1, 3, 6 are **native tools**; steps 2, 5, 6a are `cc-fleet` via Bash with 
    b. TeamDelete()                      ← native SECOND: removes the team/tasks dirs
 ```
 
-On a spawn failure (`ok:false`), dispatch on `error_code` — table + self-heal flow in shared/troubleshooting.md.
+On a spawn failure (`ok:false`), dispatch on `error_code` — table + self-heal flow in cc-fleet-shared/troubleshooting.md.
 
-**Why teardown before TeamDelete.** `TeamDelete()` only deletes `~/.claude/teams|tasks/<team>/`; it never touches tmux. A provider teammate is an external tmux process that does NOT self-close — `TeamDelete()` alone leaves an orphan pane + process (a wedged one keeps billing the provider). `cc-fleet teardown` kills the pane and reaps the process, and must run first because it reads the team's `config.json` (the swarm socket lives there) — which `TeamDelete()` deletes. `teardown` is forceful by design; for a provider team it is required. Same order for wedged / probe teams.
-
-**Ask before teardown.** Don't auto-kill on task completion. A teammate cost real tokens to spin up and is reusable — you can SendMessage it the next task, and the user may want to look at its pane. Summarize what it produced, then ask whether to keep or tear down. Skip the ask only when the user already said "clean up when done" or it's a throwaway probe team.
+**Teardown order — two hard rules** (apply to wedged and probe teams too):
+1. `cc-fleet teardown` FIRST, `TeamDelete()` SECOND — teardown reads the team's `config.json` (the swarm socket lives there), which `TeamDelete()` deletes; and `TeamDelete()` alone never touches tmux, so a provider pane/process would be orphaned and keep billing.
+2. ASK before tearing down — a teammate is reusable (SendMessage it the next task) and the user may want its pane. Skip the ask only if the user already said "clean up when done" or it's a throwaway probe team.
 
 ### Example: one worker on a refactor
 
@@ -80,13 +80,13 @@ TeamDelete()
 
 ---
 
-## Choosing the provider (ask at most once per task)
+## The provider ask ladder (ask at most once per task)
 1. The user named a provider or model → use it.
 2. Else run `cc-fleet default --json`: if it returns a provider (source "configured" or "auto"), use it and STATE it in your kickoff line (e.g. "using glm (default)").
-3. Else (several providers, none default) ask the user ONCE which to use — list the enabled providers from `cc-fleet list --json` (name + default_model + the one-line note in shared/providers.md). After they pick, run `cc-fleet default <chosen>` so you never ask again. (`cc-fleet default <p>` is user-layer; only run it to FILL a blank default, never with --force.)
+3. Else (several providers, none default) ask the user ONCE which to use — list the enabled providers from `cc-fleet list --json` (name + default_model + the one-line note in cc-fleet-shared/providers.md). After they pick, run `cc-fleet default <chosen>` so you never ask again. (`cc-fleet default <p>` is user-layer; only run it to FILL a blank default, never with --force.)
 4. A mid-task provider failure (insufficient balance / rate limit / auth) → STOP, tell the user what happened, propose the next provider, and WAIT for their confirmation. Never switch providers silently.
 
-Model tier within a provider: fan-out / leaf work → omit `--model` (or `--model fast`); judge / synthesis / sustained work → `--model strong`. The provider's roster decides the actual model — see shared/providers.md.
+Model tier within a provider: fan-out / leaf work → omit `--model` (or `--model fast`); judge / synthesis / sustained work → `--model strong`. The provider's roster decides the actual model — see cc-fleet-shared/providers.md.
 
 ---
 
@@ -111,14 +111,14 @@ The one runtime difference from a native teammate. A provider teammate's brain *
 
 1. **Set a timeout.** A provider API error surfaces on the first LLM call — check ~60–90s after dispatch, then every ~2–3 min while a task legitimately runs. An idle notification cancels the wait.
 
-2. **Poll health, don't sleep blindly:** `cc-fleet ps --json --check`. `--check` scans each pane and adds `status` (`ok` | `error` | `unknown`) plus `error_class` + `detail` on error — only the class, never raw pane text. Dispatch:
+2. **Poll health, don't sleep blindly:** `cc-fleet ps --json --check`. `--check` scans each pane and adds `status` (`ok` | `error` | `unknown`) plus `error_class` + `detail` on error — only the class, never raw pane text. Note the key: this runtime-wedge detection dispatches on **`error_class`** (lower_snake), a DIFFERENT key from the **`error_code`** (UPPER_SNAKE) that up-front spawn/subagent failure envelopes carry — don't switch on the wrong one. Dispatch:
    - `ok` — keep waiting (within your ceiling).
    - `unknown` — pane couldn't be captured (teammate exited / tmux down). Confirm with `cc-fleet ps --json`; treat a vanished teammate as failed.
    - `error` — act now, per `error_class`:
 
    | `error_class` | Meaning | What you do |
    |---|---|---|
-   | `insufficient_balance` | Provider out of balance / quota. | Retrying can't help. Tear down; STOP, tell the user, propose the next provider, wait for confirm (ask-policy rule 4). |
+   | `insufficient_balance` | Provider out of balance / quota. | Retrying can't help. Tear down; STOP, tell the user, propose the next provider, wait for confirm (provider ask ladder, step 4). |
    | `auth` | Provider rejected the key (`401`/`403`). | Tear down. Tell the user to rotate the key — file backend: `cc-fleet edit <provider> --api-key-stdin <<<"$NEW_KEY"` (or `--api-key-file <path>`); other backends via the secret manager. Don't re-spawn the same provider. **Never** the raw key in argv. |
    | `rate_limit` | Provider `429`. | Tear down; wait a bit and re-spawn, or propose a switch (confirm first). Never keep a wedged teammate looping. |
    | `api_error` | Generic provider failure (5xx, overloaded, rejected). | Tear down; retry once, or propose a switch (confirm first). |
@@ -153,7 +153,7 @@ cc-fleet show <target> --json    # pane → back to its origin window, re-tiled
 
 - **hide does NOT kill** — inbox/`SendMessage` still work, `teardown` still cleans it.
 - **Swarm teammates are unsupported** — `error_code: "SWARM_UNSUPPORTED"` is a terminal no-op, not a tmux failure; attach to view instead.
-- Dispatch on `error_code`, not prose: `SWARM_UNSUPPORTED` / `TEAM_NOT_FOUND` / `MEMBER_NOT_FOUND` / `PANE_NOT_FOUND` / `NOT_HIDDEN` / `NO_ORIGIN` / `TMUX_FAILED`. Hiding an already-hidden pane is idempotent `ok`.
+- Dispatch on `error_code`, not prose: `SWARM_UNSUPPORTED` / `TEAM_NOT_FOUND` / `MEMBER_NOT_FOUND` / `PANE_NOT_FOUND` / `NOT_HIDDEN` / `NO_ORIGIN` / `TMUX_FAILED` / `BAD_ARGS` (malformed target) / `CONFIG_WRITE_FAILED` (the pane moved but the config write failed — tmux and config are now DIVERGENT; follow the envelope's `suggestion` to reconcile, never blindly re-run) / `INTERNAL` (lock/parse failure). Hiding an already-hidden pane is idempotent `ok`.
 
 **Agents Board** (human-facing): bare `cc-fleet` → `Tab` to a live board of every teammate across all teams (`ps --check` health, HIDDEN column, `h`/`s` hide/show). You use `cc-fleet ps --json --check` programmatically, not the TUI.
 
@@ -161,12 +161,12 @@ cc-fleet show <target> --json    # pane → back to its origin window, re-tiled
 
 ## Anti-patterns
 
-- **Spawning a teammate for a single-file edit / quick question** — main session; the overhead isn't worth it (shared/routing.md).
+- **Spawning a teammate for a single-file edit / quick question** — main session; the overhead isn't worth it (cc-fleet-shared/routing.md).
 - **Typing into a provider pane instead of `SendMessage`** — task delivery is always `SendMessage`. (Reading a pane for a result is fine.)
 - **Skipping `TeamCreate` before spawn** → `NO_LEAD_SESSION` / `TEAM_NOT_FOUND`. Native `TeamCreate` first.
 - **Waiting open-endedly on a teammate** — it can wedge and never go idle; always timeout + `ps --check`.
-- **Switching providers silently after a failure** — ask-policy rule 4: stop, tell, propose, wait for confirm.
+- **Switching providers silently after a failure** — provider ask ladder, step 4: stop, tell, propose, wait for confirm.
 - **Auto-tearing down on task completion** — the teammate is reusable; ask first.
 - **`rm -rf ~/.claude/teams/...` to tear down** — skips pane/proc cleanup. `cc-fleet teardown` FIRST, then `TeamDelete()`.
 - **Putting the provider API key in argv / env** — cc-fleet uses `apiKeyHelper`; keys never enter env / `ps aux` / history.
-- **Looping on errors without dispatching `.error_code`** — every `--json` failure carries a code (shared/troubleshooting.md).
+- **Looping on errors without dispatching `.error_code`** — every `--json` failure carries a code (cc-fleet-shared/troubleshooting.md).

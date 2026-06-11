@@ -9,6 +9,8 @@
 /build/
 # npm package: the platform binary fetched by postinstall (never committed)
 /npm/bin/cc-fleet
+# A stray root-level binary (e.g. a local release-archive extraction)
+/cc-fleet
 
 # Test binaries & coverage
 *.test
