@@ -186,6 +186,17 @@ func updateLockPath() (string, error) {
 	return filepath.Join(dir, ".cc-fleet-update.lock"), nil
 }
 
+// WithUpdateLock runs fn under the self-update lock — the complete uninstall
+// holds it around its plugin/binary removal so a concurrent `ccf update` never
+// mutates the same artifacts mid-removal.
+func WithUpdateLock(fn func() error) error {
+	lockPath, err := updateLockPath()
+	if err != nil {
+		return err
+	}
+	return config.WithFlock(lockPath, fn)
+}
+
 // Run updates the binary and (unless BinaryOnly) the plugin, serialized by the
 // update lock. Order is prepare-binary → update-plugin → commit-binary so a
 // plugin failure never leaves binary and plugin at different versions.

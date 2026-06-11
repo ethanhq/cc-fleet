@@ -28,7 +28,7 @@ drive it through plain language, but every command also works directly. Run `cc-
 | `doctor` | Run the health checks. |
 | `repair` | Rewrite every provider's profile JSON from `providers.toml`. |
 | `refresh-fingerprint` | Re-probe the Claude Code spawn template via a live probe agent. |
-| `uninstall` | Remove all cc-fleet config + cached state (never touches the binary). |
+| `uninstall` | Remove all cc-fleet config + cached state; `--all` also removes the skills, plugin, and binary. |
 
 ## Registering a provider from the CLI
 

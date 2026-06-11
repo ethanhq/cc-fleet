@@ -13,11 +13,14 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/fileutil"
+	"github.com/ethanhq/cc-fleet/internal/homedir"
 	"github.com/ethanhq/cc-fleet/internal/models"
 	"github.com/ethanhq/cc-fleet/internal/neterr"
+	"github.com/ethanhq/cc-fleet/internal/onboarding"
 	"github.com/ethanhq/cc-fleet/internal/pinned"
 	"github.com/ethanhq/cc-fleet/internal/profile"
 	"github.com/ethanhq/cc-fleet/internal/secrets"
+	"github.com/ethanhq/cc-fleet/internal/selfupdate"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 	"github.com/ethanhq/cc-fleet/internal/teamhist"
 )
@@ -972,28 +975,37 @@ func Repair() (*RepairResult, error) {
 
 // UninstallRequest is the typed input for Uninstall.
 type UninstallRequest struct {
-	KeepSecrets bool // default true at the caller layer
+	KeepSecrets bool // default true at the caller layer (false under All)
+	All         bool // also remove skills, the plugin, and the binary artifacts
 }
 
-// UninstallResult is the structured result of Uninstall.
+// UninstallResult is the structured result of Uninstall. Manual lists the
+// commands the user must run themselves to finish an All uninstall (tooling
+// missing, unknown install method, or windows — a running exe can't unlink).
 type UninstallResult struct {
 	Removed []string `json:"removed"`
 	Kept    []string `json:"kept"`
+	Manual  []string `json:"manual,omitempty"`
 }
 
-// Uninstall removes every cc-fleet-owned file: per-provider profile JSONs,
-// providers.toml, fingerprint.json, models-cache.json, the team-history records
-// under teams-history/, and finished background
-// jobs under subagent-jobs/ (see subagent.PurgeJobs — finished job files are
-// removed even when other jobs are still running; the live ones, and the dir
-// itself, are kept and reported in Kept). The skill directory
-// (~/.claude/skills/cc-fleet/) and ~/.claude/teams/ are explicitly
-// preserved — the former is owned by the install machinery, the latter is
-// Claude Code's own state.
+// Uninstall removes every cc-fleet-owned state file: per-provider profile
+// JSONs, providers.toml, fingerprint.json, models-cache.json, onboarding.json,
+// the update-check cache, the team-history records under teams-history/, and
+// finished background jobs under subagent-jobs/ (see subagent.PurgeJobs —
+// finished job files are removed even when other jobs are still running; the
+// live ones, and the dir itself, are kept and reported in Kept). Without All,
+// the skill dirs (install machinery's), ~/.claude/teams/ (Claude Code's own
+// state), the plugin, and the binary are preserved — a bare uninstall is a
+// re-installable state reset.
+//
+// With All it is a complete uninstall: the cc-fleet skill dirs, the Claude
+// Code plugin (via the claude CLI when available), and — last — the binary
+// artifacts (method-aware via selfupdate) go too; whatever can't be done from
+// inside this process lands in Manual as exact commands.
 //
 // Per-provider file-backend secrets are removed unless KeepSecrets is true (the
-// caller-level default). The whole <SecretsDir>/ tree is removed only when
-// KeepSecrets is false.
+// caller-level default; under All the caller defaults it to false). The whole
+// <SecretsDir>/ tree is removed only when KeepSecrets is false.
 func Uninstall(req UninstallRequest) (*UninstallResult, error) {
 	res := &UninstallResult{
 		Removed: []string{},
@@ -1033,6 +1045,17 @@ func Uninstall(req UninstallRequest) (*UninstallResult, error) {
 		filepath.Join(cfgDir, "providers.toml"),
 		filepath.Join(cfgDir, "fingerprint.json"),
 		filepath.Join(cfgDir, "models-cache.json"),
+	}
+	// Decision/state files whose names are owned by other packages.
+	if p, oerr := onboarding.StatePath(); oerr == nil {
+		tops = append(tops, p)
+	} else {
+		res.Kept = append(res.Kept, fmt.Sprintf("onboarding.json (resolve failed: %v)", oerr))
+	}
+	if p, uerr := selfupdate.CheckCachePath(); uerr == nil {
+		tops = append(tops, p)
+	} else {
+		res.Kept = append(res.Kept, fmt.Sprintf("update-check.json (resolve failed: %v)", uerr))
 	}
 	for _, p := range tops {
 		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -1118,19 +1141,69 @@ func Uninstall(req UninstallRequest) (*UninstallResult, error) {
 		}
 	}
 
-	// 4. Explicitly preserved paths — surface in Kept so users know we
-	// considered them. Skill dir is the install machinery's; teams/ is Claude Code's.
-	home := os.Getenv("HOME")
-	if home != "" {
-		skillsRoot := filepath.Join(home, ".claude", "skills")
-		teamsDir := filepath.Join(home, ".claude", "teams")
-		if _, err := os.Stat(skillsRoot); err == nil {
+	// 4. Skills / plugin / binary. A bare uninstall preserves them (the skill
+	// dirs are the install machinery's; ~/.claude/teams/ is Claude Code's own
+	// state) and surfaces them in Kept so users know we considered them. All
+	// removes everything cc-fleet's installers put on disk — binary last, so
+	// the rest of the uninstall is already done when it goes.
+	home, herr := homedir.Home()
+	if herr != nil {
+		res.Kept = append(res.Kept, fmt.Sprintf("skills/binary (resolve home failed: %v)", herr))
+		return res, nil
+	}
+	skillsRoot := filepath.Join(home, ".claude", "skills")
+	if teamsDir := filepath.Join(home, ".claude", "teams"); fileExists(teamsDir) {
+		res.Kept = append(res.Kept, teamsDir) // always Claude Code's, never touched
+	}
+	if !req.All {
+		if fileExists(skillsRoot) {
 			res.Kept = append(res.Kept, skillsRoot)
 		}
-		if _, err := os.Stat(teamsDir); err == nil {
-			res.Kept = append(res.Kept, teamsDir)
+		return res, nil
+	}
+
+	// 4b. (All) the cc-fleet skill dirs — per-lane + shared + the legacy single
+	// skill; never the skills root itself (other skills live there).
+	for _, name := range []string{"cc-fleet-subagent", "cc-fleet-team", "cc-fleet-workflow", "cc-fleet-shared", "cc-fleet"} {
+		dir := filepath.Join(skillsRoot, name)
+		if !fileExists(dir) {
+			continue
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			res.Kept = append(res.Kept, fmt.Sprintf("%s (rm -rf failed: %v)", dir, err))
+		} else {
+			res.Removed = append(res.Removed, dir)
 		}
 	}
 
+	// 4c. (All) plugin, then the binary last, under the self-update lock so a
+	// concurrent `ccf update` never mutates the same artifacts mid-removal.
+	// Admin-tool output streams to stderr so a --json caller's stdout stays
+	// machine-clean. The timeout bounds a hung claude/npm child — state is
+	// already removed by now, so a stalled tool must degrade to manual
+	// commands, not hang the uninstall.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if lerr := selfupdate.WithUpdateLock(func() error {
+		pRemoved, pManual := selfupdate.UninstallPlugin(ctx, os.Stderr)
+		res.Removed = append(res.Removed, pRemoved...)
+		res.Manual = append(res.Manual, pManual...)
+
+		bRemoved, bKept, bManual := selfupdate.UninstallBinary(ctx, os.Stderr)
+		res.Removed = append(res.Removed, bRemoved...)
+		res.Kept = append(res.Kept, bKept...)
+		res.Manual = append(res.Manual, bManual...)
+		return nil
+	}); lerr != nil {
+		res.Kept = append(res.Kept, fmt.Sprintf("plugin/binary (update lock: %v)", lerr))
+	}
+
 	return res, nil
+}
+
+// fileExists reports whether path exists (any type), without following a
+// trailing symlink.
+func fileExists(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }

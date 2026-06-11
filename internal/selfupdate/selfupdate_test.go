@@ -406,7 +406,7 @@ func setHome(t *testing.T) string {
 
 func writeCache(t *testing.T, body string) {
 	t.Helper()
-	p, err := cachePath()
+	p, err := CheckCachePath()
 	if err != nil {
 		t.Fatal(err)
 	}

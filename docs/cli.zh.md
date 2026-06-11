@@ -25,7 +25,7 @@
 | `doctor` | 执行健康检查。 |
 | `repair` | 从 `providers.toml` 重写每个 provider 的 profile JSON。 |
 | `refresh-fingerprint` | 通过探针 agent 重新捕获 Claude Code 的 spawn 模板。 |
-| `uninstall` | 删除所有 cc-fleet 配置和缓存状态（不影响二进制文件）。 |
+| `uninstall` | 删除所有 cc-fleet 配置和缓存状态；`--all` 连 skills、插件和二进制一起卸载。 |
 
 ## 从 CLI 注册 provider
 

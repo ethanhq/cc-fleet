@@ -29,7 +29,9 @@ type checkCache struct {
 	DismissedAt  int64  `json:"dismissed_at,omitempty"`
 }
 
-func cachePath() (string, error) {
+// CheckCachePath returns ConfigDir/update-check.json — the on-disk cache
+// behind the startup update prompt. Exported so uninstall can remove it.
+func CheckCachePath() (string, error) {
 	dir, err := config.ConfigDir()
 	if err != nil {
 		return "", err
@@ -47,7 +49,7 @@ func cacheLockPath() (string, error) {
 
 func loadCache() checkCache {
 	var c checkCache
-	p, err := cachePath()
+	p, err := CheckCachePath()
 	if err != nil {
 		return c
 	}
@@ -60,7 +62,7 @@ func loadCache() checkCache {
 }
 
 func saveCache(c checkCache) error {
-	p, err := cachePath()
+	p, err := CheckCachePath()
 	if err != nil {
 		return err
 	}

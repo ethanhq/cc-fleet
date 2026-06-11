@@ -37,9 +37,14 @@ cc-fleet doctor                          Run the health checks (Core + live-team
 cc-fleet repair                          Rebuild derived files from providers.toml.
 cc-fleet uninstall [--wipe-secrets]      Remove config/profiles/models cache. Secrets are
                                          PRESERVED by default; --wipe-secrets also removes
-                                         them. Keeps the skill dir (owned by the plugin /
-                                         make install-skill). (Removing the BINARY + ccf
-                                         alias is `make uninstall`.)
+                                         them. Keeps the skill dir, plugin, and binary.
+cc-fleet uninstall --all [--yes]         COMPLETE uninstall: also removes the skills,
+                                         plugin, binary + ccf alias, and (unless
+                                         --keep-secrets) secrets. Asks to confirm;
+                                         non-interactive and --json callers must pass
+                                         --yes. Whatever can't be removed from inside
+                                         the process is printed as manual commands
+                                         (JSON: "manual").
 cc-fleet run [provider]                  Launch an INTERACTIVE claude REPL on the provider in
                                          the foreground (execs into claude, takes over the
                                          terminal). The provider arg is OPTIONAL — omit it to

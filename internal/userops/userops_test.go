@@ -13,8 +13,10 @@ import (
 
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/models"
+	"github.com/ethanhq/cc-fleet/internal/onboarding"
 	"github.com/ethanhq/cc-fleet/internal/profile"
 	"github.com/ethanhq/cc-fleet/internal/secrets"
+	"github.com/ethanhq/cc-fleet/internal/selfupdate"
 )
 
 // setupHome points HOME (and clears XDG_CONFIG_HOME) at a fresh temp dir so
@@ -880,6 +882,66 @@ func TestUninstall_PreservesSkillAndTeamsDirs(t *testing.T) {
 	}
 	if _, err := os.Stat(teamsDir); err != nil {
 		t.Fatalf("teams dir wiped: %v", err)
+	}
+}
+
+func TestUninstall_RemovesOnboardingAndUpdateCache(t *testing.T) {
+	setupHome(t)
+	if err := (onboarding.State{AgentTeamsAck: true}).Save(); err != nil {
+		t.Fatalf("save onboarding state: %v", err)
+	}
+	cachePath, err := selfupdate.CheckCachePath()
+	if err != nil {
+		t.Fatalf("CheckCachePath: %v", err)
+	}
+	if err := os.WriteFile(cachePath, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write update cache: %v", err)
+	}
+
+	res, err := Uninstall(UninstallRequest{KeepSecrets: true})
+	if err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	statePath, _ := onboarding.StatePath()
+	for _, p := range []string{statePath, cachePath} {
+		if _, serr := os.Stat(p); !os.IsNotExist(serr) {
+			t.Fatalf("%s survived uninstall", p)
+		}
+		if !contains(res.Removed, p) {
+			t.Fatalf("Removed=%v, missing %s", res.Removed, p)
+		}
+	}
+}
+
+func TestUninstall_AllRemovesSkillDirsKeepsForeign(t *testing.T) {
+	home := setupHome(t)
+	skills := filepath.Join(home, ".claude", "skills")
+	for _, d := range []string{"cc-fleet-subagent", "cc-fleet-shared", "other-skill"} {
+		if err := os.MkdirAll(filepath.Join(skills, d), 0o700); err != nil {
+			t.Fatalf("mkdir %s: %v", d, err)
+		}
+	}
+
+	res, err := Uninstall(UninstallRequest{All: true})
+	if err != nil {
+		t.Fatalf("Uninstall --all: %v", err)
+	}
+	for _, d := range []string{"cc-fleet-subagent", "cc-fleet-shared"} {
+		if _, serr := os.Stat(filepath.Join(skills, d)); !os.IsNotExist(serr) {
+			t.Fatalf("skill dir %s survived --all", d)
+		}
+	}
+	if _, serr := os.Stat(filepath.Join(skills, "other-skill")); serr != nil {
+		t.Fatalf("foreign skill dir removed: %v", serr)
+	}
+	// The test binary runs from a go-test build dir — an unknown install
+	// method — so --all must hand back commands instead of deleting it.
+	exe, _ := os.Executable()
+	if _, serr := os.Stat(exe); serr != nil {
+		t.Fatalf("test binary deleted under unknown method: %v", serr)
+	}
+	if len(res.Manual) == 0 {
+		t.Fatalf("Manual empty, want removal commands for the unknown-method binary")
 	}
 }
 
