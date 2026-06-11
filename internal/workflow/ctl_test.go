@@ -356,10 +356,17 @@ func TestCtlPollerEndToEnd(t *testing.T) {
 		t.Fatalf("send stop: %v", err)
 	}
 	jobByLabel(t, "leaf-a", "held")
-	g.release("a")
 	if err := SendLeafCommand(run.RunID, "restart", a.JobID); err != nil {
 		t.Fatalf("send restart: %v", err)
 	}
+	// Hold the gate shut until attempt 2 is blocking in it: the held premark lands
+	// BEFORE the attempt's cancel, so a gate opened on the premark alone can let
+	// attempt 1 finish OK — success-wins keeps it and the restart has nothing to wake.
+	deadline := time.Now().Add(5 * time.Second)
+	for len(rec.prompts()) < 2 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	g.release("a")
 	select {
 	case err := <-errs:
 		if err != nil {
