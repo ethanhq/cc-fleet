@@ -95,9 +95,9 @@ func CheckSettingsJSON() CheckResult {
 	return r
 }
 
-// CheckProfilesDirWritable is check 2: ~/.claude/profiles/ exists and is
-// writable. Missing dir is fixable (mkdir 0700); permission-denied isn't (we
-// surface a hint).
+// CheckProfilesDirWritable is check 2: ~/.claude/profiles/ is writable when it
+// exists. A missing dir is healthy — profile writes MkdirAll it on demand, so a
+// fresh machine with no providers passes. Permission problems surface a hint.
 func CheckProfilesDirWritable() CheckResult {
 	r := CheckResult{ID: 2, Title: "~/.claude/profiles/ writable"}
 	cdir, err := claudeDir()
@@ -110,10 +110,16 @@ func CheckProfilesDirWritable() CheckResult {
 	info, err := os.Stat(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		r.Status = StatusFail
-		r.Detail = fmt.Sprintf("not found: %s", path)
-		r.Fixable = true
-		r.FixHint = fmt.Sprintf("mkdir -p %s (mode 0700)", path)
+		// Healthy only when it CAN be created on demand — an unwritable
+		// ancestor would make the eventual MkdirAll fail at provider add.
+		if perr := probeCreatable(path); perr != nil {
+			r.Status = StatusFail
+			r.Detail = fmt.Sprintf("not created yet and cannot be: %v", perr)
+			r.FixHint = fmt.Sprintf("fix permissions so %s can be created", path)
+			return r
+		}
+		r.Status = StatusOK
+		r.Detail = fmt.Sprintf("not created yet (made on first provider use): %s", path)
 		return r
 	case err != nil:
 		r.Status = StatusFail
@@ -144,6 +150,31 @@ func CheckProfilesDirWritable() CheckResult {
 	r.Status = StatusOK
 	r.Detail = path
 	return r
+}
+
+// probeCreatable verifies a not-yet-existing dir could be MkdirAll'd: it walks
+// to the nearest existing ancestor and creates + removes a transient probe dir
+// there.
+func probeCreatable(path string) error {
+	anc := filepath.Dir(path)
+	for {
+		if _, err := os.Stat(anc); err == nil {
+			break
+		}
+		parent := filepath.Dir(anc)
+		if parent == anc {
+			break
+		}
+		anc = parent
+	}
+	probe, err := os.MkdirTemp(anc, ".cc-fleet-doctor.")
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(probe); err != nil {
+		return fmt.Errorf("created probe %s but cannot remove: %w", probe, err)
+	}
+	return nil
 }
 
 // CheckTmuxInstalled is check 3: tmux is on PATH and `tmux -V` runs. tmux is

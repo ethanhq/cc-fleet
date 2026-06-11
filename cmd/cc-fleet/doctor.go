@@ -15,10 +15,7 @@ import (
 const totalChecks = 10
 
 func newDoctorCmd() *cobra.Command {
-	var (
-		asJSON bool
-		fix    bool
-	)
+	var asJSON bool
 
 	cmd := &cobra.Command{
 		Use:   "doctor",
@@ -44,30 +41,24 @@ Status semantics: ok = passed; fail = needs action; warn = informational.
 Exit code: 0 when every Core check is ok/warn; 1 only when a Core check fails.
 An Optional (tmux) warning never fails doctor.
 
---fix attempts a small set of safe auto-repairs:
-  check 2: mkdir -p ~/.claude/profiles (mode 0700)
-
-Other Fixable failures (skill missing, fingerprint stale) print fix hints
-but are NOT auto-repaired — they require Claude-orchestrated probes or
-manual install.`,
+Doctor never repairs anything — failures print fix hints for the user (or the
+skill) to act on.`,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(_ *cobra.Command, _ []string) error {
-			return runDoctor(fix, asJSON)
+			return runDoctor(asJSON)
 		},
 	}
 
-	cmd.Flags().BoolVar(&fix, "fix", false,
-		"Attempt safe auto-repairs (currently: mkdir ~/.claude/profiles)")
 	cmd.Flags().BoolVar(&asJSON, "json", false,
 		"Emit a machine-readable JSON envelope (for skill consumption)")
 
 	return cmd
 }
 
-func runDoctor(fix, asJSON bool) error {
-	res := doctor.RunAll(fix)
+func runDoctor(asJSON bool) error {
+	res := doctor.RunAll()
 
 	if asJSON {
 		// Marshal the whole DoctorResult — fields are tagged appropriately

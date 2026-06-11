@@ -70,7 +70,7 @@ func runInit(asJSON bool) error {
 
 	// Always run doctor at the end — gives users one-shot reassurance after
 	// init and a verifiable JSON checkpoint for automation.
-	dres := doctor.RunAll(false)
+	dres := doctor.RunAll()
 
 	if asJSON {
 		emitJSON(initJSONEnvelope{
@@ -91,14 +91,14 @@ func runInit(asJSON bool) error {
 	}
 	fmt.Println()
 
-	// Doctor block — same grouped output `cc-fleet doctor` prints, no fix attempts.
+	// Doctor block — same grouped output `cc-fleet doctor` prints.
 	fmt.Println("Health checks:")
 	printDoctorGroup("Core", doctor.GroupCore, dres.Results)
 	printDoctorGroup("Optional — live teammates only", doctor.GroupOptional, dres.Results)
 	if dres.OK {
 		fmt.Println("core checks passed")
 	} else {
-		fmt.Println("one or more core checks failed; see hints above (run: cc-fleet doctor --fix)")
+		fmt.Println("one or more core checks failed; see hints above")
 	}
 	fmt.Println()
 

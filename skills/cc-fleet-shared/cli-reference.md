@@ -32,8 +32,8 @@ cc-fleet default [provider]              Show or set the default provider used w
                                          (refuses to overwrite without --force); --unset
                                          clears it. The model is still per-call from the
                                          provider's roster. --json for the structured view.
-cc-fleet doctor [--fix]                  Run the health checks (Core + live-teammate
-                                         Optional); --fix auto-repairs the safe ones.
+cc-fleet doctor                          Run the health checks (Core + live-teammate
+                                         Optional); failures print fix hints.
 cc-fleet repair                          Rebuild derived files from providers.toml.
 cc-fleet uninstall [--wipe-secrets]      Remove config/profiles/models cache. Secrets are
                                          PRESERVED by default; --wipe-secrets also removes

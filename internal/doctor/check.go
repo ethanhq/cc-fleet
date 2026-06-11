@@ -47,14 +47,13 @@ const (
 // emits — the skill dispatches on ID and Status. Don't rename tags without
 // updating the skill.
 type CheckResult struct {
-	ID         int    `json:"id"`
-	Title      string `json:"title"`
-	Status     Status `json:"status"`
-	Group      Group  `json:"group"`
-	Detail     string `json:"detail,omitempty"`
-	Fixable    bool   `json:"fixable,omitempty"`
-	FixHint    string `json:"fix_hint,omitempty"`
-	AppliedFix bool   `json:"applied_fix,omitempty"`
+	ID      int    `json:"id"`
+	Title   string `json:"title"`
+	Status  Status `json:"status"`
+	Group   Group  `json:"group"`
+	Detail  string `json:"detail,omitempty"`
+	Fixable bool   `json:"fixable,omitempty"`
+	FixHint string `json:"fix_hint,omitempty"`
 }
 
 // DoctorResult is the full output of RunAll — one envelope around the

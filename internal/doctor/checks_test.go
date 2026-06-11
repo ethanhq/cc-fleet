@@ -178,17 +178,36 @@ func TestCheckProfilesDirWritable_OK(t *testing.T) {
 	}
 }
 
-func TestCheckProfilesDirWritable_MissingIsFixable(t *testing.T) {
+func TestCheckProfilesDirWritable_MissingIsOK(t *testing.T) {
 	setupHome(t)
 	r := CheckProfilesDirWritable()
-	if r.Status != StatusFail {
-		t.Fatalf("Status = %s, want fail", r.Status)
+	if r.Status != StatusOK {
+		t.Fatalf("Status = %s, want ok — a fresh machine has no profiles dir until the first provider is added (detail=%s)", r.Status, r.Detail)
 	}
-	if !r.Fixable {
-		t.Fatalf("Fixable = false, want true")
+	if !strings.Contains(r.Detail, "not created yet") {
+		t.Fatalf("detail = %q, want the not-created-yet note", r.Detail)
+	}
+}
+
+func TestCheckProfilesDirWritable_MissingButUncreatable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod-based write denial doesn't work on windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores mode bits")
+	}
+	home := setupHome(t)
+	cdir := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(cdir, 0o500); err != nil { // exists, not writable
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(cdir, 0o700) })
+	r := CheckProfilesDirWritable()
+	if r.Status != StatusFail {
+		t.Fatalf("Status = %s, want fail when the profiles dir cannot be created (detail=%s)", r.Status, r.Detail)
 	}
 	if r.FixHint == "" {
-		t.Fatalf("FixHint = empty, want non-empty")
+		t.Fatal("FixHint empty, want a permissions hint")
 	}
 }
 

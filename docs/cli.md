@@ -25,7 +25,7 @@ drive it through plain language, but every command also works directly. Run `cc-
 | `ps` | List live cc-fleet teammates (`--json`, `--check` for health). |
 | `hide` / `show` | Hide / restore a teammate's tmux pane without killing it. |
 | `teardown <team\|%pane>` | Kill teammate panes and clean up team state. |
-| `doctor` | Run the health checks (`--fix` attempts safe repairs). |
+| `doctor` | Run the health checks. |
 | `repair` | Rewrite every provider's profile JSON from `providers.toml`. |
 | `refresh-fingerprint` | Re-probe the Claude Code spawn template via a live probe agent. |
 | `uninstall` | Remove all cc-fleet config + cached state (never touches the binary). |
@@ -148,7 +148,7 @@ cc-fleet keeps its **own** token chain (`codex login`), never reading or writing
 
 ## Health & repair
 
-- `cc-fleet doctor` runs the checks; `--fix` attempts safe repairs.
+- `cc-fleet doctor` runs the checks; failures print fix hints.
 - `cc-fleet repair` rebuilds provider profile JSON from `providers.toml`.
 - `cc-fleet refresh-fingerprint` re-captures Claude Code's spawn template if a CC upgrade
   changed it.
