@@ -142,6 +142,13 @@ func newWorkflowRestartCmd() *cobra.Command {
 			if rerr != nil {
 				return reportWorkflowErr(rerr, asJSON)
 			}
+			if leaf != "" {
+				id, lerr := resolveLeafArg(runID, leaf)
+				if lerr != nil {
+					return reportWorkflowErr(lerr, asJSON)
+				}
+				leaf = id
+			}
 			if run.Status == "running" {
 				switch {
 				case cmd.Flags().Changed("phase"):
@@ -201,7 +208,7 @@ func newWorkflowRestartCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&leaf, "leaf", "", "Restart just this agent (job id)")
+	cmd.Flags().StringVar(&leaf, "leaf", "", "Restart just this agent (job id, or its label when unique)")
 	cmd.Flags().StringVar(&phase, "phase", "", "Restart every agent in this phase title")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit a machine-readable JSON envelope")
 	return cmd
@@ -588,13 +595,17 @@ func newWorkflowStopCmd() *cobra.Command {
 			// kills that leaf's attempt and HOLDS it (the run keeps running; restart the
 			// leaf to resume it). No run lock — the engine's poller owns the application.
 			if leaf != "" {
-				if err := workflow.SendLeafCommand(args[0], "stop", leaf); err != nil {
+				id, rerr := resolveLeafArg(args[0], leaf)
+				if rerr != nil {
+					return reportWorkflowErr(rerr, asJSON)
+				}
+				if err := workflow.SendLeafCommand(args[0], "stop", id); err != nil {
 					return reportWorkflowErr(err, asJSON)
 				}
 				if asJSON {
 					return emitWorkflow(workflowEnvelope{OK: true, RunID: args[0], Status: "running"})
 				}
-				fmt.Printf("stop sent for agent %s of %s (it holds until you restart it)\n", leaf, args[0])
+				fmt.Printf("stop sent for agent %s of %s (it holds until you restart it)\n", id, args[0])
 				return nil
 			}
 			// Serialize stop against a concurrent restart/resume of the same run via the per-run
@@ -615,10 +626,47 @@ func newWorkflowStopCmd() *cobra.Command {
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&leaf, "leaf", "", "Stop just this agent (job id) and hold it in place")
+	cmd.Flags().StringVar(&leaf, "leaf", "", "Stop just this agent (job id, or its label when unique) and hold it in place")
 	cmd.Flags().StringVar(&phase, "phase", "", "Stop every agent in this phase title and hold them")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit a machine-readable JSON envelope")
 	return cmd
+}
+
+// resolveLeafArg maps a --leaf argument onto one of the run's job ids via
+// matchLeaf, so stop/restart accept either spelling the board shows.
+func resolveLeafArg(runID, arg string) (string, error) {
+	_, jobs, err := subagent.RunStatus(runID)
+	if err != nil {
+		return "", err
+	}
+	id, err := matchLeaf(jobs, arg)
+	if err != nil {
+		return "", fmt.Errorf("run %s: %w", runID, err)
+	}
+	return id, nil
+}
+
+// matchLeaf resolves a --leaf argument against a run's jobs: an exact job-id
+// match passes through; otherwise the argument is a label — unique within the
+// run resolves to that job's id, ambiguous errors listing every candidate id,
+// and no match names both interpretations.
+func matchLeaf(jobs []subagent.Result, arg string) (string, error) {
+	var labelled []string
+	for _, j := range jobs {
+		if j.JobID == arg {
+			return arg, nil
+		}
+		if j.Label == arg {
+			labelled = append(labelled, j.JobID)
+		}
+	}
+	switch len(labelled) {
+	case 0:
+		return "", fmt.Errorf("no agent with job id or label %q", arg)
+	case 1:
+		return labelled[0], nil
+	}
+	return "", fmt.Errorf("label %q is ambiguous — pass a job id: %s", arg, strings.Join(labelled, ", "))
 }
 
 // emitWorkflow marshals one envelope to stdout and returns nil (cobra then exits
