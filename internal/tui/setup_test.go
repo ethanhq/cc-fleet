@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -24,7 +23,7 @@ func TestMain(m *testing.M) {
 	}
 	os.Setenv("HOME", home)
 	os.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
-	if err := (onboarding.State{TmuxAck: true, AgentTeamsAck: true}).Save(); err != nil {
+	if err := (onboarding.State{AgentTeamsAck: true}).Save(); err != nil {
 		panic(err)
 	}
 	code := m.Run()
@@ -32,35 +31,21 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// setupEnv installs a hermetic HOME + XDG + clean CWD, clears any inherited
-// agent-teams env var, and puts a fake tmux on PATH (so tmux looks INSTALLED by
-// default — the common case). Tests that want tmux missing call noTmux(t).
+// setupEnv installs a hermetic HOME (+USERPROFILE for windows) + XDG + clean
+// CWD and clears any inherited agent-teams env var.
 func setupEnv(t *testing.T) string {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		t.Skip("setup tests plant a #!/bin/sh fake tmux not runnable on windows")
-	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // windows reads USERPROFILE; keep the sandbox hermetic there
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	t.Setenv("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "")
 	t.Chdir(t.TempDir())
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "tmux"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake tmux: %v", err)
-	}
-	t.Setenv("PATH", dir)
 	return home
 }
 
-// noTmux makes `tmux -V` fail (empty PATH) so NeedsTmuxSetup triggers.
-func noTmux(t *testing.T) {
-	t.Helper()
-	t.Setenv("PATH", t.TempDir())
-}
-
 func TestNewModel_SetupGating(t *testing.T) {
-	setupEnv(t) // tmux present → skips the tmux screen
+	setupEnv(t)
 	// Unconfigured + unacked → open on the agent-teams setup screen.
 	if got := NewModel().screen; got != screenSetup {
 		t.Fatalf("NewModel screen = %d, want screenSetup", got)
@@ -162,87 +147,11 @@ func TestUpdateSetup_EscDismissesAndAcks(t *testing.T) {
 	}
 }
 
-// ---------- tmux setup screen ----------
-
-func TestNewModel_TmuxGating(t *testing.T) {
-	setupEnv(t)
-	noTmux(t)                                             // tmux missing → tmux screen
-	t.Setenv("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1") // agent-teams configured → isolate tmux gating
-	if got := NewModel().screen; got != screenSetupTmux {
-		t.Fatalf("NewModel screen = %d, want screenSetupTmux", got)
-	}
-	// TmuxAck + agent-teams configured → straight to the hub.
-	if err := (onboarding.State{TmuxAck: true}).Save(); err != nil {
-		t.Fatal(err)
-	}
-	if got := NewModel().screen; got != screenList {
-		t.Fatalf("NewModel screen = %d, want screenList after TmuxAck", got)
-	}
-}
-
-func TestUpdateSetupTmux_Navigate(t *testing.T) {
-	setupEnv(t)
-	m := Model{screen: screenSetupTmux}
-	m, _ = press(t, m, "down")
-	m, _ = press(t, m, "down") // clamp at last (2 options)
-	if m.tmuxCursor != tmuxOptionCount-1 {
-		t.Fatalf("cursor=%d, want clamp at %d", m.tmuxCursor, tmuxOptionCount-1)
-	}
-	m, _ = press(t, m, "up")
-	if m.tmuxCursor != 0 {
-		t.Fatalf("after up: cursor=%d, want 0", m.tmuxCursor)
-	}
-}
-
-func TestUpdateSetupTmux_Install_QuitsWithNoteNoAck(t *testing.T) {
-	setupEnv(t)
-	m := Model{screen: screenSetupTmux} // cursor 0 = "install it"
-	m, cmd := press(t, m, "enter")
-	if !m.quitting || cmd == nil {
-		t.Fatalf("install should quit: quitting=%v cmd=%v", m.quitting, cmd)
-	}
-	if !strings.Contains(m.postQuitNote, "tmux") || !strings.Contains(m.postQuitNote, onboarding.TmuxInstallHint()) {
-		t.Fatalf("postQuitNote = %q, want the install command", m.postQuitNote)
-	}
-	if st, _ := onboarding.LoadState(); st.TmuxAck {
-		t.Fatal("install must NOT set TmuxAck (nudge should return until tmux is present)")
-	}
-}
-
-func TestUpdateSetupTmux_Skip_AcksThenAgentTeams(t *testing.T) {
-	setupEnv(t)                                        // agent-teams env cleared → still needed after tmux skip
-	m := Model{screen: screenSetupTmux, tmuxCursor: 1} // "skip — subagent mode only"
-	m, _ = press(t, m, "enter")
-	if st, _ := onboarding.LoadState(); !st.TmuxAck {
-		t.Fatal("skip must set TmuxAck")
-	}
-	if m.screen != screenSetup {
-		t.Fatalf("screen=%d, want screenSetup (agent-teams nudge next)", m.screen)
-	}
-}
-
-func TestUpdateSetupTmux_Skip_ToHubWhenAgentTeamsConfigured(t *testing.T) {
-	setupEnv(t)
-	t.Setenv("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1") // agent-teams configured
-	m := Model{screen: screenSetupTmux, tmuxCursor: 1}
-	m, _ = press(t, m, "esc") // esc also skips
-	if st, _ := onboarding.LoadState(); !st.TmuxAck {
-		t.Fatal("esc skip must set TmuxAck")
-	}
-	if m.screen != screenList {
-		t.Fatalf("screen=%d, want screenList (agent-teams already configured)", m.screen)
-	}
-}
-
-// TestSetupScreens_Aligned locks the "two nudges read the same" goal: identical
-// title + footer, and the same "skip — subagent mode" wording on both.
-func TestSetupScreens_Aligned(t *testing.T) {
-	tmuxView := Model{screen: screenSetupTmux}.viewSetupTmux()
+// TestSetupView_Wording locks the setup screen's key wording: title, footer,
+// and the "skip — subagent mode" option.
+func TestSetupView_Wording(t *testing.T) {
 	atView := Model{screen: screenSetup}.viewSetup()
 	for _, want := range []string{"cc-fleet · setup", "↑/↓ move · enter select", "skip — I'll only use subagent mode"} {
-		if !strings.Contains(tmuxView, want) {
-			t.Errorf("tmux setup view missing %q", want)
-		}
 		if !strings.Contains(atView, want) {
 			t.Errorf("agent-teams setup view missing %q", want)
 		}

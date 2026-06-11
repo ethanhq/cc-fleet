@@ -17,6 +17,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 	"github.com/ethanhq/cc-fleet/internal/homedir"
 	"github.com/ethanhq/cc-fleet/internal/models"
+	"github.com/ethanhq/cc-fleet/internal/onboarding"
 	"github.com/ethanhq/cc-fleet/internal/tmux"
 	"github.com/ethanhq/cc-fleet/internal/version"
 )
@@ -30,8 +31,7 @@ const providerProbeTimeout = 3 * time.Second
 // runtime state set by GrowthBook, invisible to an external process. The env
 // var is an unreliable proxy that misfires for the common default-on case, so
 // cc-fleet does not detect it. Whether teammate mode is usable is decided by
-// the skill from Claude's own tool availability. The tmux capability check used
-// by first-run onboarding lives in internal/onboarding.)
+// the skill from Claude's own tool availability.)
 
 // homeDir resolves the user's home directory. homedir.Home reads $HOME on unix
 // (so tests driving t.Setenv("HOME", tempDir) stay hermetic) and %USERPROFILE%
@@ -156,7 +156,7 @@ func CheckTmuxInstalled() CheckResult {
 	if err != nil {
 		r.Status = StatusWarn
 		r.Detail = "not found — needed only for live teammate panes; subagent / workflow / run work without it"
-		r.FixHint = "for live teammates, install tmux (apt-get install tmux | brew install tmux)"
+		r.FixHint = "for live teammates, install tmux: " + onboarding.TmuxInstallHint()
 		return r
 	}
 	r.Status = StatusOK

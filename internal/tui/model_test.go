@@ -68,8 +68,8 @@ func press(t *testing.T, m Model, key string) (Model, tea.Cmd) {
 
 // withProviders returns a fresh model on the Model Providers list with vs already
 // loaded. It pins screenList so the screenList-owned providersMsg is always applied —
-// otherwise a fresh install with no tmux/agent-teams (CI) opens on a setup nudge and
-// the message is dropped, leaving m.providers empty.
+// otherwise a fresh install with agent-teams unconfigured (CI) opens on the setup
+// nudge and the message is dropped, leaving m.providers empty.
 func withProviders(t *testing.T, vs ...userops.ProviderView) Model {
 	t.Helper()
 	m := NewModel()

@@ -102,8 +102,6 @@ func (m Model) View() string {
 		return s
 	case screenSetup:
 		return m.viewSetup()
-	case screenSetupTmux:
-		return m.viewSetupTmux()
 	case screenCodexAuth:
 		return m.viewCodexAuth()
 	}
@@ -3015,25 +3013,16 @@ func (m Model) renderCodexAuthBox() string {
 		Render(strings.Join(lines, "\n"))
 }
 
-// tmuxOptions are the two choices on the tmux setup screen, in cursor order
-// (index 0 = "install it", handled specially by updateSetupTmux).
-var tmuxOptions = []string{
-	"install it  (I'll run the command, then restart ccf)",
-	"skip — I'll only use subagent mode",
-}
-
 // setupOptions are the three choices on the agent-teams setup nudge, in cursor
-// order (index 0 = "enable it for me", handled specially by updateSetup). The
-// trailing "skip — …" wording is kept identical to tmuxOptions' so the two
-// setup screens read the same.
+// order (index 0 = "enable it for me", handled specially by updateSetup).
 var setupOptions = []string{
 	"enable it for me  (writes ~/.claude/settings.json)",
 	"I've set it up myself",
 	"skip — I'll only use subagent mode",
 }
 
-// renderSetupOptions renders a cursor-highlighted option list shared by both
-// setup screens, so the tmux and agent-teams nudges stay visually identical.
+// renderSetupOptions renders a cursor-highlighted option list for the
+// agent-teams setup nudge.
 func renderSetupOptions(opts []string, cursor int) string {
 	var b strings.Builder
 	for i, opt := range opts {
@@ -3045,19 +3034,6 @@ func renderSetupOptions(opts []string, cursor int) string {
 		}
 		b.WriteString(marker + line + "\n")
 	}
-	return b.String()
-}
-
-// viewSetupTmux renders the first-run tmux setup nudge. tmux is needed only for
-// live teammate panes (subagent / workflow / run work without it), so this
-// offers install-vs-skip rather than forcing it.
-func (m Model) viewSetupTmux() string {
-	var b strings.Builder
-	b.WriteString(titleStyle.Render("cc-fleet · setup") + "\n\n")
-	b.WriteString("tmux isn't installed — it's needed only for live teammate panes.\n")
-	b.WriteString(faintStyle.Render("(subagent / workflow / run all work without it.)") + "\n\n")
-	b.WriteString(renderSetupOptions(tmuxOptions, m.tmuxCursor))
-	b.WriteString("\n" + footer("↑/↓ move · enter select · esc skip"))
 	return b.String()
 }
 

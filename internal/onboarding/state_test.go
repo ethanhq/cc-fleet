@@ -24,14 +24,14 @@ func TestLoadState_MissingIsZero(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadState on missing file: unexpected error %v", err)
 	}
-	if st.TmuxAck || st.AgentTeamsAck {
-		t.Fatalf("missing file should yield zero State (no acks), got %+v", st)
+	if st.AgentTeamsAck {
+		t.Fatalf("missing file should yield zero State (no ack), got %+v", st)
 	}
 }
 
 func TestState_SaveLoadRoundTrip(t *testing.T) {
 	setupHome(t)
-	in := State{TmuxAck: true, AgentTeamsAck: true}
+	in := State{AgentTeamsAck: true}
 	if err := in.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestState_SaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadState: %v", err)
 	}
-	if !out.TmuxAck || !out.AgentTeamsAck {
+	if !out.AgentTeamsAck {
 		t.Fatalf("round-trip mismatch: %+v", out)
 	}
 	if out.Version != stateVersion {
@@ -71,7 +71,7 @@ func TestLoadState_CorruptTreatedAsZero(t *testing.T) {
 	if err == nil {
 		t.Fatal("want parse error for corrupt file (caller may log it)")
 	}
-	if st.TmuxAck || st.AgentTeamsAck {
-		t.Fatal("corrupt file must yield zero State (no acks) so we re-guide")
+	if st.AgentTeamsAck {
+		t.Fatal("corrupt file must yield zero State (no ack) so we re-guide")
 	}
 }

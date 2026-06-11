@@ -47,7 +47,6 @@ const (
 	screenForm
 	screenModelPick
 	screenKeys      // EDIT form → "Manage API keys →": per-provider multi-key manager
-	screenSetupTmux // first-run tmux setup nudge; shown before agent-teams/hub
 	screenSetup     // first-run agent-teams setup nudge; shown before the hub
 	screenCodexAuth // CLI-auth → codex: committing → consent → device-code login, modal-rendered
 )
@@ -282,16 +281,12 @@ type Model struct {
 	keyRotation string
 	keyErr      string
 
-	// First-run setup nudges. setupCursor/tmuxCursor select an option on the
-	// agent-teams / tmux screens respectively. setupMsg, once non-empty, replaces
-	// the agent-teams options with a one-line outcome (e.g. the "restart claude"
-	// note after enabling) that any key dismisses. postQuitNote is printed by
-	// tui.Run AFTER the program exits — used by the tmux screen's "install it"
-	// choice to leave the install command on screen.
-	setupCursor  int
-	setupMsg     string
-	tmuxCursor   int
-	postQuitNote string
+	// First-run setup nudge. setupCursor selects an option on the agent-teams
+	// screen. setupMsg, once non-empty, replaces the options with a one-line
+	// outcome (e.g. the "restart claude" note after enabling) that any key
+	// dismisses.
+	setupCursor int
+	setupMsg    string
 
 	loading  bool
 	quitting bool
@@ -311,21 +306,17 @@ type Model struct {
 // bare-interactive both-TTY path — so the onboarding probe here never runs for
 // spawn/subagent/piped/agent callers.
 func NewModel() Model {
-	switch {
-	case onboarding.NeedsTmuxSetup():
-		return Model{screen: screenSetupTmux}
-	case onboarding.NeedsAgentTeamsSetup():
+	if onboarding.NeedsAgentTeamsSetup() {
 		return Model{screen: screenSetup}
-	default:
-		return Model{screen: screenList, loading: true}
 	}
+	return Model{screen: screenList, loading: true}
 }
 
 // Init satisfies tea.Model: load the provider list so the home screen is
-// populated as soon as the program starts. On a setup screen there's nothing to
-// load yet — toList kicks off loadProviders when the user proceeds.
+// populated as soon as the program starts. On the setup screen there's nothing
+// to load yet — toList kicks off loadProviders when the user proceeds.
 func (m Model) Init() tea.Cmd {
-	if m.screen == screenSetup || m.screen == screenSetupTmux {
+	if m.screen == screenSetup {
 		return nil
 	}
 	return loadProviders
@@ -1749,8 +1740,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateKeys(msg)
 		case screenSetup:
 			return m.updateSetup(msg)
-		case screenSetupTmux:
-			return m.updateSetupTmux(msg)
 		case screenCodexAuth:
 			return m.updateCodexAuth(msg)
 		}
@@ -3640,58 +3629,6 @@ func ackAgentTeams() {
 	_ = st.Save()
 }
 
-// tmuxOptionCount is the number of choices on the tmux setup screen
-// (install / skip-subagent-only).
-const tmuxOptionCount = 2
-
-// updateSetupTmux drives the first-run tmux setup nudge. "install it" quits ccf
-// and leaves the install command on screen (postQuitNote) — it does NOT ack, so
-// the nudge returns until tmux is actually present. "skip — subagent mode only"
-// records TmuxAck so we never nudge again, then proceeds to the agent-teams
-// screen (if needed) or the hub.
-func (m Model) updateSetupTmux(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.String() {
-	case "up", "k":
-		if m.tmuxCursor > 0 {
-			m.tmuxCursor--
-		}
-	case "down", "j":
-		if m.tmuxCursor < tmuxOptionCount-1 {
-			m.tmuxCursor++
-		}
-	case "enter":
-		if m.tmuxCursor == 0 { // "install it" → quit so the user can run the command
-			m.quitting = true
-			m.postQuitNote = tmuxInstallNote()
-			return m, tea.Quit
-		}
-		return m.skipTmux() // "skip — I'll only use subagent mode"
-	case "esc", "q":
-		return m.skipTmux()
-	}
-	return m, nil
-}
-
-// skipTmux records the "subagent mode only" choice (TmuxAck) and advances to the
-// agent-teams screen if that nudge is still needed, else the hub.
-func (m Model) skipTmux() (tea.Model, tea.Cmd) {
-	st, _ := onboarding.LoadState()
-	st.TmuxAck = true
-	_ = st.Save()
-	if onboarding.NeedsAgentTeamsSetup() {
-		m.screen = screenSetup
-		return m, nil
-	}
-	return m.toList()
-}
-
-// tmuxInstallNote is printed by tui.Run AFTER the program exits when the user
-// chose "install it" — the OS-appropriate command + a restart reminder. It is
-// printed outside the TUI so it survives the screen teardown.
-func tmuxInstallNote() string {
-	return "Install tmux, then run ccf again:\n\n    " + onboarding.TmuxInstallHint() + "\n"
-}
-
 // updateKeys drives the key manager. While the password input is active
 // (keyEditing) keystrokes edit the new key value; otherwise the cursor walks
 // the key rows + the trailing "+ Add key…" row and the action keys mutate the
@@ -4143,7 +4080,7 @@ func Run(verbose bool) error {
 			model.diag.Logf("tui: session start")
 		}
 	}
-	final, err := tea.NewProgram(model).Run()
+	_, err := tea.NewProgram(model).Run()
 	if logFile != nil {
 		_ = logFile.Close()
 	}
@@ -4154,12 +4091,6 @@ func Run(verbose bool) error {
 			fmt.Println("verbose log:", logPath)
 		}
 		return err
-	}
-	// The tmux setup screen's "install it" choice leaves a note to print AFTER
-	// the program exits (so it survives the TUI teardown). bubbletea returns the
-	// final model; read the note off it.
-	if m, ok := final.(Model); ok && m.postQuitNote != "" {
-		fmt.Println(m.postQuitNote)
 	}
 	if verbose {
 		fmt.Println("verbose log:", logPath)

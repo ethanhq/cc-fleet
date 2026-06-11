@@ -138,7 +138,7 @@ func FormatLine(total int, r CheckResult) string {
 	}
 	if r.AppliedFix {
 		line += " (auto-fix applied)"
-	} else if r.Status == StatusFail && r.FixHint != "" {
+	} else if r.Status != StatusOK && r.FixHint != "" {
 		line += "\n        hint: " + r.FixHint
 	}
 	return line
