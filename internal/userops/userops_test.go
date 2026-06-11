@@ -1036,6 +1036,9 @@ func chmodForTest(t *testing.T, path string, perm os.FileMode) {
 // the key). We force the save to fail by making ConfigDir read-only after the
 // lock file already exists.
 func TestRemove_ConfigSaveFailure_LeavesArtifactsIntact(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the error injection (chmod read-only dir) does not block writes on windows")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("permission-based failure injection needs a non-root euid")
 	}
@@ -1097,6 +1100,9 @@ func TestRemove_ConfigSaveFailure_LeavesArtifactsIntact(t *testing.T) {
 // there is no config row pointing at the (still-present) profile — the safe
 // direction.
 func TestRemove_ProfileDeleteFailure_RowAlreadyCommitted(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the error injection (chmod read-only dir) does not block writes on windows")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("permission-based failure injection needs a non-root euid")
 	}
@@ -1133,6 +1139,9 @@ func TestRemove_ProfileDeleteFailure_RowAlreadyCommitted(t *testing.T) {
 // (secrets dir read-only), the config row is already committed gone — no config
 // row references the orphaned secret. Never destroyed-key + dangling-row.
 func TestRemove_SecretDeleteFailure_RowAlreadyCommitted(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the error injection (chmod read-only dir) does not block writes on windows")
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("permission-based failure injection needs a non-root euid")
 	}

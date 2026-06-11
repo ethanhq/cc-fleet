@@ -298,10 +298,16 @@ func TestWriteForProvider_OverwriteExisting(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	if !strings.Contains(string(data), "/new/path/cc-fleet keyget deepseek") {
-		t.Fatalf("expected new helper path in file; got:\n%s", data)
+	var back struct {
+		APIKeyHelper string `json:"apiKeyHelper"`
 	}
-	if strings.Contains(string(data), oldHelper) {
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if want := quoteArg(newHelper) + " keyget " + quoteArg(v.Name); back.APIKeyHelper != want {
+		t.Fatalf("apiKeyHelper = %q, want %q", back.APIKeyHelper, want)
+	}
+	if strings.Contains(back.APIKeyHelper, oldHelper) {
 		t.Fatalf("old helper path leaked into rewritten file:\n%s", data)
 	}
 }
