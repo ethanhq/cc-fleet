@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -53,12 +54,33 @@ func TestPosixQuote_WrapsUnsafe(t *testing.T) {
 	}
 }
 
+// TestWindowsQuote covers the cmd/PowerShell form: every argument is wrapped in
+// double quotes (so a space never word-splits) and an embedded " is doubled. Pure
+// function — runs on any platform.
+func TestWindowsQuote(t *testing.T) {
+	cases := map[string]string{
+		`C:\Program Files\cc-fleet.exe`: `"C:\Program Files\cc-fleet.exe"`,
+		`deepseek`:                      `"deepseek"`,
+		`C:\bin\cc-fleet.exe`:           `"C:\bin\cc-fleet.exe"`,
+		`a"b`:                           `"a""b"`,
+		``:                              `""`,
+	}
+	for in, want := range cases {
+		if got := windowsQuote(in); got != want {
+			t.Fatalf("windowsQuote(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // TestApiKeyHelper_ExecutesThroughShell_WithSpacePath: a profile generated for a
 // helper path containing a SPACE must execute correctly when the apiKeyHelper
 // string is run through `/bin/sh -c` against a fake helper. The fake helper
 // prints a sentinel "key" so we confirm the shell located + ran the right binary
 // (the real key never enters the string — keyget resolves it at runtime).
 func TestApiKeyHelper_ExecutesThroughShell_WithSpacePath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("execs /bin/sh against the POSIX-quoted helper; the windows form is covered by windowsQuote unit tests")
+	}
 	base := t.TempDir()
 	dir := filepath.Join(base, "Jane Doe", "bin")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -88,6 +110,9 @@ func TestApiKeyHelper_ExecutesThroughShell_WithSpacePath(t *testing.T) {
 // `$(touch PWNED)` payload and assert no PWNED file is created and the right
 // helper still runs.
 func TestApiKeyHelper_NoInjection_WithMetacharPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("execs /bin/sh against the POSIX-quoted helper; the windows form is covered by windowsQuote unit tests")
+	}
 	base := t.TempDir()
 	pwned := filepath.Join(base, "PWNED")
 	// Directory name embeds a command-substitution payload as LITERAL bytes.

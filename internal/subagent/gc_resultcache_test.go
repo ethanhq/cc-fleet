@@ -52,7 +52,7 @@ func TestGC_RemovesFinishedSyncJobUnderPIDReuse(t *testing.T) {
 	}
 
 	// Confirm the recycled-PID guard is still "alive" without our fix.
-	if !processAlive(meta.PID, meta.SettingsPath) {
+	if !processAlive(meta.PID, meta.SettingsPath, meta.ProcStart) {
 		t.Fatalf("test precondition broken: processAlive should say true for current PID")
 	}
 

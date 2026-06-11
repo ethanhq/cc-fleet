@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 
 	"github.com/ethanhq/cc-fleet/internal/fileutil"
@@ -39,6 +40,9 @@ func envTruthy(v string) bool {
 // a suggestion (never an assertion that it's off) and is shown at most once —
 // after any choice, AgentTeamsAck is set.
 func NeedsAgentTeamsSetup() bool {
+	if runtime.GOOS == "windows" {
+		return false // the teammate lane is unix-only; never park the Windows TUI on its setup
+	}
 	if AgentTeamsConfigured() {
 		return false
 	}

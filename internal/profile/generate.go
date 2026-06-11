@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/ethanhq/cc-fleet/internal/config"
@@ -59,12 +60,13 @@ func GenerateForProvider(v *config.Provider, helperBinary string) ([]byte, error
 		return nil, fmt.Errorf("profile: helperBinary %q must be absolute", helperBinary)
 	}
 
-	// Claude Code hands the apiKeyHelper string to a shell, so the install path
-	// and provider arg must be POSIX-shell-quoted — a path with a space or
-	// metacharacter would otherwise be word-split or interpreted. The provider KEY
-	// never enters this string (keyget resolves it at runtime), so quoting
-	// protects only the path + name. A metachar-free path is emitted verbatim so
-	// the profile stays byte-stable.
+	// Claude Code hands the apiKeyHelper string to the platform shell, so the
+	// install path and provider arg must be quoted for THAT shell — a path with a
+	// space or metacharacter would otherwise be word-split or interpreted. Quoting
+	// is per-platform: unix single-quotes for /bin/sh (a metachar-free path is
+	// emitted verbatim so the profile stays byte-stable), windows double-quotes for
+	// cmd/PowerShell. The provider KEY never enters this string (keyget resolves it
+	// at runtime), so quoting protects only the path + provider name.
 	// Pin every Claude Code model slot to a provider model so a teammate/subagent
 	// never falls back to a built-in claude-* id the provider can't serve — the
 	// haiku slot drives background work (titles, context compaction, quick
@@ -81,7 +83,7 @@ func GenerateForProvider(v *config.Provider, helperBinary string) ([]byte, error
 		"CLAUDE_CODE_SUBAGENT_MODEL":     config.Strip1M(v.DefaultModel),
 	}
 	pf := profileFile{
-		APIKeyHelper: posixQuote(helperBinary) + " keyget " + posixQuote(v.Name),
+		APIKeyHelper: quoteArg(helperBinary) + " keyget " + quoteArg(v.Name),
 		Env:          env,
 	}
 	// Reasoning effort: "max" only via the env (the settings effortLevel field
@@ -100,6 +102,35 @@ func GenerateForProvider(v *config.Provider, helperBinary string) ([]byte, error
 		return nil, fmt.Errorf("profile: marshal provider %q: %w", v.Name, err)
 	}
 	return out, nil
+}
+
+// quoteArg quotes s for the platform shell Claude Code runs the apiKeyHelper
+// string through: windows uses double-quoting (cmd/PowerShell), every other
+// platform uses POSIX single-quoting. The split is at generation so the rendered
+// profile matches the host that will read it.
+func quoteArg(s string) string {
+	if runtime.GOOS == "windows" {
+		return windowsQuote(s)
+	}
+	return posixQuote(s)
+}
+
+// windowsQuote returns s safely embeddable in a cmd.exe/PowerShell command line:
+// it is wrapped in double quotes with any embedded double quote doubled (the
+// Windows escape for a literal " inside a quoted run). A bare path is still
+// wrapped so a space never word-splits.
+func windowsQuote(s string) string {
+	var b strings.Builder
+	b.WriteByte('"')
+	for _, r := range s {
+		if r == '"' {
+			b.WriteString(`""`)
+			continue
+		}
+		b.WriteRune(r)
+	}
+	b.WriteByte('"')
+	return b.String()
 }
 
 // posixQuote returns s safely embeddable in a /bin/sh command line: a string of

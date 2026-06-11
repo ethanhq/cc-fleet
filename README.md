@@ -8,7 +8,7 @@
 
 [![Release](https://img.shields.io/github/v/release/ethanhq/cc-fleet?style=for-the-badge&color=2ea043&label=release)](https://github.com/ethanhq/cc-fleet/releases)
 [![npm](https://img.shields.io/npm/v/@ethanhq/cc-fleet?style=for-the-badge&color=cb3837)](https://www.npmjs.com/package/@ethanhq/cc-fleet)
-[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-8957e5?style=for-the-badge)](https://github.com/ethanhq/cc-fleet/releases)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-8957e5?style=for-the-badge)](https://github.com/ethanhq/cc-fleet/releases)
 [![License](https://img.shields.io/badge/license-Apache%202.0-1f6feb?style=for-the-badge)](LICENSE)
 [![Lang](https://img.shields.io/badge/Lang-中文-d29922?style=for-the-badge)](README_zh.md)
 
@@ -34,9 +34,10 @@ panes. The skill teaches Claude Code *when* to delegate work to those teammates.
 ## Requirements
 
 - **Claude Code** (the `claude` CLI) on your PATH.
-- **tmux** — provider teammates run in tmux panes.
-- **macOS or Linux**, amd64 or arm64 — the tested platforms. Windows can in theory run
-  the one-shot **subagent** mode, but it is untested.
+- **macOS, Linux, or Windows**, amd64 or arm64. On Windows the one-shot **subagent**,
+  **workflow**, and interactive **`cc-fleet run`** lanes plus the TUI run natively.
+- **tmux** — needed only for the live **teammate** lane (the teammate panes run in tmux),
+  so that lane is unix/WSL only.
 - **Teammate** mode needs Claude Code's agent-teams enabled. Turn it on in your global
   `~/.claude/settings.json` and restart Claude Code (cc-fleet also nudges you on first run):
   ```json
@@ -54,11 +55,13 @@ Downloads the prebuilt binary, installs `cc-fleet` + the `ccf` alias, and adds t
 skill via the Claude Code plugin. Flags (after `| sh -s --`): `--skill plugin|global|none`,
 `--scope user|project|local`, `--prefix DIR`, `--version vX.Y.Z`.
 
-**npm**
+**npm** *(also the Windows install channel)*
 ```bash
 npm install -g @ethanhq/cc-fleet      # or run once: npx @ethanhq/cc-fleet
 ```
-*Binary only — also install the skill (see [The skill](#the-skill)) so Claude Code can use it.*
+*Binary only — also install the skill (see [The skill](#the-skill)) so Claude Code can use it.
+On Windows, install via npm or download the `cc-fleet-windows-<arch>.zip` from
+[Releases](https://github.com/ethanhq/cc-fleet/releases) (the one-line installer is unix-only).*
 
 **go install**
 ```bash

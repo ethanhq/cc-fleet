@@ -41,15 +41,16 @@ type engine struct {
 	// events is the run's live-event channel that `workflow watch` renders. Nil-safe.
 	// Emitted only on the loop — the seq counter needs no atomic and lines never
 	// interleave. One-way producer→watcher; never read back, never feeds journalKey.
-	events    *eventWriter
-	groupSeq  int    // monotonic id source for parallel/pipeline/workflow group brackets
-	persistIO bool   // persist each leaf's prompt+answer for the board's inline detail (default on; --no-persist-io off)
-	enginePID int    // os.Getpid() of the DETACHED engine — recorded so `workflow stop` can reap it
-	metaModel string // meta.model: default model for agents that omit model (applied before journalKey)
-	whenToUse string // meta.whenToUse: display/board text
-	sessionID string // parent Claude session (board grouping); seeded from the manifest, re-persisted every save
-	cwd       string // launching project dir (board run header); seeded from the manifest, re-persisted every save
-	argsJSON  string // --args-json, re-persisted so a restart resumes with the SAME args (else leaf keys shift)
+	events          *eventWriter
+	groupSeq        int    // monotonic id source for parallel/pipeline/workflow group brackets
+	persistIO       bool   // persist each leaf's prompt+answer for the board's inline detail (default on; --no-persist-io off)
+	enginePID       int    // os.Getpid() of the DETACHED engine — recorded so `workflow stop` can reap it
+	engineProcStart string // enginePID's start token — the stop identity where argv is unreadable (Windows)
+	metaModel       string // meta.model: default model for agents that omit model (applied before journalKey)
+	whenToUse       string // meta.whenToUse: display/board text
+	sessionID       string // parent Claude session (board grouping); seeded from the manifest, re-persisted every save
+	cwd             string // launching project dir (board run header); seeded from the manifest, re-persisted every save
+	argsJSON        string // --args-json, re-persisted so a restart resumes with the SAME args (else leaf keys shift)
 	// The run's default-provider resolution, fixed at mint and seeded from the manifest
 	// (re-persisted every save so the whole-manifest overwrite can't wipe it). A
 	// provider-less agent() resolves to defaultProvider; when it is empty, agent() throws
@@ -829,16 +830,17 @@ func (e *engine) emitGroupClose(gid string) {
 // finalize, when the loop is not running) — manifest writes never race.
 func (e *engine) saveManifest(status, errText string) {
 	_ = subagent.SaveRun(subagent.WorkflowRun{
-		RunID:       e.runID,
-		Name:        e.name,
-		Description: e.description,
-		WhenToUse:   e.whenToUse,
-		StartedAt:   e.startedAt,
-		UpdatedAt:   time.Now().UTC().Format(time.RFC3339),
-		Phases:      e.phases,
-		Status:      status,
-		Error:       errText,
-		EnginePID:   e.enginePID,
+		RunID:           e.runID,
+		Name:            e.name,
+		Description:     e.description,
+		WhenToUse:       e.whenToUse,
+		StartedAt:       e.startedAt,
+		UpdatedAt:       time.Now().UTC().Format(time.RFC3339),
+		Phases:          e.phases,
+		Status:          status,
+		Error:           errText,
+		EnginePID:       e.enginePID,
+		EngineProcStart: e.engineProcStart,
 		// Carried in engine state so every whole-file overwrite preserves them (the board
 		// groups by SessionID; a restart resumes with the same args/persistIO/budget).
 		SessionID:    e.sessionID,

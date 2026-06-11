@@ -29,7 +29,7 @@ const smoke429BalanceJSON = `{"type":"result","subtype":"success","is_error":tru
 // id — the pre-split registerSyncJob shape the board tests rely on.
 func regSyncJob(req Request, model string) string {
 	jobID := mintSyncJobID()
-	registerSyncJob(jobID, req, model, "", "")
+	registerSyncJob(jobID, req, model, "", "", 0)
 	return jobID
 }
 

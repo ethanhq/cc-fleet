@@ -1,6 +1,7 @@
 package codexproxy
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -229,18 +230,17 @@ func healthy(port int, protocol, upstreamURL, ref string) bool {
 	return portResponds(port)
 }
 
-// stopStaleDaemon interrupts a live daemon whose identity no longer matches and
-// waits briefly for it to free the port, so EnsureDaemon can rebind it. A no-op
-// when no daemon (or a dead one) holds the port.
+// stopStaleDaemon stops a live daemon whose identity no longer matches and waits
+// briefly for it to free the port, so EnsureDaemon can rebind it. A no-op when no
+// daemon (or a dead one) holds the port. loadSecretOnly takes no flock, so reading
+// it here (inside EnsureDaemon's proxy lock) cannot deadlock a concurrent ensure.
 func stopStaleDaemon(port int) {
 	st, err := readState(port)
 	if err != nil {
 		return
 	}
 	if st.PID > 0 && pidAlive(st.PID, st.ProcStart) {
-		if proc, e := os.FindProcess(st.PID); e == nil {
-			_ = proc.Signal(os.Interrupt)
-		}
+		stopViaShutdown(port, st, loadSecretOnly())
 		for i := 0; i < 20 && whoHoldsPort(port); i++ {
 			time.Sleep(50 * time.Millisecond)
 		}
@@ -386,6 +386,30 @@ func registerLease(port int) error {
 	return fileutil.AtomicWrite(filepath.Join(dir, name), []byte(strconv.FormatInt(expires, 10)), 0o600)
 }
 
+// KeepAlive holds a daemon-backed provider's daemon up for the lifetime of ctx by
+// renewing the per-port launch lease on a ticker (the lane-0 interactive run has no
+// job file, so its resident parent renews the lease while its claude child runs). It
+// blocks until ctx is done. A nil or non-daemon-backed provider returns immediately.
+func KeepAlive(ctx context.Context, v *config.Provider) {
+	if v == nil || !v.DaemonBacked() {
+		return
+	}
+	port, err := PortFromBaseURL(v.BaseURL)
+	if err != nil {
+		return
+	}
+	ticker := time.NewTicker(leaseTTL / 3)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_ = registerLease(port)
+		}
+	}
+}
+
 // activeLeases counts unexpired leases for a port and prunes expired ones.
 func activeLeases(port int) int {
 	dir, err := leasesDir(port)
@@ -414,48 +438,7 @@ func activeLeases(port int) int {
 	return active
 }
 
-// liveWorkers counts running claude processes whose --settings profile points at
-// this proxy's port. A scan error returns -1 ("unknown" -> daemon stays alive).
-func liveWorkers(port int) int {
-	table, err := procintrospect.ProcessTable()
-	if err != nil {
-		return -1
-	}
-	n := 0
-	for _, p := range table {
-		if profileTargetsPort(p.Argv, port) {
-			n++
-		}
-	}
-	return n
-}
-
-func profileTargetsPort(argv []string, port int) bool {
-	settings := settingsPath(argv)
-	if settings == "" {
-		return false
-	}
-	b, err := os.ReadFile(settings)
-	if err != nil {
-		return false
-	}
-	var prof struct {
-		Env map[string]string `json:"env"`
-	}
-	if json.Unmarshal(b, &prof) != nil {
-		return false
-	}
-	return strings.Contains(prof.Env["ANTHROPIC_BASE_URL"], fmt.Sprintf(":%d", port))
-}
-
-func settingsPath(argv []string) string {
-	for i, a := range argv {
-		if a == "--settings" && i+1 < len(argv) {
-			return argv[i+1]
-		}
-		if strings.HasPrefix(a, "--settings=") {
-			return strings.TrimPrefix(a, "--settings=")
-		}
-	}
-	return ""
-}
+// liveWorkers counts running claude workers bound to this proxy's port; a return of
+// -1 ("unknown") keeps the daemon alive. The count source is platform-split: unix
+// scans process argv for the --settings profile, windows scans cc-fleet's own job
+// store (argv is unreadable there). See liveworkers_{unix,windows}.go.

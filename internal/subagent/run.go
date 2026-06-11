@@ -52,9 +52,17 @@ type WorkflowRun struct {
 	Status    string     `json:"status,omitempty"`
 	// EnginePID is the OS pid of the process running the engine (the detached child for a
 	// normal run). `workflow stop` reaps its whole process tree — which includes the
-	// engine's in-flight provider-leaf children — after a cmdline reuse-guard check, so a
-	// recycled pid can never make stop kill an unrelated process.
+	// engine's in-flight provider-leaf children — after an identity reuse-guard check
+	// (argv where readable, else the start token below), so a recycled pid can never make
+	// stop kill an unrelated process.
 	EnginePID int `json:"engine_pid,omitempty"`
+	// EngineProcStart is EnginePID's kernel start-time token
+	// (procintrospect.ProcStart), self-stamped by the engine next to EnginePID.
+	// It is the engine-identity check where argv is unreadable (Windows): a
+	// recycled pid carries a new start time, so equality proves this is still
+	// our engine. Empty (a pre-token manifest / capture failure) degrades to the
+	// argv-only behavior.
+	EngineProcStart string `json:"engine_proc_start,omitempty"`
 	// Error is the failure cause, set when Status is "failed" — so a DETACHED run
 	// (whose stderr went to /dev/null) still records WHY it failed for `workflow
 	// status`. It is a canonical/script-level message (agent() failures carry
@@ -330,10 +338,12 @@ func removeRun(dir, runID string) {
 // reapable DETACHED engine is found it kills the engine's whole process TREE by ANCESTRY
 // — the engine plus its in-flight provider-leaf `claude` children and their grandchildren
 // (each leaf is its OWN process group, so an ancestry walk, not a single group signal, is
-// required on unix; reapEngineTree handles the platform split). A cmdline reuse guard
+// required on unix; reapEngineTree handles the platform split). An identity reuse guard
 // means a recycled EnginePID can NEVER make this kill an unrelated process: the pid is
 // reaped only when its argv still proves it is this run's detached `workflow run …
-// --run-id <id>` engine. An already-terminal run is returned untouched (no clobbering a
+// --run-id <id>` engine, or — where argv is unreadable (Windows) — when its kernel start
+// token still equals the manifest's recorded one. An already-terminal run is returned
+// untouched (no clobbering a
 // real done/failed). Every other case — a foreground run (EnginePID deliberately 0), an
 // engine already gone (crashed), or a recycled pid whose argv no longer matches — is
 // reaped of nothing and simply flipped to stopped, clearing a stale "running"; the reuse
@@ -347,7 +357,7 @@ func StopRun(runID string) (WorkflowRun, error) {
 		return run, nil // already terminal — don't clobber done/failed/stopped
 	}
 	switch {
-	case run.EnginePID > 0 && pidAlive(run.EnginePID) && engineCmdlineMatches(run.EnginePID, runID):
+	case run.EnginePID > 0 && pidAlive(run.EnginePID) && engineIdentityMatches(run):
 		// Verifiably this run's live detached engine: reap it + confirm dead before finalizing its leaves.
 		reapEngineTree(run.EnginePID) // reaps the engine + its in-flight leaf children
 		if !WaitEngineStopped(runID, stopReapTimeout) {
@@ -372,6 +382,7 @@ func StopRun(runID string) (WorkflowRun, error) {
 	run.Status = "stopped"
 	run.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 	run.EnginePID = 0 // a stopped run has no engine; clear the stale pid
+	run.EngineProcStart = ""
 	if serr := SaveRun(run); serr != nil {
 		return WorkflowRun{}, serr
 	}
@@ -437,6 +448,32 @@ func engineCmdlineMatches(pid int, runID string) bool {
 	return argvIsRunEngine(argv, runID)
 }
 
+// engineIdentityMatches is StopRun's kill guard: where argv is readable it
+// alone decides (a token match must not override an argv mismatch — the darwin
+// token is seconds-coarse and a same-second recycle can collide); where argv is
+// unreadable (Windows) the recorded start token decides. Fail SAFE: with
+// neither, never kill.
+func engineIdentityMatches(run WorkflowRun) bool {
+	argv, ok := reuseGuardArgv(run.EnginePID)
+	if ok {
+		return argvIsRunEngine(argv, run.RunID)
+	}
+	return engineProcStartMatches(run)
+}
+
+// engineProcStartMatches reports whether run's recorded engine start token still
+// matches the live pid — the identity check where argv is unreadable (Windows).
+// A recycled pid carries a new start time, so equality positively identifies
+// the engine. An empty token (a pre-token manifest / capture failure) never
+// matches: those runs keep the argv-only behavior.
+func engineProcStartMatches(run WorkflowRun) bool {
+	if run.EngineProcStart == "" || run.EnginePID <= 0 {
+		return false
+	}
+	live, ok := procStartFn(run.EnginePID)
+	return ok && live == run.EngineProcStart
+}
+
 // argvIsRunEngine reports whether argv is this run's detached `workflow run … --run-id <id>`
 // engine — the argv-matching core shared by the StopRun kill-guard (engineCmdlineMatches) and the
 // EngineAlive liveness check. Requiring the "--run-id" flag (which only the detached child carries)
@@ -462,20 +499,24 @@ func argvIsRunEngine(argv []string, runID string) bool {
 // EngineAlive reports whether run's DETACHED engine MIGHT still be running. It is a read-only
 // LIVENESS check (it kills nothing), used by a watcher to stop waiting on a stale "running"
 // manifest whose engine is gone. A foreground run (EnginePID 0) or a definitively-dead pid is
-// "not alive". When the pid IS alive, the answer depends on whether we can read its argv: where
-// we can (unix), require it to still be THIS run's engine so a RECYCLED pid (now an unrelated
-// process) reads as gone — otherwise a SIGKILLed engine whose pid was reused would hold the
-// watcher open forever; where we can't (a platform without process introspection, e.g. Windows),
-// trust pidAlive alone, since a false "gone" for a live engine is worse than a rare missed
-// recycled-pid detection. Unlike StopRun (which must fail-SAFE to never-kill an unverifiable
-// pid), this fails-SOFT to keep-watching — neither can ever kill the wrong process.
+// "not alive". When the pid IS alive, the answer depends on what identity we can read: where
+// argv is readable (unix), require it to still be THIS run's engine so a RECYCLED pid (now an
+// unrelated process) reads as gone — otherwise a SIGKILLed engine whose pid was reused would
+// hold the watcher open forever; where it isn't (Windows), the manifest's recorded start token
+// answers the same question; with neither (a pre-token manifest), trust pidAlive alone, since
+// a false "gone" for a live engine is worse than a rare missed recycled-pid detection. Unlike
+// StopRun (which must fail-SAFE to never-kill an unverifiable pid), this fails-SOFT to
+// keep-watching — neither can ever kill the wrong process.
 func EngineAlive(run WorkflowRun) bool {
 	if run.EnginePID <= 0 || !pidAlive(run.EnginePID) {
 		return false
 	}
 	argv, ok := reuseGuardArgv(run.EnginePID)
 	if !ok {
-		return true // argv unavailable → can't disprove it's our engine; trust pidAlive
+		if run.EngineProcStart != "" {
+			return engineProcStartMatches(run)
+		}
+		return true // no argv and no token → can't disprove it's our engine; trust pidAlive
 	}
 	return argvIsRunEngine(argv, run.RunID)
 }

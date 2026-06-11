@@ -12,6 +12,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/ethanhq/cc-fleet/internal/homedir"
 )
 
 const (
@@ -341,8 +343,8 @@ func claudeConfigDir() string {
 	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
 		return dir
 	}
-	home := os.Getenv("HOME")
-	if home == "" {
+	home, err := homedir.Home()
+	if err != nil || home == "" {
 		return ""
 	}
 	return filepath.Join(home, ".claude")

@@ -143,15 +143,15 @@ func TestProcessAlive_LivePidWrongCmdlineReadsDead(t *testing.T) {
 	}
 	// A live pid (this test process) whose cmdline is obviously NOT our claude
 	// job: this is exactly the recycled-pid footgun the guard exists to catch.
-	if processAlive(os.Getpid(), "/no/such/cc-fleet/profile-marker.json") {
+	if processAlive(os.Getpid(), "/no/such/cc-fleet/profile-marker.json", "") {
 		t.Fatal("a live pid whose cmdline is not our claude subagent must read as dead (reuse guard)")
 	}
 	// Empty SettingsPath (a sync job / legacy meta) degrades to a bare liveness probe.
-	if !processAlive(os.Getpid(), "") {
+	if !processAlive(os.Getpid(), "", "") {
 		t.Fatal("empty settingsPath should degrade to a bare liveness probe = alive for a live pid")
 	}
 	// pid <= 0 is always dead.
-	if processAlive(-1, "") {
+	if processAlive(-1, "", "") {
 		t.Fatal("pid <= 0 must be reported dead")
 	}
 }

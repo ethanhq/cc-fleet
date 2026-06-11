@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethanhq/cc-fleet/internal/homedir"
 	"github.com/ethanhq/cc-fleet/internal/procintrospect"
 )
 
@@ -159,8 +160,8 @@ func claudeConfigDir() string {
 	if dir := os.Getenv("CLAUDE_CONFIG_DIR"); dir != "" {
 		return dir
 	}
-	home := os.Getenv("HOME")
-	if home == "" {
+	home, err := homedir.Home()
+	if err != nil || home == "" {
 		return ""
 	}
 	return filepath.Join(home, ".claude")
@@ -178,6 +179,9 @@ func parentPID(pid int) (int, bool) {
 	case "darwin":
 		// macOS has no /proc; use `ps -o ppid=`.
 		return procintrospect.Ppid(pid)
+	case "windows":
+		// Windows has no /proc; use the Toolhelp32 snapshot.
+		return procintrospect.Ppid(pid)
 	}
 	return 0, false
 }
@@ -193,6 +197,10 @@ func procStart(pid int) (string, bool) {
 	case "darwin":
 		// epoch-seconds token from `ps -o lstart=`; compared against the file's
 		// UTC date via normalizeFileProcStart.
+		return procintrospect.ProcStart(pid)
+	case "windows":
+		// decimal-nanos creation token from GetProcessTimes; platform-local
+		// equality only, compared against whatever the session file stores.
 		return procintrospect.ProcStart(pid)
 	}
 	return "", false

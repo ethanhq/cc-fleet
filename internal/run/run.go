@@ -1,16 +1,15 @@
 // Package run implements `cc-fleet run <provider>` (lane 0): launch an interactive
-// foreground claude REPL backed by a provider's profile + default model, by
-// replacing the cc-fleet process via exec. It is a strict subset of the spawn
-// pipeline — no tmux, team, locks, settle gate, or fingerprint recipe
-// placeholders — and holds the same key-safety invariant (provider auth flows
-// only through the profile apiKeyHelper; no key in env/argv).
+// foreground claude REPL backed by a provider's profile + default model, handing
+// the process over to claude (an execve on unix, a wait-on-child on Windows). It
+// is a strict subset of the spawn pipeline — no tmux, team, locks, settle gate, or
+// fingerprint recipe placeholders — and holds the same key-safety invariant
+// (provider auth flows only through the profile apiKeyHelper; no key in env/argv).
 package run
 
 import (
 	"fmt"
 	"os"
 	"strings"
-	"syscall"
 
 	"github.com/ethanhq/cc-fleet/internal/childenv"
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
@@ -57,18 +56,10 @@ var resolveBinary = func() (string, error) {
 	return bin, nil
 }
 
-// execClaude replaces the current process with claude via execve. A seam so
-// tests intercept the launch instead of replacing the test process. cc-fleet
-// targets linux/darwin (like the rest of the binary, which uses unix-only
-// flock/tmux), so syscall.Exec is always available.
-var execClaude = func(bin string, argv, env []string) error {
-	return syscall.Exec(bin, argv, env)
-}
-
 // Run validates the request, ensures the provider profile, resolves the claude
-// binary, and replaces the current process with an interactive claude bound to
-// the provider. Fail-before-exec: every rejecting check runs before any process
-// replacement. On success it does not return.
+// binary, and hands the process over to an interactive claude bound to the
+// provider. Fail-before-launch: every rejecting check runs before any process
+// is launched. On success it does not return.
 func Run(req Request) error {
 	if err := ids.ValidateProviderName(req.Provider); err != nil {
 		return err
@@ -124,7 +115,7 @@ func Run(req Request) error {
 		permMode = v.DefaultPermission
 	}
 	argv := buildArgv(bin, profilePath, model, permmode.ExplicitFlags(permMode), req.ExtraArgs)
-	return execClaude(bin, argv, childenv.Clean(os.Environ()))
+	return execClaude(v, bin, argv, childenv.Clean(os.Environ()))
 }
 
 // buildArgv builds the claude argv: bin, cc-fleet's managed flags

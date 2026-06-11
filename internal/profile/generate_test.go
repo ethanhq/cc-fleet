@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -25,15 +26,21 @@ func sampleProvider() *config.Provider {
 	}
 }
 
-// isolateHome points $HOME at a temp dir so ProfilesDir() is sandboxed.
+// isolateHome points the home directory at a temp dir so ProfilesDir() is
+// sandboxed. HOME covers unix; USERPROFILE covers windows (homedir.Home reads
+// each platform's native variable).
 func isolateHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	return home
 }
 
 func TestGenerateForProvider_Snapshot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("pins the unix-quoted apiKeyHelper bytes; windows quoting is covered by TestWindowsQuote")
+	}
 	v := sampleProvider()
 	const helper = "/usr/local/bin/cc-fleet"
 	// A single-model provider (no strong/fast/effort): every Claude Code model tier
@@ -92,7 +99,7 @@ func TestGenerateForProvider_TiersEffortAndStrip1M(t *testing.T) {
 		SecretRef:      "deepseek.key",
 		Enabled:        true,
 	}
-	got, err := GenerateForProvider(v, "/usr/local/bin/cc-fleet")
+	got, err := GenerateForProvider(v, testHelperBin())
 	if err != nil {
 		t.Fatalf("GenerateForProvider: %v", err)
 	}
@@ -127,7 +134,7 @@ func TestGenerateForProvider_TiersEffortAndStrip1M(t *testing.T) {
 func TestGenerateForProvider_MaxEffortRidesEnv(t *testing.T) {
 	v := sampleProvider()
 	v.Effort = "max"
-	got, err := GenerateForProvider(v, "/usr/local/bin/cc-fleet")
+	got, err := GenerateForProvider(v, testHelperBin())
 	if err != nil {
 		t.Fatalf("GenerateForProvider: %v", err)
 	}
@@ -171,7 +178,7 @@ func TestWriteForProvider_FilePerm(t *testing.T) {
 	isolateHome(t)
 	v := sampleProvider()
 
-	path, err := WriteForProvider(v, "/usr/local/bin/cc-fleet")
+	path, err := WriteForProvider(v, testHelperBin())
 	if err != nil {
 		t.Fatalf("WriteForProvider: %v", err)
 	}
@@ -188,7 +195,7 @@ func TestWriteForProvider_FilePerm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
-	wantBytes, err := GenerateForProvider(v, "/usr/local/bin/cc-fleet")
+	wantBytes, err := GenerateForProvider(v, testHelperBin())
 	if err != nil {
 		t.Fatalf("GenerateForProvider: %v", err)
 	}
@@ -202,7 +209,7 @@ func TestWriteForProvider_Atomic_NoTempLeft(t *testing.T) {
 	isolateHome(t)
 	v := sampleProvider()
 
-	if _, err := WriteForProvider(v, "/usr/local/bin/cc-fleet"); err != nil {
+	if _, err := WriteForProvider(v, testHelperBin()); err != nil {
 		t.Fatalf("WriteForProvider: %v", err)
 	}
 	dir, err := ProfilesDir()
@@ -299,7 +306,7 @@ func TestRemoveForProvider_OK(t *testing.T) {
 	isolateHome(t)
 	v := sampleProvider()
 
-	path, err := WriteForProvider(v, "/usr/local/bin/cc-fleet")
+	path, err := WriteForProvider(v, testHelperBin())
 	if err != nil {
 		t.Fatalf("WriteForProvider: %v", err)
 	}
@@ -341,8 +348,20 @@ func TestProfilePath_EmptyProvider(t *testing.T) {
 }
 
 func TestProfilesDir_NoHome(t *testing.T) {
+	// Clear both home variables: HOME is decisive on unix, USERPROFILE on windows.
 	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
 	if _, err := ProfilesDir(); err == nil {
-		t.Fatalf("ProfilesDir: want error when HOME unset, got nil")
+		t.Fatalf("ProfilesDir: want error when home directory unset, got nil")
 	}
+}
+
+// testHelperBin is a platform-absolute helperBinary for tests that need any
+// absolute path (the unix-quoted snapshot keeps its literal and skips on
+// windows).
+func testHelperBin() string {
+	if runtime.GOOS == "windows" {
+		return `C:\fleet\cc-fleet.exe`
+	}
+	return "/usr/local/bin/cc-fleet"
 }

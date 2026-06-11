@@ -29,7 +29,7 @@ func newRunCmd() *cobra.Command {
 		Long: "Replace this process with an interactive `claude` REPL whose LLM backend is the\n" +
 			"named provider: its profile pins the apiKeyHelper + base URL, and the model is the\n" +
 			"provider's default_model unless --model overrides. The provider key never enters env,\n" +
-			"argv, or shell history. Requires an interactive terminal; Unix/macOS only.",
+			"argv, or shell history. Requires an interactive terminal.",
 		Args:          cobra.ArbitraryArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,

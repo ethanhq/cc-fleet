@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -96,6 +97,9 @@ func TestVersionForPath(t *testing.T) {
 // be runnable for versionFromPath to succeed, but we name its parent dir with
 // a semver so versionFromPath returns a value without exec.
 func TestDetect_PathLookup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("writes a #!/bin/sh fake claude; windows layout discovery is covered by the _windows test")
+	}
 	dir := t.TempDir()
 	verDir := filepath.Join(dir, "2.1.150")
 	if err := os.MkdirAll(verDir, 0o755); err != nil {
@@ -125,6 +129,9 @@ func TestDetect_PathLookup(t *testing.T) {
 // writeExecClaude drops a runnable stub `claude` into versionsDir/<ver>/claude.
 func writeExecClaude(t *testing.T, versionsDir, ver string) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("writes a #!/bin/sh fake under HOME; windows layout discovery is covered by the _windows test")
+	}
 	d := filepath.Join(versionsDir, ver)
 	if err := os.MkdirAll(d, 0o755); err != nil {
 		t.Fatalf("mkdir %s: %v", d, err)

@@ -195,13 +195,13 @@ func detectPIDWithStartFrom(start int) (int, string) {
 }
 
 // TestPIDWalk_UnsupportedPlatform_ReturnsZero locks the auto-degrade guarantee
-// for platforms with NO process introspection (procintrospect's "other" build —
-// e.g. windows): parentPID/procStart return (_,false) so walk bails on the first
-// step. darwin and linux have process introspection, so they're excluded here
+// for platforms with NO process introspection (procintrospect's "other" build):
+// parentPID/procStart return (_,false) so walk bails on the first step. linux,
+// darwin, and windows all have process introspection, so they're excluded here
 // and covered by their own tests.
 func TestPIDWalk_UnsupportedPlatform_ReturnsZero(t *testing.T) {
-	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
-		t.Skip("introspection-capable platform; degrade is asserted on 'other' (e.g. windows) only")
+	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
+		t.Skip("introspection-capable platform; degrade is asserted on 'other' only")
 	}
 	// On an unsupported host parentPID returns (0,false) for any pid; walk falls
 	// out before reaching any session file lookup.

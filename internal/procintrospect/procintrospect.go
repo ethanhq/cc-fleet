@@ -5,9 +5,11 @@
 // Each operation is platform-split via build tags so the binary carries exactly
 // one implementation per OS:
 //
-//   - linux  (procintrospect_linux.go)  — reads /proc.
-//   - darwin (procintrospect_darwin.go) — shells out to ps(1)/pgrep(1). No cgo.
-//   - other  (procintrospect_other.go)  — degrades to empty/unsupported.
+//   - linux   (procintrospect_linux.go)   — reads /proc.
+//   - darwin  (procintrospect_darwin.go)  — shells out to ps(1)/pgrep(1). No cgo.
+//   - windows (procintrospect_windows.go) — GetProcessTimes start tokens +
+//     Toolhelp32 parent lookup; argv/table stay unsupported (no PEB read).
+//   - other   (procintrospect_other.go)   — degrades to empty/unsupported.
 //
 // It is the single shared home for the pattern: spawn (rollback reap) and
 // teardown (ps / board / hide-show discovery + ghost reap) both compose these

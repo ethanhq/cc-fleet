@@ -26,8 +26,9 @@ func StaticModels() []string { return append([]string(nil), codexModels...) }
 type server struct {
 	up           upstream
 	protocol     string
-	handshake    string       // codex-oauth handshake secret; "" for openai-*
+	handshake    string       // handshake secret gating /shutdown for every protocol, and /v1/messages for codex-oauth; "" only before Serve loads it
 	lastActivity atomic.Int64 // unix nanos of the last /v1/messages request
+	shutdown     func()       // drains the listener; set by Serve, nil in handler-only tests
 }
 
 func newServer(up upstream, protocol, handshake string) *server {
@@ -40,8 +41,30 @@ func (s *server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/messages", s.handleMessages)
 	mux.HandleFunc("/v1/models", s.handleModels)
+	mux.HandleFunc("/shutdown", s.handleShutdown)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	return mux
+}
+
+// handleShutdown drains the daemon on an authenticated request. The handshake
+// secret is required for every protocol (an openai daemon needs no secret to serve
+// /v1/messages, but a bare /shutdown would be an any-local-process kill switch), so
+// a missing or wrong x-api-key is refused. On a match it responds 200, then drains
+// in a goroutine so the response flushes before the listener closes. The loopback
+// binding is enforced by the listener.
+func (s *server) handleShutdown(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.handshake == "" || r.Header.Get("x-api-key") != s.handshake {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	if s.shutdown != nil {
+		go s.shutdown()
+	}
 }
 
 func (s *server) handleModels(w http.ResponseWriter, _ *http.Request) {

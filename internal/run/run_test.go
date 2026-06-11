@@ -25,7 +25,7 @@ func stubSeams(t *testing.T, binPath string, binErr error) *launch {
 	got := &launch{}
 	origResolve, origExec := resolveBinary, execClaude
 	resolveBinary = func() (string, error) { return binPath, binErr }
-	execClaude = func(bin string, argv, env []string) error {
+	execClaude = func(_ *config.Provider, bin string, argv, env []string) error {
 		got.called, got.bin, got.argv, got.env = true, bin, argv, env
 		return nil
 	}

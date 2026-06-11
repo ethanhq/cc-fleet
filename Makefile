@@ -97,15 +97,17 @@ smoke: build
 
 cross-compile:
 	@mkdir -p $(DIST_DIR)
-	GOOS=linux  GOARCH=amd64 go build -o $(DIST_DIR)/$(BIN_NAME)-linux-amd64  $(PKG)
-	GOOS=linux  GOARCH=arm64 go build -o $(DIST_DIR)/$(BIN_NAME)-linux-arm64  $(PKG)
-	GOOS=darwin GOARCH=amd64 go build -o $(DIST_DIR)/$(BIN_NAME)-darwin-amd64 $(PKG)
-	GOOS=darwin GOARCH=arm64 go build -o $(DIST_DIR)/$(BIN_NAME)-darwin-arm64 $(PKG)
-	@echo "Built 4 binaries in $(DIST_DIR)/"
+	GOOS=linux   GOARCH=amd64 go build -o $(DIST_DIR)/$(BIN_NAME)-linux-amd64      $(PKG)
+	GOOS=linux   GOARCH=arm64 go build -o $(DIST_DIR)/$(BIN_NAME)-linux-arm64      $(PKG)
+	GOOS=darwin  GOARCH=amd64 go build -o $(DIST_DIR)/$(BIN_NAME)-darwin-amd64     $(PKG)
+	GOOS=darwin  GOARCH=arm64 go build -o $(DIST_DIR)/$(BIN_NAME)-darwin-arm64     $(PKG)
+	GOOS=windows GOARCH=amd64 go build -o $(DIST_DIR)/$(BIN_NAME)-windows-amd64.exe $(PKG)
+	GOOS=windows GOARCH=arm64 go build -o $(DIST_DIR)/$(BIN_NAME)-windows-arm64.exe $(PKG)
+	@echo "Built 6 binaries in $(DIST_DIR)/"
 
 # Local fallback for building release tarballs by hand. The canonical release
 # path is .goreleaser.yaml run by the release workflow on a tag; keep this for
-# offline / dev packaging only.
+# offline / dev packaging only. Unix-only — the Windows .zip is goreleaser-only.
 #
 # Per-platform tarballs: each cc-fleet-<os>-<arch>.tar.gz bundles the prebuilt
 # binary (renamed cc-fleet) + the cc-fleet SKILL.md + a copy-binary installer

@@ -34,7 +34,7 @@ func newSpawnCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "spawn [provider]",
-		Short: "Spawn a provider teammate as a tmux pane (Claude layer)",
+		Short: "Spawn a provider teammate as a tmux pane (Claude layer; unix-only — needs tmux)",
 		Long: `Spawn a provider teammate into a tmux pane using cc-fleet's cached
 fingerprint + the provider's profile. Designed to be invoked by the
 cc-fleet skill via Bash; the --json flag emits a machine-readable

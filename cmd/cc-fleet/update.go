@@ -29,7 +29,8 @@ The binary is updated according to how it was installed:
   - npm:        runs 'npm install -g @ethanhq/cc-fleet@latest'.
   - go install: runs 'go install github.com/ethanhq/cc-fleet/cmd/cc-fleet@latest'.
 When the needed tool is missing (or the install dir isn't writable), update
-prints the exact command instead of acting.
+prints the exact command instead of acting. On Windows self-update is
+unavailable; update via npm or the release zip.
 
 The Claude Code plugin is refreshed in the same run (marketplace update + plugin
 update, preserving scope); --binary-only skips it. A dev/non-release build is

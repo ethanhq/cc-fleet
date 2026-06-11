@@ -15,6 +15,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/ccver"
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/fingerprint"
+	"github.com/ethanhq/cc-fleet/internal/homedir"
 	"github.com/ethanhq/cc-fleet/internal/models"
 	"github.com/ethanhq/cc-fleet/internal/tmux"
 	"github.com/ethanhq/cc-fleet/internal/version"
@@ -32,15 +33,11 @@ const providerProbeTimeout = 3 * time.Second
 // the skill from Claude's own tool availability. The tmux capability check used
 // by first-run onboarding lives in internal/onboarding.)
 
-// homeDir resolves $HOME. We don't use os.UserHomeDir because that consults
-// /etc/passwd as a fallback — tests rely on t.Setenv("HOME", tempDir) and
-// shouldn't see real-user files leak in.
+// homeDir resolves the user's home directory. homedir.Home reads $HOME on unix
+// (so tests driving t.Setenv("HOME", tempDir) stay hermetic) and %USERPROFILE%
+// on windows, where HOME is not a native variable.
 func homeDir() (string, error) {
-	h := os.Getenv("HOME")
-	if h == "" {
-		return "", errors.New("HOME is not set")
-	}
-	return h, nil
+	return homedir.Home()
 }
 
 // claudeDir returns $HOME/.claude — Claude Code's per-user config root that

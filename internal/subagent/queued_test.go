@@ -24,7 +24,7 @@ func TestMintQueuedLeafThenStatusForQueued(t *testing.T) {
 		t.Errorf("queued placeholder lost its run grouping: %+v", st)
 	}
 	// Flip queued→running (subagent.Run reuses the id via registerSyncJob).
-	if registerSyncJob(jobID, req, "m", "", "") != registerOK {
+	if registerSyncJob(jobID, req, "m", "", "", 0) != registerOK {
 		t.Fatal("registerSyncJob(reuse) failed")
 	}
 	if st := StatusFor(jobID); st.Status != "running" {
@@ -44,7 +44,7 @@ func TestRegisterSyncJobClearsStaleCacheOnReuse(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	req := Request{Provider: "v", RunID: "r", Phase: "p", Label: "l", PersistIO: true, IOPrompt: "hi", Attempt: 1}
 	jobID := MintQueuedLeaf(req, "m")
-	registerSyncJob(jobID, req, "m", "", "")
+	registerSyncJob(jobID, req, "m", "", "", 0)
 	finalizeSyncJob(jobID, Result{OK: true, Result: "first-answer", NumTurns: 1}) // attempt 1 → done cache + .answer
 	if StatusFor(jobID).Status != "done" {
 		t.Fatal("attempt 1 should be cached done")
@@ -52,7 +52,7 @@ func TestRegisterSyncJobClearsStaleCacheOnReuse(t *testing.T) {
 	// Re-registering the SAME id must clear the stale done cache.
 	req2 := req
 	req2.Attempt = 2
-	if registerSyncJob(jobID, req2, "m", "", "") != registerOK {
+	if registerSyncJob(jobID, req2, "m", "", "", 0) != registerOK {
 		t.Fatal("re-register failed")
 	}
 	st := StatusFor(jobID)

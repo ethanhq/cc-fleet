@@ -1,9 +1,11 @@
 package config
 
 import (
-	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/ethanhq/cc-fleet/internal/homedir"
 )
 
 // appDirName is the cc-fleet subdirectory inside the XDG config directory.
@@ -13,16 +15,16 @@ const appDirName = "cc-fleet"
 //
 // Resolution order:
 //  1. $XDG_CONFIG_HOME/cc-fleet  (if XDG_CONFIG_HOME is set and non-empty)
-//  2. $HOME/.config/cc-fleet     (fallback)
+//  2. <home>/.config/cc-fleet    ($HOME on unix, %USERPROFILE% on windows)
 //
-// Returns an error if neither XDG_CONFIG_HOME nor HOME is set.
+// Returns an error if XDG_CONFIG_HOME is unset and the user's home can't be resolved.
 func ConfigDir() (string, error) {
 	if xdg := os.Getenv("XDG_CONFIG_HOME"); xdg != "" {
 		return filepath.Join(xdg, appDirName), nil
 	}
-	home := os.Getenv("HOME")
-	if home == "" {
-		return "", errors.New("config: neither XDG_CONFIG_HOME nor HOME is set")
+	home, err := homedir.Home()
+	if err != nil {
+		return "", fmt.Errorf("config: resolve home: %w", err)
 	}
 	return filepath.Join(home, ".config", appDirName), nil
 }

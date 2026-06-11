@@ -361,6 +361,7 @@ func TestLocations_XDG(t *testing.T) {
 	}
 
 	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "") // windows home var, so the no-home path holds on windows runners
 	if _, err := ConfigDir(); err == nil {
 		t.Fatalf("ConfigDir: want error when neither XDG_CONFIG_HOME nor HOME set")
 	}

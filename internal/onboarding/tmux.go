@@ -1,6 +1,9 @@
 package onboarding
 
-import "os/exec"
+import (
+	"os/exec"
+	"runtime"
+)
 
 // tmuxAvailable reports whether a runnable tmux binary is on PATH. Unlike
 // agent-teams (a Claude runtime state), tmux presence is something cc-fleet CAN
@@ -13,6 +16,9 @@ func tmuxAvailable() bool {
 // screen: tmux isn't installed AND the user hasn't already chosen "skip —
 // subagent mode only" (TmuxAck).
 func NeedsTmuxSetup() bool {
+	if runtime.GOOS == "windows" {
+		return false // the tmux teammate lane is unix-only; no tmux install screen on windows
+	}
 	if tmuxAvailable() {
 		return false
 	}

@@ -23,7 +23,7 @@ func newTeardownCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "teardown <team-or-pane>",
-		Short: "Kill teammate panes and clean up team state",
+		Short: "Kill teammate panes and clean up team state (unix-only — needs tmux)",
 		Long: `Clean up cc-fleet teammates and their state.
 
 The argument is treated as a tmux pane id when it starts with "%"

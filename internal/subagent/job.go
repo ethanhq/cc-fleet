@@ -60,6 +60,19 @@ type jobMeta struct {
 	// its PID is the cc-fleet process, not a claude child, so the reuse guard
 	// must NOT apply (processAlive degrades to a bare kill(0)).
 	SettingsPath string `json:"settings_path,omitempty"`
+	// ProcStart is meta.PID's kernel start-time token (procintrospect.ProcStart),
+	// captured at registration: the recycled-PID guard wherever argv can't bind
+	// the pid — platforms without argv introspection (Windows) and sync jobs
+	// (whose pid is the cc-fleet parent, with no --settings marker). A reused pid
+	// carries a new start time, so equality proves identity. Empty (legacy meta /
+	// capture failure) degrades to the bare liveness check.
+	ProcStart string `json:"proc_start,omitempty"`
+	// ProxyPort is the loopback conversion-daemon port this job's provider rides
+	// (0 for a non-daemon-backed provider). The Windows codexproxy daemon counts
+	// live workers from the job store instead of process argv, and this field is
+	// that mapping; it deliberately does NOT reuse SettingsPath, whose presence
+	// arms the unix argv-reuse guard.
+	ProxyPort int `json:"proxy_port,omitempty"`
 
 	// Workflow run grouping (optional): the run this job belongs to, the phase
 	// within it, and a human label — so the board can group jobs into a run tree.
@@ -119,7 +132,7 @@ var materializePromptFn = materializePromptReader
 // Any failure between cmd.Start and the final Release triggers a process-group
 // SIGTERM (200ms grace) → SIGKILL → Wait → file cleanup so we never leak a
 // detached provider child + orphan .out/.err files.
-func launchBackground(req Request, binaryPath, profilePath, model, effective, downgrade string) Result {
+func launchBackground(req Request, binaryPath, profilePath, model, effective, downgrade string, proxyPort int) Result {
 	dir, err := jobsDir()
 	if err != nil {
 		return fail(ErrCodeFailed, fmt.Sprintf("resolve jobs dir: %v", err), req.Provider, "")
@@ -220,10 +233,13 @@ func launchBackground(req Request, binaryPath, profilePath, model, effective, do
 	// observes its reap/finalize/classify.
 	req.Diag.Logf("subagent: background job %s started (pid %d, captures %s)", jobID, pid, outPath)
 
+	bgProcStart, _ := procStartFn(pid)
 	meta := jobMeta{
 		JobID:     jobID,
 		PID:       pid,
 		PGID:      pid, // Setpgid → the group id equals the leader pid
+		ProcStart: bgProcStart,
+		ProxyPort: proxyPort,
 		Provider:  req.Provider,
 		Model:     model,
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
@@ -363,7 +379,9 @@ func ReapJob(jobID string) error {
 	if merr != nil {
 		return nil // unknown / already gone — nothing to reap
 	}
-	if meta.PID > 0 {
+	// Identity-guard the kill: a pid whose argv/start token no longer matches
+	// the meta is dead-and-recycled — reaping it would terminate a stranger.
+	if meta.PID > 0 && processAlive(meta.PID, meta.SettingsPath, meta.ProcStart) {
 		reapJobTree(meta.PID)
 	}
 	finalizeSyncJob(jobID, fail(ErrCodeTimeout, "background leaf exceeded its timeout", meta.Provider, ""))
@@ -445,7 +463,7 @@ func StatusFor(jobID string) Result {
 		}
 	}
 
-	if processAlive(meta.PID, meta.SettingsPath) {
+	if processAlive(meta.PID, meta.SettingsPath, meta.ProcStart) {
 		return Result{
 			OK:            true,
 			JobID:         jobID,
@@ -635,7 +653,7 @@ func GC(olderThan time.Duration) Result {
 		resultPath := filepath.Join(dir, jobID+".result.json")
 		_, resultErr := os.Stat(resultPath)
 		resultCached := resultErr == nil
-		if !resultCached && (processAlive(meta.PID, meta.SettingsPath) || queuedPlaceholder(meta)) {
+		if !resultCached && (processAlive(meta.PID, meta.SettingsPath, meta.ProcStart) || queuedPlaceholder(meta)) {
 			continue // truly running (no result cache + alive process), or a not-yet-started queued leaf
 		}
 		if started, perr := time.Parse(time.RFC3339, meta.StartedAt); perr == nil && started.After(cutoff) {
@@ -802,7 +820,7 @@ func PurgeJobs() (dir string, removedFinished []string, running []string, err er
 		// meta we can't read can't be polled, so it falls through to removal.
 		resultPath := filepath.Join(dir, jobID+".result.json")
 		if _, resultErr := os.Stat(resultPath); resultErr != nil {
-			if meta, merr := readMeta(dir, jobID); merr == nil && (processAlive(meta.PID, meta.SettingsPath) || queuedPlaceholder(meta)) {
+			if meta, merr := readMeta(dir, jobID); merr == nil && (processAlive(meta.PID, meta.SettingsPath, meta.ProcStart) || queuedPlaceholder(meta)) {
 				running = append(running, jobID)
 				if meta.RunID != "" {
 					runningRuns[meta.RunID] = true
@@ -882,24 +900,42 @@ func queuedPlaceholder(meta jobMeta) bool {
 // alive; ESRCH → gone; EPERM → alive but not ours. An empty settingsPath (a sync
 // job — its pid is cc-fleet, not a claude child — or a legacy meta) and any
 // platform without process introspection degrade to the bare kill(0).
-func processAlive(pid int, settingsPath string) bool {
+func processAlive(pid int, settingsPath, procStart string) bool {
 	if pid <= 0 {
 		return false
 	}
 	if !pidAlive(pid) {
 		return false
 	}
-	if settingsPath == "" {
-		return true // no marker to bind the pid to → trust kill(0)
+	// Two reuse guards compose, each trusted only in its safe direction. The
+	// start token: a MISMATCH always proves a recycled pid (one process keeps
+	// one start time) and is decisive; a MATCH is not sufficient alone — the
+	// darwin token is seconds-coarse (ps lstart), so a same-second recycle can
+	// collide. The argv marker: catches what a coarse token match misses, but
+	// its --settings value is per-provider and can collide with a later claude
+	// job of the same provider — which the token mismatch catches. Token-less
+	// metas (legacy / capture failure) keep the argv-only behavior; with no
+	// readable marker either, trust kill(0) as before.
+	if procStart != "" {
+		if live, ok := procStartFn(pid); ok && live != procStart {
+			return false
+		}
 	}
-	// Run the cmdline reuse guard on every platform that can introspect a live
-	// process — linux via /proc, darwin via ps (procintrospect). Platforms with
-	// neither degrade to the bare kill(0).
-	if runtime.GOOS != "linux" && runtime.GOOS != "darwin" {
+	if !hasArgvIntrospection || settingsPath == "" {
 		return true
 	}
 	return cmdlineIsClaudeJob(pid, settingsPath)
 }
+
+// hasArgvIntrospection reports whether platformReuseGuardArgv can read a live
+// process's argv here — linux via /proc, darwin via ps. A package var so tests
+// drive the no-argv branch cross-platform.
+var hasArgvIntrospection = runtime.GOOS == "linux" || runtime.GOOS == "darwin"
+
+// procStartFn reads a pid's start-time token for the PID-reuse guards. A
+// package var so tests inject tokens without a live process. Default:
+// procintrospect.ProcStart.
+var procStartFn = procintrospect.ProcStart
 
 // cmdlineIsClaudeJob reads pid's argv and reports whether it is still the claude
 // subagent for this job: a claude binary (an arg whose path contains "/claude/"
@@ -1084,7 +1120,7 @@ const (
 // registerFailed must skip finalizeSyncJob (which would otherwise write an
 // orphan .result.json with no backing meta) and let Run reap the slim sidecar
 // instead.
-func registerSyncJob(jobID string, req Request, model string, effective, downgrade string) registerOutcome {
+func registerSyncJob(jobID string, req Request, model string, effective, downgrade string, proxyPort int) registerOutcome {
 	if jobID == "" {
 		return registerFailed
 	}
@@ -1101,10 +1137,13 @@ func registerSyncJob(jobID string, req Request, model string, effective, downgra
 	if prev, perr := readMeta(dir, jobID); perr == nil && prev.Status == "held" {
 		return registerHeld
 	}
+	procStart, _ := procStartFn(os.Getpid())
 	meta := jobMeta{
 		JobID:         jobID,
 		PID:           os.Getpid(),
 		PGID:          os.Getpid(),
+		ProcStart:     procStart, // the resident parent's token; its liveness proxies the leaf
+		ProxyPort:     proxyPort,
 		Provider:      req.Provider,
 		Model:         model,
 		StartedAt:     time.Now().UTC().Format(time.RFC3339),

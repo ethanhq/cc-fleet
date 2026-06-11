@@ -69,7 +69,7 @@ func locate() (string, error) {
 		return p, nil
 	}
 
-	home := os.Getenv("HOME")
+	home := homeForLayout()
 	if home == "" {
 		return "", ErrNotFound
 	}
@@ -80,12 +80,13 @@ func locate() (string, error) {
 	}
 
 	// Collect every entry whose name parses as semver, sort descending, then
-	// pick the FIRST one that actually holds an executable `claude`.
+	// pick the FIRST one that actually holds an executable claude (claudeBinName:
+	// `claude` on unix, `claude.exe` on windows).
 	//
 	// Descend candidates by descending semver and commit only to a dir whose
-	// <dir>/claude is an executable regular file: a versioned dir with no runnable
-	// claude must NOT be reported as the install (that's a false-healthy doctor
-	// and a spawn that selects a nonexistent binary).
+	// <dir>/claudeBinName is an executable regular file: a versioned dir with no
+	// runnable claude must NOT be reported as the install (that's a false-healthy
+	// doctor and a spawn that selects a nonexistent binary).
 	type sv struct {
 		name string
 		nums [3]int
@@ -113,7 +114,7 @@ func locate() (string, error) {
 		return false
 	})
 	for _, c := range cands {
-		cand := filepath.Join(versionsDir, c.name, "claude")
+		cand := filepath.Join(versionsDir, c.name, claudeBinName)
 		if isExecutableFile(cand) {
 			return cand, nil
 		}
@@ -122,20 +123,6 @@ func locate() (string, error) {
 	// as no versioned install at all, so the caller (doctor) Fails rather than
 	// reporting a phantom binary it can never run.
 	return "", ErrNotFound
-}
-
-// isExecutableFile reports whether path is a regular file with at least one
-// execute bit set. Used by locate() so a versioned install dir only counts when
-// it holds a runnable `claude`.
-func isExecutableFile(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
-		return false
-	}
-	if !info.Mode().IsRegular() {
-		return false
-	}
-	return info.Mode().Perm()&0o111 != 0
 }
 
 // parseSemver returns the three components of a "X.Y.Z" name. Returns ok=false

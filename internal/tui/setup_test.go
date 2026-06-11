@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -36,6 +37,9 @@ func TestMain(m *testing.M) {
 // default — the common case). Tests that want tmux missing call noTmux(t).
 func setupEnv(t *testing.T) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("setup tests plant a #!/bin/sh fake tmux not runnable on windows")
+	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))

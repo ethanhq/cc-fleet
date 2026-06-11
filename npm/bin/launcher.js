@@ -8,7 +8,8 @@ const path = require("path");
 const fs = require("fs");
 const { spawnSync } = require("child_process");
 
-const bin = path.join(__dirname, "cc-fleet");
+const binName = process.platform === "win32" ? "cc-fleet.exe" : "cc-fleet";
+const bin = path.join(__dirname, binName);
 
 if (!fs.existsSync(bin)) {
   console.error(

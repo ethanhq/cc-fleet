@@ -20,6 +20,7 @@ func isolateHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // windows reads USERPROFILE; keep the sandbox hermetic there
 	return home
 }
 
@@ -79,6 +80,7 @@ func TestWithTeamLock_RejectsNilFn(t *testing.T) {
 
 func TestWithTeamLock_RequiresHome(t *testing.T) {
 	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "") // windows home var, so the no-home path holds on windows runners
 	if err := WithTeamLock("teamA", func() error { return nil }); err == nil {
 		t.Fatal("WithTeamLock with empty HOME: want error, got nil")
 	}

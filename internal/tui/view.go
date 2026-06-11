@@ -1611,13 +1611,23 @@ func asCreated(s asSession) string {
 	return s.earliest.Format("01-02 15:04")
 }
 
+// splitPathSegs breaks a project dir into its path segments, splitting on either
+// separator so a Windows backslash cwd (C:\Users\me\proj) yields real segments
+// instead of one. Empty segments (leading / doubled separators) are dropped.
+func splitPathSegs(dir string) []string {
+	return strings.FieldsFunc(dir, func(r rune) bool { return r == '/' || r == '\\' })
+}
+
 // projectName is the project rail's short form — the path's LAST segment only (the L0
 // header and the right pane title carry the longer forms); "(no project)" when unresolved.
 func projectName(dir string) string {
 	if dir == "" {
 		return "(no project)"
 	}
-	segs := strings.Split(strings.Trim(dir, "/"), "/")
+	segs := splitPathSegs(dir)
+	if len(segs) == 0 {
+		return ""
+	}
 	return segs[len(segs)-1]
 }
 
@@ -1627,7 +1637,7 @@ func projectLabel(dir string) string {
 	if dir == "" {
 		return "(no project)"
 	}
-	segs := strings.Split(strings.Trim(dir, "/"), "/")
+	segs := splitPathSegs(dir)
 	if n := len(segs); n > 2 {
 		segs = segs[n-2:]
 	}

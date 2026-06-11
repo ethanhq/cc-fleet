@@ -25,6 +25,11 @@ var ModelEnvKeys = []string{
 // dropList is the variables Clean removes. Key-safety boundary: unexported so no
 // other package can mutate the scrub set, and shared (not duplicated) by subagent
 // and run. Built from the credential + nested-CC/teams markers plus ModelEnvKeys.
+//
+// Case-fold invariant (relied on by the windows matcher in match_windows.go):
+// every entry is an ANTHROPIC_*/CLAUDE* name, so folding case can only ever match
+// MORE credential/marker variants — never a legitimate var. A future generic-word
+// entry (e.g. "PATH") would break this and must not be added.
 var dropList = buildDropList()
 
 func buildDropList() map[string]bool {
@@ -47,6 +52,18 @@ func buildDropList() map[string]bool {
 	return d
 }
 
+// upperKeys returns a copy of m keyed by the upper-cased name. The windows
+// matcher uses it to fold case-insensitive env names onto the canonical
+// upper-case dropList entries; kept here (not in match_windows.go) so it builds
+// and is testable on every platform.
+func upperKeys(m map[string]bool) map[string]bool {
+	u := make(map[string]bool, len(m))
+	for k := range m {
+		u[strings.ToUpper(k)] = true
+	}
+	return u
+}
+
 // Clean returns environ (os.Environ() form) with dropList entries removed. It
 // only removes; it never injects. A line with no '=' is passed through
 // untouched. Load-bearing — see dropList for why each var must go.
@@ -54,7 +71,7 @@ func Clean(environ []string) []string {
 	out := make([]string, 0, len(environ))
 	for _, kv := range environ {
 		eq := strings.IndexByte(kv, '=')
-		if eq >= 0 && dropList[kv[:eq]] {
+		if eq >= 0 && inDropList(kv[:eq]) {
 			continue
 		}
 		out = append(out, kv)

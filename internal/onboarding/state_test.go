@@ -12,6 +12,7 @@ func setupHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // windows reads USERPROFILE; keep the sandbox hermetic there
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	return home
 }

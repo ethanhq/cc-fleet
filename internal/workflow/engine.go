@@ -23,6 +23,7 @@ import (
 	"github.com/dop251/goja"
 
 	"github.com/ethanhq/cc-fleet/internal/config"
+	"github.com/ethanhq/cc-fleet/internal/procintrospect"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
@@ -189,6 +190,7 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 		name: meta.Name, description: meta.Description, startedAt: startedAt, phases: phases,
 		persistIO:          !opts.NoPersistIO, // the board's inline prompt/answer detail is default-on
 		enginePID:          detachedEnginePID(opts),
+		engineProcStart:    detachedEngineProcStart(opts),
 		metaModel:          meta.Model, // default model for agents that omit model
 		whenToUse:          meta.WhenToUse,
 		budgetTotal:        opts.BudgetUSD,
@@ -268,6 +270,17 @@ func detachedEnginePID(opts Options) int {
 		return os.Getpid()
 	}
 	return 0
+}
+
+// detachedEngineProcStart is the DETACHED engine's own start token, stamped next
+// to EnginePID so stop/liveness can identify the engine where argv is unreadable
+// (Windows). Empty for a foreground run or when the platform can't read it.
+func detachedEngineProcStart(opts Options) string {
+	if opts.RunID == "" {
+		return ""
+	}
+	start, _ := procintrospect.ProcStart(os.Getpid())
+	return start
 }
 
 // run executes a normalized script body: it builds the VM, compiles the wrapped form,
@@ -438,6 +451,7 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 		run.Status = "running"
 		run.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 		run.EnginePID = 0 // clear the prior engine's pid; the new child re-stamps, and WaitEngineStarted waits for exactly that
+		run.EngineProcStart = ""
 		if serr := subagent.SaveRun(run); serr != nil {
 			return "", fmt.Errorf("workflow: stamp resume liveness: %w", serr)
 		}

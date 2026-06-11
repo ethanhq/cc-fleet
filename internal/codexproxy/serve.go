@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ethanhq/cc-fleet/internal/config"
@@ -27,20 +28,19 @@ func Serve(port int, protocol, upstreamURL, ref string) error {
 	if err != nil {
 		return err
 	}
-	// codex gates /v1/messages on the handshake secret (its OAuth bearer lives
-	// only here); an openai-* daemon takes the real key per request, so it needs
-	// none. The create-once runs under the global secret lock on every path that
-	// may be the first creator: a manual `serve` racing a first-time EnsureDaemon
-	// must not interleave two creations.
+	// Every daemon loads the handshake secret at startup. codex also gates
+	// /v1/messages on it (its OAuth bearer lives only here); an openai-* daemon
+	// takes the real key per request, so the secret gates only its /shutdown. The
+	// create-once runs under the global secret lock on every path that may be the
+	// first creator: a manual `serve` racing a first-time EnsureDaemon must not
+	// interleave two creations.
 	var secret string
-	if protocol == config.ProtocolCodexOAuth {
-		if lerr := withSecretLock(func() error {
-			var serr error
-			secret, serr = loadOrCreateSecret()
-			return serr
-		}); lerr != nil {
-			return lerr
-		}
+	if lerr := withSecretLock(func() error {
+		var serr error
+		secret, serr = loadOrCreateSecret()
+		return serr
+	}); lerr != nil {
+		return lerr
 	}
 	srv := newServer(up, protocol, secret)
 
@@ -55,16 +55,34 @@ func Serve(port int, protocol, upstreamURL, ref string) error {
 	}
 
 	httpSrv := &http.Server{Handler: srv.handler()}
+	// Drain exactly once and make completion observable: the /shutdown handler
+	// fires this from a goroutine after its 200, and Serve must not let the
+	// process exit until the drain finishes (httpSrv.Serve returns as soon as
+	// the listener closes, while in-flight conversions are still completing).
+	drained := make(chan struct{})
+	var drainOnce sync.Once
+	srv.shutdown = func() {
+		drainOnce.Do(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = httpSrv.Shutdown(ctx)
+			cancel()
+			close(drained)
+		})
+	}
 	go func() {
 		for {
 			time.Sleep(60 * time.Second)
-			if maybeShutdown(port, srv, httpSrv) {
+			if maybeShutdown(port, srv) {
 				return
 			}
 		}
 	}()
 	if err := httpSrv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
+	}
+	select { // every listener close goes through srv.shutdown; wait out its drain
+	case <-drained:
+	case <-time.After(6 * time.Second): // just past the drain ctx; never wedge the exit
 	}
 	clearStateIfOwner(port)
 	return nil
@@ -77,7 +95,7 @@ func Serve(port int, protocol, upstreamURL, ref string) error {
 // by us. It may stop only when no unexpired launch lease and no live worker remain
 // and it has been idle past the grace period; any introspection uncertainty (-1
 // workers) keeps it alive.
-func maybeShutdown(port int, srv *server, httpSrv *http.Server) bool {
+func maybeShutdown(port int, srv *server) bool {
 	stopped := false
 	_ = withProxyLock(port, func() error {
 		if activeLeases(port) > 0 {
@@ -89,9 +107,7 @@ func maybeShutdown(port int, srv *server, httpSrv *http.Server) bool {
 		if time.Since(time.Unix(0, srv.lastActivity.Load())) < idleGrace {
 			return nil
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = httpSrv.Shutdown(ctx)
-		cancel()
+		srv.shutdown() // synchronous drain via the shared once; Serve's exit wait sees it
 		clearStateIfOwner(port)
 		stopped = true
 		return nil
@@ -119,15 +135,14 @@ func clearStateIfOwner(port int) {
 func StopDaemon() error {
 	for _, st := range listStates() {
 		port := st.Port
+		secret := loadSecretOnly() // read before the proxy lock — see stopViaShutdown
 		_ = withProxyLock(port, func() error {
 			cur, err := readState(port)
 			if err != nil {
 				return nil // already gone
 			}
 			if cur.PID > 0 && pidAlive(cur.PID, cur.ProcStart) {
-				if proc, e := os.FindProcess(cur.PID); e == nil {
-					_ = proc.Signal(os.Interrupt)
-				}
+				stopViaShutdown(port, cur, secret)
 			}
 			clearState(port)
 			return nil
@@ -145,6 +160,7 @@ func stopDaemonsForCredential(ref string) error {
 			continue
 		}
 		port := st.Port
+		secret := loadSecretOnly() // read before the proxy lock — see stopViaShutdown
 		_ = withProxyLock(port, func() error {
 			cur, err := readState(port)
 			// Re-check protocol too: a recycled port may now hold an openai daemon
@@ -154,9 +170,7 @@ func stopDaemonsForCredential(ref string) error {
 				return nil
 			}
 			if cur.PID > 0 && pidAlive(cur.PID, cur.ProcStart) {
-				if proc, e := os.FindProcess(cur.PID); e == nil {
-					_ = proc.Signal(os.Interrupt)
-				}
+				stopViaShutdown(port, cur, secret)
 			}
 			clearState(port)
 			return nil

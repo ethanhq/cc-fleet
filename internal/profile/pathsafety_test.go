@@ -1,7 +1,7 @@
 package profile
 
 import (
-	"strings"
+	"path/filepath"
 	"testing"
 
 	"github.com/ethanhq/cc-fleet/internal/config"
@@ -32,8 +32,8 @@ func TestProfilePath_HappyPathStaysUnderRoot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ProfilePath: %v", err)
 	}
-	if !strings.HasPrefix(got, dir) || !strings.HasSuffix(got, "/deepseek.json") {
-		t.Fatalf("ProfilePath = %q, want under %q ending /deepseek.json", got, dir)
+	if got != filepath.Join(dir, "deepseek.json") {
+		t.Fatalf("ProfilePath = %q, want %q", got, filepath.Join(dir, "deepseek.json"))
 	}
 }
 
@@ -45,7 +45,7 @@ func TestGenerateForProvider_RejectsMaliciousName(t *testing.T) {
 		Name:    "x; rm -rf /",
 		BaseURL: "https://api.example.com/anthropic",
 	}
-	if _, err := GenerateForProvider(v, "/usr/local/bin/cc-fleet"); err == nil {
+	if _, err := GenerateForProvider(v, testHelperBin()); err == nil {
 		t.Fatal("GenerateForProvider: want error for shell-injection provider name, got nil")
 	}
 }

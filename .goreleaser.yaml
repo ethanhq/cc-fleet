@@ -15,6 +15,7 @@ builds:
     goos:
       - linux
       - darwin
+      - windows
     goarch:
       - amd64
       - arm64
@@ -26,6 +27,13 @@ archives:
     name_template: "cc-fleet-{{ .Os }}-{{ .Arch }}"
     formats:
       - tar.gz
+    # Windows ships a .zip (goreleaser auto-appends .exe to the binary);
+    # `formats` plural needs goreleaser >=2.6, which the release workflow's
+    # latest-v2 resolution satisfies.
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
     # Extract into a cc-fleet-<os>-<arch>/ dir rather than dumping into cwd, so
     # a manual `tar xzf` then `cd … && ./install.sh` is clean.
     wrap_in_directory: true

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -62,6 +63,11 @@ func maybePromptUpdate() {
 	if err := selfupdate.Run(ctx, selfupdate.Options{Out: os.Stdout}); err != nil {
 		fmt.Fprintln(os.Stderr, "cc-fleet update:", err)
 		return // fall through to the TUI on the current binary
+	}
+	if runtime.GOOS == "windows" {
+		// Run only printed the reinstall notice (npm/zip); there is nothing new on
+		// disk to relaunch into, and exec is unavailable here.
+		return
 	}
 	if exeErr != nil {
 		fmt.Println("updated — restart ccf to use the new version.")

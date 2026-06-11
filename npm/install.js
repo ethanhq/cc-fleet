@@ -13,18 +13,26 @@ const { execFileSync } = require("child_process");
 const REPO = "ethanhq/cc-fleet";
 const version = require("./package.json").version;
 
-const PLATFORM = { linux: "linux", darwin: "darwin" }[process.platform];
+const PLATFORM = { linux: "linux", darwin: "darwin", win32: "windows" }[
+  process.platform
+];
 const ARCH = { x64: "amd64", arm64: "arm64" }[process.arch];
+const WIN = process.platform === "win32";
 
 if (!PLATFORM || !ARCH) {
   console.error(
     `cc-fleet: unsupported platform ${process.platform}/${process.arch} ` +
-      "(cc-fleet supports linux|darwin on x64|arm64)"
+      "(cc-fleet supports linux|darwin|win32 on x64|arm64)"
   );
   process.exit(1);
 }
 
-const tarball = `cc-fleet-${PLATFORM}-${ARCH}.tar.gz`;
+// Windows ships a .zip; linux/darwin a .tar.gz. The binary inside gains .exe
+// on Windows (goreleaser appends it).
+const archive = WIN
+  ? `cc-fleet-${PLATFORM}-${ARCH}.zip`
+  : `cc-fleet-${PLATFORM}-${ARCH}.tar.gz`;
+const binName = WIN ? "cc-fleet.exe" : "cc-fleet";
 // CCF_BASE_URL overrides the asset base for a mirror or a local test.
 const base =
   process.env.CCF_BASE_URL ||
@@ -64,27 +72,29 @@ async function main() {
   const binDir = path.join(__dirname, "bin");
   fs.mkdirSync(binDir, { recursive: true });
 
-  const [tarBuf, sumsBuf] = await Promise.all([
-    get(`${base}/${tarball}`),
+  const [archiveBuf, sumsBuf] = await Promise.all([
+    get(`${base}/${archive}`),
     get(`${base}/checksums.txt`),
   ]);
 
-  const expected = checksumFor(sumsBuf.toString("utf8"), tarball);
-  if (!expected) throw new Error(`no checksum for ${tarball} in checksums.txt`);
-  const actual = crypto.createHash("sha256").update(tarBuf).digest("hex");
+  const expected = checksumFor(sumsBuf.toString("utf8"), archive);
+  if (!expected) throw new Error(`no checksum for ${archive} in checksums.txt`);
+  const actual = crypto.createHash("sha256").update(archiveBuf).digest("hex");
   if (actual !== expected) {
-    throw new Error(`checksum mismatch for ${tarball}`);
+    throw new Error(`checksum mismatch for ${archive}`);
   }
 
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "cc-fleet-"));
   try {
-    const tarPath = path.join(tmp, tarball);
-    fs.writeFileSync(tarPath, tarBuf);
-    execFileSync("tar", ["-xzf", tarPath, "-C", tmp]);
-    const extracted = path.join(tmp, `cc-fleet-${PLATFORM}-${ARCH}`, "cc-fleet");
-    const dest = path.join(binDir, "cc-fleet");
+    const archivePath = path.join(tmp, archive);
+    fs.writeFileSync(archivePath, archiveBuf);
+    // tar reads both .tar.gz and .zip; bsdtar (Windows >=1809, and the GH
+    // runners) handles the zip with -xf.
+    execFileSync("tar", [WIN ? "-xf" : "-xzf", archivePath, "-C", tmp]);
+    const extracted = path.join(tmp, `cc-fleet-${PLATFORM}-${ARCH}`, binName);
+    const dest = path.join(binDir, binName);
     fs.copyFileSync(extracted, dest);
-    fs.chmodSync(dest, 0o755);
+    if (!WIN) fs.chmodSync(dest, 0o755);
     // Install manifest (co-located with the binary): `cc-fleet update` reads it
     // and delegates to npm instead of self-replacing an npm-managed binary.
     fs.writeFileSync(

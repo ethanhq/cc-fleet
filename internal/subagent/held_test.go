@@ -150,7 +150,7 @@ func TestRequeueLeaf(t *testing.T) {
 // registerHeld so the attempt exits without ever finalizing.
 func TestRegisterAfterHold_PreservesHold(t *testing.T) {
 	jobID := mintHeldFixture(t)
-	if got := registerSyncJob(jobID, Request{Provider: "v", RunID: "run-h"}, "m", "", ""); got != registerHeld {
+	if got := registerSyncJob(jobID, Request{Provider: "v", RunID: "run-h"}, "m", "", "", 0); got != registerHeld {
 		t.Fatalf("registerSyncJob on a held meta = %v, want registerHeld", got)
 	}
 	if res := StatusFor(jobID); res.Status != "held" {
@@ -171,7 +171,7 @@ func TestHoldAfterSettle_NoOps(t *testing.T) {
 	if jobID == "" {
 		t.Fatal("mint failed")
 	}
-	if got := registerSyncJob(jobID, Request{Provider: "v", RunID: "run-s"}, "m", "", ""); got != registerOK {
+	if got := registerSyncJob(jobID, Request{Provider: "v", RunID: "run-s"}, "m", "", "", 0); got != registerOK {
 		t.Fatalf("registerSyncJob = %v, want registerOK", got)
 	}
 	finalizeSyncJob(jobID, Result{OK: true, NumTurns: 1})
@@ -195,7 +195,7 @@ func TestHoldVsFinalize_NeverTerminalCacheUnderHold(t *testing.T) {
 		if jobID == "" {
 			t.Fatal("mint failed")
 		}
-		if got := registerSyncJob(jobID, Request{Provider: "v", RunID: "run-r"}, "m", "", ""); got != registerOK {
+		if got := registerSyncJob(jobID, Request{Provider: "v", RunID: "run-r"}, "m", "", "", 0); got != registerOK {
 			t.Fatalf("registerSyncJob = %v, want registerOK", got)
 		}
 		var wg sync.WaitGroup

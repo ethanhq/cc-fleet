@@ -68,6 +68,27 @@ func TestClean_StripsModelEnvKeys(t *testing.T) {
 	}
 }
 
+// TestUpperKeys_FoldsToCanonical: the windows matcher's table folds case so a
+// mixed-case env name resolves to its canonical upper-case dropList entry, while
+// a non-dropList name (even one whose upper form differs) never gains an entry.
+// Runs on every platform — it exercises the matcher logic without the windows tag.
+func TestUpperKeys_FoldsToCanonical(t *testing.T) {
+	tbl := upperKeys(dropList)
+	for canonical := range dropList {
+		for _, variant := range []string{
+			strings.ToUpper(canonical),
+			strings.ToLower(canonical),
+		} {
+			if !tbl[strings.ToUpper(variant)] {
+				t.Fatalf("upperKeys missed %q (canonical %q)", variant, canonical)
+			}
+		}
+	}
+	if tbl[strings.ToUpper("PATH")] || tbl[strings.ToUpper("HOME")] {
+		t.Fatalf("upperKeys gained a keeper var: %v", tbl)
+	}
+}
+
 func containsLine(env []string, want string) bool {
 	for _, kv := range env {
 		if kv == want {

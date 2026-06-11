@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -44,8 +45,22 @@ func setupHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // windows reads USERPROFILE; keep the sandbox hermetic there
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
 	return home
+}
+
+// writeFakeClaude drops a runnable `claude` into dir for ccver.Detect to exec
+// for its --version. The fake is a #!/bin/sh script, so tests using it skip on
+// windows (no sh).
+func writeFakeClaude(t *testing.T, dir string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("requires sh: fake claude is a #!/bin/sh script not runnable on windows")
+	}
+	if err := os.WriteFile(filepath.Join(dir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write claude: %v", err)
+	}
 }
 
 // installMockTmux drops a fake `tmux` shell script into a fresh tempdir and
@@ -55,6 +70,9 @@ func setupHome(t *testing.T) string {
 // hermetic isolation.
 func installMockTmux(t *testing.T) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("requires sh: mock tmux is a #!/bin/sh fake binary not runnable on windows")
+	}
 	dir := t.TempDir()
 	argsPath := filepath.Join(dir, "args.log")
 	binPath := filepath.Join(dir, "tmux")
@@ -140,6 +158,7 @@ func TestCheckSettingsJSON_Invalid(t *testing.T) {
 
 func TestCheckSettingsJSON_NoHome(t *testing.T) {
 	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "") // windows home var, so the no-home path holds on windows runners
 	r := CheckSettingsJSON()
 	if r.Status != StatusFail {
 		t.Fatalf("Status = %s, want fail when HOME empty", r.Status)
@@ -228,9 +247,7 @@ func TestCheckClaudeBinary_OK_FromVersionsLayout(t *testing.T) {
 	}
 	// The dir alone is not enough — doctor only reports OK when a runnable claude
 	// actually lives inside. Write the executable.
-	if err := os.WriteFile(filepath.Join(verDir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write claude: %v", err)
-	}
+	writeFakeClaude(t, verDir)
 	r := CheckClaudeBinary()
 	if r.Status != StatusOK {
 		t.Fatalf("Status = %s, want ok (detail=%s)", r.Status, r.Detail)
@@ -573,9 +590,7 @@ func TestCheckFingerprint_MissingCache_UsesBundledWhenClaudePresent(t *testing.T
 	if err := os.MkdirAll(verDir, 0o755); err != nil {
 		t.Fatalf("mkdir verDir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(verDir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write claude: %v", err)
-	}
+	writeFakeClaude(t, verDir)
 	t.Setenv("PATH", t.TempDir()) // force versions-layout fallback
 
 	r := CheckFingerprint()
@@ -596,9 +611,7 @@ func TestCheckFingerprint_StaleVsCurrentCC(t *testing.T) {
 	if err := os.MkdirAll(verDir, 0o755); err != nil {
 		t.Fatalf("mkdir verDir: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(verDir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write claude: %v", err)
-	}
+	writeFakeClaude(t, verDir)
 	t.Setenv("PATH", t.TempDir()) // force versions-layout fallback
 
 	// Cache a fingerprint with an older cc_version.
@@ -632,9 +645,7 @@ func TestCheckFingerprint_OK(t *testing.T) {
 		t.Fatalf("mkdir verDir: %v", err)
 	}
 	// Write the executable so ccver.Detect resolves 2.1.150.
-	if err := os.WriteFile(filepath.Join(verDir, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write claude: %v", err)
-	}
+	writeFakeClaude(t, verDir)
 	t.Setenv("PATH", t.TempDir())
 
 	fp := &fingerprint.Fingerprint{

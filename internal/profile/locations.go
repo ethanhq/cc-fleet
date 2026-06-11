@@ -8,26 +8,27 @@
 // user's ~/.claude/settings.json via Claude Code's normal settings merge.
 //
 // Profiles intentionally do NOT follow XDG: Claude Code reads ~/.claude/
-// unconditionally, so this package only consults $HOME.
+// unconditionally, so this package roots everything under the user's home
+// directory.
 package profile
 
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 
+	"github.com/ethanhq/cc-fleet/internal/homedir"
 	"github.com/ethanhq/cc-fleet/internal/ids"
 )
 
 // ProfilesDir returns the absolute path to ~/.claude/profiles/.
 //
-// It errors if $HOME is unset; the directory is not created here — writers
-// (WriteForProvider) MkdirAll it on demand.
+// It errors if the user's home directory cannot be resolved; the directory is
+// not created here — writers (WriteForProvider) MkdirAll it on demand.
 func ProfilesDir() (string, error) {
-	home := os.Getenv("HOME")
-	if home == "" {
-		return "", errors.New("profile: HOME is not set")
+	home, err := homedir.Home()
+	if err != nil || home == "" {
+		return "", errors.New("profile: home directory is not set")
 	}
 	return filepath.Join(home, ".claude", "profiles"), nil
 }

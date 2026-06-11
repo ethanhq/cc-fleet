@@ -93,6 +93,22 @@ var detectLeadSession = leadsession.Detect
 // launching a real daemon process.
 var ensureProviderProxy = codexproxy.EnsureForProvider
 
+// proxyPortOf is the loopback conversion-daemon port a daemon-backed provider
+// rides, recorded on the job meta so the Windows daemon can count its live
+// workers from the job store (process argv is unreadable there). 0 for a
+// direct provider or an unparseable base_url.
+func proxyPortOf(v *config.Provider) int {
+	if v == nil || !v.DaemonBacked() {
+		return 0
+	}
+	u, err := config.ParseLoopbackURL(v.BaseURL)
+	if err != nil {
+		return 0
+	}
+	p, _ := strconv.Atoi(u.Port())
+	return p
+}
+
 // Run executes the full subagent pipeline and returns a structured Result. Like
 // Spawn it NEVER returns a Go error — every failure path produces a Result.
 // Its hard deadline derives from parent (the workflow engine's per-leaf cancel
@@ -205,7 +221,7 @@ func Run(parent context.Context, req Request) Result {
 
 	// 7. Background mode: launch detached, return a job handle.
 	if req.Background {
-		return launchBackground(req, fp.BinaryPath, profilePath, model, effective, downgrade)
+		return launchBackground(req, fp.BinaryPath, profilePath, model, effective, downgrade, proxyPortOf(v))
 	}
 
 	// 8. Synchronous exec with a hard deadline.
@@ -260,7 +276,7 @@ func Run(parent context.Context, req Request) Result {
 	// cancelled this very attempt before it registered: the held meta survives
 	// untouched, no cache is written, and the attempt exits as the stop the
 	// cancel asked for.
-	reg := registerSyncJob(jobID, req, model, effective, downgrade)
+	reg := registerSyncJob(jobID, req, model, effective, downgrade, proxyPortOf(v))
 	if reg == registerHeld {
 		if slim.promptFile != "" {
 			_ = os.Remove(slim.promptFile)
