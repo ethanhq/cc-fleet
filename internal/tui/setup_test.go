@@ -157,10 +157,10 @@ func TestUpdateSetup_EscDismissesAndAcks(t *testing.T) {
 }
 
 // TestSetupView_Wording locks the setup screen's key wording: title, footer,
-// and the "skip — subagent mode" option.
+// and the skip option naming every lane that works without agent-teams.
 func TestSetupView_Wording(t *testing.T) {
 	atView := Model{screen: screenSetup}.viewSetup()
-	for _, want := range []string{"cc-fleet · setup", "↑/↓ move · enter select", "skip — I'll only use subagent mode"} {
+	for _, want := range []string{"cc-fleet · setup", "↑/↓ move · enter select", "skip — I'll only use subagent / workflow / run"} {
 		if !strings.Contains(atView, want) {
 			t.Errorf("agent-teams setup view missing %q", want)
 		}

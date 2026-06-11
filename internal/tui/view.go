@@ -3018,7 +3018,7 @@ func (m Model) renderCodexAuthBox() string {
 var setupOptions = []string{
 	"enable it for me  (writes ~/.claude/settings.json)",
 	"I've set it up myself",
-	"skip — I'll only use subagent mode",
+	"skip — I'll only use subagent / workflow / run",
 }
 
 // renderSetupOptions renders a cursor-highlighted option list for the
