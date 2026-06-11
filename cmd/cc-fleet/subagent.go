@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -291,9 +294,17 @@ func resolveMCPDefault(explicit, flagValue bool, profile string) bool {
 	return profile == subagent.ProfileSlim
 }
 
-// newSubagentStatusCmd builds `cc-fleet subagent-status <job_id>`.
+// newSubagentStatusCmd builds `cc-fleet subagent-status <job_id>`. The default is a one-shot
+// read; --wait blocks until the job settles, so a backgrounded shell's exit becomes the
+// completion signal (the push companion to `workflow wait`). Wait-mode exit codes layer onto
+// the one-shot 0/1: held→3 (operator-parked — never waited out), timed-out-while-pending→124
+// (the current envelope as a heartbeat snapshot), SIGINT→130.
 func newSubagentStatusCmd() *cobra.Command {
-	var asJSON bool
+	var (
+		asJSON  bool
+		wait    bool
+		timeout time.Duration
+	)
 	cmd := &cobra.Command{
 		Use:           "subagent-status <job_id>",
 		Short:         "Check a background subagent job (running | done | failed)",
@@ -301,10 +312,36 @@ func newSubagentStatusCmd() *cobra.Command {
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return reportSubagent(subagent.StatusFor(args[0]), asJSON)
+			if !wait {
+				return reportSubagent(subagent.StatusFor(args[0]), asJSON)
+			}
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			if timeout > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, timeout)
+				defer cancel()
+			}
+			res, settled := subagent.WaitForJob(ctx, args[0], 0)
+			if !settled {
+				if errors.Is(ctx.Err(), context.Canceled) {
+					os.Exit(130) // interrupted — no envelope; the consumer is gone
+				}
+				_ = reportSubagent(res, asJSON) // nonterminal heartbeat (running/queued → OK envelope)
+				os.Exit(124)
+			}
+			if res.Status == "held" {
+				_ = reportSubagent(res, asJSON) // held is OK:true → reportSubagent returns
+				os.Exit(3)
+			}
+			return reportSubagent(res, asJSON)
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit a machine-readable JSON envelope")
+	cmd.Flags().BoolVar(&wait, "wait", false,
+		"Block until the job settles (done | failed | stopped; held exits 3)")
+	cmd.Flags().DurationVar(&timeout, "timeout", 0,
+		"With --wait: stop waiting after this duration (exit 124 while the job is still pending)")
 	return cmd
 }
 

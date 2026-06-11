@@ -26,8 +26,7 @@ const (
 // newWatchCmd builds `cc-fleet watch` — stream a live text snapshot of the whole fleet (provider
 // teammates + one-shot subagent jobs + workflow runs), refreshed on an interval until
 // interrupted. It is the cross-lane companion to `workflow watch <id>`: run it in a backgrounded
-// shell to surface the fleet in the /tasks panel, or via the `cc-fleet:fleet-watch` agent to
-// surface it in the agent panel. INSPECTION-ONLY and key-safe: it prints only field-source-safe
+// shell to surface the fleet in the /tasks panel. INSPECTION-ONLY and key-safe: it prints only field-source-safe
 // columns (never a provider reply / job result, never raw pane text — only canonical health). The
 // only writes it triggers are the dead-job result memoization any status read (the board,
 // `workflow status`, ListJobs) already performs; it never spawns, stops, or tears down anything.
@@ -42,8 +41,7 @@ func newWatchCmd() *cobra.Command {
 		Short: "Stream the fleet status board (teammates, subagent jobs, workflow runs) as text",
 		Long: `Stream a live text snapshot of the whole cc-fleet fleet — provider teammates, one-shot
 subagent jobs, and workflow runs — refreshed on an interval until interrupted (Ctrl-C) or
---timeout. Run it in a backgrounded shell to surface the fleet in the /tasks panel, or via the
-cc-fleet:fleet-watch agent to surface it in the agent panel.
+--timeout. Run it in a backgrounded shell to surface the fleet in the /tasks panel.
 
 Read-only: it never prints a provider reply, a job result, or raw pane text — only canonical
 status. --check adds a per-teammate pane health scan (slower; a higher minimum interval).`,

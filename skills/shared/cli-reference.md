@@ -91,8 +91,11 @@ cc-fleet subagent [provider] --model <m> --prompt "<task>" [--lead-session-id <i
                                          when possible; --lead-session-id overrides.
                                          (Full manual: the /cc-fleet:subagent skill.)
 
-cc-fleet subagent-status <job_id> --json Poll a --background subagent job
-                                         (running | done | failed).
+cc-fleet subagent-status <job_id> --json Check a --background subagent job
+                                         (running | done | failed). --wait blocks
+                                         until it settles (--timeout → exit 124) —
+                                         arm it in a backgrounded Bash so the exit
+                                         wakes the session (push, not poll).
 cc-fleet subagent-gc --json              Remove finished background job files (default:
                                          older than 24h). --session <id> clears only that
                                          lead session's finished jobs/runs now (excludes

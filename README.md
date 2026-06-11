@@ -153,7 +153,7 @@ fan-out of independent tasks.
 
 | Flag | Use |
 |------|-----|
-| `--background` | run detached; poll with `cc-fleet subagent-status` |
+| `--background` | run detached; `cc-fleet subagent-status` checks it, `--wait` blocks until it settles |
 | `--resume <id>` | continue a previous subagent (multi-turn) |
 | `--max-budget-usd` / `--max-turns` | bound cost and runtime |
 

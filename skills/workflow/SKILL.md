@@ -50,6 +50,7 @@ cc-fleet workflow stop "$RUN"                # reap a running run (engine + in-f
 cc-fleet workflow stop "$RUN" --leaf <job|label>  # hold ONE agent in place (run keeps going); --phase <title> holds a phase
 cc-fleet workflow restart "$RUN" --leaf <job|label>  # re-run a held/running agent in place; --phase <title> a phase;
                                              # on a FINISHED run: keyed re-run (whole run, --leaf, or --phase)
+cc-fleet workflow wait "$RUN" --timeout 3m --json  # block silently until the run settles ("Waiting on a run" below)
 # or watch the board's Dynamic Workflows view: live log, token/cost columns, prompt/answer drill-in.
 # x/r there are level-scoped: run row = the run, Phases pane = the phase, agent pane = the leaf
 # (a held agent shows ▶ until you restart it). --foreground runs inline (debug).
@@ -61,14 +62,25 @@ cc-fleet workflow restart "$RUN" --leaf <job|label>  # re-run a held/running age
 # --max-concurrency N overrides the default pool (min(16, cores-2));
 # --budget-usd N caps total spend; --no-persist-io disables the prompt/answer drill-in.
 ```
-The run is detached so it outlives this call and your session stays responsive; poll `workflow status` or watch the board.
+The run is detached so it outlives this call and your session stays responsive.
 
-To surface a detached run INSIDE this session (the run is otherwise invisible here):
+## Waiting on a run: arm `wait` in a backgrounded Bash (push, not poll)
+Right after launching, arm the notifier — a backgrounded Bash whose EXIT is your wake-up:
 ```bash
-cc-fleet workflow watch "$RUN"               # stream its live events as text until it finishes
-cc-fleet watch                               # stream the whole fleet (teammates + jobs + runs)
+RUN=$(cc-fleet workflow run audit.js)
+# Bash tool with run_in_background=true; the harness wakes you when it exits:
+cc-fleet workflow wait "$RUN" --timeout 3m --json
 ```
-Run either in a backgrounded shell to surface it in the `/tasks` panel, or delegate the `cc-fleet:workflow-watch` agent (a run id) / `cc-fleet:fleet-watch` agent (the fleet) to surface it in the agent panel. Both are read-only and print only canonical status — never a provider reply.
+End your turn and keep working — never spawn an agent (or loop yourself) to poll a run.
+On the wake, dispatch on the envelope's `wait_outcome` (+ exit code):
+- **`terminal`** (exit 0 done/stopped · 1 failed) — fetch the detail with `workflow status "$RUN" --json` (it carries `run_error` and the per-leaf list; the wait envelope deliberately doesn't) and report.
+- **`engine_gone`** (1) — the engine died without finalizing; propose `cc-fleet workflow run <script> --resume "$RUN"` (the journal replays the finished leaves).
+- **`parked`** (3) — every remaining leaf is held. FIRST re-check `workflow status`: leaves running/queued again means it was a transient (the engine was between leaves) — re-arm silently. Still parked → name the envelope's `held` leaves to the user and propose `restart --leaf`; never wait it out.
+- **`timeout`** (124) — a heartbeat, not a verdict. Compare `counts`/`spent_*` with the previous snapshot: progress → one short progress line and re-arm with a longer window; zero delta → inspect (`workflow status`; is one long leaf still inside its own `timeout`?) and escalate only on a real anomaly, else re-arm.
+
+Window sizing: make the FIRST window short (2–3m — a provider auth/balance failure surfaces on the first leaf call), then 10–15m per re-arm. One wait per run; they are independent. After a session restart, re-arm every `running` run from `workflow list --json`.
+
+For a human live view: `cc-fleet workflow watch "$RUN"` streams the run's events as text (in a terminal, or a backgrounded shell → the `/tasks` panel) and `cc-fleet watch` streams the whole fleet; the board's Dynamic Workflows view has the rich drill-in. Both print only canonical status — never a provider reply.
 
 ## Resume (content-hash journal)
 Each run records a content-hash **journal** of its completed leaves. Re-run the same script under an existing run id to replay:

@@ -46,7 +46,7 @@ cc-fleet subagent deepseek --model deepseek-chat --prompt "总结这段日志" -
 ```
 
 - `--prompt-file <path>` —— 适用于较长或敏感的 prompt。
-- `--background` —— detached 运行；用 `cc-fleet subagent-status` 轮询进度。
+- `--background` —— detached 运行；用 `cc-fleet subagent-status` 查询进度（`--wait` 阻塞直到结束）。
 - `--resume <session_id>` —— 续接上一次 subagent，进行多轮对话。
 - `--timeout` / `--max-turns` / `--max-budget-usd` —— 限制运行时长和费用上限。
 - `--profile` —— `slim`（默认）镜像原生 subagent 上下文，首个请求远小于完整会话 prompt

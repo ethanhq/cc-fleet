@@ -42,7 +42,7 @@ cc-fleet subagent --prompt "..." --lead-session-id "$lead_session_id" --json
 Useful flags (full list in shared/cli-reference.md):
 - **Name it** → `--label "<short-alias>"` (e.g. `--label sort-complexity`). The Agents Board shows the label instead of the opaque job id — pass one on every launch, like a teammate name. Display-only metadata; capped at 256 bytes.
 - **Large / sensitive prompt** → `--prompt-file <path>` (read from file, piped via stdin, kept out of argv / `ps`). Use it once a single prompt approaches **~128 KiB** (`MAX_ARG_STRLEN`, the per-argument cap — not the ~2 MB total `ARG_MAX`). `--prompt-file -` reads stdin.
-- **Long task** → `--timeout 600s` (default 300s). For tasks that may exceed the timeout, prefer `--background` (below). Note: a provider that's down on **auth (401) or quota (429)** makes claude retry **~180s** before surfacing `KEY_INVALID` / `INSUFFICIENT_BALANCE`, so keep `--timeout ≥ ~200s` (the 300s default is fine) — a shorter timeout reports those as `SUBAGENT_TIMEOUT` instead. `--probe` does **not** catch a bad key (the models endpoint may not 401 it).
+- **Long task** → `--timeout 600s` (default 300s). For tasks that may exceed the timeout, run the sync call in a backgrounded Bash, or use `--background` (both below). Note: a provider that's down on **auth (401) or quota (429)** makes claude retry **~180s** before surfacing `KEY_INVALID` / `INSUFFICIENT_BALANCE`, so keep `--timeout ≥ ~200s` (the 300s default is fine) — a shorter timeout reports those as `SUBAGENT_TIMEOUT` instead. `--probe` does **not** catch a bad key (the models endpoint may not 401 it).
 - **Cost / runaway gates** → `--max-budget-usd 0.5` (cap spend) and `--max-turns 8` (cap the agentic tool loop). On fan-out, strongly consider passing these on every call.
 - **Prompt profile** — `slim` is the DEFAULT (native-mirror context, far smaller first request, which cache-less providers pay per call); `--profile slim-ro` for read-only research; `--profile full` ONLY to compare against a full session or diagnose a suspected slim regression. The full profile block — tool whitelists, `--tools` / `--skills=false` / `--mcp`, downgrade behavior — is in shared/providers.md; do not re-derive it from memory. Weak provider models skip tools on weak-imperative prompts under **any** profile — write prescriptive prompts ("Run `cmd`", "Use the Read tool on X"), not "look at" / "check".
 - **Probe** is **off by default** (`--probe` to opt in): the inner `claude -p` call is itself the authoritative reachability + auth test. On a big fan-out, run one shared `cc-fleet doctor` / probe up front rather than paying 3s × N.
@@ -90,16 +90,20 @@ cc-fleet subagent deepseek --prompt "Summarize docs/c.md" --json
 ```
 A flat fan-out only — phases, dependencies, or dynamic orchestration over the results is /cc-fleet:workflow.
 
-## Long tasks: `--background` + `subagent-status` (poll, not push)
-A subagent is a separate process and **cannot push a notification to you** (unlike native Agent, which is in-process). For a task that may run longer than you want to block a Bash call:
+## Long tasks: a backgrounded Bash is the push notification
+A finished subagent CAN wake you: a backgrounded Bash command's exit is delivered to the session as a task notification. Never spawn an agent (or loop yourself) to poll. Two shapes:
+
+1. **Sync call in a backgrounded Bash** (first choice). Run the ordinary `cc-fleet subagent … --json` with the Bash tool's `run_in_background=true`, end your turn, and the harness wakes you when it exits — the envelope is the task output. Zero extra mechanism; the process is tied to your session.
+2. **`--background` + a waited status** — when the job must survive your session, or you want it grouped on the Agents Board:
 ```bash
 cc-fleet subagent --prompt "<long task>" --background --json
 # → {"ok":true,"job_id":"<uuid>","status":"running","output_file":"…","pid":…}
-# later, poll:
-cc-fleet subagent-status <job_id> --json
-# → {"status":"running"}  … then …  {"ok":true,"status":"done","result":"…", …}
+# arm the notifier (backgrounded Bash — its exit wakes you):
+cc-fleet subagent-status <job_id> --wait --timeout 5m --json
 ```
-This is a **poll** model: re-check `subagent-status` after a while; there is no idle notification. (Need push-on-done → that's a teammate's job, /cc-fleet:team.) `cc-fleet subagent-gc --json` prunes finished job files.
+Wake-up dispatch on the exit code: **0** done (envelope has `.result`) · **1** failed (dispatch on `.error_code`) · **3** held (a workflow-leaf id an operator parked — surface it, never wait it out) · **124** still pending at `--timeout` (a heartbeat: re-arm; escalate only if the job is far past its own `--timeout`) · **130** interrupted. Always pass `--timeout`, and re-arm any still-pending wait after a session restart.
+
+`cc-fleet subagent-gc --json` prunes finished job files.
 
 ## Multi-turn: `--resume`
 Continue a prior subagent session (stateful, but not long-lived between turns — each turn is a fresh `claude -p --resume`):
@@ -121,6 +125,7 @@ A one-shot **sync** subagent is just a process that exits — no pane, no team, 
 - Chaining subagents into a dependent pipeline by hand → /cc-fleet:workflow.
 - `TeamCreate` / `SendMessage` / polling `cc-fleet ps --check` for a subagent → unnecessary; the result is on stdout.
 - Stuffing a giant prompt into `--prompt` (hits `MAX_ARG_STRLEN` ~128 KiB) → use `--prompt-file`.
-- Running a possibly-stuck provider with no bound → the default `--timeout 300s` caps it, but tune per task on fan-out, and use `--background` for genuinely long work.
+- Running a possibly-stuck provider with no bound → the default `--timeout 300s` caps it, but tune per task on fan-out, and run genuinely long work via a backgrounded Bash or `--background` (Long tasks above).
+- Polling `subagent-status` in a loop (or delegating an agent to watch a job) → arm `subagent-status --wait` in a backgrounded Bash once; its exit is the notification.
 - Looping on a failure without dispatching `.error_code` → every `--json` failure carries a code; switch on it (table above; spawn-side codes in shared/troubleshooting.md).
 - Switching providers silently after a balance / rate-limit / auth failure → stop, tell the user, wait for their pick (ask ladder step 4).

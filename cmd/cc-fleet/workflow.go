@@ -39,6 +39,11 @@ type workflowEnvelope struct {
 	Removed      int                      `json:"removed,omitempty"`   // rm/prune: number of runs deleted
 	RunError     string                   `json:"run_error,omitempty"` // a failed run's cause (distinct from the command-level Error)
 	Error        string                   `json:"error,omitempty"`
+	// wait-only fields: why `workflow wait` returned, the leaf tally at that moment,
+	// and (parked) the held leaves an operator must act on.
+	WaitOutcome string                  `json:"wait_outcome,omitempty"`
+	Counts      *workflow.WaitCounts    `json:"counts,omitempty"`
+	Held        []workflow.WaitHeldLeaf `json:"held,omitempty"`
 }
 
 // newWorkflowCmd builds `cc-fleet workflow` — run orchestration over subagent
@@ -55,7 +60,7 @@ so they group into one run tree on the board. List runs and inspect a run's jobs
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
-	cmd.AddCommand(newWorkflowNewCmd(), newWorkflowListCmd(), newWorkflowStatusCmd(), newWorkflowRunCmd(), newWorkflowStopCmd(), newWorkflowRestartCmd(), newWorkflowWatchCmd(), newWorkflowSavedCmd(), newWorkflowRmCmd(), newWorkflowPruneCmd())
+	cmd.AddCommand(newWorkflowNewCmd(), newWorkflowListCmd(), newWorkflowStatusCmd(), newWorkflowRunCmd(), newWorkflowStopCmd(), newWorkflowRestartCmd(), newWorkflowWatchCmd(), newWorkflowWaitCmd(), newWorkflowSavedCmd(), newWorkflowRmCmd(), newWorkflowPruneCmd())
 	return cmd
 }
 
@@ -216,7 +221,8 @@ func newWorkflowRestartCmd() *cobra.Command {
 
 // newWorkflowWatchCmd builds `cc-fleet workflow watch <run-id>` — stream a run's live events as
 // scrubbed text until it finishes, so a detached run is observable from a plain terminal (or a
-// backgrounded shell → the /tasks panel, or the `cc-fleet:workflow-watch` agent → FleetView).
+// backgrounded shell → the /tasks panel). `workflow wait` is the quiet sibling for a completion
+// signal without the stream.
 // Exit code: done/stopped→0, failed→1, timed-out-while-running→124 (reattach with --since-seq),
 // SIGINT→130, watcher/IO/unknown-run error→2 (distinct from a run's own failure).
 func newWorkflowWatchCmd() *cobra.Command {
@@ -230,8 +236,8 @@ func newWorkflowWatchCmd() *cobra.Command {
 		Short: "Stream a workflow run's live status until it finishes",
 		Long: `Stream a workflow run's live events as text until the run reaches a terminal status.
 Blocks (no busy-poll); prints one scrubbed line per event and a final status line. Run it in a
-backgrounded shell to surface the run in the /tasks panel, or via the cc-fleet:workflow-watch
-agent to surface it in the agent panel.`,
+backgrounded shell to surface the run in the /tasks panel; for a completion signal without
+the event stream, use 'workflow wait'.`,
 		Args:          cobra.ExactArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -270,6 +276,96 @@ agent to surface it in the agent panel.`,
 	cmd.Flags().Int64Var(&sinceSeq, "since-seq", 0,
 		"Skip events with seq <= N for a clean reattach (scoped to one run generation; a resume restarts seq)")
 	return cmd
+}
+
+// newWorkflowWaitCmd builds `cc-fleet workflow wait <run-id>` — block silently until the run
+// needs attention, then emit ONE slim status line. The quiet sibling of `watch`, built for a
+// backgrounded shell: its process exit is the completion signal, so the launching session is
+// woken instead of polling. Exit code: done/stopped→0, failed/engine-gone→1, parked→3 (every
+// remaining leaf held — operator action required), timed-out-while-still-running→124 (a
+// heartbeat snapshot), SIGINT→130, IO/unknown-run error→2.
+func newWorkflowWaitCmd() *cobra.Command {
+	var (
+		timeout  time.Duration
+		interval time.Duration
+		asJSON   bool
+	)
+	cmd := &cobra.Command{
+		Use:   "wait <run-id>",
+		Short: "Block until a workflow run finishes, parks, or loses its engine",
+		Long: `Block silently until the run reaches a terminal status (done | failed | stopped), parks
+(every remaining leaf held — nothing progresses until an operator restarts one), or its
+detached engine dies, then print one slim status line. Run it in a backgrounded shell: its
+exit is the push notification that the run needs attention. --timeout bounds the wait
+(exit 124 with a heartbeat snapshot while the run is still progressing).`,
+		Args:          cobra.ExactArgs(1),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			if timeout > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, timeout)
+				defer cancel()
+			}
+			res, werr := workflow.Wait(ctx, args[0], workflow.WaitOptions{Interval: interval})
+			switch {
+			case werr == nil, errors.Is(werr, workflow.ErrEngineGone), errors.Is(werr, context.DeadlineExceeded):
+				emitWaitResult(res, asJSON)
+				switch res.Outcome {
+				case workflow.WaitParked:
+					os.Exit(3)
+				case workflow.WaitEngineGone:
+					os.Exit(1)
+				case workflow.WaitTimeout:
+					os.Exit(124)
+				}
+				if res.Run.Status == "failed" {
+					os.Exit(1)
+				}
+				return nil // done / stopped
+			case errors.Is(werr, context.Canceled):
+				os.Exit(130) // interrupted — no envelope; the consumer is gone
+			default:
+				if asJSON {
+					_ = emitWorkflow(workflowEnvelope{OK: false, Error: werr.Error()})
+				} else {
+					fmt.Fprintln(os.Stderr, "workflow:", werr)
+				}
+				os.Exit(2) // IO / unknown-run error
+			}
+			return nil
+		},
+	}
+	cmd.Flags().DurationVar(&timeout, "timeout", 0,
+		"Stop waiting after this duration (0 = until the run settles; exit 124 while still running)")
+	cmd.Flags().DurationVar(&interval, "interval", 0, "Poll cadence (default ~2s)")
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit a machine-readable JSON envelope")
+	return cmd
+}
+
+// emitWaitResult renders `workflow wait`'s single exit line. JSON: the slim envelope —
+// outcome + counts + spend, never the full Jobs array and never WorkflowRun.Error (a
+// schema-reject can taint it with a provider reply, and the wait envelope is injected
+// into the waking session unasked; `workflow status` is the deliberate drill-down).
+// Text: one scrubbed line via RenderWaitLine.
+func emitWaitResult(res workflow.WaitResult, asJSON bool) {
+	if asJSON {
+		_ = emitWorkflow(waitEnvelope(res))
+		return
+	}
+	fmt.Println(workflow.RenderWaitLine(res))
+}
+
+// waitEnvelope builds the slim `workflow wait` JSON envelope.
+func waitEnvelope(res workflow.WaitResult) workflowEnvelope {
+	c := res.Counts
+	return workflowEnvelope{
+		OK: true, RunID: res.Run.RunID, Name: res.Run.Name, Status: res.Run.Status,
+		SpentUSD: res.Run.SpentUSD, SpentTokens: res.Run.SpentTokens,
+		WaitOutcome: string(res.Outcome), Counts: &c, Held: res.Held,
+	}
 }
 
 // newWorkflowRunCmd builds `cc-fleet workflow run <script.js>` — execute a JavaScript

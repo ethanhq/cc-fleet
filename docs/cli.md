@@ -50,7 +50,7 @@ cc-fleet subagent deepseek --model deepseek-chat --prompt "Summarize this log" -
 ```
 
 - `--prompt-file <path>` — for large or sensitive prompts.
-- `--background` — run detached; poll with `cc-fleet subagent-status`.
+- `--background` — run detached; `cc-fleet subagent-status` checks it (`--wait` blocks until it settles).
 - `--resume <session_id>` — continue a previous subagent for multi-turn work.
 - `--timeout` / `--max-turns` / `--max-budget-usd` — bound runtime and cost.
 - `--profile` — `slim` (the default) mirrors the native subagent context, a far smaller
