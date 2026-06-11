@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -46,6 +47,14 @@ func setupEnv(t *testing.T) string {
 
 func TestNewModel_SetupGating(t *testing.T) {
 	setupEnv(t)
+	if runtime.GOOS == "windows" {
+		// agent-teams powers the unix-only teammate lane, so windows never
+		// nudges — a fresh install opens straight on the hub.
+		if got := NewModel().screen; got != screenList {
+			t.Fatalf("NewModel screen = %d, want screenList on windows", got)
+		}
+		return
+	}
 	// Unconfigured + unacked → open on the agent-teams setup screen.
 	if got := NewModel().screen; got != screenSetup {
 		t.Fatalf("NewModel screen = %d, want screenSetup", got)
