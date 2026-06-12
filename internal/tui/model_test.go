@@ -510,6 +510,57 @@ func TestCombine1MAndOffToEmpty(t *testing.T) {
 	}
 }
 
+// TestModelPickAccept_LiftsTrailing1M: accepting a picked id that ends in [1m]
+// writes the bare id into the slot and lights its paired 1M toggle, so an off
+// toggle can't strip the marker on submit.
+func TestModelPickAccept_LiftsTrailing1M(t *testing.T) {
+	m := NewModel()
+	m.form = newEditForm(userops.ProviderView{Name: "deepseek", DefaultModel: "x", SecretBackend: "file"})
+	m.screen = screenModelPick
+	m.pickerTarget = "default_model"
+	m.modelList = []models.Model{{ID: "deepseek-v4[1m]"}}
+	m.modelCursor = 0
+
+	m, _ = press(t, m, "enter")
+	if m.screen != screenForm {
+		t.Fatalf("screen = %d, want screenForm", m.screen)
+	}
+	if got := m.form.value("default_model"); got != "deepseek-v4" {
+		t.Errorf("default_model text = %q, want bare deepseek-v4", got)
+	}
+	if !m.form.boolValue("default_1m") {
+		t.Error("default_1m should be lit after accepting a [1m] id")
+	}
+}
+
+// TestModelConfigFromForm_TypedTrailing1MKept: a typed id ending in [1m] folds with
+// the marker intact even when the paired toggle is off (the marker is its own [1m]).
+func TestModelConfigFromForm_TypedTrailing1MKept(t *testing.T) {
+	m := NewModel()
+	m.form = newEditForm(userops.ProviderView{Name: "deepseek", DefaultModel: "", SecretBackend: "file"})
+	m.form.setValue("default_model", "foo[1m]")
+	m.form.setToggle("default_1m", false)
+
+	def, _, _, _, _ := m.modelConfigFromForm()
+	if def != "foo[1m]" {
+		t.Errorf("default model = %q, want foo[1m] (suffix kept with toggle off)", def)
+	}
+}
+
+// TestModelConfigFromForm_NoDoubleSuffix: a typed id ending in [1m] with the toggle
+// on stays single-suffixed (combine1M's With1M is idempotent).
+func TestModelConfigFromForm_NoDoubleSuffix(t *testing.T) {
+	m := NewModel()
+	m.form = newEditForm(userops.ProviderView{Name: "deepseek", DefaultModel: "", SecretBackend: "file"})
+	m.form.setValue("default_model", "foo[1m]")
+	m.form.setToggle("default_1m", true)
+
+	def, _, _, _, _ := m.modelConfigFromForm()
+	if def != "foo[1m]" {
+		t.Errorf("default model = %q, want foo[1m] (no double suffix)", def)
+	}
+}
+
 // TestDeleteFromListConfirmAndCancel: d on a highlighted provider row opens the centered
 // confirm modal over the list; Cancel (the default) closes it in place, Confirm
 // dispatches the remove and the outcome pops as an info modal over the list.

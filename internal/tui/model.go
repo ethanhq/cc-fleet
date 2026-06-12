@@ -3533,7 +3533,16 @@ func (m Model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if target == "" {
 				target = "default_model"
 			}
-			m.form.setValue(target, filtered[m.modelCursor].ID)
+			id := filtered[m.modelCursor].ID
+			// A picked id ending in [1m] lifts the marker into the slot's paired
+			// toggle so an off toggle can't silently strip it on submit; an id
+			// without the marker is written verbatim.
+			if pairKey := oneMKeyFor(target); pairKey != "" && config.Has1M(id) {
+				m.form.setValue(target, config.Strip1M(id))
+				m.form.setToggle(pairKey, true)
+			} else {
+				m.form.setValue(target, id)
+			}
 		}
 		m.screen = screenForm
 		return m, textinput.Blink
@@ -3810,9 +3819,11 @@ func (m Model) submitAdd() (tea.Model, tea.Cmd) {
 // bare id recombined with its 1M toggle, effort/permission mapped off→"". Used by
 // every add submitter and submitEdit so the read-back can't drift.
 func (m Model) modelConfigFromForm() (defModel, strong, fast, effort, perm string) {
-	return combine1M(m.form.value("default_model"), m.form.boolValue("default_1m")),
-		combine1M(m.form.value("strong_model"), m.form.boolValue("strong_1m")),
-		combine1M(m.form.value("fast_model"), m.form.boolValue("fast_1m")),
+	def, strg, fst := m.form.value("default_model"), m.form.value("strong_model"), m.form.value("fast_model")
+	// A typed id that itself ends in [1m] keeps the marker even with the toggle off.
+	return combine1M(def, m.form.boolValue("default_1m") || config.Has1M(def)),
+		combine1M(strg, m.form.boolValue("strong_1m") || config.Has1M(strg)),
+		combine1M(fst, m.form.boolValue("fast_1m") || config.Has1M(fst)),
 		offToEmpty(m.form.choiceValue("effort")),
 		offToEmpty(m.form.choiceValue("permission"))
 }

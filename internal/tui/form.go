@@ -529,6 +529,18 @@ func (f *form) setValue(key, val string) {
 	}
 }
 
+// setToggle sets the state of the toggle field identified by key (no-op if the
+// key is absent or not a toggle field). The model picker uses it to light a slot's
+// 1M toggle when the picked id carried a trailing [1m] marker.
+func (f *form) setToggle(key string, on bool) {
+	for i := range f.fields {
+		if f.fields[i].key == key && f.fields[i].kind == fieldToggle {
+			f.fields[i].on = on
+			return
+		}
+	}
+}
+
 // boolValue returns the state of a toggle field by key (false if absent).
 func (f form) boolValue(key string) bool {
 	for _, fld := range f.fields {
