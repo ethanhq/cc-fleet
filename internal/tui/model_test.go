@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1417,6 +1418,60 @@ func TestJobElapsedNeverAgesTerminalJobs(t *testing.T) {
 	}
 	if got := jobElapsed(subagent.Result{Status: "done", DurationMs: 7000}); got != "7s" {
 		t.Fatalf("terminal job with a duration = %q, want 7s", got)
+	}
+}
+
+// TestBoardTmuxMissingDegradesNotErrors: tmux absent drops the live-teammate lane but
+// keeps the filesystem-backed content — the board renders its jobs plus a dim notice and
+// NEVER takes the hard-error frame.
+func TestBoardTmuxMissingDegradesNotErrors(t *testing.T) {
+	jobs := []subagent.Result{{JobID: "abcdef0123456789", Provider: "glm", Model: "glm-4.6",
+		Status: "done", DurationMs: 50, LeadSessionID: "sess-aaaaaaaa"}}
+	m := boardModel(t, nil, jobs)
+	m, _ = step(t, m, boardMsg{teammates: nil, jobs: jobs, tmuxMissing: true, epoch: m.boardEpoch})
+	out := m.View()
+	if !strings.Contains(out, "Subagents") {
+		t.Fatalf("tmux-missing board must still render its jobs content:\n%s", out)
+	}
+	if runtime.GOOS == "windows" {
+		if strings.Contains(out, "tmux not found") {
+			t.Fatalf("windows renders no tmux notice (the lane isn't shipped there):\n%s", out)
+		}
+	} else if !strings.Contains(out, tmuxMissingNotice()) {
+		t.Fatalf("tmux-missing board must show the degrade notice:\n%s", out)
+	}
+	if strings.Contains(out, "error:") {
+		t.Fatalf("tmux-missing board must not take the error frame:\n%s", out)
+	}
+}
+
+// TestLoadBoardTmuxMissingSkipsEndedSynthesis: with tmux absent the live set is
+// unknown (a tmux server and its panes can outlive the client binary), so a
+// recorded team must NOT be presented as ended and no history record is touched.
+func TestLoadBoardTmuxMissingSkipsEndedSynthesis(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	if err := teamhist.Upsert(
+		[]teardown.Teammate{{Team: "alpha", Name: "w1", PID: 4242}},
+		func(string) string { return "" },
+	); err != nil {
+		t.Fatalf("Upsert: %v", err)
+	}
+	t.Setenv("PATH", t.TempDir()) // tmux absent
+
+	msg := loadBoard(1)()
+	bm, ok := msg.(boardMsg)
+	if !ok {
+		t.Fatalf("loadBoard returned %T, want boardMsg", msg)
+	}
+	if !bm.tmuxMissing || bm.teamErr != nil {
+		t.Fatalf("tmuxMissing=%v teamErr=%v, want true / nil", bm.tmuxMissing, bm.teamErr)
+	}
+	if len(bm.teammates) != 0 {
+		t.Fatalf("no team rows may be synthesized while the live set is unknown: %+v", bm.teammates)
+	}
+	if len(bm.endedSeen) != 0 {
+		t.Fatalf("endedSeen must stay empty while the live set is unknown: %v", bm.endedSeen)
 	}
 }
 

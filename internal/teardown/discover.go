@@ -152,13 +152,11 @@ func teamSwarmSockets() []string {
 // listPanesWithPid routes through internal/tmux.Server.ListPanesWithPid so
 // every tmux exec funnels through the one Server.command outlet. socket ""
 // targets the default server. An empty tmux server (no panes) returns an empty
-// slice with no error, matching the historical contract.
+// slice with no error, matching the historical contract. The error is passed
+// through as-is — tmux.ListPanesWithPid already carries the "tmux list-panes: "
+// prefix, so re-wrapping here would double it.
 func listPanesWithPid(socket string) ([]tmux.PanePid, error) {
-	pairs, err := tmux.NewServer(socket).ListPanesWithPid()
-	if err != nil {
-		return nil, fmt.Errorf("tmux list-panes: %w", err)
-	}
-	return pairs, nil
+	return tmux.NewServer(socket).ListPanesWithPid()
 }
 
 // findTeammateInSubtree breadth-first walks the process subtree rooted at
