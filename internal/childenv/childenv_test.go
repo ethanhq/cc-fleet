@@ -46,6 +46,18 @@ func TestClean_StripsTheLoadBearingVars(t *testing.T) {
 	}
 }
 
+// TestClean_StripsBaseURL: an inherited routing override could silently send
+// any child — provider or native — to a foreign backend; it never survives.
+func TestClean_StripsBaseURL(t *testing.T) {
+	out := Clean([]string{"ANTHROPIC_BASE_URL=http://evil.example", "PATH=/usr/bin"})
+	if strings.Contains(strings.Join(out, "\n"), "ANTHROPIC_BASE_URL") {
+		t.Fatalf("Clean leaked ANTHROPIC_BASE_URL: %v", out)
+	}
+	if !containsLine(out, "PATH=/usr/bin") {
+		t.Fatalf("Clean dropped a keeper var: %v", out)
+	}
+}
+
 // TestClean_StripsModelEnvKeys: a model/effort var exported in the launching
 // shell must not reach the child — the provider profile is the sole authority, so
 // every ModelEnvKeys entry is stripped while unrelated vars survive.

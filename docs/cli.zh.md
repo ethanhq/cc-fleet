@@ -17,7 +17,7 @@
 | `refresh <provider>` | 重新查询某 provider 的 `/v1/models` 并更新缓存。 |
 | `keyget <provider>` | 取出 provider API key —— 由 Claude 的 `apiKeyHelper` 内部调用。 |
 | `spawn <provider>` | 将 provider teammate 作为 tmux pane 拉起（Claude 层调用）。 |
-| `subagent <provider>` | 运行一次性 headless 的 provider subagent。 |
+| `subagent <provider>` | 运行一次性 headless 的 provider subagent（保留 id `claude` 改用你自己的 Claude Code 登录）。 |
 | `run <provider>` | 在前台拉起一个交互式、后端为该 provider 的 `claude` 会话（你自己驱动）。 |
 | `ps` | 列出存活的 cc-fleet teammate（`--json`、`--check` 查看健康状态）。 |
 | `hide` / `show` | 隐藏 / 恢复某 teammate 的 tmux pane，不终止进程。 |
@@ -58,6 +58,11 @@ cc-fleet subagent deepseek --model deepseek-chat --prompt "总结这段日志" -
   且 `--tools WebSearch` 会让 subagent 只剩 WebSearch 一个工具。MCP 默认按 profile 区分：
   `slim` 继承宿主 MCP 配置，`slim-ro` 走 `--strict-mcp-config`；显式传 `--mcp`（无论真假）
   均覆盖默认。
+- 保留 id `claude`（`cc-fleet subagent claude --model opus …`）在你自己的 Claude Code 登录上
+  运行官方 `claude` CLI —— 无 provider、无 profile、无 key。仅限显式指定：不能设为默认，且名字被
+  保留（`add` 会拒绝）。`--model` 只接受字面模型 id（档位关键字会被拒绝 —— 没有 roster）；省略则
+  用 claude 登录的默认模型，通常是最贵的档位，所以最好指定一个。该 leaf 消耗你自己的订阅额度 ——
+  留给一两个综合 / 判断节点，不要大规模并行展开。
 
 不需要 tmux，也不需要 agent-teams —— 纯 stdout 输入，结果输出。
 

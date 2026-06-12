@@ -2,6 +2,7 @@ package userops
 
 import (
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/ethanhq/cc-fleet/internal/config"
@@ -110,5 +111,30 @@ func TestList_ExposesDefault(t *testing.T) {
 		if v.Default != want {
 			t.Fatalf("row %q Default = %v, want %v", v.Name, v.Default, want)
 		}
+	}
+}
+
+// A hand-edited `default_provider = "claude"` is reported as RESERVED — never
+// "unset" — so the show command suggests --unset / --force instead of a bare
+// set that would then fail DEFAULT_ALREADY_SET.
+func TestDefaultProvider_ReservedReported(t *testing.T) {
+	setupHome(t)
+	if _, err := Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	path, err := config.ProvidersPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	toml := "version = 1\ndefault_provider = \"claude\"\n"
+	if err := os.WriteFile(path, []byte(toml), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	view, err := DefaultProvider()
+	if err != nil {
+		t.Fatalf("DefaultProvider: %v", err)
+	}
+	if view.Source != "reserved" || view.Provider != config.ReservedNativeProvider {
+		t.Fatalf("source=%q provider=%q, want reserved/claude", view.Source, view.Provider)
 	}
 }

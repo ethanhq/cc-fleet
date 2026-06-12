@@ -251,6 +251,10 @@ func addLocked(req AddRequest) (*AddResult, error) {
 	if err := ValidateProviderName(req.Name); err != nil {
 		return nil, opErr(CodeProviderNameInvalid, err)
 	}
+	if req.Name == config.ReservedNativeProvider {
+		return nil, opErr(CodeProviderNameInvalid,
+			fmt.Errorf("name %q is reserved for the native leaf (the official claude CLI on your own login)", req.Name))
+	}
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -874,6 +878,11 @@ func DefaultProvider() (*DefaultProviderView, error) {
 		view.Provider, view.Source = cfg.DefaultProvider, "disabled"
 	case errors.Is(rerr, config.ErrDefaultProviderUnknown):
 		view.Provider, view.Source = cfg.DefaultProvider, "unknown"
+	case errors.Is(rerr, config.ErrDefaultProviderReserved):
+		// A hand-edited `default_provider = "claude"`: reported as such — NOT
+		// "unset" — so the show command suggests --unset / --force instead of
+		// a bare set that would fail DEFAULT_ALREADY_SET.
+		view.Provider, view.Source = cfg.DefaultProvider, "reserved"
 	default:
 		view.Source = "unset"
 	}
@@ -893,6 +902,10 @@ func SetDefaultProvider(name string, force bool) (*DefaultProviderView, error) {
 		}
 		if err := ValidateProviderName(name); err != nil {
 			return struct{}{}, opErr(CodeProviderNameInvalid, err)
+		}
+		if name == config.ReservedNativeProvider {
+			return struct{}{}, opErr(CodeProviderNameInvalid,
+				fmt.Errorf("%q is the native leaf — explicit-only, it can't be the default provider", name))
 		}
 		if _, ok := cfg.Providers[name]; !ok {
 			return struct{}{}, opErr(CodeProviderUnknown, fmt.Errorf("provider %q not in providers.toml", name))

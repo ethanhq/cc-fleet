@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -93,6 +94,35 @@ var detectLeadSession = leadsession.Detect
 // launching a real daemon process.
 var ensureProviderProxy = codexproxy.EnsureForProvider
 
+// hasReservedRow reports whether providers.toml carries a provider table named
+// like the native leaf. Load-independent on purpose: the parsed config when it
+// loads, a raw table-header scan when it doesn't — a syntax error elsewhere in
+// the file must not disable the reserved-row billing guard. A missing file is
+// "no row"; an EXISTING file that cannot be read fails closed (err non-nil) —
+// the guard never guesses about a file that is there.
+func hasReservedRow() (bool, error) {
+	if cfg, err := config.Load(); err == nil {
+		_, exists := cfg.Providers[config.ReservedNativeProvider]
+		return exists, nil
+	}
+	path, err := config.ProvidersPath()
+	if err != nil {
+		return false, nil // no resolvable config location ≡ no file
+	}
+	raw, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return reservedRowRe.Match(raw), nil
+}
+
+// reservedRowRe matches a `[claude]` TOML table header at line start, in its
+// bare, spaced, or quoted forms ([claude] / [ claude ] / ["claude"] / ['claude']).
+var reservedRowRe = regexp.MustCompile(`(?m)^\s*\[\s*['"]?` + config.ReservedNativeProvider + `['"]?\s*\]`)
+
 // proxyPortOf is the loopback conversion-daemon port a daemon-backed provider
 // rides, recorded on the job meta so the Windows daemon can count its live
 // workers from the job store (process argv is unreadable there). 0 for a
@@ -124,25 +154,65 @@ func Run(parent context.Context, req Request) Result {
 	}
 	dg := req.Diag
 
-	// 1. Load provider config.
-	cfg, err := config.Load()
-	if err != nil {
-		return fail(ErrCodeUnknownProvider, fmt.Sprintf("load providers.toml: %v", err),
-			req.Provider, suggestionFor(ErrCodeUnknownProvider))
-	}
-	v, ok := cfg.Providers[req.Provider]
-	if !ok {
-		return fail(ErrCodeUnknownProvider, fmt.Sprintf("provider %q not in providers.toml", req.Provider),
-			req.Provider, suggestionFor(ErrCodeUnknownProvider))
-	}
-	if !v.Enabled {
-		return fail(ErrCodeProviderDisabled, fmt.Sprintf("provider %q is disabled in providers.toml", req.Provider),
-			req.Provider, suggestionFor(ErrCodeProviderDisabled))
-	}
+	// Native leaf: the reserved `claude` provider runs the official claude CLI
+	// on the user's own login. It has no providers.toml row (and must work even
+	// when providers.toml is malformed or absent), no profile, no base URL, no
+	// key — steps 1, 2, 3b, 4 and 5 below are provider machinery it skips; the
+	// child authenticates itself from claude's own credential chain.
+	native := req.Provider == config.ReservedNativeProvider
+	var v *config.Provider
+	var model string
+	if native {
+		// The slot keywords resolve against a provider roster; the native leaf
+		// has none. A literal id passes through; "" omits --model so claude
+		// picks the login's own default model.
+		switch req.Model {
+		case "default", "strong", "fast":
+			return fail(ErrCodeBadArgs,
+				fmt.Sprintf("model keyword %q needs a provider roster — the native leaf takes a literal model id, or none for the login's default", req.Model),
+				req.Provider, "pass a literal id (opus / sonnet / haiku / full id) or omit --model")
+		}
+		// A pre-reservation providers.toml row named `claude` must not be
+		// silently bypassed (the caller configured a backend, a key, a model —
+		// rerouting to their subscription is a cost regression): fail with the
+		// migration path instead. An unloadable config can't be consulted and
+		// must not gate the native leaf — but a raw scan still catches a
+		// `[claude]` table inside a malformed file, so a syntax error elsewhere
+		// can't disable the billing guard.
+		reserved, rerr := hasReservedRow()
+		if rerr != nil {
+			return fail(ErrCodeFailed,
+				fmt.Sprintf("cannot verify providers.toml for a reserved %q row: %v", config.ReservedNativeProvider, rerr),
+				req.Provider, "fix the providers.toml read error, then retry")
+		}
+		if reserved {
+			return fail(ErrCodeProviderReserved,
+				fmt.Sprintf("providers.toml has a provider named %q, which is reserved for the native leaf", config.ReservedNativeProvider),
+				req.Provider, suggestionFor(ErrCodeProviderReserved))
+		}
+		model = req.Model
+	} else {
+		// 1. Load provider config.
+		cfg, err := config.Load()
+		if err != nil {
+			return fail(ErrCodeUnknownProvider, fmt.Sprintf("load providers.toml: %v", err),
+				req.Provider, suggestionFor(ErrCodeUnknownProvider))
+		}
+		var ok bool
+		v, ok = cfg.Providers[req.Provider]
+		if !ok {
+			return fail(ErrCodeUnknownProvider, fmt.Sprintf("provider %q not in providers.toml", req.Provider),
+				req.Provider, suggestionFor(ErrCodeUnknownProvider))
+		}
+		if !v.Enabled {
+			return fail(ErrCodeProviderDisabled, fmt.Sprintf("provider %q is disabled in providers.toml", req.Provider),
+				req.Provider, suggestionFor(ErrCodeProviderDisabled))
+		}
 
-	// 2. Resolve model (capability keyword default/strong/fast → slot id, else a
-	//    literal id, "" → default_model).
-	model := v.ResolveModel(req.Model)
+		// 2. Resolve model (capability keyword default/strong/fast → slot id,
+		//    else a literal id, "" → default_model).
+		model = v.ResolveModel(req.Model)
+	}
 
 	// 3. Resolve the spawn recipe (probed fingerprint if present, else bundled
 	//    default). Use ONLY the binary path, never fp.Env — it carries the
@@ -172,37 +242,42 @@ func Run(parent context.Context, req Request) Result {
 	}
 	dg.Logf("subagent: fingerprint gate ok (binary %s)", binPath)
 
-	// 3b. For a codex provider, ensure the conversion daemon is up — after the
-	//     fingerprint gate, before the profile write, so a daemon failure is
-	//     fail-before-mutation and leaves no profile behind.
-	if err := ensureProviderProxy(v, dg); err != nil {
-		return fail(ErrCodeProxyUnavailable, err.Error(), req.Provider, suggestionFor(ErrCodeProxyUnavailable))
-	}
-
-	// 4. Ensure the per-provider profile exists. Atomic temp+rename + idempotent,
-	//    so it's safe with no lock even under N concurrent subagents for one
-	//    provider (the package's lock-free invariant).
-	//
-	//    MUST run AFTER the fingerprint gate above, not before — fail-before-
-	//    side-effects, so a corrupt/missing fingerprint never leaves a profile
-	//    file behind. profilePath is only consumed later, so the move is safe.
-	profilePath, err := profile.WriteForProvider(v, "")
-	if err != nil {
-		return fail(ErrCodeFailed, fmt.Sprintf("write profile for %s: %v", req.Provider, err),
-			req.Provider, "")
-	}
-	dg.Logf("subagent: profile written %s", profilePath)
-
-	// 5. Optional reachability probe (default OFF). Shares spawn's classifier;
-	//    on Block we abort, on Warn we note and proceed.
-	if req.Probe {
-		p := providerclass.Reachability(v)
-		if p.Warn != "" {
-			fmt.Fprint(os.Stderr, p.Warn)
+	var profilePath string
+	if !native {
+		// 3b. For a codex provider, ensure the conversion daemon is up — after the
+		//     fingerprint gate, before the profile write, so a daemon failure is
+		//     fail-before-mutation and leaves no profile behind.
+		if err := ensureProviderProxy(v, dg); err != nil {
+			return fail(ErrCodeProxyUnavailable, err.Error(), req.Provider, suggestionFor(ErrCodeProxyUnavailable))
 		}
-		if p.Block {
-			return fail(p.Code, p.Msg, req.Provider, p.Suggestion)
+
+		// 4. Ensure the per-provider profile exists. Atomic temp+rename + idempotent,
+		//    so it's safe with no lock even under N concurrent subagents for one
+		//    provider (the package's lock-free invariant).
+		//
+		//    MUST run AFTER the fingerprint gate above, not before — fail-before-
+		//    side-effects, so a corrupt/missing fingerprint never leaves a profile
+		//    file behind. profilePath is only consumed later, so the move is safe.
+		profilePath, err = profile.WriteForProvider(v, "")
+		if err != nil {
+			return fail(ErrCodeFailed, fmt.Sprintf("write profile for %s: %v", req.Provider, err),
+				req.Provider, "")
 		}
+		dg.Logf("subagent: profile written %s", profilePath)
+
+		// 5. Optional reachability probe (default OFF). Shares spawn's classifier;
+		//    on Block we abort, on Warn we note and proceed.
+		if req.Probe {
+			p := providerclass.Reachability(v)
+			if p.Warn != "" {
+				fmt.Fprint(os.Stderr, p.Warn)
+			}
+			if p.Block {
+				return fail(p.Code, p.Msg, req.Provider, p.Suggestion)
+			}
+		}
+	} else if req.Probe {
+		dg.Logf("subagent: probe skipped — the native leaf has no models endpoint")
 	}
 
 	// Prefer the explicit flag, but when cc-fleet is launched from a Claude Bash
@@ -385,7 +460,17 @@ func buildArgv(binaryPath, profilePath, model string, req Request, slim slimArgv
 		argv = append(argv, "--resume", req.Resume)
 	}
 
-	argv = append(argv, "--settings", profilePath, "--model", model, "-p")
+	// A native (reserved `claude`) run has no profile and may have no model:
+	// --settings is what injects the provider base URL + apiKeyHelper, so its
+	// absence IS the native auth story, and an absent --model lets claude pick
+	// the login's own default.
+	if profilePath != "" {
+		argv = append(argv, "--settings", profilePath)
+	}
+	if model != "" {
+		argv = append(argv, "--model", model)
+	}
+	argv = append(argv, "-p")
 	if req.PromptReader == nil {
 		argv = append(argv, req.Prompt)
 	}

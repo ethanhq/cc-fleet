@@ -248,6 +248,8 @@ func suggestionFor(code string) string {
 		return "Run cc-fleet add <provider> (or check cc-fleet list --json)"
 	case ErrCodeProviderDisabled:
 		return "Run cc-fleet edit <provider> --enable"
+	case ErrCodeProviderReserved:
+		return "Rename or remove the configured `claude` provider (cc-fleet remove claude) — the name is reserved for the native leaf"
 	case ErrCodeFingerprintMissing, ErrCodeFingerprintStale:
 		return "Run the FINGERPRINT self-heal flow (native probe → cc-fleet refresh-fingerprint), then retry"
 	case ErrCodeProxyUnavailable:

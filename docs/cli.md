@@ -18,7 +18,7 @@ drive it through plain language, but every command also works directly. Run `cc-
 | `refresh <provider>` | Re-query a provider's `/v1/models` and update the cache. |
 | `keyget <provider>` | Fetch a provider API key — used internally by Claude's `apiKeyHelper`. |
 | `spawn [provider]` | Spawn a provider teammate as a tmux pane (provider optional → default). |
-| `subagent [provider]` | Run a one-shot headless provider subagent (provider optional → default). |
+| `subagent [provider]` | Run a one-shot headless provider subagent (provider optional → default; the reserved id `claude` runs your own Claude Code login). |
 | `run [provider]` | Launch an interactive provider-backed `claude` session (provider optional → default; foreground). |
 | `codex add` / `login` / `logout` / `status` | Register the ChatGPT-subscription provider + manage cc-fleet's own codex login. |
 | `codex-proxy status` / `stop` | Inspect / stop the local codex conversion daemon. |
@@ -63,6 +63,12 @@ cc-fleet subagent deepseek --model deepseek-chat --prompt "Summarize this log" -
   WebSearch / WebFetch) must be listed explicitly, and `--tools WebSearch` leaves ONLY
   WebSearch. MCP defaults per profile — `slim` inherits the host MCP config, `slim-ro`
   runs `--strict-mcp-config`; an explicit `--mcp` (either value) overrides.
+- The reserved id `claude` (`cc-fleet subagent claude --model opus …`) runs the official
+  `claude` CLI on your OWN Claude Code login — no provider, no profile, no key. Explicit
+  only: it can't be the default, and the name is reserved (`add` rejects it). `--model`
+  takes a literal id (the slot keywords are rejected — no roster); omitted uses claude's
+  login default, typically the costliest tier, so name a model. The leaf spends your own
+  subscription window — reserve it for a synthesis or judgement node, not a wide fan-out.
 
 It needs no tmux and no agent-teams — pure stdout in, result out.
 

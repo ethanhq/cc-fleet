@@ -49,6 +49,9 @@ func TestResolveProvider(t *testing.T) {
 		{"multiple, no default", cfgWith("", provider("a", true), provider("b", true)), "", "", "", ErrNoDefaultProvider},
 		{"default disabled never falls through", cfgWith("glm", provider("glm", false), provider("kimi", true)), "", "", "", ErrDefaultProviderDisabled},
 		{"default unknown", cfgWith("gone", provider("kimi", true)), "", "", "", ErrDefaultProviderUnknown},
+		{"reserved native default rejected", cfgWith(ReservedNativeProvider, provider(ReservedNativeProvider, true)), "", "", "", ErrDefaultProviderReserved},
+		{"sole enabled reserved row never auto-resolves", cfgWith("", provider(ReservedNativeProvider, true)), "", "", "", ErrNoDefaultProvider},
+		{"explicit reserved passes through", cfgWith(""), ReservedNativeProvider, ReservedNativeProvider, "explicit", nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

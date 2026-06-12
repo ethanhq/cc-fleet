@@ -36,3 +36,5 @@ Teammate mode is driven by Claude's native `TeamCreate` / `SendMessage` tools, w
 ## No providers configured
 
 If `cc-fleet list --json` returns an empty provider list, no offload lane is possible — tell the user to `cc-fleet add <provider>` first (provider notes are in providers.md, commands in cli-reference.md — both beside this file).
+
+Exception: even with no provider configured, the subagent and workflow lanes can still use the reserved id `claude` (`cc-fleet subagent claude …`, `agent(..., {provider: "claude"})`), which runs the user's OWN Claude Code login — no providers.toml row needed (providers.md). It does NOT enable the teammate lane (`spawn` still needs a configured provider).

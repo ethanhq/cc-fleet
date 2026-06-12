@@ -25,7 +25,9 @@
 Provider workers are **real Claude Code teammates** — driven exactly like native ones — with
 the LLM backend swapped to any provider that exposes an Anthropic-compatible API. Your main
 session's own auth (OAuth subscription or API key) is untouched; provider workers bill the
-provider API key via `apiKeyHelper`, and the key never enters env, argv, or shell history.
+provider API key via `apiKeyHelper`, and the key never enters env, argv, or shell history —
+the one exception being the reserved `claude` subagent/workflow leaf, which deliberately runs
+on your own login.
 
 `cc-fleet` is a small Go CLI plus one Claude Code skill. The CLI manages per-provider
 profiles, dispatches API keys via `apiKeyHelper`, and spawns teammate sessions in tmux
@@ -149,7 +151,9 @@ tmux new-session -s cc-fleet
 
 `cc-fleet subagent [provider]` runs the provider model headless and returns the result
 synchronously — **no pane, no team, no agent-teams**. Ideal for one-off analysis and batch
-fan-out of independent tasks.
+fan-out of independent tasks. The reserved id `claude` (`cc-fleet subagent claude --model opus …`)
+runs the native `claude` on your own Claude Code login instead of a provider — explicit-only,
+billed to your subscription, so reserve it for a synthesis node rather than a wide fan-out.
 
 | Flag | Use |
 |------|-----|

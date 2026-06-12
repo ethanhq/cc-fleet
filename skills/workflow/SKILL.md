@@ -27,7 +27,7 @@ In a script, `agent()`'s `opts.provider` is **optional**: omitted, the leaf uses
 
 ## The script API (mirrors the native Workflow tool)
 - `const meta = {name, description, whenToUse?, model?, phases?: [{title, detail?}]}` — a top-level **pure literal** (no calls/vars/spreads; the native `export const meta` form is also accepted). `name` + `description` are **required**; `model` is the default for agents that omit it. Read statically before the run → the board shows the named, phase-skeletoned run immediately.
-- `agent(prompt, opts) → Promise<string|object>` — runs ONE provider subagent leaf. `opts.provider` is optional (omitted → the run's default provider, above); the rest are optional: `model`, `schema`, `label`, `phase`, `timeout` (seconds), `max_budget_usd`, `max_turns`, `isolation: "worktree"`, `profile` ("slim" default / "slim-ro" / "full"), `tools`, `skills`, `mcp`. An unknown option key throws (typos fail loudly). On a leaf failure the promise **rejects** — an un-caught top-level `await agent()` aborts the run; inside `parallel`/`pipeline` a failed element degrades to `null`. Leaf failures classify like subagent failures — dispatch table in "Leaf failures" below.
+- `agent(prompt, opts) → Promise<string|object>` — runs ONE provider subagent leaf. `opts.provider` is optional (omitted → the run's default provider, above); `provider: "claude"` runs the official `claude` CLI on the user's OWN Claude Code login (subscription OAuth) instead of a configured provider — a literal `model` id (`opus`/`sonnet`/a full id, omitted → claude's login default, typically the costliest tier so name one), no roster keywords, no key material. The rest are optional: `model`, `schema`, `label`, `phase`, `timeout` (seconds), `max_budget_usd`, `max_turns`, `isolation: "worktree"`, `profile` ("slim" default / "slim-ro" / "full"), `tools`, `skills`, `mcp`. An unknown option key throws (typos fail loudly). On a leaf failure the promise **rejects** — an un-caught top-level `await agent()` aborts the run; inside `parallel`/`pipeline` a failed element degrades to `null`. Leaf failures classify like subagent failures — dispatch table in "Leaf failures" below.
   - **`schema`** (a plain object) goes to the claude child via `--json-schema`: claude injects a forced `StructuredOutput` tool and enforces that it is CALLED (the native mechanism — no JSON instruction is added to the prompt); the promise resolves with the parsed structured payload. The three rules:
     - a validation failure — or a result envelope without a structured payload — FAILS the leaf; there is NO automatic retry;
     - the forced `StructuredOutput` call costs turns — give a schema'd leaf `max_turns` ≥ 3 (a budget of 1 starves it);
@@ -39,7 +39,7 @@ In a script, `agent()`'s `opts.provider` is **optional**: omitted, the leaf uses
 - `parallel(thunks) → Promise<array>` — run each 0-arg thunk concurrently; **BARRIER** (settles once all finish), `null` where an element failed: `await parallel([() => agent("a", {provider: "glm"}), () => agent("b", {provider: "glm"})])`. Concurrent execs stay ~pool size even for a huge list (excess queues).
 - `pipeline(items, ...stages) → Promise<array>` — push each item through all stages independently with **NO inter-stage barrier** (item A can be in stage 3 while B is in stage 1). Each stage is `(prev, item, index) => …` (sync or async; its return value is awaited). A failing stage drops that item to `null` and skips its remaining stages. **DEFAULT to `pipeline` over `parallel`** — only use `parallel` when a stage genuinely needs ALL prior results together.
 - `workflow(path, args?) → Promise` — run another `.js` inline on the same engine (shared pool/journal/budget), **one level deep** only; resolves with the child's top-level `return` value.
-- `budget` — two parallel cap surfaces. **USD:** `budget.total` (the `--budget-usd` cap in USD, or `null`), `budget.spent()`, `budget.remaining()` (`Infinity` when uncapped) — USD floats (an Anthropic list-price estimate). **Tokens:** `budget.tokens_total` (the `--budget-tokens` cap, or `null`), `budget.tokens_spent()`, `budget.tokens_remaining()` — ints (input+output, cache-read excluded). `agent()` throws once **either** cap is reached; a `while (budget.remaining() > N)` loop scales depth to the cap. (Native's `budget.total` is a token target; here it is **USD** — `--budget-usd` is the cross-provider cap since providers price tokens differently — and tokens are the separate `tokens_*` surface.)
+- `budget` — two parallel cap surfaces. **USD:** `budget.total` (the `--budget-usd` cap in USD, or `null`), `budget.spent()`, `budget.remaining()` (`Infinity` when uncapped) — USD floats (an Anthropic list-price estimate). **Tokens:** `budget.tokens_total` (the `--budget-tokens` cap, or `null`), `budget.tokens_spent()`, `budget.tokens_remaining()` — ints (input+output, cache-read excluded). `agent()` throws once **either** cap is reached; a `while (budget.remaining() > N)` loop scales depth to the cap. (Native's `budget.total` is a token target; here it is **USD** — `--budget-usd` is the cross-provider cap since providers price tokens differently — and tokens are the separate `tokens_*` surface.) A `provider: "claude"` leaf spends the **lead session's own subscription window**, not a metered provider — use it for one or two synthesis / judgement nodes, never a wide fan-out. Its usage still flows into the run's token / USD surfaces, but the USD is claude's notional list-price (a subscription is not metered per token); `max_budget_usd` / `--budget-usd` still gate against that notional figure.
 - `phase(title, detail?)` — name the current phase (tags subsequent agents lacking an explicit `phase`; the detail shows on the board row). `log(msg)` — a narrator line (board live log + stderr); `console.log/info/warn/error/debug` alias onto it (non-strings render as JSON, Errors by message).
 - `args` — the parsed `--args-json '<json>'` value (or the `workflow(child, args)` value); `undefined` when none was given.
 
@@ -94,15 +94,16 @@ A failed leaf's `error_code` is in `workflow status --json` (`jobs[]`) and in th
 | `error_code` | What you do |
 |---|---|
 | `INSUFFICIENT_BALANCE` / `KEY_INVALID` / `RATE_LIMITED` | STOP — provider ask ladder, step 4 (never switch silently). `KEY_INVALID` → the user rotates the key; `RATE_LIMITED` → brief wait, one retry. |
-| `NO_DEFAULT_PROVIDER` / `DEFAULT_PROVIDER_DISABLED` / `DEFAULT_PROVIDER_UNKNOWN` | No usable default for a provider-less `agent()` — apply the provider ask ladder, then re-run. |
+| `NO_DEFAULT_PROVIDER` / `DEFAULT_PROVIDER_DISABLED` / `DEFAULT_PROVIDER_UNKNOWN` / `DEFAULT_PROVIDER_RESERVED` | No usable default for a provider-less `agent()` (`RESERVED` = `default_provider` hand-set to `claude`, explicit-only — the user unsets/re-pins) — apply the provider ask ladder, then re-run. |
 | `MODEL_NOT_FOUND` | `cc-fleet refresh <provider>`, or drop the leaf's `model` to use the provider default. |
 | `SUBAGENT_TIMEOUT` | Raise the leaf's `timeout` or split the task; awaited background leaves are backstopped at 45m. |
 | `SUBAGENT_OUTPUT_TOO_LARGE` | The leaf's output exceeded the byte cap — have it write to a file and answer concisely; a blind retry overflows again. |
 | `SUBAGENT_STOPPED` | An operator stopped it (`stop --leaf` / run stop) — terminal, NOT a failure; never auto-retry. |
-| `SUBAGENT_FAILED` / `PROVIDER_API_ERROR` | Inspect (`workflow status`); `restart --leaf` once, or propose a provider switch (ask first). |
+| `SUBAGENT_FAILED` / `PROVIDER_API_ERROR` | Inspect (`workflow status`); `restart --leaf` once, or propose a provider switch (ask first). A `provider: "claude"` leaf on a logged-out machine fails here (the error preview names the login problem, no dedicated code) — tell the user to log in to Claude Code interactively. |
 | `FINGERPRINT_MISSING` / `FINGERPRINT_STALE` | Self-heal flow in cc-fleet-shared/troubleshooting.md (`STALE` = no claude binary — the flow can't help; fix Claude Code / PATH). |
 | `CODEX_PROXY_UNAVAILABLE` / `CODEX_CLOUDFLARE_BLOCKED` | `cc-fleet codex login` / free the port; a Cloudflare block → switch network, don't rotate credentials. |
 | `UNKNOWN_PROVIDER` / `PROVIDER_DISABLED` / `CONFIG_LOAD_FAILED` | Config problem — `cc-fleet list --json`, `cc-fleet add` / `edit --enable`; `CONFIG_LOAD_FAILED` → `cc-fleet doctor`. |
+| `PROVIDER_RESERVED` | A providers.toml row is named `claude` (reserved for the native leaf) — the user renames or removes it. |
 | `SUBAGENT_BAD_ARGS` | Bad leaf options — fix the script, re-run. |
 
 ## Resume (content-hash journal)
@@ -148,10 +149,14 @@ while (gaps.length < 10) {           // loop-until-dry (the runtime hard-caps 10
     gaps.push(g);
 }
 
+// one final synthesis node on your OWN subscription — a single judgement leaf, not a fan-out
+const verdict = await agent("Rank these gaps by severity and name the top three:\n"
+                            + gaps.join("\n"), {provider: "claude", model: "opus"});
+
 log(`done: ${maps.length} maps, ${checklists.length} checklists, ${gaps.length} gaps`);
-return { maps, checklists, gaps };
+return { maps, checklists, gaps, verdict };
 ```
-One run, three phases, a barriered fan-out, a no-barrier pipeline, and a bounded loop-until-dry — all sequenced by the script in a cc-fleet process, off your context.
+One run, three phases, a barriered fan-out, a no-barrier pipeline, a bounded loop-until-dry, and a single `claude` synthesis node — all sequenced by the script in a cc-fleet process, off your context.
 
 ## Anti-patterns
 - A script for a single flat independent batch → /cc-fleet:subagent.

@@ -38,6 +38,10 @@ func buildDropList() map[string]bool {
 		// provider auth must come solely from the profile's apiKeyHelper.
 		"ANTHROPIC_API_KEY":    true,
 		"ANTHROPIC_AUTH_TOKEN": true,
+		// Backend routing: a provider child gets its base URL from the profile, and
+		// a native (reserved `claude`) child must talk to Anthropic itself — an
+		// inherited override could silently reroute either to a foreign backend.
+		"ANTHROPIC_BASE_URL": true,
 		// Nested-CC / teams markers. A child launched from inside the lead's session
 		// inherits these via os.Environ(); leaving CLAUDECODE=1 marks the child as
 		// "nested in CC" (alters/refuses the run), and the teams trigger would make a
@@ -66,7 +70,10 @@ func upperKeys(m map[string]bool) map[string]bool {
 
 // Clean returns environ (os.Environ() form) with dropList entries removed. It
 // only removes; it never injects. A line with no '=' is passed through
-// untouched. Load-bearing — see dropList for why each var must go.
+// untouched. Load-bearing — see dropList for why each var must go. The native
+// (reserved `claude`) child gets the SAME scrub: keys never ride env, so it
+// authenticates only from claude's own stored login (file / OS keychain) — an
+// env-key-only setup uses a configured `anthropic` provider instead.
 func Clean(environ []string) []string {
 	out := make([]string, 0, len(environ))
 	for _, kv := range environ {

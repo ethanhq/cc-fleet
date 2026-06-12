@@ -59,6 +59,16 @@ third-party provider model (via the provider profile) and return the result
 synchronously. The analog of the native Agent/Task tool, but the model can be
 a provider id. No tmux pane, no team, no locks.
 
+The reserved id "claude" runs the official claude CLI on your OWN Claude Code
+login (subscription OAuth) instead of a configured provider — no providers.toml
+row, no profile, no key material. Explicit-only: it can never be the default
+(default claude errors) and the name is reserved (add rejects it). --model takes
+a literal id only (opus / sonnet / a full id); the slot keywords default/strong/
+fast are rejected (no roster), and an omitted model uses claude's login default,
+typically the costliest tier — so naming a model is usually wise. The leaf spends
+the lead session's own subscription window, so reserve it for one or two synthesis
+nodes, never a wide fan-out.
+
 Designed to be invoked by the cc-fleet skill via Bash with --json, which
 emits one machine-readable subagent.Result envelope the skill switches on.
 

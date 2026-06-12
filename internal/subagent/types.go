@@ -203,6 +203,7 @@ const (
 	ErrCodeBadArgs            = "SUBAGENT_BAD_ARGS"       // --prompt/--prompt-file missing or both given (CLI layer)
 	ErrCodeUnknownProvider    = "UNKNOWN_PROVIDER"        // provider not in providers.toml
 	ErrCodeProviderDisabled   = "PROVIDER_DISABLED"       // enabled = false
+	ErrCodeProviderReserved   = "PROVIDER_RESERVED"       // a configured row uses the reserved native name — rename/remove it
 	ErrCodeFingerprintMissing = "FINGERPRINT_MISSING"     // never captured → skill self-heal
 	ErrCodeFingerprintStale   = "FINGERPRINT_STALE"       // BinaryPath gone from disk
 	ErrCodeProxyUnavailable   = "CODEX_PROXY_UNAVAILABLE" // codex conversion daemon could not be started

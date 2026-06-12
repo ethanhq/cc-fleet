@@ -74,6 +74,8 @@ default/strong/fast roster.`,
 				fmt.Printf("default provider: %s is configured but DISABLED — re-enable it, or `cc-fleet default <provider> --force`, or `cc-fleet default --unset`\n", view.Provider)
 			case "unknown":
 				fmt.Printf("default provider: %s is configured but no longer exists — `cc-fleet default <provider> --force`, or `cc-fleet default --unset`\n", view.Provider)
+			case "reserved":
+				fmt.Printf("default provider: %s is RESERVED for the native leaf (explicit-only) — `cc-fleet default <provider> --force`, or `cc-fleet default --unset`\n", view.Provider)
 			default:
 				if len(view.Candidates) == 0 {
 					fmt.Println("default provider: unset (no providers configured — run: cc-fleet add <provider> ...)")

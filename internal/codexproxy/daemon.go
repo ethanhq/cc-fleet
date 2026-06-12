@@ -144,6 +144,12 @@ func PortFromBaseURL(baseURL string) (int, error) {
 // before minting a queued leaf. An unknown provider is a no-op here — the leaf's own
 // path surfaces it.
 func EnsureForProviderName(name string) error {
+	// The native leaf rides no daemon and must not touch provider config at
+	// all — neither a malformed providers.toml nor a stale hand-made row may
+	// gate or side-effect it.
+	if name == config.ReservedNativeProvider {
+		return nil
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return err

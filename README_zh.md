@@ -25,7 +25,8 @@
 cc-fleet 接入的第三方模型本质是**真正的 Claude Code teammate** —— 驱动方式和原生 teammate 完全一致，
 只是 LLM 后端换成了任意一家提供 Anthropic 兼容 API 的服务商。你主会话自身的认证（OAuth 订阅或 API
 key）完全不受影响；第三方模型 worker 通过 `apiKeyHelper` 取用自己的 API key 计费，这把 key
-永不进入环境变量、argv 或 shell 历史。
+永不进入环境变量、argv 或 shell 历史 —— 唯一的例外是保留的 `claude` subagent/workflow leaf，
+它有意运行在你自己的登录上。
 
 `cc-fleet` 是一个小巧的 Go CLI 加一个 Claude Code skill。CLI 负责管理各第三方模型的 profile、通过
 `apiKeyHelper` 派发 API key、在 tmux pane 里拉起 teammate 会话；skill 则教 Claude Code
@@ -144,7 +145,9 @@ tmux new-session -s cc-fleet
 > *"用 deepseek 总结这个 2000 行的日志文件。"*
 
 `cc-fleet subagent <provider>` 以 headless 方式调用第三方模型，同步返回结果 —— **无 pane、无
-team、也不需要 agent-teams**。最适合一次性分析，以及把互不依赖的任务批量并行展开。
+team、也不需要 agent-teams**。最适合一次性分析，以及把互不依赖的任务批量并行展开。保留 id
+`claude`（`cc-fleet subagent claude --model opus …`）改用你自己的 Claude Code 登录运行原生
+`claude`，而非第三方模型 —— 仅限显式指定，按你的订阅计费，因此留给综合节点，而非大规模并行展开。
 
 | 参数 | 用途 |
 |------|------|

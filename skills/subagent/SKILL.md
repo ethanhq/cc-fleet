@@ -24,6 +24,12 @@ When this skill cites `cc-fleet-shared/<file>.md`, OPEN it with the Read tool at
 
 Model tier within a provider: fan-out / leaf work → omit `--model` (or `--model fast`); judge / synthesis / sustained work → `--model strong`. The provider's roster decides the actual model — see cc-fleet-shared/providers.md.
 
+**The reserved native leaf — `claude`.** `cc-fleet subagent claude …` runs the official `claude` CLI on the user's OWN Claude Code login (their subscription OAuth or whatever they're logged in as) — no providers.toml row, no profile, no key material. A NAMED deliberate choice, never the auto-default (`cc-fleet default claude` errors; it never auto-resolves). `--model` takes a literal id (`opus` / `sonnet` / a full id) — the slot keywords `default`/`strong`/`fast` are rejected (no roster); omitted = claude's login default, which is typically the most expensive tier, so naming a model is usually wise. Profiles apply unchanged. The leaf spends the **lead session's own subscription window** — use it for one or two synthesis / judgement nodes, never a wide fan-out.
+
+```bash
+cc-fleet subagent claude --model opus --prompt "<synthesis over the gathered notes>" --json
+```
+
 ## Calling it (run via Bash, always with `--json`)
 ```bash
 cc-fleet subagent --prompt "<task>" --json                 # no provider arg → default provider
@@ -67,8 +73,10 @@ Useful flags (full list in cc-fleet-shared/cli-reference.md):
 | `NO_DEFAULT_PROVIDER` | No provider arg and no default configured. | Apply the provider ask ladder. |
 | `DEFAULT_PROVIDER_DISABLED` | The default provider is disabled. | Apply the provider ask ladder; or the user re-enables via `cc-fleet edit <provider> --enable`. |
 | `DEFAULT_PROVIDER_UNKNOWN` | The default names a provider that no longer exists. | Apply the provider ask ladder; the user re-pins with `cc-fleet default <p>`. |
+| `DEFAULT_PROVIDER_RESERVED` | `default_provider` is hand-set to the reserved `claude` (explicit-only). | The user runs `cc-fleet default --unset` or re-pins a real provider; don't retry. |
 | `CONFIG_LOAD_FAILED` | `providers.toml` failed to load/validate. | `cc-fleet doctor`; surface to the user — don't retry. |
 | `UNKNOWN_PROVIDER` / `PROVIDER_DISABLED` | Provider not configured / disabled. | Tell the user to `cc-fleet add` / `cc-fleet edit <provider> --enable`. |
+| `PROVIDER_RESERVED` | A providers.toml row is named `claude` (reserved for the native leaf). | Tell the user to rename or `cc-fleet remove claude`; spawn still uses the row meanwhile. |
 | `FINGERPRINT_MISSING` | An existing `fingerprint.json` is corrupt (a fresh install uses the bundled recipe, so this is rare). | Run the **self-heal flow** in cc-fleet-shared/troubleshooting.md, then retry. |
 | `FINGERPRINT_STALE` | No `claude` binary found anywhere (not a missing recipe). | Tell the user to install/fix Claude Code or PATH; the self-heal flow can't help. `cc-fleet doctor` confirms. |
 | `KEY_INVALID` | Provider 401/403. | Have the user rotate the key; do not retry blindly. |
@@ -80,7 +88,7 @@ Useful flags (full list in cc-fleet-shared/cli-reference.md):
 | `PROVIDER_API_ERROR` | Other provider failure (5xx / overloaded). | Retry once or propose a switch. |
 | `CODEX_PROXY_UNAVAILABLE` | The codex conversion daemon could not start (no login, or the loopback port is held). | Tell the user: `cc-fleet codex login`, or free / change the port (`cc-fleet codex add --port <n>`). |
 | `CODEX_CLOUDFLARE_BLOCKED` | The ChatGPT backend's edge blocked this IP/client — not a key problem. | Switch network/IP or retry later; don't rotate credentials. |
-| `SUBAGENT_FAILED` | claude exited with no parseable result (or turn/budget exhaustion). | Inspect; retry or switch provider. |
+| `SUBAGENT_FAILED` | claude exited with no parseable result (or turn/budget exhaustion). For a `claude` native leaf on a logged-out machine, this is the login failure — the error preview names it (no dedicated code). | Inspect; retry or switch provider. A logged-out native leaf → tell the user to log in to Claude Code interactively. |
 | `SUBAGENT_OUTPUT_TOO_LARGE` | The child's stdout/stderr exceeded the byte cap; the run was killed. | Have it write its output to a file and return a short answer (or narrow the ask) — a blind retry overflows again. |
 | `SUBAGENT_STOPPED` | An operator stopped the job (`workflow stop` / a leaf stop) — terminal, NOT a failure. | Never auto-retry; surface it. |
 
@@ -133,3 +141,4 @@ A **sync** subagent has nothing to tear down; "cleanup" only concerns `--backgro
 - Polling `subagent-status` in a loop (or delegating an agent to watch a job) → arm `subagent-status --wait` in a backgrounded Bash once; its exit is the notification.
 - Looping on a failure without dispatching `.error_code` → every `--json` failure carries a code; switch on it (table above; spawn-side codes in cc-fleet-shared/troubleshooting.md).
 - Switching providers silently after a balance / rate-limit / auth failure → stop, tell the user, wait for their pick (provider ask ladder, step 4).
+- Fanning out N `claude` native leaves → drains your own subscription window; use a metered provider for breadth, `claude` only for one or two synthesis nodes.

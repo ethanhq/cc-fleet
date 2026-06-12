@@ -491,10 +491,12 @@ func StatusFor(jobID string) Result {
 	stdout, _ := os.ReadFile(outPath)
 	stderr, _ := os.ReadFile(errPath)
 	innerJSON := meta.JSON || meta.OutputFormat == "json"
-	// A detached json leaf (settingsPath set) can be seen dead a moment before its envelope write
-	// lands. When the capture is empty, re-read once after a short delay before classifying, so a
-	// late write isn't cached as a failure. Non-empty output is already written and skips the wait.
-	if meta.SettingsPath != "" && innerJSON && strings.TrimSpace(string(stdout)) == "" {
+	// A detached json leaf can be seen dead a moment before its envelope write lands. When the
+	// capture is empty, re-read once after a short delay before classifying, so a late write
+	// isn't cached as a failure. The capture file's EXISTENCE is the detached marker (only a
+	// detached launch creates it; sync metas never do) — not the profile path, which a native
+	// (reserved `claude`) job legitimately lacks. Non-empty output skips the wait.
+	if _, statErr := os.Stat(outPath); statErr == nil && innerJSON && strings.TrimSpace(string(stdout)) == "" {
 		time.Sleep(statusConfirmDelay)
 		stdout, _ = os.ReadFile(outPath)
 		stderr, _ = os.ReadFile(errPath)

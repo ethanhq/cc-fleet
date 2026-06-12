@@ -199,6 +199,37 @@ func TestAdd_RejectsBadName(t *testing.T) {
 	}
 }
 
+func TestAdd_RejectsReservedNativeName(t *testing.T) {
+	setupHome(t)
+	if _, err := Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	_, err := Add(AddRequest{
+		Name:           config.ReservedNativeProvider,
+		BaseURL:        "https://x.example",
+		ModelsEndpoint: "https://x.example/v1/models",
+		DefaultModel:   "x",
+		SecretBackend:  "file",
+		SecretRef:      "x.key",
+	})
+	var op *Op
+	if !errors.As(err, &op) || op.Code != CodeProviderNameInvalid {
+		t.Fatalf("Add %q: err=%v, want code %s", config.ReservedNativeProvider, err, CodeProviderNameInvalid)
+	}
+}
+
+func TestSetDefaultProvider_ReservedNativeRejected(t *testing.T) {
+	setupHome(t)
+	if _, err := Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	_, err := SetDefaultProvider(config.ReservedNativeProvider, false)
+	var op *Op
+	if !errors.As(err, &op) || op.Code != CodeProviderNameInvalid {
+		t.Fatalf("SetDefaultProvider %q: err=%v, want code %s", config.ReservedNativeProvider, err, CodeProviderNameInvalid)
+	}
+}
+
 func TestAdd_RejectsAPIKeyForNonFileBackend(t *testing.T) {
 	setupHome(t)
 	if _, err := Init(); err != nil {

@@ -193,6 +193,15 @@ func (v *Provider) ResolveModel(requested string) string {
 // Provider-resolution sentinels. A provider-less lane invocation maps an empty
 // request through ResolveProvider; these classify the no-result outcomes so a CLI
 // can emit a stable error_code and the skill can dispatch on it.
+// ReservedNativeProvider is the provider name reserved for the native leaf:
+// `cc-fleet subagent claude` / a workflow `agent(…, {provider: "claude"})` runs
+// the official claude CLI on the user's own Claude Code login — no
+// providers.toml row, no profile, no key. The name is rejected at add /
+// set-default, never auto-resolved as the default or sole provider, and the
+// subagent run path branches on it before any config lookup, so a hand-made
+// `[claude]` row can never shadow the builtin in the subagent/workflow lanes.
+const ReservedNativeProvider = "claude"
+
 var (
 	// ErrNoDefaultProvider: no provider was named, no default is set, and zero or
 	// more-than-one providers are enabled (so there is no unambiguous choice). The
@@ -205,6 +214,11 @@ var (
 	// exists (a dangling pointer; remove scrubs the default, so this is the
 	// hand-edited / racing case).
 	ErrDefaultProviderUnknown = errors.New("default provider is unknown")
+	// ErrDefaultProviderReserved: default_provider names the reserved native leaf —
+	// implicit provider-less calls must never silently land on the user's own
+	// subscription, so the native leaf is explicit-only (hand-edited case;
+	// SetDefaultProvider rejects the name at write time).
+	ErrDefaultProviderReserved = errors.New("default provider is reserved")
 )
 
 // ProviderErrorCode maps a ResolveProvider sentinel to a stable error_code string
@@ -216,6 +230,8 @@ func ProviderErrorCode(err error) string {
 		return "DEFAULT_PROVIDER_DISABLED"
 	case errors.Is(err, ErrDefaultProviderUnknown):
 		return "DEFAULT_PROVIDER_UNKNOWN"
+	case errors.Is(err, ErrDefaultProviderReserved):
+		return "DEFAULT_PROVIDER_RESERVED"
 	case errors.Is(err, ErrNoDefaultProvider):
 		return "NO_DEFAULT_PROVIDER"
 	default:
@@ -246,6 +262,11 @@ func (c *Config) ResolveProvider(requested string) (name, source string, err err
 		return requested, "explicit", nil
 	}
 	if c.DefaultProvider != "" {
+		// The native leaf is explicit-only: a provider-less call must never
+		// silently spend the user's own subscription.
+		if c.DefaultProvider == ReservedNativeProvider {
+			return "", "", fmt.Errorf("%w: %q is the native leaf — name it explicitly per call", ErrDefaultProviderReserved, c.DefaultProvider)
+		}
 		v, ok := c.Providers[c.DefaultProvider]
 		if !ok || v == nil {
 			return "", "", fmt.Errorf("%w: %q", ErrDefaultProviderUnknown, c.DefaultProvider)
@@ -256,7 +277,9 @@ func (c *Config) ResolveProvider(requested string) (name, source string, err err
 		return c.DefaultProvider, "default", nil
 	}
 	enabled := c.EnabledProviders()
-	if len(enabled) == 1 {
+	// A row named like the native leaf (pre-reservation hand edit) never
+	// auto-resolves either — same explicit-only rule.
+	if len(enabled) == 1 && enabled[0] != ReservedNativeProvider {
 		return enabled[0], "sole", nil
 	}
 	return "", "", fmt.Errorf("%w (enabled: %s)", ErrNoDefaultProvider, strings.Join(enabled, ", "))

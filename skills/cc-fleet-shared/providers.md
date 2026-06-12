@@ -33,6 +33,8 @@ Default seeds for the built-in providers. Suggestions only — always confirm cu
 
 A provider not in this table works the same way — the user adds it first: `cc-fleet add <provider> --base-url <url> --models-endpoint <url> --default-model <id> --api-key-stdin <<<"$KEY"` (use `--api-key-stdin` or `--api-key-file`; **never** the raw key in argv).
 
+**The reserved id `claude` is not a table row** — it is not a configured provider. In the subagent / workflow lanes only (never spawn/teammates, never `cc-fleet run`), `claude` runs the official `claude` CLI on the user's OWN Claude Code login (subscription OAuth) — no providers.toml row, no profile, no key. It needs a real stored login (file / OS keychain); env-key auth (`ANTHROPIC_API_KEY`) is scrubbed like for every child — an API-key user adds a normal `anthropic` provider instead. It never shows in `cc-fleet list` (selected by the literal id, not discovered), can't be the default, and the name is reserved (`cc-fleet add claude` / the TUI add form reject it). `--model` / `model:` takes a literal id only (`opus` / `sonnet` / a full id; the slots `default`/`strong`/`fast` are rejected — no roster); omitted = claude's login default, typically the costliest tier, so name one. It spends the **lead session's own subscription window** — one or two synthesis / judgement nodes, never a wide fan-out. (A providers.toml row named `claude` from before the reservation still loads and lists, but a subagent / workflow `claude` call fails with `PROVIDER_RESERVED` — rename or remove the row; only spawn/teammates still use it.)
+
 ---
 
 ## Prompt profiles (subagent + workflow leaves)

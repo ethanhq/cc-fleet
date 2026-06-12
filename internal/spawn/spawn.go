@@ -705,7 +705,11 @@ func buildSpawnCommand(fp *fingerprint.Fingerprint, ctx fingerprint.SpawnContext
 		return "", errors.New("fingerprint missing binary_path")
 	}
 
-	parts := []string{"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN"}
+	// ANTHROPIC_BASE_URL goes for the same reason as the credentials: the
+	// provider profile owns backend routing, and an inherited override could
+	// silently send the pane's traffic to a foreign endpoint (mirrors childenv
+	// on the subagent/run path).
+	parts := []string{"env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "ANTHROPIC_BASE_URL"}
 	// The provider profile owns model/effort selection; unset any value the
 	// launching shell exported so it can't override the profile (mirrors childenv
 	// on the subagent/run path — one shared key list, no drift).

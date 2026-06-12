@@ -14,6 +14,11 @@ func providerErrorCode(err error) string { return config.ProviderErrorCode(err) 
 // explicit name is returned verbatim — its existence/enabled checks stay on the
 // lane's normal launch path, unchanged.
 func resolveProviderArg(requested string) (string, error) {
+	// The native leaf must stay reachable even when providers.toml is
+	// malformed — it consumes nothing from it.
+	if requested == config.ReservedNativeProvider {
+		return requested, nil
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		return "", err

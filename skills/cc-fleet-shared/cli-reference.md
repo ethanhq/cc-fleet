@@ -83,7 +83,10 @@ cc-fleet spawn [provider] --as <name> --team <team> [--model <m>] --json
                                          Spawn a provider teammate into a tmux pane.
                                          The provider arg is OPTIONAL — omit it to use the
                                          default provider (cc-fleet default; a provider-less
-                                         call errors NO_DEFAULT_PROVIDER / DEFAULT_PROVIDER_DISABLED).
+                                         call errors NO_DEFAULT_PROVIDER /
+                                         DEFAULT_PROVIDER_DISABLED / DEFAULT_PROVIDER_RESERVED
+                                         — the last when a hand-set default_provider = "claude"
+                                         resolves: the reserved id is never an auto-default).
                                          Outside tmux ($TMUX empty) it auto-builds an
                                          out-of-tmux swarm session; --json carries
                                          tmux_socket + attach_command (also on stderr).
@@ -94,6 +97,10 @@ cc-fleet subagent [provider] --model <m> --prompt "<task>" [--lead-session-id <i
                                          synchronous result on stdout. No pane,
                                          no team. Parent Claude session auto-detected
                                          when possible; --lead-session-id overrides.
+                                         The reserved id `claude` runs the user's OWN
+                                         Claude Code login (subscription OAuth, no
+                                         providers.toml row) — explicit-only, never the
+                                         default; spends the lead session's own window.
                                          (Full manual: the /cc-fleet:subagent skill.)
 
 cc-fleet subagent-status <job_id> --json Check a --background subagent job
@@ -213,3 +220,5 @@ Dispatch on `error_code` (see `cc-fleet-shared/troubleshooting.md`), never parse
 | Provider model id | Not possible (enum-locked) | Yes (`--model <provider-id>`) |
 
 If you only need Anthropic and the work fits the main session, native `Agent` is simpler. cc-fleet is for the cases where the four right-column properties matter.
+
+A third point sits between them: the reserved `claude` leaf (`cc-fleet subagent claude …`, workflow `agent(..., {provider: "claude"})`) — an Anthropic backend like native `Agent`, billed to your OWN subscription (not a metered provider), but run through cc-fleet's subagent / workflow lane (off-context, journaled, board-tracked). Use it for a synthesis / judgement node when you want a cc-fleet leaf on your own login rather than a provider; it spends the lead session's own window, so one or two nodes, never a fan-out.

@@ -3789,6 +3789,13 @@ func (m Model) keyLabel(idx int) string {
 // surfaced inline (no command) so the user can fix them in place; provider-side
 // errors (bad key, unreachable) come back via opDoneMsg.
 func (m Model) submitAdd() (tea.Model, tea.Cmd) {
+	// Reserved-name gate for every add form, checked centrally (not only in
+	// userops.Add) because the codex submitter starts a device login before
+	// Add would bounce the name.
+	if name := m.form.value("name"); name == config.ReservedNativeProvider {
+		m.form.err = "name " + name + " is reserved for the native leaf (your own claude login)"
+		return m, nil
+	}
 	switch m.addProtocol {
 	case config.ProtocolCodexOAuth:
 		return m.submitAddCodex()

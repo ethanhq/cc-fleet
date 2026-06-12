@@ -169,6 +169,25 @@ func TestFirstCodexClaimsDefaultCredential(t *testing.T) {
 	}
 }
 
+// The reserved native-leaf name is rejected by the central submitAdd gate for
+// every add form — before the codex flow could start a device login.
+func TestSubmitAdd_ReservedNativeNameRejected(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	m := withProviders(t)
+	mm, _ := m.enterCodexFlow()
+	m = mm.(Model)
+	m.form.setValue("name", "claude")
+	m = pressN(t, m, "down", len(m.form.fields)) // jump to submit
+	m, cmd := press(t, m, "enter")
+	if m.screen != screenForm || !strings.Contains(m.form.err, "reserved for the native leaf") {
+		t.Fatalf("reserved name must fail on the form: screen=%d err=%q", m.screen, m.form.err)
+	}
+	if m.codexPendingAdd != nil || cmd != nil {
+		t.Fatal("reserved name must not stash a request or start a login")
+	}
+}
+
 // An invalid codex provider name is rejected at submit BEFORE any device login —
 // no auth screen, no credential file written, just a form error.
 func TestCodexInvalidNameRejectedBeforeLogin(t *testing.T) {

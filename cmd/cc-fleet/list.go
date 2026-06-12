@@ -31,6 +31,9 @@ Each row shows the provider name, current default model, enabled flag, secret
 backend, the number of cached models, and a (stale) marker when the models
 cache is older than 7 days (or missing entirely).
 
+The reserved native leaf "claude" (subagent/workflow on your own Claude Code
+login) never appears here — it is selected by the literal id, not discovered.
+
 --json emits ` + "`{\"ok\":true,\"providers\":[...]}`" + ` with one entry per provider.
 The list is always present (empty array for fresh installs) so the skill
 can iterate without a presence check.`,

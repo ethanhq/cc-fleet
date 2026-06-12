@@ -368,9 +368,9 @@ func TestSpawn_HappyPath(t *testing.T) {
 	// Hardening: the command must explicitly unset the main session's
 	// Anthropic credentials so a provider teammate can't inherit them from the
 	// tmux server environment (e.g. an ANTHROPIC_API_KEY-mode main session).
-	for _, want := range []string{"-u ANTHROPIC_API_KEY", "-u ANTHROPIC_AUTH_TOKEN"} {
+	for _, want := range []string{"-u ANTHROPIC_API_KEY", "-u ANTHROPIC_AUTH_TOKEN", "-u ANTHROPIC_BASE_URL"} {
 		if !strings.Contains(cmd, want) {
-			t.Errorf("split-window cmd missing credential unset %q\n  cmd: %s", want, cmd)
+			t.Errorf("split-window cmd missing credential/routing unset %q\n  cmd: %s", want, cmd)
 		}
 	}
 	// Critical: NO actual key VALUE may appear in the command line. (The var
@@ -1124,7 +1124,7 @@ func TestBuildSpawnCommand_FrozenTemplate_StripsThenByteStable(t *testing.T) {
 	// Hand-build the expectation: env prefix + binary + the applied template with
 	// permission flags STRIPPED + --settings + --model.
 	var want []string
-	want = append(want, "env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN")
+	want = append(want, "env", "-u", "ANTHROPIC_API_KEY", "-u", "ANTHROPIC_AUTH_TOKEN", "-u", "ANTHROPIC_BASE_URL")
 	// The model/effort env is unset so the launching shell can't override the
 	// profile (same key list childenv strips on the subagent/run path).
 	for _, k := range childenv.ModelEnvKeys {

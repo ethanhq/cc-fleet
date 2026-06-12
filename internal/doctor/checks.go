@@ -643,12 +643,14 @@ func checkBundledFingerprintRuntime(r CheckResult) CheckResult {
 }
 
 // CheckOAuthCredentials is check 9: does the main session have an OAuth /
-// subscription credential on disk? **Purely informational** — its purpose is to
-// report which auth the MAIN session can use, NOT to flag a problem. cc-fleet's
-// model is: main session on the OAuth subscription, provider teammates on their
-// own API key. A main session that runs entirely on a provider profile has no
-// credentials.json and that is completely fine — so ABSENCE is reported as OK
-// (informational), never a WARN, and this check can never flip doctor's overall OK.
+// subscription credential on disk? **Purely informational** — its purpose is
+// to report which auth the MAIN session (and the native `claude` leaf, which
+// runs on the same login) can use, NOT to flag a problem. cc-fleet's model is:
+// main session on the OAuth subscription, provider teammates on their own API
+// key. A main session that runs entirely on a provider profile has no
+// credentials.json, and on macOS the login lives in the OS keychain with no
+// file at all — so ABSENCE is reported as OK (informational), never a WARN,
+// and this check can never flip doctor's overall OK.
 func CheckOAuthCredentials() CheckResult {
 	r := CheckResult{ID: 9, Title: "OAuth credentials.json exists (informational)"}
 	cdir, err := claudeDir()
@@ -673,10 +675,10 @@ func CheckOAuthCredentials() CheckResult {
 			return r
 		}
 	}
-	// Absent is fine and NOT a warning: only a main session on an OAuth /
-	// subscription login needs this file; provider teammates authenticate with
-	// their own API key via apiKeyHelper.
+	// Absent is fine and NOT a warning: provider teammates authenticate with
+	// their own API key via apiKeyHelper, and on macOS the login lives in the
+	// OS keychain (no file at all) — absence here is not proof of no login.
 	r.Status = StatusOK
-	r.Detail = "no credentials.json (fine — only a main session on an OAuth/subscription login needs it; provider teammates use their own API key)"
+	r.Detail = "no credentials.json (fine — provider teammates use their own API key; the main session and the native `claude` leaf use claude's own login, which may live in the OS keychain instead)"
 	return r
 }
