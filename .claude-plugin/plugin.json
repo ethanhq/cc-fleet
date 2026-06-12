@@ -1,7 +1,7 @@
 {
   "name": "cc-fleet",
   "description": "Spawn any third-party LLM provider with an Anthropic-compatible API (e.g. DeepSeek, GLM, Kimi, Qwen, MiniMax) as real Claude Code agent-team teammates or one-shot subagents — driven exactly like native teammates. Your main session's own auth is untouched (OAuth subscription or API key, either works); provider workers bill the provider API key via apiKeyHelper (the key never enters env/argv/history). Requires the `cc-fleet` binary on PATH, installed separately.",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "author": {
     "name": "Ethan Guo",
     "email": "ethanguo.dev@gmail.com"
