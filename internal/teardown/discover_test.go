@@ -3,7 +3,9 @@
 package teardown
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -211,6 +213,28 @@ exit 1
 	}
 	if len(got) != 0 {
 		t.Fatalf("expected empty result, got %+v", got)
+	}
+}
+
+// TestDiscoverTeammates_TmuxNotFound covers tmux missing from PATH entirely:
+// the default-socket scan is fatal, so the error propagates — but it must wrap
+// exec.ErrNotFound (so the TUI can degrade) and carry the "tmux list-panes:"
+// prefix exactly ONCE (no double-wrap across the tmux/teardown layers).
+func TestDiscoverTeammates_TmuxNotFound(t *testing.T) {
+	// PATH points at an empty dir so exec.LookPath("tmux") fails; HOME points at
+	// an empty dir so the swarm-socket scan stays silent.
+	t.Setenv("PATH", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+
+	_, err := DiscoverTeammates()
+	if err == nil {
+		t.Fatal("DiscoverTeammates with tmux absent: err=nil, want error")
+	}
+	if !errors.Is(err, exec.ErrNotFound) {
+		t.Fatalf("error %v does not satisfy errors.Is(exec.ErrNotFound)", err)
+	}
+	if n := strings.Count(err.Error(), "tmux list-panes:"); n != 1 {
+		t.Fatalf("error %q contains %q %d times, want exactly 1", err.Error(), "tmux list-panes:", n)
 	}
 }
 

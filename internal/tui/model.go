@@ -8,8 +8,10 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -150,6 +152,11 @@ type Model struct {
 	spawnErr    error
 	jobs        []subagent.Result
 	sessionMeta map[string]sessiontitle.Meta
+	// tmuxMissing is set when discovery failed solely because tmux is absent from
+	// PATH: the board keeps its filesystem-backed content and shows a degrade
+	// notice instead of the hard-error frame. Refreshed on every boardMsg so it
+	// clears the moment tmux reappears.
+	tmuxMissing bool
 	// endedSeen maps an ended team (gone from live discovery, rendered from its
 	// history record) to its record LastSeen, for the card's "last seen" line.
 	endedSeen map[string]time.Time
@@ -344,8 +351,12 @@ func (providersMsg) owningScreen() screen { return screenList }
 // that scheduled it, so a stale refresh from a prior board visit is dropped
 // when the user re-enters (epoch++) or leaves the board.
 type boardMsg struct {
-	teammates   []teardown.Teammate
-	teamErr     error
+	teammates []teardown.Teammate
+	teamErr   error
+	// tmuxMissing is set when discovery failed solely because tmux is not on PATH.
+	// The board then renders its filesystem-backed content (jobs / runs / ended
+	// teams) with a degrade notice instead of taking the hard-error path.
+	tmuxMissing bool
 	jobs        []subagent.Result
 	jobsErr     error
 	runs        []subagent.WorkflowRun
@@ -400,6 +411,14 @@ func loadProviders() tea.Msg {
 func loadBoard(epoch int) tea.Cmd {
 	return func() tea.Msg {
 		items, err := teardown.DiscoverTeammates()
+		// tmux absent from PATH isn't a board failure: the live-teammate lane is
+		// simply unavailable (it's the only tmux-dependent source), so drop the
+		// error to an empty live set + a degrade flag and keep the rest. Any other
+		// discovery error stays fatal to the board.
+		tmuxMissing := errors.Is(err, exec.ErrNotFound)
+		if tmuxMissing {
+			items, err = nil, nil
+		}
 		if err == nil {
 			items = teardown.AnnotateHealth(items)
 			items = teardown.AnnotateHidden(items)
@@ -412,18 +431,23 @@ func loadBoard(epoch int) tea.Cmd {
 		}
 		meta := sessiontitle.ResolveMeta(leadSessionIDs(items, jobs, runs))
 		// Record live teams + synthesize ended ones AFTER annotation, so a pane
-		// capture can never overwrite a synthetic row's `ended` status. Upsert runs
-		// only on a successful discovery (else the live set is unknown) and is
+		// capture can never overwrite a synthetic row's `ended` status. Both run
+		// only on a successful discovery: with tmux missing the live set is
+		// unknown (a server and its panes can outlive the client binary), so no
+		// record is touched and no recorded team is presented as ended. Upsert is
 		// best-effort — a record error never fails the board.
-		if err == nil {
+		var endedSeen map[string]time.Time
+		if err == nil && !tmuxMissing {
 			_ = teamhist.Upsert(items, func(sessionID string) string { return meta[sessionID].Cwd })
+			var ended []teardown.Teammate
+			ended, endedSeen = synthesizeEnded(items, meta)
+			items = append(items, ended...)
 		}
-		ended, endedSeen := synthesizeEnded(items, meta)
-		items = append(items, ended...)
 		pins, _ := pinned.Snapshot() // best-effort: a read glitch just renders no ★ this tick
 		return boardMsg{
 			teammates:   items,
 			teamErr:     err,
+			tmuxMissing: tmuxMissing,
 			jobs:        jobs,
 			jobsErr:     jobsErr,
 			runs:        runs,
@@ -1376,6 +1400,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// slices, mirror wfGroups) renders contiguously on every update path, tests included.
 		m.teammates = groupByTeam(msg.teammates)
 		m.spawnErr = msg.teamErr
+		m.tmuxMissing = msg.tmuxMissing
 		m.jobs = msg.jobs
 		m.boardJobsErr = msg.jobsErr
 		m.workflowJobs = wfTagged(msg.jobs)

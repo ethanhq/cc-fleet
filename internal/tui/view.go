@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"os"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
+	"github.com/ethanhq/cc-fleet/internal/onboarding"
 	"github.com/ethanhq/cc-fleet/internal/permmode"
 	"github.com/ethanhq/cc-fleet/internal/pinned"
 	"github.com/ethanhq/cc-fleet/internal/secrets"
@@ -496,8 +498,21 @@ func (m Model) viewSpawn() string {
 		b.WriteString("\n" + pad + faintStyle.Render("jobs unavailable: "+
 			sessiontitle.CleanTitle(m.boardJobsErr.Error())))
 	}
+	// tmux absent → the live-teammate lane is off, but every other source loaded.
+	// One dim notice, styled like the jobs warning. Windows renders none: the
+	// teammate lane isn't shipped there, so a missing tmux is the permanent
+	// normal state, not a degradation worth flagging.
+	if m.tmuxMissing && runtime.GOOS != "windows" {
+		b.WriteString("\n" + pad + faintStyle.Render(tmuxMissingNotice()))
+	}
 	b.WriteString("\n" + pad + m.renderAsFooter())
 	return b.String()
+}
+
+// tmuxMissingNotice is the dim board-foot line shown when tmux is not on PATH.
+func tmuxMissingNotice() string {
+	return "tmux not found — live teammate panes unavailable; subagent / workflow / run still work · install: " +
+		onboarding.TmuxInstallHint()
 }
 
 // spawnTitle is the Agents Board app title + tab hint, used in the loading / empty / error
