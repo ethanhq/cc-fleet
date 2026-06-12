@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/permmode"
@@ -657,15 +658,40 @@ func (f form) viewLines(width int) []string {
 		}
 		switch fld.kind {
 		case fieldText:
-			line := " " + keyCell + "  " + fld.input.View()
+			prefix := " " + keyCell + "  "
 			// A model slot trails its 1M-context toggle on the same row, when that
-			// slot has one.
+			// slot has one. On a narrow pane the input cell shrinks so the tag slides
+			// left to the pane edge instead of being clipped; on a wide pane it keeps
+			// the static 48-col cell (the fixed tag column). The cell never shrinks
+			// past the visible value (+1 cursor cell), so typed text is never hidden —
+			// growing content pushes the tag right and may overflow (boxCell clips it).
 			if mk := oneMKeyFor(fld.key); mk != "" {
 				if _, ok := f.indexOfKey(mk); ok {
-					line += "   " + f.render1MTag(mk)
+					tag := f.render1MTag(mk)
+					lead := ansi.StringWidth(prefix)
+					tagW := ansi.StringWidth(tag)
+					contentW := ansi.StringWidth(fld.input.Value())
+					if contentW == 0 {
+						contentW = ansi.StringWidth(fld.input.Placeholder)
+					}
+					// input.View() renders Width plus a trailing cursor cell, so the row
+					// is lead + (Width+1) + 3 (gap) + tagW; the -4 reserves that cursor
+					// cell and the gap. min keeps the static 48 on wide panes; max stops
+					// the slide at one pad column past the value (the cursor cell), so the
+					// tag sits 4 columns past the value end and never hides typed text.
+					w := width - lead - 4 - tagW
+					if w > 48 {
+						w = 48
+					}
+					if w < contentW {
+						w = contentW
+					}
+					fld.input.Width = w
+					lines = append(lines, prefix+fld.input.View()+"   "+tag)
+					break
 				}
 			}
-			lines = append(lines, line)
+			lines = append(lines, prefix+fld.input.View())
 		case fieldToggle:
 			state := "[ ] off"
 			if fld.on {

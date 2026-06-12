@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/models"
@@ -400,6 +401,58 @@ func TestNoteBlockConstantHeight(t *testing.T) {
 		if h := noteToConfig(f); h != base {
 			t.Fatalf("Note→Config gap shifted at focus %d (key %q): %d != %d", i, f.focusedKey(), h, base)
 		}
+	}
+}
+
+// model1MRow strips ANSI from the form's first model row carrying the 1M tag,
+// rendered at the given width.
+func model1MRow(t *testing.T, f form, width int) string {
+	t.Helper()
+	for _, l := range f.viewLines(width) {
+		if strings.Contains(l, "1M ctx") {
+			return ansi.Strip(l)
+		}
+	}
+	t.Fatalf("no model row with a 1M tag rendered at width %d", width)
+	return ""
+}
+
+// TestModel1MTag_SlidesLeftOnNarrowPane: on a narrow pane the model row's input cell
+// shrinks so the row fits the width and the 1M tag survives instead of being clipped.
+func TestModel1MTag_SlidesLeftOnNarrowPane(t *testing.T) {
+	f := newEditForm(userops.ProviderView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
+	row := model1MRow(t, f, 50)
+	if w := ansi.StringWidth(row); w > 50 {
+		t.Fatalf("model row overflows the pane: %d > 50: %q", w, row)
+	}
+	if !strings.Contains(row, "1M ctx [") {
+		t.Fatalf("the 1M tag must survive on a narrow pane: %q", row)
+	}
+}
+
+// TestModel1MTag_StaticOnWidePane: on a wide pane the cell stays the static 48 cols, so
+// the tag column matches its fixed position (no regression from the slide-left).
+func TestModel1MTag_StaticOnWidePane(t *testing.T) {
+	f := newEditForm(userops.ProviderView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
+	row := model1MRow(t, f, 80)
+	// prefix " default   " (11) + input.View() (Width 48 + cursor cell = 49) + "   " (3).
+	if got := strings.Index(row, "1M ctx"); got != 11+49+3 {
+		t.Fatalf("wide-pane tag column moved: %d, want %d: %q", got, 11+49+3, row)
+	}
+}
+
+// TestModel1MTag_MinGapOnLongValue: a value longer than the right-aligned budget keeps
+// the full value visible and stops the slide with the tag 4 columns past the value's end.
+func TestModel1MTag_MinGapOnLongValue(t *testing.T) {
+	const val = "this-is-a-very-long-model-identifier-xx"
+	f := newEditForm(userops.ProviderView{Name: "x", DefaultModel: val, SecretBackend: "file"})
+	row := model1MRow(t, f, 50)
+	if !strings.Contains(row, val) {
+		t.Fatalf("long value must stay fully visible: %q", row)
+	}
+	valEnd := strings.Index(row, val) + len(val)
+	if got := strings.Index(row, "1M ctx"); got != valEnd+4 {
+		t.Fatalf("tag must start 4 cols past the value end: tagStart=%d valEnd=%d: %q", got, valEnd, row)
 	}
 }
 
