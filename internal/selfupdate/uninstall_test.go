@@ -240,6 +240,38 @@ func TestUninstallBinary_WindowsManualOnly(t *testing.T) {
 	}
 }
 
+// TestBinaryArtifactsFor_WindowsListsSiblingCopy: the windows installers copy
+// the exe to both canonical names, so the artifact list carries the sibling
+// copy — through either invocation name — plus the manifest; a sibling that
+// does not exist is simply absent.
+func TestBinaryArtifactsFor_WindowsListsSiblingCopy(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"cc-fleet.exe", "ccf.exe", manifestName} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o755); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	for exeName, sibling := range map[string]string{"cc-fleet.exe": "ccf.exe", "ccf.exe": "cc-fleet.exe"} {
+		arts := binaryArtifactsFor(filepath.Join(dir, exeName), "windows")
+		joined := strings.Join(arts, "\n")
+		for _, want := range []string{filepath.Join(dir, sibling), filepath.Join(dir, manifestName), filepath.Join(dir, exeName)} {
+			if !strings.Contains(joined, want) {
+				t.Fatalf("artifacts for %s missing %s: %v", exeName, want, arts)
+			}
+		}
+	}
+	solo := t.TempDir()
+	exe := filepath.Join(solo, "cc-fleet.exe")
+	if err := os.WriteFile(exe, []byte("x"), 0o755); err != nil {
+		t.Fatalf("write exe: %v", err)
+	}
+	for _, a := range binaryArtifactsFor(exe, "windows") {
+		if strings.HasSuffix(a, "ccf.exe") {
+			t.Fatalf("nonexistent sibling listed: %v", a)
+		}
+	}
+}
+
 // pluginSandbox points HOME at a temp dir, optionally planting a cached
 // plugin. Returns the cache dir (so a test's runner stub can clear it the way
 // a real `claude plugin uninstall` would).

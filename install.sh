@@ -70,8 +70,8 @@ case "$os" in
     Linux) os="linux" ;;
     Darwin) os="darwin" ;;
     *) echo "install.sh: unsupported OS '$os' (this installer supports linux and darwin)." >&2
-       echo "  On Windows install via npm: npm install -g @ethanhq/cc-fleet" >&2
-       echo "  or download the cc-fleet-windows-<arch>.zip from https://github.com/${REPO}/releases" >&2
+       echo "  On Windows run in PowerShell: irm https://raw.githubusercontent.com/${REPO}/main/install.ps1 | iex" >&2
+       echo "  or install via npm: npm install -g @ethanhq/cc-fleet" >&2
        exit 1 ;;
 esac
 

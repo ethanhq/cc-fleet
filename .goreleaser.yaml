@@ -52,6 +52,8 @@ archives:
         dst: skills/cc-fleet-shared
       - src: release/install.sh
         dst: install.sh
+      - src: release/install.ps1
+        dst: install.ps1
       - src: release/README.md
         dst: README.md
 

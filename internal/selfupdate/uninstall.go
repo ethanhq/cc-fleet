@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/ethanhq/cc-fleet/internal/tmux"
 )
@@ -150,9 +151,16 @@ func UninstallBinary(ctx context.Context, out io.Writer) (removed, kept, manual 
 }
 
 // binaryArtifacts lists the existing install artifacts next to exe: the
-// executable itself, the sibling `ccf` alias (only when it resolves to exe —
-// never someone else's ccf), the install manifest, and the rollback backup.
+// executable itself, the sibling alias, the install manifest, and the rollback
+// backup. On unix the alias is the `ccf` symlink (only when it resolves to exe
+// — never someone else's ccf); on windows the installers copy the exe to both
+// canonical names, so the sibling copy is listed by name (the windows path only
+// prints removal commands, never deletes).
 func binaryArtifacts(exe string) []string {
+	return binaryArtifactsFor(exe, runtime.GOOS)
+}
+
+func binaryArtifactsFor(exe, goos string) []string {
 	dir := filepath.Dir(exe)
 	var arts []string
 	add := func(p string) {
@@ -160,10 +168,18 @@ func binaryArtifacts(exe string) []string {
 			arts = append(arts, p)
 		}
 	}
-	alias := filepath.Join(dir, "ccf")
-	if alias != exe {
-		if target, err := filepath.EvalSymlinks(alias); err == nil && target == exe {
-			add(alias)
+	if goos == "windows" {
+		for _, name := range []string{"cc-fleet.exe", "ccf.exe"} {
+			if !strings.EqualFold(filepath.Base(exe), name) {
+				add(filepath.Join(dir, name))
+			}
+		}
+	} else {
+		alias := filepath.Join(dir, "ccf")
+		if alias != exe {
+			if target, err := filepath.EvalSymlinks(alias); err == nil && target == exe {
+				add(alias)
+			}
 		}
 	}
 	add(filepath.Join(dir, manifestName))

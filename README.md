@@ -51,19 +51,23 @@ panes. The skill teaches Claude Code *when* to delegate work to those teammates.
 
 **One-line (recommended)**
 ```bash
+# Linux / macOS
 curl -fsSL https://raw.githubusercontent.com/ethanhq/cc-fleet/main/install.sh | sh
+```
+```powershell
+# Windows (PowerShell)
+irm https://raw.githubusercontent.com/ethanhq/cc-fleet/main/install.ps1 | iex
 ```
 Downloads the prebuilt binary, installs `cc-fleet` + the `ccf` alias, and adds the
 skill via the Claude Code plugin. Flags (after `| sh -s --`): `--skill plugin|global|none`,
-`--scope user|project|local`, `--prefix DIR`, `--version vX.Y.Z`.
+`--scope user|project|local`, `--prefix DIR`, `--version vX.Y.Z`. The PowerShell installer
+takes the same overrides via env vars (`$env:CCF_VERSION`, `$env:CCF_PREFIX`).
 
-**npm** *(also the Windows install channel)*
+**npm** *(works everywhere, including Windows)*
 ```bash
 npm install -g @ethanhq/cc-fleet      # or run once: npx @ethanhq/cc-fleet
 ```
-*Binary only — also install the skill (see [The skill](#the-skill)) so Claude Code can use it.
-On Windows, install via npm or download the `cc-fleet-windows-<arch>.zip` from
-[Releases](https://github.com/ethanhq/cc-fleet/releases) (the one-line installer is unix-only).*
+*Binary only — also install the skill (see [The skill](#the-skill)) so Claude Code can use it.*
 
 **go install**
 ```bash
