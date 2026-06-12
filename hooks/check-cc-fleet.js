@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // cc-fleet plugin · SessionStart binary check.
 //
-// This plugin ships ONLY the skill (+ this hook + read-only commands). The
+// This plugin ships ONLY the skill (+ this hook). The
 // native `cc-fleet` Go binary is installed SEPARATELY onto PATH — a plugin
 // can't compile or reliably ship a native binary (no install-time hook; the
 // plugin root path is ephemeral and would break the apiKeyHelper pin baked

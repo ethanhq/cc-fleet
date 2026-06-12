@@ -170,5 +170,4 @@ canonical. **Edit only the canonical source**, then run `make skill-sync`;
 
 GoReleaser builds + GitHub release on a `v*` tag (`.github/workflows/release.yml`). Also shipped
 via npm (`npm/`, postinstall fetches the platform binary), the one-line `install.sh`, and the
-Claude Code plugin marketplace (`.claude-plugin/`, with `commands/` slash commands and a
-SessionStart hook in `hooks/`).
+Claude Code plugin marketplace (`.claude-plugin/`, with a SessionStart hook in `hooks/`).

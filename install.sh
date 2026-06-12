@@ -35,7 +35,7 @@ Usage:
 Options:
     --skill plugin|global|none  How to install the skill. Default: plugin.
                                   plugin = via Claude Code plugin (also adds the
-                                           SessionStart hook + /ps //doctor commands).
+                                           SessionStart hook).
                                   global = copy the per-lane skills into ~/.claude/skills/.
                                   none   = binary only.
     --scope user|project|local  Plugin install scope (--skill plugin). Default: user.
