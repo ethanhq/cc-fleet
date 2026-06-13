@@ -2,11 +2,14 @@
 
 This repo's agent/AI guidance lives in **[`CLAUDE.md`](CLAUDE.md)** — it is the single source
 of truth for any coding agent (Claude Code, Codex, Cursor, etc.). Read it before editing:
-what cc-fleet is, the two execution modes, the architecture, the load-bearing invariants, and
-the build/test commands.
+what cc-fleet is, the four execution lanes, the load-bearing invariants, and the build/test
+commands. The system design lives in **[`docs/architecture.md`](docs/architecture.md)**; the
+skills' canonical source is `skills/` (edit there, then `make skill-sync` — see CLAUDE.md);
+the user-facing references to keep in sync are [`docs/cli.md`](docs/cli.md) and
+[`docs/workflows.md`](docs/workflows.md).
 
 The contribution standard (required checks, commit/PR rules, screenshots, AI attribution) is
-**[`CONTRIBUTING.md`](CONTRIBUTING.md)**.
+**[`CONTRIBUTING.md`](.github/CONTRIBUTING.md)**.
 
 ## Coding standards (the essentials)
 

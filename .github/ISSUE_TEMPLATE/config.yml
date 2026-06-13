@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/ethanhq/cc-fleet/security/advisories/new
+    about: Key-handling or other security issues — report privately, never in a public issue.

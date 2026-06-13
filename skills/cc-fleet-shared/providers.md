@@ -20,18 +20,28 @@ Shared cross-lane reference — linked from `/cc-fleet:team`, `/cc-fleet:subagen
 
 ## Provider cheat sheet
 
-Default seeds for the built-in providers. Suggestions only — always confirm current state via `cc-fleet list --json` and `cc-fleet models <provider> --json`.
+Template seeds for the built-in presets (what the TUI add picker prefills). Suggestions only — always confirm current state via `cc-fleet list --json` and `cc-fleet models <provider> --json`.
 
-| Provider | Suggested model | Notes |
+| Provider | Seeded default model | Notes |
 |---|---|---|
-| `deepseek` | `deepseek-chat` (cheap, fast) / `deepseek-reasoner` (math/code) | Use canonical names; legacy aliases silently fall back to default. |
-| `kimi` (Moonshot) | `kimi-latest`, `kimi-k2-0905-preview` | 200k+ context; strong Chinese. |
-| `glm` (智谱) | `glm-4.6`, `glm-4.5` | Domain Chinese, industry vertical. |
-| `qwen` (DashScope) | varies by region | Often needs OpenAI-format conversion; consult user docs if `refresh` fails. |
-| `minimax` | `MiniMax-M2`, `abab7-chat-preview` | — |
+| `deepseek` | `deepseek-v4-flash` | Use canonical names; legacy aliases silently fall back to default. |
+| `kimi` (Moonshot) | `kimi-latest` | 200k+ context; strong Chinese. |
+| `glm` (智谱, bigmodel.cn) | `glm-4.6` | Domain Chinese, industry vertical. |
+| `zai` (GLM international, z.ai) | `glm-4.6` | Same models as `glm`; separate site + separate key. |
+| `qwen` (DashScope) | `qwen-max` | Endpoint/plan vary by region; consult user docs if `refresh` fails. |
+| `minimax` | `MiniMax-M2` | — |
+| `xiaomimimo` (Xiaomi MiMo) | `mimo-v2.5-pro` | Models endpoint sits at the host root. |
+| `stepfun` (阶跃) | `step-3.5-flash-2603` | Step-plan coding endpoint. |
+| `longcat` (Meituan) | `LongCat-Flash-Chat` | — |
+| `volcengine` (Ark, ByteDance) | `ark-code-latest` | Coding-plan; endpoint-id scheme — the model list may probe empty. |
+| `doubao` (Doubao Seed) | `doubao-seed-2-0-code-preview-latest` | Endpoint-id scheme. |
+| `qianfan` (Baidu) | `qianfan-code-latest` | Coding-plan endpoint. |
+| `bailing` (Ant Ling) | `Ling-2.5-1T` | — |
 | `codex` (ChatGPT subscription) | `gpt-5.5`, `gpt-5.3-codex` | Setup: `cc-fleet codex add` + `cc-fleet codex login` (user-run). Quota = the subscription; a 429 carries its reset time. |
 
-A provider not in this table works the same way — the user adds it first: `cc-fleet add <provider> --base-url <url> --models-endpoint <url> --default-model <id> --api-key-stdin <<<"$KEY"` (use `--api-key-stdin` or `--api-key-file`; **never** the raw key in argv).
+OpenAI-protocol presets also exist — `openai` (Responses API), `openai-chat` (Chat Completions), and any OpenAI-compatible endpoint (Groq / Together / Fireworks / vLLM). They are registered via the TUI add form (not `cc-fleet add`), carry no seeded default model (pick from the probed list), and behave like any other provider once configured.
+
+A provider with no built-in seed works the same way — the user adds it first: `cc-fleet add <provider> --base-url <url> --models-endpoint <url> --default-model <id> --api-key-stdin <<<"$KEY"` (use `--api-key-stdin` or `--api-key-file`; **never** the raw key in argv).
 
 **The reserved id `claude` is not a table row** — it is not a configured provider. In the subagent / workflow lanes only (never spawn/teammates, never `cc-fleet run`), `claude` runs the official `claude` CLI on the user's OWN Claude Code login (subscription OAuth) — no providers.toml row, no profile, no key. It needs a real stored login (file / OS keychain); env-key auth (`ANTHROPIC_API_KEY`) is scrubbed like for every child — an API-key user adds a normal `anthropic` provider instead. It never shows in `cc-fleet list` (selected by the literal id, not discovered), can't be the default, and the name is reserved (`cc-fleet add claude` / the TUI add form reject it). `--model` / `model:` takes a literal id only (`opus` / `sonnet` / a full id; the slots `default`/`strong`/`fast` are rejected — no roster); omitted = claude's login default, typically the costliest tier, so name one. It spends the **lead session's own subscription window** — one or two synthesis / judgement nodes, never a wide fan-out. (A providers.toml row named `claude` from before the reservation still loads and lists, but a subagent / workflow `claude` call fails with `PROVIDER_RESERVED` — rename or remove the row; only spawn/teammates still use it.)
 

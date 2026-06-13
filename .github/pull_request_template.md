@@ -1,5 +1,5 @@
 <!--
-Please read CONTRIBUTING.md before opening this PR.
+Please read .github/CONTRIBUTING.md before opening this PR.
 Fill in each section; delete the HTML comments.
 -->
 
@@ -37,7 +37,7 @@ the change has no visible or behavioral effect.
 
 <!--
 If this PR was generated end-to-end by an AI agent with no human authoring the diff,
-add the autonomous-PR marker as the LAST line of this body (see CONTRIBUTING.md):
+add the autonomous-PR marker as the LAST line of this body (see .github/CONTRIBUTING.md):
 
 > 🤖 This PR was generated autonomously by an AI agent. A human is accountable for it: <name/handle>.
 -->

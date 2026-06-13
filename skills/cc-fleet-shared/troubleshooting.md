@@ -31,11 +31,11 @@ Dispatch on `error_code` — do **not** parse `error_msg` prose.
 | `UNKNOWN_PROVIDER` | The provider name isn't in `providers.toml`. | `cc-fleet list --json` to see configured providers; tell the user to `cc-fleet add <provider>` first. Don't guess. |
 | `PROVIDER_DISABLED` | The provider row has `enabled = false`. | Pick a different provider or tell the user to `cc-fleet edit <provider> --enable`. |
 | `CODEX_PROXY_UNAVAILABLE` | The codex conversion daemon could not start or its loopback port is held by another process. | Tell the user: `cc-fleet codex login` if not logged in; otherwise free the port in the codex `base_url` (or re-add with `cc-fleet codex add --port <n>`). |
-| `CODEX_CLOUDFLARE_BLOCKED` | The ChatGPT backend's edge (Cloudflare) blocked this IP/client — NOT a bad key. | Switch network/IP or retry later; rotating credentials won't help. |
+| `CODEX_CLOUDFLARE_BLOCKED` | The ChatGPT backend's edge (Cloudflare) blocked this IP/client — NOT a bad key. Surfaces on subagent/workflow-leaf envelopes; a spawned teammate hitting it mid-task shows via `ps --check` instead. | Switch network/IP or retry later; rotating credentials won't help. |
 | `DUPLICATE_NAME` | The `--as` name is already a member of the team. | Pick a fresh name (common on fan-out re-spawns); or teardown the old member first if you mean to replace it. |
 | `BAD_ARGS` | Bad arguments: `--as`/`--team` carries an illegal character (path separator), or both permission-override flags were passed. | Fix the call; don't retry as-is. |
 | `NO_DEFAULT_PROVIDER` / `DEFAULT_PROVIDER_DISABLED` / `DEFAULT_PROVIDER_UNKNOWN` / `DEFAULT_PROVIDER_RESERVED` / `CONFIG_LOAD_FAILED` | No provider arg and the default can't be used: none configured / disabled / names a removed provider / hand-set to the reserved `claude` / providers.toml failed to load. | Apply the provider ask ladder (name a provider or have the user fix `cc-fleet default` — `RESERVED` → `cc-fleet default --unset`); `CONFIG_LOAD_FAILED` → `cc-fleet doctor`. |
-| `UNSUPPORTED_ON_WINDOWS` | The teammate (tmux) lane is not available on Windows — spawn/teardown/hide/show refuse. | Run the work through the subagent or workflow lane (both Windows-native, as is `cc-fleet run`). |
+| `UNSUPPORTED_ON_WINDOWS` | The teammate (tmux) lane is not available on Windows — spawn/hide/show refuse with this code; `teardown` refuses with the same message under `INTERNAL`. | Run the work through the subagent or workflow lane (both Windows-native, as is `cc-fleet run`). |
 | (rate-limit class) | Provider returns 429 / rate-limit text in `error_msg`. | Wait 30–60s and retry once; if it persists, switch provider. Don't loop tightly. |
 
 ## General rules

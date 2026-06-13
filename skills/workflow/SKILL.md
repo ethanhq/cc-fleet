@@ -96,7 +96,7 @@ A failed leaf's `error_code` is in `workflow status --json` (`jobs[]`) and in th
 | `INSUFFICIENT_BALANCE` / `KEY_INVALID` / `RATE_LIMITED` | STOP — provider ask ladder, step 4 (never switch silently). `KEY_INVALID` → the user rotates the key; `RATE_LIMITED` → brief wait, one retry. |
 | `NO_DEFAULT_PROVIDER` / `DEFAULT_PROVIDER_DISABLED` / `DEFAULT_PROVIDER_UNKNOWN` / `DEFAULT_PROVIDER_RESERVED` | No usable default for a provider-less `agent()` (`RESERVED` = `default_provider` hand-set to `claude`, explicit-only — the user unsets/re-pins) — apply the provider ask ladder, then re-run. |
 | `MODEL_NOT_FOUND` | `cc-fleet refresh <provider>`, or drop the leaf's `model` to use the provider default. |
-| `SUBAGENT_TIMEOUT` | Raise the leaf's `timeout` or split the task; awaited background leaves are backstopped at 45m. |
+| `SUBAGENT_TIMEOUT` | Raise the leaf's `timeout` or split the task; a leaf with no `timeout` defaults to 300s. |
 | `SUBAGENT_OUTPUT_TOO_LARGE` | The leaf's output exceeded the byte cap — have it write to a file and answer concisely; a blind retry overflows again. |
 | `SUBAGENT_STOPPED` | An operator stopped it (`stop --leaf` / run stop) — terminal, NOT a failure; never auto-retry. |
 | `SUBAGENT_FAILED` / `PROVIDER_API_ERROR` | Inspect (`workflow status`); `restart --leaf` once, or propose a provider switch (ask first). A `provider: "claude"` leaf on a logged-out machine fails here (the error preview names the login problem, no dedicated code) — tell the user to log in to Claude Code interactively. |

@@ -1,0 +1,79 @@
+name: Bug report
+description: Something broke or behaves wrong
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Security-sensitive findings (key leakage etc.) go through
+        [private vulnerability reporting](https://github.com/ethanhq/cc-fleet/security/advisories/new),
+        never a public issue.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what actually happened.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. cc-fleet …
+        2. …
+    validations:
+      required: true
+  - type: dropdown
+    id: lane
+    attributes:
+      label: Lane / surface
+      options:
+        - teammate (spawn / tmux)
+        - subagent
+        - workflow
+        - cc-fleet run
+        - TUI / board
+        - install / update / doctor
+        - other
+    validations:
+      required: true
+  - type: dropdown
+    id: provider-class
+    attributes:
+      label: Provider class
+      options:
+        - Anthropic-protocol (deepseek / glm / kimi / …)
+        - OpenAI-protocol (openai / openai-chat / compatible)
+        - codex (ChatGPT subscription)
+        - not provider-related
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - Linux
+        - macOS
+        - Windows
+        - WSL
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: cc-fleet --version
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: cc-fleet doctor output
+      description: Paste the output — keys are masked, it carries no secrets.
+      render: text
+  - type: textarea
+    id: extra
+    attributes:
+      label: Logs / JSON envelope / screenshots
+      description: "`--json` output, `--verbose` stderr, or a screenshot of the failure."

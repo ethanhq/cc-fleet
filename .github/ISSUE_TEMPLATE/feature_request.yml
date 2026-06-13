@@ -1,0 +1,35 @@
+name: Feature request
+description: Propose an improvement or a new capability
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't you do today, or what is awkward?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: What you'd like to happen. CLI sketch welcome.
+    validations:
+      required: true
+  - type: dropdown
+    id: lane
+    attributes:
+      label: Lane / surface
+      options:
+        - teammate (spawn / tmux)
+        - subagent
+        - workflow
+        - cc-fleet run
+        - TUI / board
+        - providers / keys
+        - install / update / doctor
+        - other
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
