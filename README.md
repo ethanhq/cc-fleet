@@ -14,13 +14,13 @@
 
 ---
 
-Claude Code's multi-agent orchestration — Dynamic Workflows, Agent Teams, Subagents — only runs Anthropic's own models. cc-fleet lets any model with an Anthropic- or OpenAI-compatible API, even your Codex subscription, join as a workflow leaf, a long-lived teammate, or a one-shot subagent — scheduled by your main session, with the same identity and powers as a native Claude agent.
+Claude Code's multi-agent orchestration — Dynamic Workflows, Agent Teams, Subagents — only runs Anthropic's own models. cc-fleet lets any model with an Anthropic- or OpenAI-compatible API, even your Codex subscription, join as a workflow leaf, a long-lived teammate, or a one-shot subagent — scheduled by your main session, **with the same identity and powers as a native Claude agent**.
 
-Every third-party worker is a real `claude` process with its LLM backend swapped to the provider, so Claude Code drives it exactly like a native agent. Your main session's own auth (OAuth subscription or API key) is untouched, and provider keys never enter env, argv, or shell history — zero leak risk.
+Every third-party worker is a real `claude` process with its LLM backend swapped to the provider, so Claude Code drives it exactly like a native agent. Your main session's own auth (OAuth subscription or API key) is untouched, and provider keys never enter env, argv, or shell history — **zero leak risk**.
 
-Two steps to start: one-line install, register a provider. Then state your intent in Claude Code with `/workflow`, `/team`, or `/subagent` — or just describe the task in plain language; intent recognition and CLI calls are all Claude's own reasoning and action.
+**Two steps to start**: one-line install, register a provider. Then state your intent in Claude Code with `/workflow`, `/team`, or `/subagent` — or just describe the task in plain language; intent recognition and CLI calls are all Claude's own reasoning and action.
 
-No Claude subscription? `ccf run <provider>` starts an interactive session driven by that provider — the same `claude` you know, just running on the provider's model.
+No Claude subscription? `ccf run <provider>` starts an interactive session driven by that provider — **the same `claude` you know**, just running on the provider's model.
 
 ## Install
 
@@ -71,11 +71,11 @@ Once installed, run `ccf` to register a provider and start delegating.
 
 </div>
 
-1. `ccf` opens the TUI; choose Add provider
-2. Pick any Anthropic / OpenAI-compatible vendor
-3. Enter the API key and default model; optionally an effort level and a Claude permission mode
-4. Save and go; add more models and toggle them in the list, `s` sets the default, `d` deletes
-5. (Optional) Add Codex: reuse an existing OAuth, or log in fresh (cc-fleet holds its own credential)
+1. **`ccf` opens the TUI**; choose Add provider
+2. **Pick any Anthropic / OpenAI-compatible vendor**
+3. **Enter the API key and default model**; optionally an effort level and a Claude permission mode
+4. **Save and go**; add more models and toggle them in the list, `s` sets the default, `d` deletes
+5. **(Optional) Add Codex**: reuse an existing OAuth, or log in fresh (cc-fleet holds its own credential)
 
 </td>
 <td width="50%" valign="top">
@@ -87,10 +87,9 @@ Once installed, run `ccf` to register a provider and start delegating.
 
 </div>
 
-1. `ccf run` launches an interactive `claude` on your default provider; `ccf run <provider>` picks one
-2. All tools, the full REPL; no Anthropic subscription, and your main session's login is unaffected
-3. One command on Linux, macOS, or Windows
-4. Optional `--model strong/fast`, `--permission-mode`, `-- <args>` pass-through; switch mid-session too — `/model` for the model, `/effort` for thinking effort, `Shift+Tab` for permission mode
+1. **`ccf run` launches an interactive `claude` on your default provider**; `ccf run <provider>` picks one
+2. **All tools, the full REPL**; no Anthropic subscription, your main session's login untouched
+3. **Switch anytime mid-session**: `/model` for the model, `/effort` for thinking effort, `Shift+Tab` for permission mode
 
 </td>
 </tr>
@@ -104,11 +103,10 @@ Once installed, run `ccf` to register a provider and start delegating.
 
 </div>
 
-1. `/workflow` to kick it off, or just tell Claude: "map each module with deepseek, glm drafts an audit checklist per module, gpt synthesizes"
-2. Claude writes the JS script and hands it to a detached background engine — zero tokens off your main session
-3. Native `agent()` / `parallel()` / `pipeline()` orchestration, a `provider` option assigning each model to run in parallel
-4. `workflow wait` blocks until the run finishes — event-driven, no polling; `--resume` re-runs only the leaves that didn't finish
-5. The TUI board shows every leaf and phase live, `x` to hold / `r` to rerun a single leaf or a whole phase
+1. **`/workflow` to kick it off, or just tell Claude**: "map each module with deepseek, glm drafts an audit checklist per module, gpt synthesizes"
+2. **Claude writes the JS script and runs it in the background **— no tokens off your main session
+3. **`workflow wait` blocks until it finishes **— event-driven, no polling
+4. **The TUI board shows every leaf and phase live, `x` to hold / `r` to rerun a single leaf or a whole phase**
 
 </td>
 <td width="50%" valign="top">
@@ -120,10 +118,9 @@ Once installed, run `ccf` to register a provider and start delegating.
 
 </div>
 
-1. `/team` to kick it off, or just tell Claude: "spawn a glm and a deepseek teammate, then compare their strengths"
-2. Claude calls native `TeamCreate`; each teammate is a real `claude` process working live in a side tmux pane
-3. Driven by `SendMessage` — mix providers in one team, hand follow-ups across turns
-4. The TUI board shows each teammate's full inbox and status; `h` parks / `s` reveals a pane, permissions inherit from your lead — split in the foreground or run in the background
+1. **`/team` to kick it off, or just tell Claude**: "spawn a glm and a deepseek teammate, then compare their strengths"
+2. **Each teammate is a real `claude` process working live in a side tmux pane **— mix providers in one team, hand follow-ups across turns
+3. **The TUI board shows each teammate's full inbox and status**; `h` hides / `s` shows a pane — split in the foreground or run in the background
 
 </td>
 </tr>
@@ -137,12 +134,10 @@ Once installed, run `ccf` to register a provider and start delegating.
 
 </div>
 
-1. `/subagent` to kick it off, or just tell Claude: "fan out kimi, qwen, and glm over these three files in parallel"
-2. The lightest lane: no pane, no team — Claude runs each model headless and collects results synchronously, fan out as many as you like in parallel
-3. `slim-ro` read-only profile: the provider gets read access only — it can analyze the whole repo but never touch Edit / Write; `--resume` lets you follow up over several turns on the result
-4. Long jobs in the background: `--background` detaches and `subagent-status --wait` blocks until done, then wakes you — event-driven again, no polling
-5. Spend stays bounded: USD / turn / timeout caps catch it, and failures carry a stable `error_code` rather than prose to parse
-6. The TUI board shows each job's prompt, answer, and spend
+1. **`/subagent` to kick it off, or just tell Claude**: "fan out kimi, qwen, and glm over these three files in parallel"
+2. **Claude runs the models and collects results synchronously **— dispatch as many in parallel as you like
+3. **`slim-ro` read-only mode**: let a provider analyze your repo safely, without touching code
+4. **The TUI board shows each job's prompt, answer, and spend**
 
 </td>
 <td width="50%" valign="top">
@@ -154,33 +149,27 @@ Once installed, run `ccf` to register a provider and start delegating.
 
 </div>
 
-1. After `ccf` launches, press `Tab` for the Agents Board — every Workflow / Team / Subagent laid out by project → session
-2. Open any one for detail: a Workflow shows the live run → phase → leaf progress tree, a Team shows each teammate's conversation inbox, drilling into prompt, answer, and spend
-3. Act without leaving the board: `x` / `r` to stop or rerun, `p` to pin against cleanup, `c` to clear finished, `d` to delete, `h` / `s` to hide or show a pane
-4. Provider management shares the screen: add a vendor, manage multiple keys, log in to Codex — all here
-5. Finished teams are kept on record; the UI follows your system light / dark theme
+1. **After `ccf` launches, press `Tab` for the Agents Board **— every Workflow / Team / Subagent laid out by project → session
+2. **Open any one for detail**: a Workflow's run → phase → leaf progress tree, a Team's teammate inbox, each drilling into prompt, answer, and spend
+3. **Act inside the board**: `x` / `r` to stop or rerun, `p` to pin against cleanup, `c` to clear finished, `d` to delete, `h` / `s` to hide or show a pane
+4. **Finished teams stay on record**; the UI follows your system light / dark theme
 
 </td>
 </tr>
 </table>
 
-**🧱 Cross-platform, built to last**: zero cgo, six release-target builds; Windows natively supports Subagent / Workflow / run / TUI (`irm | iex` one-liner); `ccf update` self-updates by install channel, refreshes the plugin, and rolls back in one command; `doctor` runs ten health checks, each with a concrete fix hint; atomic writes and nine flock scopes throughout — a crash never leaves torn state.
-## The four lanes
+## Deep dive
 
-You never pick a lane by hand — the skills route each request. For reference:
+cc-fleet's capabilities fall into two groups:
 
-| Lane | Shape | Needs |
-|------|-------|-------|
-| [**Workflow**](#workflow--scripted-orchestration-off-your-context) | a JS script fanning out subagent leaves in a detached engine | — |
-| [**Teammate**](#teammate--a-long-lived-worker-on-your-team) | long-lived `claude` in a tmux pane, driven by `SendMessage` | tmux, agent-teams |
-| [**Subagent**](#subagent--a-one-shot-headless-call) | one-shot headless call, result on stdout | — |
-| [**`cc-fleet run`**](#cc-fleet-run--a-provider-session-you-drive) | an interactive provider-backed `claude` you drive yourself | a terminal |
+- **Three delegation lanes** (Workflow / Agent Team / Subagent) — scheduled automatically by Claude: say what you want and the skills pick the lane and the model for you, no manual choice.
+- **Provider and `ccf run`** — tools you configure and use directly.
 
-### Workflow — scripted orchestration off your context
+---
 
-> *"Write a workflow that maps every module with deepseek, then has glm draft an audit checklist per module."*
+### ⚙️ Dynamic Workflows
 
-Multi-phase orchestration lives in a JavaScript file and runs in a **detached cc-fleet engine** — scheduling costs none of your session's tokens. The API mirrors Claude Code's native Workflow tool, plus a `provider` option per agent:
+**Orchestration API**: multi-phase orchestration lives in a JavaScript file, with an API identical to Claude Code's native Workflow tool — `agent()` starts a node, `parallel()` fans out, `pipeline()` chains a flow. The one difference is that `agent()` takes a `provider` option to assign each node's model, so different vendors mix and run in parallel within a single run:
 
 ```js
 const meta = {
@@ -201,96 +190,103 @@ const checklists = await pipeline(maps,
                              { provider: "glm", label: "build:" + i }));
 
 phase("judge");
-const verdict = await agent("Pick the strongest checklist and say why:\n" + checklists.join("\n---\n"),
+const verdict = await agent("Pick the strongest one and say why:\n" + checklists.join("\n---\n"),
                             { provider: "claude", model: "opus", label: "judge" });
 return { checklists, verdict };
 ```
 
+**Running and managing**: once kicked off, the whole run executes in a background engine, managed by a small command set. Runs are journaled by content hash, and budgets cap spend in USD or tokens:
+
 ```bash
-RUN=$(cc-fleet workflow run audit.js)            # detached — prints the run id
-cc-fleet workflow wait "$RUN" --timeout 10m      # blocks; its exit IS the completion push
-cc-fleet workflow stop "$RUN" --leaf build:1     # hold one leaf in place (run keeps going)
-cc-fleet workflow restart "$RUN" --leaf build:1  # resume it
-cc-fleet workflow run audit.js --resume "$RUN"   # journal replay — finished leaves are cached
+RUN=$(ccf workflow run audit.js)            # starts in the background, prints the run id
+ccf workflow wait "$RUN" --timeout 10m      # blocks until done, event-driven
+ccf workflow stop "$RUN" --leaf build:1     # hold a single leaf (run keeps going)
+ccf workflow restart "$RUN" --leaf build:1  # resume it
+ccf workflow run audit.js --resume "$RUN"   # replay the journal, finished leaves hit cache
 ```
 
-Runs are journaled by content hash, leaves can be held and restarted individually (live on the TUI board), and budgets cap spend in USD or tokens. A `provider: "claude"` leaf runs on your **own** Claude login — the judge node above bills your subscription, not a provider key.
+**Holding and restarting**: `ccf workflow stop --leaf` / `--phase` doesn't fail the run — it just pauses the named node: the run keeps going and other nodes carry on, until you `restart` it to run again. If every node currently running gets paused, the whole run settles into a *parked* state that needs you to step in before it continues.
 
-### Teammate — a long-lived worker on your team
+**Wait without polling**: `ccf workflow wait` blocks until the run ends, then exits — drop it in the background and come back when it exits, no repeated checking. The exit code states the outcome: `0` succeeded, `1` failed, `3` parked and waiting, `124` wait timed out (run still going), `130` interrupted.
 
-> *"Spawn a glm teammate and a deepseek teammate; have each summarize its model's strengths, then compare the two."*
+**Budget-adaptive**: `budget.spent()` / `budget.remaining()` are readable live inside the script (USD or tokens), so a workflow can decide for itself whether to dispatch another batch.
 
-Claude calls native `TeamCreate`, cc-fleet launches the provider's own `claude` process in a tmux pane, and Claude drives it with native `SendMessage`. The teammate stays alive across turns — keep handing it follow-ups, or run several in parallel.
+**Mixing in your own subscription**: a node assigned `provider: "claude"` runs on your **own** Claude login — the `judge` above uses your subscription, not a provider key, which suits a synthesis-and-finish node.
 
-It needs tmux — start inside one (`tmux new-session -s work`) so panes split alongside your lead — and Claude Code's agent-teams, enabled once in `~/.claude/settings.json` (the other three lanes need neither):
+---
+
+### 👥 Agent Teams
+
+**Prerequisites**: Agent Team is the only lane that needs setup up front, and because it relies on tmux it **doesn't support Windows yet**. Two conditions before you use it:
+
+1. **Be inside a tmux session** (`tmux new-session -s work`) so teammate panes can show up alongside you;
+2. **Enable Claude Code's agent-teams**: the first time you run `ccf` it detects this isn't on and offers to write it in for you — or add it once yourself to `~/.claude/settings.json`:
 
 ```json
 { "env": { "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1" } }
 ```
 
-> [!TIP]
-> **Not in tmux?** The teammate runs in a detached `cc-fleet-swarm-<team>` server instead — same flow, the pane just isn't on screen. Attach with `tmux -L cc-fleet-swarm-<team> attach`.
+**How they collaborate**: each teammate is a real `claude` process; Claude builds the team with native `TeamCreate` and assigns work with native `SendMessage`, and teammates stay alive across turns so you can keep adding tasks. One team can use several providers at once, then have one teammate gather and compare the results.
 
-### Subagent — a one-shot headless call
+**Permission inheritance**: each teammate inherits your main session's permission posture (plan / acceptEdits / default). If that can't be detected, it falls back to the safest default and won't open up risky permissions on its own.
 
-> *"Fan out kimi, qwen, and glm subagents over these three files in parallel and collect the results."*
+**Park and restore**: `ccf hide` tucks a teammate's pane out of the way while the process keeps running — messages and context are never lost — and `ccf show` brings it back. At cleanup, `ccf teardown` thoroughly clears every related process, including ones still running in the background and burning the key after their pane was closed, so no ghost quietly bills you.
 
-`cc-fleet subagent [provider]` runs the model headless and returns the result synchronously — no pane, no team. Ideal for one-off analysis and batch fan-out. The reserved id `claude` (`cc-fleet subagent claude --model opus …`) runs the native CLI on your own Claude Code login instead of a provider — explicit-only and billed to your subscription, so save it for a synthesis node, not a wide fan-out. Long jobs run with `--background`, and `cc-fleet subagent-status <job> --wait` blocks until the job settles, so its exit wakes the session that launched it — push, not poll.
+**Outside tmux**: the teammate runs in a background `cc-fleet-swarm-<team>` session, exactly the same flow with the pane just not on screen. To look in, attach with `tmux -L cc-fleet-swarm-<team> attach`.
 
-### `cc-fleet run` — a provider session you drive
+---
 
-> *Not delegation — this one is all you.*
+### ⚡ Subagents
 
-```bash
-cc-fleet run deepseek        # an interactive claude, on DeepSeek, billing the provider key
-```
+**Three run modes**: the default **slim** sends the model a trimmed system prompt with a narrowed tool set, so the first request is much smaller than a full session — cheaper and faster on metered providers. `--profile slim-ro` is read-only, with tools cut to inspection only (Bash / Glob / Grep / Read / Skill) and no creating, editing, or deleting files, so a provider can read code and check logs without touching your workspace. Use `--profile full` when you need full-session capability.
 
-Drops you straight into an interactive Claude Code session with the backend swapped — the same `claude` you know, on a cheaper or different-jurisdiction model for day-to-day work. `--model` overrides the default; `--permission-mode` sets the permission posture.
+**Tool trimming and parallelism**: `--tools` takes a comma-separated list to set exactly which tools are open (a replacement, not an addition to the defaults), `--skills=false` turns off the Skill tool, and `--mcp` controls whether the host MCP config carries over. A subagent builds no team, takes no pane, and holds no locks, so running many against one provider doesn't interfere — ideal for large batches in parallel.
 
-## Providers
+**Background and wake-up**: add `--background` to send a long job to the background, then `ccf subagent-status <job> --wait` blocks until it's done and wakes the session that launched it — no repeated checking. Each job is capped by spend (USD), turns, and timeout, and a failure returns a fixed `error_code` your program can branch on.
 
-The add form ships **13 presets** for Anthropic-protocol endpoints — DeepSeek, Moonshot Kimi, Zhipu GLM (two presets: bigmodel.cn and z.ai international), Qwen (DashScope), MiniMax, Xiaomi MiMo, StepFun, LongCat (Meituan), Volcengine Ark, Doubao Seed, Baidu Qianfan, and Ant Ling (Bailing) — plus *Custom* for any other Anthropic-compatible API.
+**Structured result**: with `--json` you get a result object with fixed fields, easy for scripts to parse — besides the answer text it includes the model id that actually responded, the call's spend, token usage, turns, and session_id.
 
-Beyond those, two more provider classes register through the same TUI form:
+**Run key nodes on your own subscription**: as with Workflow, setting the provider to the reserved name `claude` (`ccf subagent claude --model opus …`) uses your own Claude login and bills your subscription — good for a synthesis-and-finish node, not large parallel batches.
 
-- **OpenAI-protocol** — official OpenAI via the Responses or Chat Completions API, or any OpenAI-compatible endpoint (Groq, Together, Fireworks, a local vLLM). A loopback conversion daemon translates Claude's Anthropic calls; the upstream key never reaches the `claude` process.
-- **Codex (ChatGPT subscription)** — see below.
+---
 
-Each provider carries a model roster — a default plus optional **strong** and **fast** slots (per-slot 1M-context markers, a reasoning-effort level) — so Claude can ask for "the strong model" without hardcoding IDs. Set a fleet-wide default provider with `cc-fleet default
-<provider>` and every provider-less call resolves to it. File-backend providers hold multiple
-keys with `off` / `round_robin` / `random` rotation.
+### 🔌 Provider management
 
-### ChatGPT subscription as a provider (codex)
+**Broad compatibility**: works with any Anthropic- or OpenAI-compatible API endpoint — the former includes DeepSeek, Kimi, GLM, Qwen, and more; the latter Groq, Together, Fireworks, a local vLLM, and OpenAI itself. Common vendors ship as presets — select one and the endpoint and protocol are filled in, no manual entry; for anything not listed, pick *Custom* and enter the address.
 
-```bash
-cc-fleet codex add && cc-fleet codex login   # register + one-time device-code OAuth
-```
+**Model tiers**: each provider can carry **default / strong / fast** model slots, each separately taggable with 1M context and a reasoning effort. So Claude just asks for "the strong model" — no hardcoded model IDs. `ccf default <provider>` sets the fleet-wide default provider, and any call that doesn't name one goes to it.
 
-The subscription becomes a regular provider — teammate, subagent, workflow leaf, or `run`, answering through gpt-5.x. The OAuth token lives only inside the local conversion daemon, and cc-fleet keeps its own login chain, so the codex CLI's auth is untouched. Multiple credentials are supported (`codex login --credential work`). **Unofficial** — reusing a subscription outside the codex CLI may violate OpenAI's terms; `codex login` asks for explicit confirmation. [Details.](docs/cli.md#codex--reuse-a-chatgpt-subscription-as-a-provider)
+**Multi-key rotation**: one provider can hold several API keys, rotated by `off` / `round_robin` / `random` to spread quota and dodge rate limits.
 
-## Security model
+**API key protection**: a key is fetched only at request time, emitted once, and never written into environment variables, command-line arguments, or shell history; a worker process starts with the main session's credentials cleared, so the two never leak into each other. On disk it's saved `0600`, readable only by you, or handed to `pass`, 1Password, Vault, or your OS keyring; every UI and log shows the key masked (`sk-…238`).
 
-The provider key is treated as radioactive:
+**Codex (ChatGPT subscription)**: one device-code login and your ChatGPT subscription becomes a regular provider — usable across Workflow / Team / Subagent / run.
 
-- Claude's `apiKeyHelper` calls `cc-fleet keyget <provider>` at request time — the key goes to stdout exactly once and is **never** placed in env, argv, a profile, or shell history.
-- Spawned workers start with `env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN`, so your main session's credentials cannot leak into a worker — and vice versa.
-- Keys live `0600` in `~/.config/cc-fleet/secrets/` (the `file` backend) or in `pass`, 1Password, Vault, or your OS keyring — resolved only at `keyget` time.
-- Every UI, log, and error renders keys masked (`sk-…238`). For daemon-backed providers (OpenAI, codex), the upstream bearer never leaves the loopback daemon.
+> [!WARNING]
+> **Codex is unofficial.** Reusing a ChatGPT subscription outside the codex CLI may violate OpenAI's terms, and `ccf codex login` asks you to confirm first. The OAuth token lives only inside the local conversion daemon; cc-fleet keeps its own login chain and never touches the codex CLI's auth.
 
-## The Claude Code plugin
+---
 
-The plugin ships the intelligence; the binary does the work. Installed via:
+### 🖥️ `ccf run`
+
+**Launch**: `ccf run <provider>` opens an interactive `claude` on the named provider; with no provider (`ccf run`) it resolves to the fleet-wide default.
 
 ```bash
-claude plugin marketplace add ethanhq/cc-fleet
-claude plugin install cc-fleet@ethanhq
+ccf run deepseek        # an interactive claude, on DeepSeek, billing the provider key
 ```
 
-It contains **three skills** (subagent / team / workflow — they teach Claude when to delegate, which lane to pick, and how to recover from provider failures) and a **SessionStart hook** (one quiet line if the binary is missing, never blocks). The binary always installs separately: a plugin can't ship a native executable, and its cache path is too ephemeral to pin the `apiKeyHelper` to.
+**It's just native claude**: `ccf run` adds no extra process layer — it replaces itself with `claude`, cc-fleet steps out entirely, and from then on it's a plain `claude` process whose feel and exit behavior match typing `claude` yourself.
 
-## The board
+**Credentials isolated automatically**: even if you run it from inside a logged-in Claude Code session, it first clears any leftover Anthropic auth from the environment and uses the chosen provider's auth instead — so billing lands on the provider's key, never your own subscription.
 
-`cc-fleet` with no arguments opens the TUI: a provider hub (add/edit, key manager, codex login) and an **Agents Board** — projects → sessions → teams, subagent jobs, and workflow runs, with health, spend, prompt/answer drill-in, and per-leaf hold/restart. Pin records (`p`) survive cleanup; hide (`h`) / show (`s`) park a teammate pane without killing it.
+**Flags**:
+
+- `--model strong / fast` — override the default with the provider's strong or fast model
+- `--permission-mode` — set the permission posture
+- `-- <claude args>` — everything after is passed through verbatim to the underlying `claude`
+
+> [!NOTE]
+> This lane is for hands-on interactive use: it needs a real terminal and doesn't support pipes or redirects — for non-interactive, one-shot output use a Subagent instead.
 
 ## Documentation
 
