@@ -95,7 +95,7 @@ cc-fleet run deepseek --model strong
 cc-fleet run deepseek --dangerously-skip-permissions
 ```
 
-`cc-fleet run [provider]` replaces the current process with an interactive `claude` REPL whose backend is the provider (the profile pins the `apiKeyHelper` + base URL; the model is the provider's `default_model` unless `--model` overrides). Unlike spawn/subagent, this is **you** using a provider, not Claude delegating.
+`cc-fleet run [provider]` replaces the current process with an interactive `claude` REPL whose backend is the provider — **omit the provider to use the fleet-wide default** (the profile pins the `apiKeyHelper` + base URL; the model is the provider's `default_model` unless `--model` overrides). Unlike spawn/subagent, this is **you** using a provider, not Claude delegating.
 
 - `--permission-mode <mode>` / `--dangerously-skip-permissions` — the session's permission posture (mutually exclusive). `run` execs the binary directly, so a `claude` shell alias that adds such a flag does not carry over — pass it here.
 - `-- <claude args>` — everything after `--` is forwarded to `claude`.
