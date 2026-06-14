@@ -169,6 +169,13 @@ cc-fleet's capabilities fall into two groups:
 
 ### ⚙️ Dynamic Workflows
 
+<table>
+<tr>
+<td width="50%" align="center"><img src="docs/assets/workflow-board.webp" width="100%" /><br/><sub>Agents Board: the phase → leaf tree, vendors in parallel</sub></td>
+<td width="50%" align="center"><img src="docs/assets/workflow-leaf.webp" width="100%" /><br/><sub>drill into one leaf: full prompt and synthesized output</sub></td>
+</tr>
+</table>
+
 **Orchestration API**: multi-phase orchestration lives in a JavaScript file, with an API identical to Claude Code's native Workflow tool — `agent()` starts a node, `parallel()` fans out, `pipeline()` chains a flow. The one difference is that `agent()` takes a `provider` option to assign each node's model, so different vendors mix and run in parallel within a single run:
 
 ```js
@@ -217,6 +224,13 @@ ccf workflow run audit.js --resume "$RUN"   # replay the journal, finished leave
 
 ### 👥 Agent Teams
 
+<table>
+<tr>
+<td width="50%" align="center"><img src="docs/assets/team-panes.webp" width="100%" /><br/><sub>four teammates working side by side in tmux panes</sub></td>
+<td width="50%" align="center"><img src="docs/assets/team-board.webp" width="100%" /><br/><sub>a teammate's overview / messages / output on the board</sub></td>
+</tr>
+</table>
+
 **Prerequisites**: Agent Team is the only lane that needs setup up front, and because it relies on tmux it **doesn't support Windows yet**. Two conditions before you use it:
 
 1. **Be inside a tmux session** (`tmux new-session -s work`) so teammate panes can show up alongside you;
@@ -238,6 +252,13 @@ ccf workflow run audit.js --resume "$RUN"   # replay the journal, finished leave
 
 ### ⚡ Subagents
 
+<table>
+<tr>
+<td width="50%" align="center"><img src="docs/assets/subagent-fanout.webp" width="100%" /><br/><sub>fan out three subagents in parallel from one ask</sub></td>
+<td width="50%" align="center"><img src="docs/assets/subagent-board.webp" width="100%" /><br/><sub>the job list and one job's detail (slim profile / tokens / output)</sub></td>
+</tr>
+</table>
+
 **Three run modes**: the default **slim** sends the model a trimmed system prompt with a narrowed tool set, so the first request is much smaller than a full session — cheaper and faster on metered providers. `--profile slim-ro` is read-only, with tools cut to inspection only (Bash / Glob / Grep / Read / Skill) and no creating, editing, or deleting files, so a provider can read code and check logs without touching your workspace. Use `--profile full` when you need full-session capability.
 
 **Tool trimming and parallelism**: `--tools` takes a comma-separated list to set exactly which tools are open (a replacement, not an addition to the defaults), `--skills=false` turns off the Skill tool, and `--mcp` controls whether the host MCP config carries over. A subagent builds no team, takes no pane, and holds no locks, so running many against one provider doesn't interfere — ideal for large batches in parallel.
@@ -251,6 +272,13 @@ ccf workflow run audit.js --resume "$RUN"   # replay the journal, finished leave
 ---
 
 ### 🔌 Provider management
+
+<table>
+<tr>
+<td width="50%" align="center"><img src="docs/assets/provider-presets.webp" width="100%" /><br/><sub>pick from built-in presets (13 Anthropic-protocol + OpenAI + Codex)</sub></td>
+<td width="50%" align="center"><img src="docs/assets/provider-config.webp" width="100%" /><br/><sub>each provider's default / strong / fast tiers and key</sub></td>
+</tr>
+</table>
 
 **Broad compatibility**: works with any Anthropic- or OpenAI-compatible API endpoint — the former includes DeepSeek, Kimi, GLM, Qwen, and more; the latter Groq, Together, Fireworks, a local vLLM, and OpenAI itself. Common vendors ship as presets — select one and the endpoint and protocol are filled in, no manual entry; for anything not listed, pick *Custom* and enter the address.
 
@@ -268,6 +296,13 @@ ccf workflow run audit.js --resume "$RUN"   # replay the journal, finished leave
 ---
 
 ### 🖥️ `ccf run`
+
+<table>
+<tr>
+<td width="50%" align="center"><img src="docs/assets/run-launch.webp" width="100%" /><br/><sub>one-line launch: ccf run / ccf run codex</sub></td>
+<td width="50%" align="center"><img src="docs/assets/run-session.webp" width="100%" /><br/><sub>inside, it's a full claude — here on gpt-5.5</sub></td>
+</tr>
+</table>
 
 **Launch**: `ccf run <provider>` opens an interactive `claude` on the named provider; with no provider (`ccf run`) it resolves to the fleet-wide default.
 
