@@ -132,7 +132,7 @@ cc-fleet workflow wait "$RUN" --timeout 10m  # 静默阻塞直到 run 落定
 cc-fleet workflow stop "$RUN"                # 收掉整个 run
 cc-fleet workflow stop "$RUN" --leaf <job|label>     # 挂起一个 leaf(run 继续);--phase 挂整个 phase
 cc-fleet workflow restart "$RUN" --leaf <job|label>  # 恢复 held 的 leaf;对已结束的 run 则是按键重放
-cc-fleet workflow run audit.js --resume "$RUN"       # journal 重放 - 完成过的 leaf 直接命中缓存
+cc-fleet workflow run audit.js --resume "$RUN"       # journal 重放 — 完成过的 leaf 直接命中缓存
 cc-fleet workflow rm "$RUN" / prune          # 删除一个 run / 清掉所有无引擎的 run
 ```
 
