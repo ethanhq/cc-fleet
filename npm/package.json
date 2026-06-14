@@ -1,6 +1,6 @@
 {
   "name": "@ethanhq/cc-fleet",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Spawn any third-party LLM provider with an Anthropic-compatible API as real Claude Code agent-team teammates or one-shot subagents. The main session's own auth (OAuth or API key) is untouched.",
   "bin": {
     "cc-fleet": "bin/launcher.js",
