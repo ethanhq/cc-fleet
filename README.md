@@ -14,11 +14,11 @@
 
 ---
 
-Claude Code's multi-agent orchestration — Dynamic Workflows, Agent Teams, Subagents — only runs Anthropic's own models. cc-fleet lets any model with an Anthropic- or OpenAI-compatible API, even your Codex subscription, join as a workflow leaf, a long-lived teammate, or a one-shot subagent — scheduled by your main session, **with the same identity and powers as a native Claude agent**.
+Claude Code's multi-agent orchestration — Dynamic Workflows, Agent Teams, Subagents — only runs Anthropic's own models. cc-fleet lets any model with an Anthropic- or OpenAI-compatible API, even your Codex subscription, join as a workflow leaf, a long-lived teammate, or a one-shot subagent — scheduled by your main session, **with the same identity and capabilities as a native Claude agent**.
 
 Every third-party worker is a real `claude` process with its LLM backend swapped to the provider, so Claude Code drives it exactly like a native agent. Your main session's own auth (OAuth subscription or API key) is untouched, and provider keys never enter env, argv, or shell history — **zero leak risk**.
 
-**Two steps to start**: one-line install, register a provider. Then state your intent in Claude Code with `/workflow`, `/team`, or `/subagent` — or just describe the task in plain language; intent recognition and CLI calls are all Claude's own reasoning and action.
+**Two steps to get going**: one-line install, register a provider. Then state your intent in Claude Code with `/workflow`, `/team`, or `/subagent` — or just describe the task in plain language, and Claude figures out the rest.
 
 No Claude subscription? `ccf run <provider>` starts an interactive session driven by that provider — **the same `claude` you know**, just running on the provider's model.
 
@@ -75,7 +75,7 @@ Once installed, run `ccf` to register a provider and start delegating.
 2. **Pick any Anthropic / OpenAI-compatible vendor**
 3. **Enter the API key and default model**; optionally an effort level and a Claude permission mode
 4. **Save and go**; add more models and toggle them in the list, `s` sets the default, `d` deletes
-5. **(Optional) Add Codex**: reuse an existing OAuth, or log in fresh (cc-fleet holds its own credential)
+5. **(Optional) Add Codex**: reuse an existing OAuth, or log in fresh
 
 </td>
 <td width="50%" valign="top">
@@ -104,9 +104,9 @@ Once installed, run `ccf` to register a provider and start delegating.
 </div>
 
 1. **`/workflow` to kick it off, or just tell Claude**: "map each module with deepseek, glm drafts an audit checklist per module, gpt synthesizes"
-2. **Claude writes the JS script and runs it in the background **— no tokens off your main session
-3. **`workflow wait` blocks until it finishes **— event-driven, no polling
-4. **The TUI board shows every leaf and phase live, `x` to hold / `r` to rerun a single leaf or a whole phase**
+2. **Claude writes the JS script and runs it in the background** — no tokens off your main session
+3. **`workflow wait` blocks until it finishes** — event-driven, no polling
+4. **The TUI board shows every leaf and phase live** — `x` to hold / `r` to rerun a single leaf or a whole phase
 
 </td>
 <td width="50%" valign="top">
@@ -119,7 +119,7 @@ Once installed, run `ccf` to register a provider and start delegating.
 </div>
 
 1. **`/team` to kick it off, or just tell Claude**: "spawn a glm and a deepseek teammate, then compare their strengths"
-2. **Each teammate is a real `claude` process working live in a side tmux pane **— mix providers in one team, hand follow-ups across turns
+2. **Each teammate is a real `claude` process working live in a side tmux pane** — mix providers in one team, hand follow-ups across turns
 3. **The TUI board shows each teammate's full inbox and status**; `h` hides / `s` shows a pane — split in the foreground or run in the background
 
 </td>
@@ -135,7 +135,7 @@ Once installed, run `ccf` to register a provider and start delegating.
 </div>
 
 1. **`/subagent` to kick it off, or just tell Claude**: "fan out kimi, qwen, and glm over these three files in parallel"
-2. **Claude runs the models and collects results synchronously **— dispatch as many in parallel as you like
+2. **Claude runs the models and collects results synchronously** — dispatch as many in parallel as you like
 3. **`slim-ro` read-only mode**: let a provider analyze your repo safely, without touching code
 4. **The TUI board shows each job's prompt, answer, and spend**
 
@@ -149,7 +149,7 @@ Once installed, run `ccf` to register a provider and start delegating.
 
 </div>
 
-1. **After `ccf` launches, press `Tab` for the Agents Board **— every Workflow / Team / Subagent laid out by project → session
+1. **After `ccf` launches, press `Tab` for the Agents Board** — every Workflow / Team / Subagent laid out by project → session
 2. **Open any one for detail**: a Workflow's run → phase → leaf progress tree, a Team's teammate inbox, each drilling into prompt, answer, and spend
 3. **Act inside the board**: `x` / `r` to stop or rerun, `p` to pin against cleanup, `c` to clear finished, `d` to delete, `h` / `s` to hide or show a pane
 4. **Finished teams stay on record**; the UI follows your system light / dark theme
@@ -244,7 +244,7 @@ ccf workflow run audit.js --resume "$RUN"   # replay the journal, finished leave
 
 **Permission inheritance**: each teammate inherits your main session's permission posture (plan / acceptEdits / default). If that can't be detected, it falls back to the safest default and won't open up risky permissions on its own.
 
-**Park and restore**: `ccf hide` tucks a teammate's pane out of the way while the process keeps running — messages and context are never lost — and `ccf show` brings it back. At cleanup, `ccf teardown` thoroughly clears every related process, including ones still running in the background and burning the key after their pane was closed, so no ghost quietly bills you.
+**Park and restore**: `ccf hide` tucks a teammate's pane out of the way while the process keeps running — messages and context are never lost — and `ccf show` brings it back. At cleanup, `ccf teardown` thoroughly clears every related process, including ones still running in the background and consuming the key after their pane was closed, so no ghost quietly bills you.
 
 **Outside tmux**: the teammate runs in a background `cc-fleet-swarm-<team>` session, exactly the same flow with the pane just not on screen. To look in, attach with `tmux -L cc-fleet-swarm-<team> attach`.
 
@@ -284,7 +284,7 @@ ccf workflow run audit.js --resume "$RUN"   # replay the journal, finished leave
 
 **Model tiers**: each provider can carry **default / strong / fast** model slots, each separately taggable with 1M context and a reasoning effort. So Claude just asks for "the strong model" — no hardcoded model IDs. `ccf default <provider>` sets the fleet-wide default provider, and any call that doesn't name one goes to it.
 
-**Multi-key rotation**: one provider can hold several API keys, rotated by `off` / `round_robin` / `random` to spread quota and dodge rate limits.
+**Multi-key rotation**: one provider can hold several API keys, rotated by `off` / `round_robin` / `random` to spread quota and avoid rate limits.
 
 **API key protection**: a key is fetched only at request time, emitted once, and never written into environment variables, command-line arguments, or shell history; a worker process starts with the main session's credentials cleared, so the two never leak into each other. On disk it's saved `0600`, readable only by you, or handed to `pass`, 1Password, Vault, or your OS keyring; every UI and log shows the key masked (`sk-…238`).
 
@@ -328,7 +328,7 @@ ccf run deepseek        # an interactive claude, on DeepSeek, billing the provid
 - **[CLI reference & advanced usage](docs/cli.md)** — every command, flag, and envelope.
 - **[Writing workflows](docs/workflows.md)** — the JS scripting API for the workflow lane.
 - **[Architecture](docs/architecture.md)** — how spawning, key safety, the conversion daemon, and the workflow engine actually work.
-- `cc-fleet <cmd> --help` — always authoritative.
+- `ccf <cmd> --help` — always authoritative.
 
 ## Contributing
 
