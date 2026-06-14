@@ -14,7 +14,7 @@
 
 ---
 
-Claude Code 的多 agent 编排能力——Dynamic Workflow、Agent Team、Subagent——原本只能跑 Anthropic 自家的模型。cc-fleet 让任何提供 Anthropic 或 OpenAI 兼容 API 的模型(DeepSeek、GLM、Kimi、Qwen……甚至你的 Codex 订阅)都能作为 Workflow leaf、长驻 Teammate 或一次性 Subagent 接入,由主会话直接调度,身份与能力都与原生 Claude Agent 一致。
+Claude Code 的多 agent 编排能力——Dynamic Workflow、Agent Team、Subagent——原本只能跑 Anthropic 自家的模型。cc-fleet 让任何提供 Anthropic 与 OpenAI 兼容 API 的模型,甚至你的 Codex 订阅,都能作为 Workflow leaf、长驻 Teammate 或一次性 Subagent 接入,由主会话直接调度,身份与能力都与原生 Claude Agent 一致。
 
 每个第三方 worker 都是一个真实的 `claude` 进程,只是 LLM 后端换成了对应服务商,Claude Code 用驱动原生 agent 的方式驱动它即可。主会话自己的认证(OAuth 订阅或 API key)不受影响,第三方 key 绝不进入环境变量、argv 或 shell 历史——无泄漏风险。
 
@@ -22,7 +22,7 @@ Claude Code 的多 agent 编排能力——Dynamic Workflow、Agent Team、Subag
 
 如果没有 Claude 订阅,`ccf run <provider>` 直接启动一个由该 Provider 驱动的交互式会话——还是熟悉的 `claude`,只是跑在对应的 Provider(供应商)模型上。
 
-## 快速上手
+## 快速安装
 
 **0. 先装 Claude Code**——cc-fleet 驱动的是官方 `claude` CLI,没装的话先装(PATH 上已有 `claude` 可跳过):
 
@@ -35,9 +35,7 @@ curl -fsSL https://claude.ai/install.sh | bash
 irm https://claude.ai/install.ps1 | iex
 ```
 
-### 方式一: 一键脚本(推荐)
-
-一条命令完成全部安装——下载并校验 CLI、写入 PATH(同时建立 `ccf` 别名,之后用 `ccf` 即可启动)、通过 marketplace 装好 Claude Code 插件(skill + 会话 hook),装完直接可用:
+**1. 一键脚本装 cc-fleet(推荐)**——一条命令完成全部:下载并校验 CLI、写入 PATH(同时建立 `ccf` 别名,之后用 `ccf` 即可启动)、通过 marketplace 装好 Claude Code 插件(skill + 会话 hook),装完直接可用:
 
 **macOS / Linux:**
 ```bash
@@ -48,49 +46,7 @@ curl -fsSL https://raw.githubusercontent.com/ethanhq/cc-fleet/main/install.sh | 
 irm https://raw.githubusercontent.com/ethanhq/cc-fleet/main/install.ps1 | iex
 ```
 
-要覆盖安装器的默认行为,在 `| sh -s --` 后追加参数:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/ethanhq/cc-fleet/main/install.sh | sh -s -- \
-  --skill plugin \        # 怎么装 skill:plugin(默认,走 marketplace)| global(拷进 ~/.claude/skills)| none
-  --scope user \          # 插件 scope:user(默认)| project | local
-  --prefix ~/.local/bin \ # 二进制装到哪(默认 ~/.local/bin)
-  --version v0.2.1         # 钉一个具体版本(默认最新)
-```
-
-Windows 上 PowerShell 安装器用环境变量覆盖:
-
-```powershell
-$env:CCF_VERSION = "v0.2.1"; $env:CCF_PREFIX = "$HOMEin"; irm https://raw.githubusercontent.com/ethanhq/cc-fleet/main/install.ps1 | iex
-```
-
-### 方式二: 从其他源安装
-
-下面这些渠道**只装 CLI**,装完还需手动补装插件。npm / go / Releases 在 Linux、macOS、Windows 上通用:
-
-| 渠道 | 命令 |
-|------|------|
-| npm | `npm install -g @ethanhq/cc-fleet` |
-| go install | `go install github.com/ethanhq/cc-fleet/cmd/cc-fleet@latest` |
-| [Releases](https://github.com/ethanhq/cc-fleet/releases) | 先按你的 OS / arch 下载压缩包,再 `tar -xzf cc-fleet-*.tar.gz && cd cc-fleet-*/ && ./install.sh`(Windows:解压 zip 后运行内附的 `install.ps1`) |
-| 源码 *(Linux / macOS)* | `git clone https://github.com/ethanhq/cc-fleet.git && cd cc-fleet && make install` —— 需要 `make`;Windows 上从源码安装请改用上面的 `go install` |
-
-**补装 Claude Code 插件** —— 这是教 Claude *何时*委派的部分:三个 skill 分别教会它在合适的场景下调度 Workflow、Agent Team 与 Subagent,并判断该走哪条 lane。二选一安装:
-
-- **在 Claude Code 里装(推荐)**:启动 `claude`,敲下面两条斜杠命令(或执行 `/plugin` 打开交互式 Marketplaces / Discover 面板):
-  ```
-  /plugin marketplace add ethanhq/cc-fleet
-  /plugin install cc-fleet@ethanhq
-  ```
-- **命令行**:
-  ```bash
-  claude plugin marketplace add ethanhq/cc-fleet
-  claude plugin install cc-fleet@ethanhq        # 默认装在 user scope;加 --scope project|local 可改
-  ```
-
-### 环境要求与维护
-
-**环境要求:**Agent Team 模式依赖 tmux,因此**无法在 Windows 上使用**;其余功能(Subagent / Workflow / run / TUI)完全一致、无任何额外依赖。需要前台运行 Agent Team,先装一个 tmux 即可(macOS:`brew install tmux`;Debian / Ubuntu:`sudo apt install tmux`)。
+> 其他安装方式(npm / go install / Releases / 源码)、安装器覆盖参数、环境要求与维护,见 **[安装与维护](install.zh.md)**。
 
 **常用命令:**
 
@@ -98,72 +54,111 @@ $env:CCF_VERSION = "v0.2.1"; $env:CCF_PREFIX = "$HOMEin"; irm https://raw.githu
 ccf                      # 唤起 TUI 交互面板
 ccf doctor               # 体检:检查依赖、Provider、插件状态
 ccf update               # 沿安装渠道自更新并刷新插件
-ccf update rollback      # 回滚到上一个版本
-ccf uninstall            # 重置配置与状态(保留二进制与 secret)
 ccf uninstall --all      # 连二进制、插件一起清空
 ```
 
 装好后先运行 `ccf` 注册一个 Provider,即可开始委派。
 
-## 亮点
+## 快速上手
 <table>
 <tr>
-<td width="50%" valign="top" align="center">
+<td width="50%" valign="top">
+<div align="center">
 
-**🔌 Provider 管理 - 一张表单接入,key 零泄漏**
+**🔌 Provider 管理 - 输入 API Key 快速接入**
 
 <img src="assets/demo-provider.webp" alt="Provider 管理演示" width="100%" />
 
-15+ 内置预设(13 家 Anthropic 协议、OpenAI Responses / Chat,以及 Groq / Together / vLLM 等兼容端点),Codex 订阅也能当 Provider(设备码登录、多凭证、token 永不出 daemon);模型分 default / strong / fast 档位,可标 `[1m]` 上下文与 effort;多 key 支持启停与轮换(off / round_robin / random),五种 secret 后端任选;key 按次经 `apiKeyHelper` 取用,绝不进 env / argv,全界面打码。
+</div>
+
+1. `ccf` 进入 TUI,选 Add provider
+2. 选任意一家 Anthropic / OpenAI 兼容厂商
+3. 填 API Key 与默认模型,可选配 effort 思考强度与 Claude 启动权限
+4. 保存即用;列表里可加多个模型启停切换,`s` 设默认、`d` 删除
+5. (按需)配 Codex:复用已有 OAuth,或现场登录(ccf 自持一份凭证)
 
 </td>
-<td width="50%" valign="top" align="center">
+<td width="50%" valign="top">
+<div align="center">
 
-**🖥️ ccf run - 没有订阅,也是完整的 Claude Code**
+**🖥️ ccf run - 用任意 Provider 跑 Claude Code**
 
 <img src="assets/demo-run.webp" alt="ccf run 演示" width="100%" />
 
-任意 Provider 直接 exec 进一个交互式 `claude`——全套工具、完整 REPL,它就是 `claude` 本身,无需 Anthropic 认证,主会话自己的登录也分毫不动;`--model` 在 strong / fast 间随选、权限档位与原生一致,`-- <claude 参数>` 原样透传;跨平台(Linux / macOS / Windows)一条命令即开。
+</div>
+
+1. `ccf run` 用默认 Provider 启动一个交互式 `claude`,`ccf run <provider>` 指定其中一家
+2. 全套工具、完整 REPL;无需 Anthropic 订阅,不影响主会话登录状态
+3. Linux / macOS / Windows 一条命令即开
+4. 可选 `--model strong/fast` 选档、`--permission-mode` 定权限、`-- <参数>` 透传;进会话后也能切换——`/model` 换模型、`/effort` 调思考强度、`Shift+Tab` 切权限
 
 </td>
 </tr>
 <tr>
-<td width="50%" valign="top" align="center">
+<td width="50%" valign="top">
+<div align="center">
 
-**⚙️ Dynamic Workflow - 原生 runtime 的编排脚本**
+**⚙️ Dynamic Workflow - 与原生 workflows 一致的编排 API**
 
 <img src="assets/demo-workflow.webp" alt="Dynamic Workflow 演示" width="100%" />
 
-与 Claude Code 原生 Workflow 工具同一套 JS API(`agent()` / `parallel()` / `pipeline()` / `budget`……唯一新增是 `provider` 选项),跑在 detached 引擎里、不花主会话一个 token;内容哈希 journal 让 `--resume` 只补没跑完的,单个 leaf 可挂起(held ▶)再原地重启,`workflow wait` 的退出本身就是完成推送;还能用保留 id `claude` 让 opus 在你自己的订阅上跑综合节点——廉价扇出 + 原生模型收尾。
+</div>
+
+1. `/workflow` 直接发起,或一句话交给 Claude:「deepseek 摸每个模块,glm 逐个出审计清单,gpt 汇总」
+2. Claude 自动写成 JS 脚本、丢给独立的后台引擎(detached)跑——不花你主会话 token
+3. 原生 `agent()` / `parallel()` / `pipeline()` 编排,`provider` 指派各家模型并行跑
+4. `workflow wait` 阻塞到任务完成才退出——事件驱动、无需轮询;`--resume` 只补没跑完的 leaf
+5. TUI 板实时显示每个 leaf 与 phase 的运行状态,`x` 暂停 / `r` 重跑单个 leaf 或整个 phase
 
 </td>
-<td width="50%" valign="top" align="center">
+<td width="50%" valign="top">
+<div align="center">
 
-**👥 Agent Team - 原生 tmux 分 pane 协作**
+**👥 Agent Team - tmux 分屏里的原生 Claude 多 Agent 协作**
 
 <img src="assets/demo-team.webp" alt="Agent Team 演示" width="100%" />
 
-teammate 是真 `claude` 进程,按 Claude Code 启动原生 agent 的同一套配方拉起,用原生 `TeamCreate` / `SendMessage` 通信;每人一个 pane 在你旁边实时干活,跨供应商混编、跨轮次存活、`hide`/`show` 收纳、权限继承自 lead;不在 tmux 里也能 headless 开团——teammate 落进 detached 的 `cc-fleet-swarm-<team>` 会话照常协作,想围观随时 attach。
+</div>
+
+1. `/team` 直接发起,或一句话交给 Claude:「开 glm 和 deepseek 两个 teammate,各自总结强项再对比」
+2. Claude 调原生 `TeamCreate`,每个 Teammate 是真 `claude` 进程,在侧边的 tmux pane 实时工作
+3. `SendMessage` 驱动,跨 Provider 混编、跨轮次持续追加任务
+4. TUI 看板里可看每个 Teammate 的完整 inbox 与运行状态;`h` 收纳 / `s` 展示 pane、权限继承自 lead,可前台分屏或后台运行
 
 </td>
 </tr>
 <tr>
-<td width="50%" valign="top" align="center">
+<td width="50%" valign="top">
+<div align="center">
 
-**⚡ Subagent - 最轻量的一次委派**
+**⚡ Subagent - 最轻量的一次性委派**
 
 <img src="assets/demo-subagent.webp" alt="Subagent 演示" width="100%" />
 
-默认 slim profile 只发原生 Subagent 级别的小 prompt(首请求远小于完整会话),无锁,可任意并行扇出;`slim-ro` 只读档让 Provider 安全分析你的仓库(不碰 Edit / Write),`--resume` 可接着多轮;`--background` 配合 `subagent-status --wait` 完成推送;成本兜底有 USD / 轮次 / 超时三道上限;失败用稳定的 `error_code` 标识,不靠解析输出文本。
+</div>
+
+1. `/subagent` 直接发起,或一句话交给 Claude:「kimi、qwen、glm 三个 subagent 并行分到这三个文件」
+2. 最轻的一条 lane:不开 pane、不建 team,Claude 直接把模型 headless 跑起来、同步收结果,要扇出多少个就并行多少个
+3. `slim-ro` 只读档:Provider 只拿到读权限,能分析整个仓库却碰不到 Edit / Write,放心让它跑;`--resume` 可在结果上接着追问多轮
+4. 后台跑长任务:`--background` 转入后台,`subagent-status --wait` 阻塞到完成即唤醒——同样事件驱动、不用轮询
+5. 花销可控:USD / 轮次 / 超时三道上限随时兜底,失败按稳定的 error_code 标识而非解析文本
+6. TUI 看板里可逐个查 job 的 prompt、答案与花费
 
 </td>
-<td width="50%" valign="top" align="center">
+<td width="50%" valign="top">
+<div align="center">
 
 **📊 TUI 看板 - 整支舰队一屏运维**
 
 <img src="assets/demo-tui.webp" alt="TUI 看板演示" width="100%" />
 
-`cc-fleet` 一键进入,project → session → Workflows / Teams / Subagents 的主从视图;run → phase → leaf 实时树,带 token / 费用列、prompt 与答案下钻,`x` / `r` 对 run / phase / leaf 三级停启;`★` pin 防清理、teamhist 留档、`h` / `s` 收纳 pane;Provider hub 内置分组添加器、多 key 管理器、Codex 登录向导;明暗主题自适应。
+</div>
+
+1. `ccf` 启动后按 `Tab` 进入 Agents Board——所有 Workflow / Team / Subagent 按 project → session 一屏展开
+2. 选中任意一支展开详情:Workflow 看到 run → phase → leaf 的实时进度树,Team 看到每个 Teammate 的对话 inbox,逐条下钻 prompt、回答与花费
+3. 不用离开看板就能操作:`x` / `r` 停止或重跑、`p` 钉住防清理、`c` 清掉已完成、`d` 删除、`h` / `s` 收起或展开 pane
+4. 同屏还有 Provider 管理:加厂商、管多 key、登录 Codex,都在这里完成
+5. 跑完的 Team 自动留档备查;界面随系统明暗主题切换
 
 </td>
 </tr>

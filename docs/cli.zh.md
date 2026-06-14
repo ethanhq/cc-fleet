@@ -95,7 +95,7 @@ cc-fleet run deepseek --model strong
 cc-fleet run deepseek --dangerously-skip-permissions
 ```
 
-`cc-fleet run [provider]` 用一个交互式 `claude` REPL 替换当前进程,后端换成该 provider (profile 钉住 `apiKeyHelper` + base URL;模型取 provider 的 `default_model`,`--model` 可覆盖)。与 spawn/subagent 不同,这是**你自己**在用 provider,不是 Claude 委派。
+`cc-fleet run [provider]` 用一个交互式 `claude` REPL 替换当前进程,后端换成该 provider——**省略 provider 时解析到全局默认**(profile 钉住 `apiKeyHelper` + base URL;模型取 provider 的 `default_model`,`--model` 可覆盖)。与 spawn/subagent 不同,这是**你自己**在用 provider,不是 Claude 委派。
 
 - `--permission-mode <mode>` / `--dangerously-skip-permissions`——会话权限档(互斥)。`run` 直接 exec 二进制,你给 `claude` 配的 shell 别名里的这类 flag 带不过来——在这里传。
 - `-- <claude args>`——`--` 之后全部转发给 `claude`。
