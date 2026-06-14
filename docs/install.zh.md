@@ -36,7 +36,7 @@ $env:CCF_VERSION = "v0.2.1"; $env:CCF_PREFIX = "$HOME\bin"; irm https://raw.gith
 | npm | `npm install -g @ethanhq/cc-fleet` |
 | go install | `go install github.com/ethanhq/cc-fleet/cmd/cc-fleet@latest` |
 | [Releases](https://github.com/ethanhq/cc-fleet/releases) | 先按你的 OS / arch 下载压缩包,再 `tar -xzf cc-fleet-*.tar.gz && cd cc-fleet-*/ && ./install.sh`(Windows:解压 zip 后运行内附的 `install.ps1`) |
-| 源码 *(Linux / macOS)* | `git clone https://github.com/ethanhq/cc-fleet.git && cd cc-fleet && make install` —— 需要 `make`;Windows 上从源码安装请改用上面的 `go install` |
+| 源码 *(Linux / macOS)* | `git clone https://github.com/ethanhq/cc-fleet.git && cd cc-fleet && make install` — 需要 `make`;Windows 上从源码安装请改用上面的 `go install` |
 
 ### 补装 Claude Code 插件
 

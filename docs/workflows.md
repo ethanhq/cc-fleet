@@ -52,11 +52,11 @@ Pass a plain JSON-Schema object and the leaf's `claude` child is forced to call 
 - the forced call costs turns — give a schema'd leaf `max_turns` ≥ 3;
 - it needs claude ≥ 2.1.88; older versions fail the leaf with a classified error.
 
-The client-side validator covers a JSON-Schema subset: `type`, `required`, nested `properties`, array `items`, scalar `enum`, string `pattern`/`format`, `additionalProperties`, `allOf`/`anyOf`/`oneOf`, and intra-document `$ref` (`#/…`; external URIs are unsupported).
+The client-side validator covers a JSON-Schema subset: `type`, `required`, nested `properties`, array `items`, `enum` (members may be any JSON value, compared by deep equality), string `pattern`/`format`, `additionalProperties`, `allOf`/`anyOf`/`oneOf`, and intra-document `$ref` (`#/…`; external URIs are unsupported). The forced `StructuredOutput` tool is profile-independent — it survives a custom slim `tools` whitelist, so a schema'd leaf works regardless of `tools`.
 
 ## Determinism (and why)
 
-`Date` (wall-clock) and `Math.random()` **throw**; `eval`, `Function`, `setTimeout`, `require`, `fs`, and ESM `import` don't exist. Pass timestamps or randomness in via `args`. This is what makes the journal exact: with no clock or PRNG, the same script + args always produce the same leaf keys.
+`new Date()` with no arguments and `Date.now()` **throw** (`Date.parse` / `Date.UTC` / `new Date(…args)` still work); `Math.random()` **throws**. `eval`, `Function`, `setTimeout`, `require`, `fs`, and ESM `import` don't exist. Pass timestamps or randomness in via `args`. This is what makes the journal exact: with no clock or PRNG, the same script + args always produce the same leaf keys.
 
 ## Resume — the content-hash journal
 
@@ -66,7 +66,7 @@ Every completed leaf is journaled, keyed by its determinant (provider + model + 
 cc-fleet workflow run audit.js --resume "$RUN"
 ```
 
-Unchanged leaves return cached (no provider call); a leaf you edited — and everything downstream of its output — re-runs. A killed run resumes by replaying what finished. Failed leaves are never journaled, so a resume always retries them.
+Unchanged leaves return cached (no provider call); a leaf you edited — and everything downstream of its output — re-runs. A killed run resumes by replaying what finished — and any re-run reusing the same run id resumes against the journal, `--resume` being the explicit form. Failed leaves are never journaled, so a resume always retries them.
 
 ## Live control
 
@@ -80,7 +80,7 @@ A held leaf is parked indefinitely — not an error, never auto-retried; its `ag
 
 ## Waiting on a run
 
-`cc-fleet workflow wait "$RUN" --timeout 10m` blocks silently and exits exactly once — `0` done/stopped, `1` failed or engine-gone, `3` parked (every remaining leaf is held), `124` timeout heartbeat, `130` interrupt. Run it in a backgrounded shell and its exit is your completion notification; no polling loop needed.
+`cc-fleet workflow wait "$RUN" --timeout 10m` blocks silently and exits exactly once — `0` done/stopped, `1` failed or engine-gone, `3` parked (every remaining leaf is held), `124` timeout heartbeat, `130` interrupt, `2` IO/unknown-run error. Run it in a backgrounded shell and its exit is your completion notification; no polling loop needed.
 
 ## Limits
 

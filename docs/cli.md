@@ -64,7 +64,7 @@ printf '%s' "$DEEPSEEK_API_KEY" | cc-fleet add deepseek \
 
 ## Default provider & model tiers
 
-`cc-fleet default <provider>` sets the fleet-wide default; every provider-less `spawn` / `subagent` / `run` / workflow leaf resolves to it (`default` alone shows it, `--unset` clears it). The id `claude` is reserved for the native leaf and can never be the default — `cc-fleet default claude` refuses with `DEFAULT_PROVIDER_RESERVED`. A provider's roster gives Claude stable handles instead of hardcoded IDs:
+`cc-fleet default <provider>` sets the fleet-wide default; every provider-less `spawn` / `subagent` / `run` / workflow leaf resolves to it (`default` alone shows it, `--unset` clears it). The id `claude` is reserved for the native leaf and can never be the default — `cc-fleet default claude` refuses with `PROVIDER_NAME_INVALID`. A provider's roster gives Claude stable handles instead of hardcoded IDs:
 
 - `--model strong` / `--model fast` / `--model default` resolve through the roster.
 - Each slot can carry a 1M-context marker (`[1m]`) and the provider an effort level — both set in the TUI form or via `add`/`edit` flags.
@@ -85,7 +85,7 @@ cc-fleet subagent deepseek --prompt "Summarize this log" --json
 
 No tmux, no agent-teams — prompt in, result envelope out.
 
-**The reserved `claude` leaf.** `cc-fleet subagent claude` (and a workflow leaf with `provider: "claude"`) runs the official `claude` CLI on your own Claude Code login — no provider row, no profile, no key material; child env credentials are scrubbed as always, so it needs a real stored login. Explicit-only: it never auto-resolves, never shows in `list`, and `cc-fleet add claude` is rejected (`PROVIDER_RESERVED`). `--model` takes a literal id (`opus` / `sonnet` / a full id — roster keywords are rejected); omitted means your login's default tier, typically the costliest. It spends your own subscription window — use it for a synthesis node or two, never a wide fan-out.
+**The reserved `claude` leaf.** `cc-fleet subagent claude` (and a workflow leaf with `provider: "claude"`) runs the official `claude` CLI on your own Claude Code login — no provider row, no profile, no key material; child env credentials are scrubbed as always, so it needs a real stored login. Explicit-only: it never auto-resolves, never shows in `list`, and `cc-fleet add claude` is rejected (`PROVIDER_NAME_INVALID`). `--model` takes a literal id (`opus` / `sonnet` / a full id — roster keywords are rejected); omitted means your login's default tier, typically the costliest. It spends your own subscription window — use it for a synthesis node or two, never a wide fan-out.
 
 ## Interactive — a provider-backed session you drive
 

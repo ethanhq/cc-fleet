@@ -4,7 +4,7 @@ How cc-fleet actually works — the spawn recipe, the key-safety model, the conv
 
 ## The shape of the system
 
-cc-fleet is a single cgo-free Go binary (plus a Claude Code plugin carrying skills, a hook, and two read-only slash commands). Everything it runs is a **real `claude` process** whose LLM backend has been swapped: a generated per-provider profile sets `ANTHROPIC_BASE_URL` and an `apiKeyHelper`, and the worker is launched with `--settings <profile>.json --model <id>`. The main session's own auth is never read or modified.
+cc-fleet is a single cgo-free Go binary (plus a Claude Code plugin carrying skills and a SessionStart hook). Everything it runs is a **real `claude` process** whose LLM backend has been swapped: a generated per-provider profile sets `ANTHROPIC_BASE_URL` and an `apiKeyHelper`, and the worker is launched with `--settings <profile>.json --model <id>`. The main session's own auth is never read or modified.
 
 Four execution lanes share that mechanism:
 
@@ -21,7 +21,7 @@ The CLI is invoked as many short-lived external processes (by Claude, by hooks, 
 
 To behave like a native teammate, a worker must be launched with the *exact* flags/env Claude Code itself uses to spawn an agent. cc-fleet learns these by capturing a live native-agent process: `CaptureFromPid` reads its argv plus a tiny env allowlist, and `templatize()` replaces per-spawn values with placeholders (`--agent-id {name}@{team}`, `--team-name {team}`, …) and strips `--model`/`--settings` (cc-fleet always appends its own). At spawn, `Apply()` substitutes the placeholders back.
 
-- A **bundled default recipe** ships in the binary (`//go:embed`), so a fresh install spawns without ever probing. `refresh-fingerprint` re-captures when a Claude Code upgrade drifts the flags; the skills run that self-heal automatically on `FINGERPRINT_MISSING`.
+- A **bundled default recipe** ships in the binary (`//go:embed`), so a fresh install spawns without ever probing. `refresh-fingerprint` re-captures the live spawn recipe; the skills run that self-heal automatically on `FINGERPRINT_MISSING` (a corrupt cache) and `SPAWN_DID_NOT_SETTLE` (flag drift on a Claude Code newer than the bundled recipe). A plain Claude Code upgrade needs no refresh — the binary path is resolved live.
 - **The gate runs before any side effect.** Every spawn/subagent resolves `LoadOrBundled → ResolveBinaryPath → ValidateForRuntime` *before* a profile is written, a lock is taken, or a pane is split — a launch that cannot work fails before it mutates anything. No `claude` binary anywhere is the one hard stop (`FINGERPRINT_STALE`).
 - A post-spawn **settle check** (pane-based, so identical on Linux/macOS) is paid only when the live Claude Code is newer than the recipe.
 
@@ -29,8 +29,8 @@ To behave like a native teammate, a worker must be launched with the *exact* fla
 
 The provider key must never reach env, argv, `ps` output, or shell history:
 
-- The profile pins `apiKeyHelper: "<cc-fleet> keyget <provider>"`. Claude Code invokes it at request time; `keyget` resolves the configured backend (`file` | `pass` | `1password` | `vault` | `keyring`) and writes the key to stdout exactly once. Nothing in `secrets` logs key bytes.
-- Spawned teammate commands begin `env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN`; the subagent/run lanes scrub the same vars plus nested-Claude markers through the shared `childenv.Clean` (case-insensitive on Windows).
+- The profile pins `apiKeyHelper: "<cc-fleet> keyget <provider>"`. Claude Code invokes it at request time; `keyget` resolves the configured backend (`file` | `pass` | `1password` | `vault` | `keyring` | `codex-oauth`) and writes the key to stdout exactly once — the `codex-oauth` backend returns the loopback handshake secret rather than a real key. Nothing in `secrets` logs key bytes.
+- Spawned teammate commands begin `env -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN -u ANTHROPIC_BASE_URL` (plus the model/effort vars); the subagent/run lanes scrub the same vars plus nested-Claude markers through the shared `childenv.Clean` (case-insensitive on Windows).
 - Everything user-facing renders keys through `MaskKey` (`sk-…238`); `redact.MaskKeyLike` scrubs `sk-…` / `Bearer …` / `x-api-key` tokens from any error or log line that could carry one.
 - The reserved id `claude` (subagent/workflow leaves only) deliberately runs the leaf on the caller's own Claude Code login — no profile, no `keyget`; the child env is still scrubbed, so it requires a stored login rather than an env key, and the name is rejected everywhere a provider is configured.
 - The `file` backend supports multi-key sets with per-key enable/disable and rotation (`off` / `round_robin` — a flock-guarded counter — / `random`); disabled keys are filtered before selection, and `keyget` is the per-worker rotation point.
@@ -43,7 +43,7 @@ A provider's `protocol` field selects one of three classes:
 2. **OpenAI-protocol** (`openai-responses`, `openai-chat`) — `claude` speaks Anthropic to a loopback conversion daemon, which translates to the OpenAI Responses or Chat Completions API and attaches the upstream key. The key reaches the daemon as a header and is forwarded as the upstream Bearer; every error surface is redacted.
 3. **codex-oauth** — reuses a ChatGPT subscription. cc-fleet keeps its own token store per credential (`codex_oauth[-<ref>].json`, never touching `~/.codex`), refreshes under a per-credential lock, and the daemon converts to the Responses API.
 
-For daemon-backed classes, **the bearer never leaves the daemon**: `keyget` serves only a per-install loopback handshake secret. Daemons are per-port (state, lock, and lease keyed by port; identity-checked reuse; `/healthz` readiness), started lazily, and self-exit when idle.
+For codex-oauth, **the bearer never leaves the daemon** — `keyget` serves `claude` only a per-install loopback handshake secret that gates `/v1/messages`, and the daemon holds the real token. The openai-* classes instead hand `claude` the real upstream key via `keyget` (it reaches the daemon as a header, forwarded as the upstream Bearer, every error surface redacted). Daemons are per-port (state, lock, and lease keyed by port; identity-checked reuse; `/healthz` readiness), started lazily, and self-exit when idle.
 
 ## The workflow engine (`workflow`)
 
@@ -51,7 +51,7 @@ For daemon-backed classes, **the bearer never leaves the daemon**: `keyget` serv
 
 Live control runs over a polled per-run control file: `stop --leaf` pre-marks the leaf **held** (a nonterminal status — the `agent()` promise stays unsettled, the engine keeps the run open indefinitely) and then kills the attempt; `restart --leaf` re-execs the same job id with attempt +1. `stop --phase`/`restart --phase` do the same per phase.
 
-`workflow wait` is the push-notification verb: it polls the manifest and job files (never the event stream) and exits exactly once — `0` terminal-ok, `1` failed/engine-gone, `3` parked (zero running, zero queued, at least one held — debounced over consecutive polls), `124` heartbeat timeout, `130` interrupt. Armed in a backgrounded shell, its exit wakes the launching session; the envelope stays slim (counts + spend, no per-leaf detail) because it is injected into a session unasked.
+`workflow wait` is the push-notification verb: it polls the manifest and job files (never the event stream) and exits exactly once — `0` terminal-ok, `1` failed/engine-gone, `3` parked (zero running, zero queued, at least one held — debounced over consecutive polls), `124` heartbeat timeout, `130` interrupt, `2` IO/unknown-run error. Armed in a backgrounded shell, its exit wakes the launching session; the envelope stays slim (counts + spend, no per-leaf detail) because it is injected into a session unasked.
 
 ## Concurrency: flock scopes (`config/lock.go` and friends)
 
@@ -77,7 +77,7 @@ No cgo anywhere; `CGO_ENABLED=0` across all six release targets (linux/darwin/wi
 
 - **Linux** — full; `/proc` is the reference introspection path.
 - **macOS** — full and CI-tested; introspection falls back to `ps`, and the settle gate is pane-based so teammate liveness behaves identically.
-- **Windows** — everything except the tmux teammate lane: `subagent`, `workflow`, `run`, and the TUI are native; `spawn`/`hide`/`show` refuse with `UNSUPPORTED_ON_WINDOWS` (`teardown` refuses with the same message). Process identity is (pid, start-token): a token mismatch is decisive, and a token match never overrides a readable argv mismatch.
+- **Windows** — everything except the tmux teammate lane: `subagent`, `workflow`, `run`, and the TUI are native; `spawn`/`hide`/`show` refuse with `UNSUPPORTED_ON_WINDOWS` (`teardown` returns the same human message but `error_code` `INTERNAL`). Process identity is (pid, start-token): a token mismatch is decisive, and a token match never overrides a readable argv mismatch.
 
 Platform splits live in `procintrospect` and per-package `_unix.go` / `_windows.go` seams — anything touching process tables goes through them.
 

@@ -1,4 +1,4 @@
-![cc-fleet — run any provider LLM as native Claude Code agents: dynamic workflows, teammates, subagents](docs/assets/cc-fleet-banner.png)
+![cc-fleet — plug any third-party model into Claude Code's Dynamic Workflows, Agent Teams, and Subagents](docs/assets/cc-fleet-banner.png)
 
 <h1 align="center">🚢 cc-fleet</h1>
 
@@ -46,7 +46,7 @@ curl -fsSL https://raw.githubusercontent.com/ethanhq/cc-fleet/main/install.sh | 
 irm https://raw.githubusercontent.com/ethanhq/cc-fleet/main/install.ps1 | iex
 ```
 
-> Other channels (npm / go install / Releases / source), installer overrides, and requirements & maintenance live in **[Install & maintenance](docs/install.md)**.
+> Other channels (npm / go install / Releases / source) and adding the Claude Code plugin, installer overrides, and requirements & maintenance live in **[Install & maintenance](docs/install.md)**.
 
 **Common commands:**
 
@@ -171,7 +171,7 @@ cc-fleet's capabilities fall into two groups:
 
 <table>
 <tr>
-<td width="50%" align="center"><img src="docs/assets/workflow-board.webp" width="100%" /><br/><sub>Agents Board: the phase → leaf tree, vendors in parallel</sub></td>
+<td width="50%" align="center"><img src="docs/assets/workflow-board.webp" width="100%" /><br/><sub>Agents Board: the phase → leaf tree</sub></td>
 <td width="50%" align="center"><img src="docs/assets/workflow-leaf.webp" width="100%" /><br/><sub>drill into one leaf: full prompt and synthesized output</sub></td>
 </tr>
 </table>
@@ -255,7 +255,7 @@ ccf workflow run audit.js --resume "$RUN"   # replay the journal, finished leave
 <table>
 <tr>
 <td width="50%" align="center"><img src="docs/assets/subagent-fanout.webp" width="100%" /><br/><sub>fan out three subagents in parallel from one ask</sub></td>
-<td width="50%" align="center"><img src="docs/assets/subagent-board.webp" width="100%" /><br/><sub>the job list and one job's detail (slim profile / tokens / output)</sub></td>
+<td width="50%" align="center"><img src="docs/assets/subagent-board.webp" width="100%" /><br/><sub>the job list and one job's detail</sub></td>
 </tr>
 </table>
 
@@ -275,8 +275,8 @@ ccf workflow run audit.js --resume "$RUN"   # replay the journal, finished leave
 
 <table>
 <tr>
-<td width="50%" align="center"><img src="docs/assets/provider-presets.webp" width="100%" /><br/><sub>pick from built-in presets (13 Anthropic-protocol + OpenAI + Codex)</sub></td>
-<td width="50%" align="center"><img src="docs/assets/provider-config.webp" width="100%" /><br/><sub>each provider's default / strong / fast tiers and key</sub></td>
+<td width="50%" align="center"><img src="docs/assets/provider-presets.webp" width="100%" /><br/><sub>presets for many vendors</sub></td>
+<td width="50%" align="center"><img src="docs/assets/provider-config.webp" width="100%" /><br/><sub>set each tier's model, effort, and permission</sub></td>
 </tr>
 </table>
 
