@@ -101,10 +101,11 @@ dev version.
 - **Name validation before use** (`internal/ids`). Provider/team/agent names reach file paths
   and the `apiKeyHelper` string — `ValidateProviderName`/`ValidateTeamName`/
   `ValidateMemberName` + `EnsureUnderRoot`, re-validated in `config.Load` and `profile`.
-- **Nine flock scopes; the nesting trio in order.** `WithProvidersConfigLock` →
-  `WithTeamLock` → `WithServerLock` when combined; the other six (workflow per-run, codexproxy
-  per-port, per-credential token, handshake-secret, selfupdate update, update-check cache) are
-  standalone — held with no other scope. See `docs/architecture.md`.
+- **Ten flock scopes; the nesting trio in order.** `WithProvidersConfigLock` →
+  `WithTeamLock` → `WithServerLock` when combined; the other seven (workflow per-run, codexproxy
+  per-port, per-credential token, handshake-secret, selfupdate update, update-check cache,
+  subagent per-job live-scan checkpoint) are standalone — held with no other scope. See
+  `docs/architecture.md`.
 - **Single outlets.** Every tmux call goes through `tmux.Server`; every atomic write through
   `fileutil.AtomicWrite`. Pane identity is (socket, pane id), never (team, name).
 - **`config.Load` is strict.** Invalid `key_rotation` / unknown `secret_backend` / wrong

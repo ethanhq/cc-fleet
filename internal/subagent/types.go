@@ -77,12 +77,13 @@ type Request struct {
 	// workflow engine; the CLI's --prompt) pass it here separately for the side file.
 	// Empty → no prompt side file.
 	IOPrompt string
-	// StreamActivity opts a SYNC run into `--output-format stream-json --verbose` so its
-	// per-job tool calls + running token usage stream to <jobID>.activity for the boards'
-	// Activity feed WHILE it runs. Content-privacy, gated like PersistIO; set only where
-	// the caller consumes a distilled envelope rather than passing claude's output through
-	// (workflow sync leaves; the CLI's --json path), so every passthrough run — plain text
-	// AND --output-format json — stays byte-identical.
+	// StreamActivity opts a run into `--output-format stream-json --verbose --include-partial-messages`.
+	// On a SYNC run its per-job tool calls + running token usage also stream to <jobID>.activity for the
+	// boards' Activity feed WHILE it runs (content-privacy, gated like PersistIO; set where the caller
+	// consumes a distilled envelope rather than passing claude's output through — workflow sync leaves,
+	// the CLI's --json path — so every passthrough run, plain text AND --output-format json, stays
+	// byte-identical). launchBackground also sets it, only to select that inner format: the detached child
+	// writes no sidecar, so StatusFor scans its .out for live usage instead.
 	StreamActivity bool
 	// JournalKey is the leaf's content-hash key (workflow-engine-only). Persisted on the job
 	// record so the board can target THIS leaf for restart — drop its journal entry and resume,

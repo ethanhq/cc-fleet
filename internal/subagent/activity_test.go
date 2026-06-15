@@ -6,8 +6,35 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
+
+// TestFreshActivitySidecar_TruncatesStale: a restart reuses the job id, and the best-effort cleanup can
+// leave a prior attempt's .activity (a failed remove). The new attempt must start from an EMPTY sidecar
+// so the board, which stamps a snapshot's attempt from the live meta, never reads stale rows as the
+// current attempt.
+func TestFreshActivitySidecar_TruncatesStale(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "job.activity")
+	if err := os.WriteFile(path, []byte(`{"kind":"usage","in":5000,"out":800}`+"\n"), 0o600); err != nil {
+		t.Fatalf("seed stale sidecar: %v", err)
+	}
+	freshActivitySidecar(path)
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read after fresh: %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("a new attempt must start from an empty sidecar, got %q", got)
+	}
+	// Truncate-only: an absent sidecar (the cleanup already removed it) is a no-op — never recreated as
+	// an orphan empty file.
+	absent := filepath.Join(t.TempDir(), "gone.activity")
+	freshActivitySidecar(absent)
+	if _, err := os.Stat(absent); !os.IsNotExist(err) {
+		t.Fatalf("freshActivitySidecar must not create an absent sidecar, got %v", err)
+	}
+}
 
 // TestExtractResultLine: the type:"result" line is found by SCANNING (not last-line) — a trailing
 // SessionStart hook_response after the result must not shadow it.
@@ -342,5 +369,62 @@ func TestScanLiveUsage_IncrementalCheckpoint(t *testing.T) {
 	// An absent capture (nothing reported yet) returns nil.
 	if scanLiveUsage(filepath.Join(dir, "absent.out"), filepath.Join(dir, "absent.scan")) != nil {
 		t.Fatal("an absent capture should return nil")
+	}
+}
+
+// TestScanLiveUsage_FloorHeldWhenRealLower: a later poll whose accounting drops (a real per-message
+// count landing under an earlier estimate) must not lower the persisted display floor — the board
+// figure holds, while the accounting underneath stays exact.
+func TestScanLiveUsage_FloorHeldWhenRealLower(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "j.out")
+	statePath := filepath.Join(dir, "j.scan")
+	write := func(s string) {
+		f, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		_, _ = f.WriteString(s)
+		_ = f.Close()
+	}
+	// Poll 1: 500 runes, no message_delta → estimate 100 → floor 100.
+	write(`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"` + strings.Repeat("x", 500) + `"}}}` + "\n")
+	if u := scanLiveUsage(outPath, statePath); u == nil || u.OutputTokens != 100 {
+		t.Fatalf("poll 1: want out=100, got %+v", u)
+	}
+	// Poll 2: the real per-message count lands low (10); the display floor holds 100.
+	write(`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":10}}}` + "\n")
+	if u := scanLiveUsage(outPath, statePath); u == nil || u.OutputTokens != 100 {
+		t.Fatalf("poll 2: the floor must hold at 100, got %+v", u)
+	}
+	if got := loadScanState(statePath).LastOut; got != 100 {
+		t.Fatalf("persisted floor must stay 100, got %d", got)
+	}
+}
+
+// TestScanLiveUsage_ConcurrentPollsHoldFloor: the 500ms and 3s board chains scan the same job
+// concurrently; the per-job flock serializes the checkpoint read-modify-write, so no poll sees the
+// floor dip and the file never races (run under -race).
+func TestScanLiveUsage_ConcurrentPollsHoldFloor(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "j.out")
+	statePath := filepath.Join(dir, "j.scan")
+	if err := os.WriteFile(outPath, []byte(`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"`+strings.Repeat("x", 500)+`"}}}`+"\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	scanLiveUsage(outPath, statePath) // establish the floor at 100
+	var wg sync.WaitGroup
+	for i := 0; i < 30; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if u := scanLiveUsage(outPath, statePath); u == nil || u.OutputTokens < 100 {
+				t.Errorf("a concurrent poll saw the floor dip: %+v", u)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := loadScanState(statePath).LastOut; got != 100 {
+		t.Fatalf("persisted floor changed under concurrent polls: %d", got)
 	}
 }

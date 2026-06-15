@@ -22,6 +22,7 @@ type activitySnapshot struct {
 	sigs          []string // tool-call signatures in arrival order
 	inTok, outTok int
 	hasUsage      bool
+	attempt       int // the leaf's exec ordinal this snapshot belongs to; a restart bumps it and resets the floor
 }
 
 // toolCount is the number of tool calls the leaf has made so far.

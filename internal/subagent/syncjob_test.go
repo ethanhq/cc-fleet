@@ -13,6 +13,40 @@ import (
 // Cross-platform sync-job board + processAlive guard tests. The fake-claude
 // exec cases live in syncjob_unix_test.go.
 
+// TestRegisterSyncJob_NoStaleActivityAtPublish: a restart reuses the job id, so registerSyncJob must
+// leave no prior-attempt .activity readable the instant it publishes the running meta — a board poll that
+// then observes the job as running would otherwise read the stale sidecar and (since the board stamps the
+// snapshot with the live attempt) paint it as the current attempt. Guards the cleanup-before-writeMetaFn
+// ordering: the meta is captured at publish time and the sidecar must already be empty.
+func TestRegisterSyncJob_NoStaleActivityAtPublish(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	jobID := "11111111-1111-1111-1111-111111111111"
+	p, err := leafActivityPath(jobID)
+	if err != nil {
+		t.Fatalf("leafActivityPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(p, []byte(`{"kind":"usage","in":5000,"out":800}`+"\n"), 0o600); err != nil {
+		t.Fatalf("seed stale sidecar: %v", err)
+	}
+	origWrite := writeMetaFn
+	t.Cleanup(func() { writeMetaFn = origWrite })
+	var atPublish []byte
+	writeMetaFn = func(dir string, m jobMeta) error {
+		atPublish, _ = os.ReadFile(p) // the sidecar as the running meta is published
+		return origWrite(dir, m)
+	}
+	req := Request{Provider: "v", Model: "m", RunID: "r1", Phase: "map", Label: "leaf-a", StreamActivity: true, Attempt: 2}
+	if registerSyncJob(jobID, req, "m", "", "", 0) != registerOK {
+		t.Fatal("registerSyncJob failed")
+	}
+	if len(atPublish) != 0 {
+		t.Fatalf("no stale activity may be readable when the running meta is published, got %q", atPublish)
+	}
+}
+
 // ----- a sync run is visible on the board, without leaking its answer -----
 
 func TestRegisterAndFinalizeSyncJob(t *testing.T) {

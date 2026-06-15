@@ -1079,14 +1079,28 @@ func leafDuration(j subagent.Result) string {
 	return fmt.Sprintf("%dm %ds", int(d/time.Minute), int(d.Seconds())%60)
 }
 
+// snapForJob returns the live activity snapshot that may drive j's board display, or the zero snapshot
+// when none applies. The snapshot describes j only while j is RUNNING at the SAME attempt it was scanned
+// at: floorActivity smooths m.wfActivity across out-of-order refreshes, so the map can momentarily hold a
+// snapshot carried from a different attempt (a restart reuses the job id), which must never paint j's
+// tokens or tool count. A non-running job renders from its Result, never the snapshot. Single render-side
+// gate — every wfActivity consumer reads through it.
+func (m Model) snapForJob(j subagent.Result) activitySnapshot {
+	if snap := m.wfActivity[j.JobID]; j.Status == "running" && snap.attempt == j.Attempt {
+		return snap
+	}
+	return activitySnapshot{}
+}
+
 // leafCounts returns the leaf's (input, output) tokens + tool-call count. input is the PEAK context
-// window (max over turns, non-cumulative — so it is shown per-leaf, never summed across leaves);
-// output is CUMULATIVE generated tokens (additive, what the run header sums); cache-read is excluded.
-// Live from the activity snapshot while running, the accurate final from the Result once done; the
-// tool count always comes from the snapshot (the final Result doesn't carry it).
+// window (max over turns, non-cumulative — so it is shown per-leaf, never summed across leaves); output
+// is CUMULATIVE generated tokens (additive, what the run header sums); cache-read is excluded. Live from
+// the activity snapshot while running, the accurate final from the Result once done; the tool count comes
+// from the snapshot (the final Result doesn't carry it), so it shows only while j is the running current
+// attempt.
 func (m Model) leafCounts(j subagent.Result) (in, out, tools int) {
 	in, out = m.liveTokens(j)
-	return in, out, m.wfActivity[j.JobID].toolCount()
+	return in, out, m.snapForJob(j).toolCount()
 }
 
 // liveTokens resolves a job's (peak-input, cumulative-output) token pair: the final Result usage,
@@ -1096,7 +1110,7 @@ func (m Model) liveTokens(j subagent.Result) (in, out int) {
 	if j.Usage != nil {
 		in, out = j.Usage.InputTokens, j.Usage.OutputTokens
 	}
-	if snap := m.wfActivity[j.JobID]; j.Status == "running" && snap.hasUsage {
+	if snap := m.snapForJob(j); snap.hasUsage {
 		in, out = snap.inTok, snap.outTok
 	}
 	return in, out
@@ -1114,7 +1128,7 @@ func (m Model) agentDetailLines(rightW int) []string {
 		return []string{faintStyle.Render("(no agent)")}
 	}
 	in, out, tools := m.leafCounts(j)
-	snap := m.wfActivity[j.JobID]
+	snap := m.snapForJob(j)
 	status := statusLabel(j.Status) + faintStyle.Render(" · "+trunc(sessiontitle.CleanTitle(j.Model), 28))
 	if j.Attempt > 1 {
 		// >1 occurs only in records from engines that retried schema mismatches; surface it.

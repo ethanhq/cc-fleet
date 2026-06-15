@@ -11,6 +11,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/redact"
 )
 
@@ -52,6 +53,21 @@ func newActivityWriter(path string) *activityWriter {
 		return nil
 	}
 	return &activityWriter{path: path}
+}
+
+// freshActivitySidecar empties a prior attempt's .activity that survived the best-effort restart cleanup
+// (a failed remove — e.g. a Windows open-handle race), so the new attempt's writer appends to a clean
+// file. The board synthesizes a snapshot's attempt from the live meta, so a surviving stale/mixed sidecar
+// would be read as the current attempt; truncating before the running meta is published makes the
+// sidecar's content provably this attempt's. Truncate-only (no O_CREATE): an absent file is a no-op, so
+// it never leaves an orphan when the cleanup already removed the file. Best-effort, nil-path-safe.
+func freshActivitySidecar(path string) {
+	if path == "" {
+		return
+	}
+	if f, err := os.OpenFile(path, os.O_WRONLY|os.O_TRUNC, 0o600); err == nil {
+		_ = f.Close()
+	}
 }
 
 // estimatePromptTokens roughly estimates a prompt's input-token count from its rune count (≈3 runes
@@ -157,7 +173,7 @@ func (s *activitySink) consume(w *activityWriter) {
 // never the assistant line. The terminal type:"result" line is handled by classify/extractResultLine.
 type streamLine struct {
 	Type    string         `json:"type"`
-	Message *streamMessage `json:"message"` // type:"assistant" (assembled message); message_start nests one
+	Message *streamMessage `json:"message"` // type:"assistant" (assembled message)
 	Event   *streamEvent   `json:"event"`   // type:"stream_event": the wrapped SSE event
 }
 
@@ -321,9 +337,10 @@ func parseStreamLine(line []byte, w *activityWriter, a *streamAccum) {
 // scanState is a detached job's persisted scan checkpoint (<jobID>.scan): the byte offset consumed so
 // far plus the running accumulator. Each StatusFor poll parses ONLY the .out bytes appended since the
 // last one, so the per-poll cost is bounded to the new bytes and the running total is kept for the
-// whole capture no matter how large it grows. Best-effort: a missing/torn checkpoint just restarts the
-// scan from offset 0 — the figure is always re-derivable from (off, accumulator) + the bytes after off,
-// so concurrent pollers need no lock (a raced stale write only makes the next poll re-parse a little).
+// whole capture no matter how large it grows. The accounting (off + accumulator) is re-derivable, so a
+// torn/missing checkpoint just restarts the scan from offset 0; but LastOut (the display floor) is NOT
+// re-derivable, so scanLiveUsage serializes the whole read-modify-write per job (a flock on a dedicated
+// <jobID>.scan.lock file) — concurrent board polls can't clobber the floor with a stale, lower value.
 type scanState struct {
 	Off       int64 `json:"off"`
 	DoneOut   int   `json:"done_out"`
@@ -358,8 +375,24 @@ func (st scanState) usage() *Usage {
 // appended since the last poll (tracked by the <jobID>.scan checkpoint) and persisting the advanced
 // checkpoint. The background lane has no live writer (its child is detached), so StatusFor calls this
 // each poll to make the job's board token count climb without a sidecar. Returns nil when nothing has
-// been reported yet.
+// been reported yet. The checkpoint read-modify-write is serialized per job (a blocking flock keyed by
+// the .scan path) so two concurrent board polls — the 500ms and 3s chains scan the same job — can't
+// interleave: a slower poll can never write back a stale, lower display floor and tick the board down.
 func scanLiveUsage(outPath, statePath string) *Usage {
+	var u *Usage
+	// Serialize on a DEDICATED lock file (a separate inode from the .scan data file the body reads and
+	// rewrites): locking the data file itself and then re-opening it to write would collide on Windows,
+	// where a byte-range lock plus a second write handle to the same file fails.
+	if err := config.WithFlock(statePath+".lock", func() error {
+		u = scanLiveUsageLocked(outPath, statePath)
+		return nil
+	}); err != nil {
+		return nil // lock unobtainable (e.g. dir vanished) → no figure this poll, never a wrong one
+	}
+	return u
+}
+
+func scanLiveUsageLocked(outPath, statePath string) *Usage {
 	st := loadScanState(statePath)
 	f, err := os.Open(outPath)
 	if err != nil {

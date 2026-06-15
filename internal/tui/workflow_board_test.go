@@ -500,6 +500,114 @@ func TestWfPromptFold_TogglesOnEnter(t *testing.T) {
 	}
 }
 
+// TestBoardMsg_FullStateAppliesWhenJobsLoseToLightChain: a boardMsg whose JOB rows lost the shared-seq
+// race to a faster wfRefreshMsg must still apply its full-refresh-only state (teammates/tmux/pins) — that
+// state rides its own boardMsg-only seq, which the light chain never bumps — while its stale job rows are
+// dropped.
+func TestBoardMsg_FullStateAppliesWhenJobsLoseToLightChain(t *testing.T) {
+	jobID := "j1"
+	done := subagent.Result{JobID: jobID, RunID: "r1", Status: "done", Attempt: 1, Usage: &subagent.Usage{InputTokens: 300, OutputTokens: 42}}
+	running := subagent.Result{JobID: jobID, RunID: "r1", Status: "running", Attempt: 1, Usage: &subagent.Usage{InputTokens: 200, OutputTokens: 5}}
+	m := runsModel(t, nil, nil, map[string]activitySnapshot{})
+	ep := m.boardEpoch
+	// A faster light refresh (seq 2) lands first: leaf done, bumps the shared job seq only.
+	m, _ = step(t, m, wfRefreshMsg{jobs: []subagent.Result{done}, epoch: ep, seq: 2})
+	// A boardMsg whose jobs read earlier (seq 1): its tmux/teammate state still applies (own fullSeq
+	// track), its job rows are dropped (shared track, 1 < 2).
+	m, _ = step(t, m, boardMsg{jobs: []subagent.Result{running}, tmuxMissing: true, epoch: ep, seq: 1, fullSeq: 1})
+	if !m.tmuxMissing {
+		t.Fatal("a boardMsg whose jobs lost to the light chain must still apply its full-refresh-only state")
+	}
+	if len(m.workflowJobs) != 1 || m.workflowJobs[0].Status != "done" {
+		t.Fatalf("its stale job rows must be seq-dropped (stay done), got %+v", m.workflowJobs)
+	}
+}
+
+// TestBoardMsg_StaleFullStateDropped: a stale boardMsg arriving after a newer boardMsg must NOT roll back
+// the newer one's full-refresh-only state (a wrong discovery error / tmux notice / teammate rows would
+// otherwise flash). The fullSeq track drops it just like the job track.
+func TestBoardMsg_StaleFullStateDropped(t *testing.T) {
+	m := runsModel(t, nil, nil, map[string]activitySnapshot{})
+	ep := m.boardEpoch
+	// Newer full board (fullSeq 2): tmux missing.
+	m, _ = step(t, m, boardMsg{tmuxMissing: true, epoch: ep, seq: 2, fullSeq: 2})
+	// A stale boardMsg (fullSeq 1) carrying the opposite state must be dropped, not roll tmuxMissing back.
+	m, _ = step(t, m, boardMsg{tmuxMissing: false, epoch: ep, seq: 1, fullSeq: 1})
+	if !m.tmuxMissing {
+		t.Fatal("a stale boardMsg must not roll back newer full-refresh-only state")
+	}
+}
+
+// TestBoardMsg_StaleFullStateDroppedDespiteHigherJobSeq: full state is gated on fullSeq (stamped at the
+// teammate read), NOT on the job seq (stamped later at ListJobs). So a boardMsg that read teammates STALE
+// but stalled and stamped a HIGHER job seq must still have its stale full state dropped — while its fresher
+// job rows are accepted on the job track.
+func TestBoardMsg_StaleFullStateDroppedDespiteHigherJobSeq(t *testing.T) {
+	m := runsModel(t, nil, nil, map[string]activitySnapshot{})
+	ep := m.boardEpoch
+	jobID := "j1"
+	running := subagent.Result{JobID: jobID, RunID: "r1", Status: "running", Attempt: 1, Usage: &subagent.Usage{InputTokens: 200, OutputTokens: 5}}
+	// Newer full payload B: fresh teammates (fullSeq 6, tmux present), jobs at seq 7.
+	m, _ = step(t, m, boardMsg{tmuxMissing: false, epoch: ep, seq: 7, fullSeq: 6})
+	// Older full payload A: read teammates STALE (fullSeq 1, tmux missing) but stamped a higher job seq 10
+	// after a stall. Its stale full state must be dropped (1 < 6); its later-read jobs are accepted (10 > 7).
+	m, _ = step(t, m, boardMsg{jobs: []subagent.Result{running}, tmuxMissing: true, epoch: ep, seq: 10, fullSeq: 1})
+	if m.tmuxMissing {
+		t.Fatal("a stale full payload must be dropped on fullSeq even when its job seq is higher")
+	}
+	if len(m.workflowJobs) != 1 || m.workflowJobs[0].Status != "running" {
+		t.Fatalf("its later-read job rows should still apply on the job seq track, got %+v", m.workflowJobs)
+	}
+}
+
+// TestWfRefresh_OutOfOrderSeqDropped: within one board epoch the 3s and 500ms chains race, so a refresh
+// that read disk earlier can arrive AFTER a newer one. A newer refresh showing a leaf DONE must not be
+// rolled back by a late earlier-seq refresh that still saw it running with a live snapshot — that would
+// flash the stale running row and its stale tokens for a frame.
+func TestWfRefresh_OutOfOrderSeqDropped(t *testing.T) {
+	m := runsModel(t, nil, nil, map[string]activitySnapshot{})
+	ep := m.boardEpoch
+	jobID := "j1"
+	running := subagent.Result{JobID: jobID, RunID: "r1", Status: "running", Attempt: 1, Usage: &subagent.Usage{InputTokens: 200, OutputTokens: 5}}
+	done := subagent.Result{JobID: jobID, RunID: "r1", Status: "done", Attempt: 1, Usage: &subagent.Usage{InputTokens: 300, OutputTokens: 42}}
+	stale := map[string]activitySnapshot{jobID: {inTok: 5000, outTok: 800, hasUsage: true, attempt: 1}}
+	// The newer refresh (higher seq) lands first: leaf done, no live snapshot.
+	m, _ = step(t, m, wfRefreshMsg{jobs: []subagent.Result{done}, epoch: ep, seq: 2})
+	// The earlier-read refresh (lower seq) arrives late — it must be dropped, not resurrect the run row.
+	m, _ = step(t, m, wfRefreshMsg{jobs: []subagent.Result{running}, activity: stale, epoch: ep, seq: 1})
+	if len(m.workflowJobs) != 1 || m.workflowJobs[0].Status != "done" {
+		t.Fatalf("a late earlier-seq refresh must not resurrect the running row, got %+v", m.workflowJobs)
+	}
+	if in, out := m.liveTokens(m.workflowJobs[0]); in != 300 || out != 42 {
+		t.Fatalf("the done leaf must render Result.Usage, not the stale snapshot, got %d/%d", in, out)
+	}
+}
+
+// TestLeafCounts_AttemptGate: floorActivity smooths m.wfActivity across out-of-order refreshes and can
+// momentarily hold a snapshot carried from a DIFFERENT attempt (a restart reuses the job id). leafCounts/
+// liveTokens must paint such a carried snapshot only when it matches the rendered job's current attempt —
+// never a cross-attempt snapshot on a running row, never a stale snapshot on a terminal row.
+func TestLeafCounts_AttemptGate(t *testing.T) {
+	runningA1 := subagent.Result{JobID: "j1", RunID: "r1", Status: "running", Attempt: 1, Usage: &subagent.Usage{InputTokens: 200, OutputTokens: 5}}
+	doneA2 := subagent.Result{JobID: "j2", RunID: "r1", Status: "done", Attempt: 2, Usage: &subagent.Usage{InputTokens: 300, OutputTokens: 42}}
+	runningA2 := subagent.Result{JobID: "j3", RunID: "r1", Status: "running", Attempt: 2, Usage: &subagent.Usage{InputTokens: 100, OutputTokens: 2}}
+	snap := map[string]activitySnapshot{
+		"j1": {inTok: 5000, outTok: 800, hasUsage: true, attempt: 2, sigs: []string{"A", "B", "C"}}, // attempt-2 snapshot carried onto an attempt-1 running row
+		"j2": {inTok: 5000, outTok: 800, hasUsage: true, attempt: 1, sigs: []string{"A"}},           // stale snapshot on a terminal row
+		"j3": {inTok: 1000, outTok: 200, hasUsage: true, attempt: 2, sigs: []string{"A", "B"}},      // matching attempt-2 snapshot — legit smoothing
+	}
+	m := runsModel(t, nil, nil, snap)
+	if in, out, tools := m.leafCounts(runningA1); in != 200 || out != 5 || tools != 0 {
+		t.Fatalf("a cross-attempt snapshot must not paint a running row; want 200/5/0, got %d/%d/%d", in, out, tools)
+	}
+	if in, out, tools := m.leafCounts(doneA2); in != 300 || out != 42 || tools != 0 {
+		t.Fatalf("a terminal row must use Result.Usage and no stale tool count; want 300/42/0, got %d/%d/%d", in, out, tools)
+	}
+	if in, out, tools := m.leafCounts(runningA2); in != 1000 || out != 200 || tools != 2 {
+		t.Fatalf("a matching-attempt snapshot must drive the running row; want 1000/200/2, got %d/%d/%d", in, out, tools)
+	}
+}
+
 // TestWfLeafCounts_DoneUsesFinalResult: a done leaf shows its accurate final Result.Usage (not the
 // live activity snapshot), while a running leaf shows the live snapshot.
 func TestWfLeafCounts_DoneUsesFinalResult(t *testing.T) {

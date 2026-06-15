@@ -563,8 +563,10 @@ func StatusFor(jobID string) Result {
 	if data, merr := json.Marshal(res); merr == nil {
 		_ = os.WriteFile(resultPath, data, 0o600)
 	}
-	// The live-scan checkpoint is moot once terminal (StatusFor serves the cache now); drop it.
-	_ = os.Remove(filepath.Join(dir, jobID+".scan"))
+	// The live-scan checkpoint is moot once terminal (StatusFor serves the cache now), but it is left for
+	// removeJob to GC: a poll that passed the alive check before this transition may still be mid-scan,
+	// and the .scan.lock flock is never unlinked at all — unlink+recreate would hand a concurrent scanner
+	// a different inode and break the serialization (the same rule the per-run .lock follows).
 	return res
 }
 
@@ -1071,6 +1073,9 @@ func readMeta(dir, jobID string) (jobMeta, error) {
 
 // removeJob deletes every file in a job's group (best-effort), including the opt-in
 // drill-in side files (.prompt / .answer) and a slim run's prompt sidecar (.slimprompt).
+// .scan.lock is deliberately absent: it is a flock file, never GC'd — unlinking one a board
+// poll might still hold would recreate a different inode and break the scan serialization
+// (the same rule the per-run .lock follows).
 func removeJob(dir, jobID string) {
 	for _, suffix := range []string{".json", ".out", ".err", ".prompt", ".answer", ".activity", ".scan", ".slimprompt", ".result.json"} {
 		_ = os.Remove(filepath.Join(dir, jobID+suffix))
@@ -1200,6 +1205,14 @@ func registerSyncJob(jobID string, req Request, model string, effective, downgra
 	// done/answer. No-op for a fresh id.
 	for _, ext := range []string{".result.json", ".answer", ".activity"} {
 		_ = os.Remove(filepath.Join(dir, jobID+ext))
+	}
+	// The remove above is best-effort; for a streamed leaf, GUARANTEE the activity sidecar is empty
+	// before the meta goes live — a survivor (a failed remove) would otherwise be read as this attempt's
+	// activity the instant the job becomes visible as running. Truncate-only, so it never creates an orphan.
+	if req.StreamActivity {
+		if p, perr := leafActivityPath(jobID); perr == nil {
+			freshActivitySidecar(p)
+		}
 	}
 	if err := writeMetaFn(dir, meta); err != nil {
 		return registerFailed

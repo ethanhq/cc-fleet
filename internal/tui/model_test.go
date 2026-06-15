@@ -1475,6 +1475,34 @@ func TestLoadBoardTmuxMissingSkipsEndedSynthesis(t *testing.T) {
 	}
 }
 
+// TestLoadWfData_QueuedJobIgnoresStaleSidecar: a restart reuses the job id, and the best-effort cleanup
+// can leave the prior attempt's .activity. While the requeued job is QUEUED, loadWfData must NOT read that
+// sidecar (which it would stamp with the new attempt) — it must emit a bare tombstone — so floorActivity
+// never carries the stale snapshot into the running phase as the current attempt.
+func TestLoadWfData_QueuedJobIgnoresStaleSidecar(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	jobID := "11111111-1111-1111-1111-111111111111"
+	dir, err := config.ConfigDir()
+	if err != nil {
+		t.Fatalf("ConfigDir: %v", err)
+	}
+	p := filepath.Join(dir, "subagent-jobs", jobID+".activity")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(p, []byte(`{"kind":"usage","in":5000,"out":800}`+"\n"), 0o600); err != nil {
+		t.Fatalf("seed stale sidecar: %v", err)
+	}
+	queued := subagent.Result{JobID: jobID, RunID: "r1", Status: "queued", Attempt: 2}
+	_, activity, _ := loadWfData([]subagent.Result{queued})
+	if snap := activity[jobID]; snap.hasUsage || snap.inTok != 0 || snap.outTok != 0 {
+		t.Fatalf("a queued job must not read its stale sidecar; want a bare tombstone, got %+v", snap)
+	}
+	if activity[jobID].attempt != 2 {
+		t.Fatalf("the queued tombstone must carry the current attempt, got %+v", activity[jobID])
+	}
+}
+
 // TestLoadWfData_SynthesizesBackgroundLiveSnapshot: a detached background job writes no .activity
 // sidecar, so loadWfData synthesizes a live snapshot from its poll-time Usage — making its standalone
 // row climb. A terminal job gets none (only a running row overrides with the live figure).
@@ -1490,6 +1518,54 @@ func TestLoadWfData_SynthesizesBackgroundLiveSnapshot(t *testing.T) {
 		Usage: &subagent.Usage{InputTokens: 5000, OutputTokens: 320}}
 	if _, activity, _ := loadWfData([]subagent.Result{done}); len(activity) != 0 {
 		t.Fatalf("a terminal job must not get a synthesized live snapshot: %+v", activity)
+	}
+}
+
+// TestFloorActivity_KeepsTokensMonotonic: the 3s and 500ms board chains can deliver refreshes out of
+// order, so a later, lower snapshot for a running job must not lower its already-shown tokens; a higher
+// one raises them; a new job passes through; a job absent from the new map is dropped.
+func TestFloorActivity_KeepsTokensMonotonic(t *testing.T) {
+	prev := map[string]activitySnapshot{"j1": {inTok: 5000, outTok: 800, hasUsage: true}}
+	// A stale, lower snapshot lands later — the floor holds the higher tokens.
+	got := floorActivity(prev, map[string]activitySnapshot{"j1": {inTok: 4000, outTok: 300, hasUsage: true}})
+	if got["j1"].inTok != 5000 || got["j1"].outTok != 800 {
+		t.Fatalf("floor must hold the higher tokens, got %+v", got["j1"])
+	}
+	// A genuinely higher snapshot raises the figure.
+	if up := floorActivity(prev, map[string]activitySnapshot{"j1": {inTok: 5000, outTok: 950, hasUsage: true}}); up["j1"].outTok != 950 {
+		t.Fatalf("a higher snapshot must raise the figure, got %+v", up["j1"])
+	}
+	// A new job passes through; a job absent from the new map is not carried.
+	fresh := floorActivity(prev, map[string]activitySnapshot{"j2": {outTok: 10, hasUsage: true}})
+	if fresh["j2"].outTok != 10 {
+		t.Fatalf("a new job must pass through, got %+v", fresh)
+	}
+	if _, ok := fresh["j1"]; ok {
+		t.Fatal("a job absent from the new map must not be carried")
+	}
+	// A restart reuses the job id with a higher Attempt and a fresh low count — the floor must NOT pin it
+	// to the prior attempt's total; the new low snapshot wins.
+	prevA1 := map[string]activitySnapshot{"j1": {inTok: 5000, outTok: 800, hasUsage: true, attempt: 1}}
+	restart := floorActivity(prevA1, map[string]activitySnapshot{"j1": {inTok: 200, outTok: 5, hasUsage: true, attempt: 2}})
+	if restart["j1"].inTok != 200 || restart["j1"].outTok != 5 {
+		t.Fatalf("a bumped attempt must reset the floor, got %+v", restart["j1"])
+	}
+	// A stale pre-restart refresh (attempt 1) can land AFTER the restart's attempt-2 snapshot; it must be
+	// discarded, never put the board back on attempt 1's high total.
+	prevA2 := map[string]activitySnapshot{"j1": {inTok: 200, outTok: 5, hasUsage: true, attempt: 2}}
+	stale := floorActivity(prevA2, map[string]activitySnapshot{"j1": {inTok: 5000, outTok: 800, hasUsage: true, attempt: 1}})
+	if stale["j1"].inTok != 200 || stale["j1"].outTok != 5 {
+		t.Fatalf("a stale lower-attempt snapshot must be discarded, got %+v", stale["j1"])
+	}
+	// The attempt-2 leaf may briefly emit no activity (the restart gap): loadWfData carries it as a zero
+	// attempt-2 tombstone. That refresh must KEEP the attempt-2 floor (not drop the job), so a later stale
+	// attempt-1 refresh still loses to it instead of being accepted as a brand-new entry.
+	held := floorActivity(prevA2, map[string]activitySnapshot{"j1": {attempt: 2}})
+	if held["j1"].inTok != 200 || held["j1"].outTok != 5 || held["j1"].attempt != 2 {
+		t.Fatalf("an empty same-attempt tombstone must hold the floor, got %+v", held["j1"])
+	}
+	if after := floorActivity(held, map[string]activitySnapshot{"j1": {inTok: 5000, outTok: 800, hasUsage: true, attempt: 1}}); after["j1"].inTok != 200 {
+		t.Fatalf("a stale attempt-1 refresh after a tombstone must still be discarded, got %+v", after["j1"])
 	}
 }
 

@@ -55,13 +55,13 @@ Live control runs over a polled per-run control file: `stop --leaf` pre-marks th
 
 ## Concurrency: flock scopes (`config/lock.go` and friends)
 
-Nine scopes. Three nest, strictly in this order when combined:
+Ten scopes. Three nest, strictly in this order when combined:
 
 1. `WithProvidersConfigLock` — the `providers.toml` load→mutate→save cycle (outermost).
 2. `WithTeamLock(team)` — every mutation of per-team state.
 3. `WithServerLock` — global tmux split/layout races (innermost).
 
-The other six are standalone, each held with no other scope: the per-run workflow lifecycle lock; codexproxy's per-port daemon lock; codexproxy's per-credential token lock (read → refresh → persist); the create-once handshake-secret lock; selfupdate's whole-run update lock; and the update-check cache lock.
+The other seven are standalone, each held with no other scope: the per-run workflow lifecycle lock; codexproxy's per-port daemon lock; codexproxy's per-credential token lock (read → refresh → persist); the create-once handshake-secret lock; selfupdate's whole-run update lock; the update-check cache lock; and the subagent per-job live-scan checkpoint lock (a dedicated `<jobID>.scan.lock` file) that serializes a detached background job's incremental token-scan read-modify-write so concurrent board polls can't tick the persisted floor backward.
 
 ## The JSON envelope contract
 
