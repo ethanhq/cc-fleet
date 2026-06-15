@@ -45,15 +45,14 @@ func TestGenerateForProvider_Snapshot(t *testing.T) {
 	const helper = "/usr/local/bin/cc-fleet"
 	// A single-model provider (no strong/fast/effort): the opus/sonnet/haiku alias
 	// slots are pinned to the default so no built-in claude-* id can escape to the
-	// provider, and the subagent slot is "inherit" (subagents keep their own model:).
+	// provider. CLAUDE_CODE_SUBAGENT_MODEL is not set, so subagents keep their own model:.
 	const want = `{
   "apiKeyHelper": "/usr/local/bin/cc-fleet keyget deepseek",
   "env": {
     "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash",
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-flash",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-flash",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "inherit"
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-flash"
   }
 }`
 
@@ -115,12 +114,14 @@ func TestGenerateForProvider_TiersEffortAndStrip1M(t *testing.T) {
 		"ANTHROPIC_DEFAULT_OPUS_MODEL":   "deepseek-v4-max", // strong, [1m] stripped
 		"ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro", // default, [1m] stripped
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL":  "deepseek-v4-flash",
-		"CLAUDE_CODE_SUBAGENT_MODEL":     "inherit", // subagents keep their own model:
 	}
 	for k, w := range want {
 		if back.Env[k] != w {
 			t.Errorf("env[%s] = %q, want %q", k, back.Env[k], w)
 		}
+	}
+	if _, ok := back.Env["CLAUDE_CODE_SUBAGENT_MODEL"]; ok {
+		t.Errorf("CLAUDE_CODE_SUBAGENT_MODEL must NOT be set (subagents keep their own model:), got %q", back.Env["CLAUDE_CODE_SUBAGENT_MODEL"])
 	}
 	if _, ok := back.Env["CLAUDE_CODE_EFFORT_LEVEL"]; ok {
 		t.Errorf("a non-max effort must NOT set CLAUDE_CODE_EFFORT_LEVEL env, got %q", back.Env["CLAUDE_CODE_EFFORT_LEVEL"])
