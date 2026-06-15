@@ -146,26 +146,6 @@ func TestFinalizeSyncJob_KeepsSafeMetricsStripsAnswer(t *testing.T) {
 	}
 }
 
-// TestReadTailCapped_BoundsRead: the running-status scan must never read more than the cap, even when
-// the file is far larger (the bound is what keeps the per-poll cost flat on a big background output).
-func TestReadTailCapped_BoundsRead(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "big.out")
-	if err := os.WriteFile(path, []byte(strings.Repeat("x", 500)), 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	if got := readTailCapped(path, 100); len(got) != 100 {
-		t.Fatalf("read %d bytes, want exactly the 100-byte cap", len(got))
-	}
-	// A file under the cap is returned whole.
-	small := filepath.Join(t.TempDir(), "small.out")
-	if err := os.WriteFile(small, []byte("hello"), 0o600); err != nil {
-		t.Fatalf("write: %v", err)
-	}
-	if got := readTailCapped(small, 100); string(got) != "hello" {
-		t.Fatalf("small file should return whole, got %q", got)
-	}
-}
-
 func readActivity(t *testing.T, path string) []activityRecord {
 	t.Helper()
 	f, err := os.Open(path)
@@ -234,10 +214,10 @@ func TestParseStreamLine_CumulativeDeltaNotSummed(t *testing.T) {
 	}
 }
 
-// TestParseStreamLine_EstimateReconcilesToReal: the live figure is APPROXIMATE — an over-running
-// estimate (400 runes / 5 → 80) yields to the authoritative per-message count (10) when message_delta
-// lands. It tracks the truth rather than holding an inflated estimate; the exact final is Result.Usage.
-func TestParseStreamLine_EstimateReconcilesToReal(t *testing.T) {
+// TestParseStreamLine_MonotonicHoldsEstimate: the live figure never dips — an over-running estimate
+// (400 runes / 5 → 80) is HELD when a lower real count (10) lands, because the current message
+// contributes max(real, estimate). The exact final still arrives from Result.Usage at completion.
+func TestParseStreamLine_MonotonicHoldsEstimate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "m.activity")
 	w := newActivityWriter(path)
 	a := &streamAccum{}
@@ -249,8 +229,53 @@ func TestParseStreamLine_EstimateReconcilesToReal(t *testing.T) {
 			outs = append(outs, r.Out)
 		}
 	}
-	if len(outs) != 2 || outs[0] != 80 || outs[1] != 10 {
-		t.Fatalf("expected the estimate (80) then a reconcile to the real count (10), got %v", outs)
+	if len(outs) == 0 {
+		t.Fatal("expected at least one usage row")
+	}
+	for i, o := range outs {
+		if o < 80 {
+			t.Fatalf("the figure must not dip below the estimate (80); outs=%v (row %d = %d)", outs, i, o)
+		}
+	}
+}
+
+// TestParseStreamLine_MeasuredCarriesReal: when an over-running estimate (400 runes → 80) is followed by
+// a LOWER real count (message_delta 10), the ACCOUNTING carries the real 10 into doneOut at the next
+// message_start — never the inflated estimate — while the DISPLAY floor holds the figure (≥80) so the
+// board doesn't dip. This keeps a measured message from being permanently overcounted.
+func TestParseStreamLine_MeasuredCarriesReal(t *testing.T) {
+	a := &streamAccum{}
+	parseStreamLine([]byte(`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"`+strings.Repeat("x", 400)+`"}}}`), nil, a)
+	parseStreamLine([]byte(`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":10}}}`), nil, a)
+	parseStreamLine([]byte(`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{}}}}`), nil, a)
+	if a.doneOut != 10 {
+		t.Fatalf("a measured message must carry its REAL count (10) into doneOut, not the estimate (80); doneOut=%d", a.doneOut)
+	}
+	if a.lastEmit < 80 {
+		t.Fatalf("the display floor must hold the figure (≥80), got lastEmit=%d", a.lastEmit)
+	}
+}
+
+// TestParseStreamLine_NoDeltaCarriesEstimate: a message that streamed text but reported NO message_delta
+// (some third-party Anthropic-compatible providers) must not lose its output — at the next message_start
+// its estimate is carried into doneOut, and the running total stays ≥ the first message's estimate.
+func TestParseStreamLine_NoDeltaCarriesEstimate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "nd.activity")
+	w := newActivityWriter(path)
+	a := &streamAccum{}
+	// msg1: 500 runes / 5 → 100 estimate, NO message_delta.
+	parseStreamLine([]byte(`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"`+strings.Repeat("x", 500)+`"}}}`), w, a)
+	// msg2 begins: msg1's 100 estimate must carry into doneOut, not vanish.
+	parseStreamLine([]byte(`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{}}}}`), w, a)
+	parseStreamLine([]byte(`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"`+strings.Repeat("y", 150)+`"}}}`), w, a)
+	var last int
+	for _, r := range readActivity(t, path) {
+		if r.Kind == "usage" {
+			last = r.Out
+		}
+	}
+	if last < 130 { // carried 100 + the 30 of msg2's in-flight estimate
+		t.Fatalf("a no-message_delta message's estimate must carry across the boundary, got last out=%d", last)
 	}
 }
 
@@ -271,20 +296,51 @@ func TestParseStreamLine_InputSeedCarry(t *testing.T) {
 	}
 }
 
-// TestScanLiveUsage_PartialAndReconciled: the background poll scan returns a climbing estimate from a
-// partial capture (text deltas, no message_delta yet) and the reconciled real output once message_delta
-// lands; a capture with no usage at all returns nil.
-func TestScanLiveUsage_PartialAndReconciled(t *testing.T) {
-	partial := []byte(`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":2000}}}}` + "\n" +
-		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"` + strings.Repeat("x", 80) + `"}}}` + "\n")
-	if u := scanLiveUsage(partial); u == nil || u.InputTokens != 2000 || u.OutputTokens != 16 {
-		t.Fatalf("partial scan: want in=2000 out=16 (80 runes/5), got %+v", u)
+// TestScanLiveUsage_IncrementalCheckpoint: the background scan parses only the bytes appended since the
+// last poll (tracked by the .scan checkpoint) and keeps the running total across the whole capture, so
+// the count climbs across polls and never drops regardless of file size.
+func TestScanLiveUsage_IncrementalCheckpoint(t *testing.T) {
+	dir := t.TempDir()
+	outPath := filepath.Join(dir, "j.out")
+	statePath := filepath.Join(dir, "j.scan")
+	write := func(s string) {
+		f, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		_, _ = f.WriteString(s)
+		_ = f.Close()
 	}
-	full := append(append([]byte{}, partial...), []byte(`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":42}}}`+"\n")...)
-	if u := scanLiveUsage(full); u == nil || u.OutputTokens != 42 {
-		t.Fatalf("full scan: want out=42 (reconciled), got %+v", u)
+
+	// Poll 1: message_start + a text delta → the live estimate (80 runes / 5 = 16).
+	write(`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":2000}}}}` + "\n")
+	write(`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"` + strings.Repeat("x", 80) + `"}}}` + "\n")
+	u1 := scanLiveUsage(outPath, statePath)
+	if u1 == nil || u1.InputTokens != 2000 || u1.OutputTokens != 16 {
+		t.Fatalf("poll 1: want in=2000 out=16, got %+v", u1)
 	}
-	if scanLiveUsage([]byte(`{"type":"system"}`+"\n")) != nil {
-		t.Fatalf("a capture with no usage should return nil")
+	off1 := loadScanState(statePath).Off
+	if off1 == 0 {
+		t.Fatal("checkpoint offset should advance after poll 1")
+	}
+
+	// Poll 2: append msg1's real count and a whole second message → totals accumulate across polls.
+	write(`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":50}}}` + "\n")
+	write(`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{}}}}` + "\n")
+	write(`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":70}}}` + "\n")
+	u2 := scanLiveUsage(outPath, statePath)
+	if u2 == nil || u2.OutputTokens != 120 { // 50 (msg1) carried + 70 (msg2)
+		t.Fatalf("poll 2: want out=120 (50+70 accumulated across the capture), got %+v", u2)
+	}
+	if u2.OutputTokens < u1.OutputTokens {
+		t.Fatalf("the running figure dropped across polls: %d -> %d", u1.OutputTokens, u2.OutputTokens)
+	}
+	if loadScanState(statePath).Off <= off1 {
+		t.Fatal("checkpoint offset should advance again on poll 2")
+	}
+
+	// An absent capture (nothing reported yet) returns nil.
+	if scanLiveUsage(filepath.Join(dir, "absent.out"), filepath.Join(dir, "absent.scan")) != nil {
+		t.Fatal("an absent capture should return nil")
 	}
 }

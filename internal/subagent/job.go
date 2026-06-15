@@ -490,12 +490,13 @@ func StatusFor(jobID string) Result {
 			SlimDowngrade: meta.SlimDowngrade,
 			Attempt:       meta.Attempt,
 		}
-		// A detached job has no live activity writer, so scan its growing stream-json
-		// .out for the running token count — making its board figure climb mid-run.
-		// The read is tail-bounded so a poll stays cheap on a very large output (the
-		// terminal classify below still reads the whole file for the exact count).
+		// A detached job has no live activity writer, so each poll scans its growing stream-json .out
+		// for the running token count, parsing ONLY the bytes appended since the last poll (tracked by
+		// the <jobID>.scan checkpoint) so the cost stays flat and the total is kept for the whole
+		// capture regardless of size. The terminal classify below reads the whole file for the exact
+		// count.
 		if meta.Stream {
-			res.Usage = scanLiveUsage(readTailCapped(filepath.Join(dir, jobID+".out"), maxLiveScan))
+			res.Usage = scanLiveUsage(filepath.Join(dir, jobID+".out"), filepath.Join(dir, jobID+".scan"))
 		}
 		return res
 	}
@@ -504,7 +505,7 @@ func StatusFor(jobID string) Result {
 	// exit code; the terminal envelope is the only signal. This runs ONCE per job (the result is then
 	// cached), so it reads the whole .out: a stream-json transcript's type:"result" line carries the
 	// full answer and can sit anywhere, so the classify read must be complete — only the per-poll
-	// running scan above is tail-bounded (best-effort live; the terminal must be exact).
+	// running scan above is incremental (best-effort live; the terminal must be exact).
 	outPath := filepath.Join(dir, jobID+".out")
 	errPath := filepath.Join(dir, jobID+".err")
 	stdout, _ := os.ReadFile(outPath)
@@ -562,6 +563,8 @@ func StatusFor(jobID string) Result {
 	if data, merr := json.Marshal(res); merr == nil {
 		_ = os.WriteFile(resultPath, data, 0o600)
 	}
+	// The live-scan checkpoint is moot once terminal (StatusFor serves the cache now); drop it.
+	_ = os.Remove(filepath.Join(dir, jobID+".scan"))
 	return res
 }
 
@@ -1069,7 +1072,7 @@ func readMeta(dir, jobID string) (jobMeta, error) {
 // removeJob deletes every file in a job's group (best-effort), including the opt-in
 // drill-in side files (.prompt / .answer) and a slim run's prompt sidecar (.slimprompt).
 func removeJob(dir, jobID string) {
-	for _, suffix := range []string{".json", ".out", ".err", ".prompt", ".answer", ".activity", ".slimprompt", ".result.json"} {
+	for _, suffix := range []string{".json", ".out", ".err", ".prompt", ".answer", ".activity", ".scan", ".slimprompt", ".result.json"} {
 		_ = os.Remove(filepath.Join(dir, jobID+suffix))
 	}
 }

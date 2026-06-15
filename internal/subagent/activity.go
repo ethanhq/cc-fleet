@@ -184,38 +184,42 @@ type streamContent struct {
 	Input json.RawMessage `json:"input"`
 }
 
-// streamAccum carries the running token figure across a leaf's stream-json lines. Output is APPROXIMATE
-// while a message streams and reconciles to the EXACT provider count as each message completes:
-// doneOut is the summed real output of finalized prior messages, curOut is the current message's real
-// cumulative output (set from its message_delta — cumulative, so the latest value wins; multiple deltas
-// in one message never double-count), and turnRunes is a conservative runes estimate used only until
-// curOut is known, so the figure climbs during a long turn instead of jumping only at the end. It is
-// NOT strictly monotonic: an over-running estimate yields DOWN to the authoritative count when
-// message_delta lands. Input is seeded from the prompt estimate and superseded by a real, larger
-// usage.input_tokens; cache is the latest non-zero reported. The exact final arrives from Result.Usage.
+// streamAccum carries a leaf's running token figure across its stream-json lines. ACCOUNTING is exact:
+// doneOut sums each finalized message's REAL output (curOut, from its message_delta — cumulative, so the
+// latest value wins and multiple deltas never double-count), falling back to a conservative runes
+// estimate only for a message that streamed text but reported NO message_delta (some third-party
+// Anthropic-compatible providers). DISPLAY is monotonic: maybeEmitUsage floors the emitted value at the
+// max already shown (lastEmit), so a low real count landing after a higher estimate never dips the board
+// — without inflating the accounting. Input is the peak (grows with context); cache the latest non-zero.
+// The exact final still arrives from Result.Usage at completion.
 type streamAccum struct {
-	inTok     int // latest input tokens (prompt seed, then real)
-	cache     int // latest cache-read input tokens
-	doneOut   int // summed real output of finalized prior messages
-	curOut    int // current message's real cumulative output (0 until its message_delta)
-	turnRunes int // streamed text runes of the current message (estimate source until curOut is known)
-	lastEmit  int // last emitted output (throttle baseline only — not a floor)
+	inTok       int  // latest input tokens (prompt seed, then real)
+	cache       int  // latest cache-read input tokens
+	doneOut     int  // exact summed output of finalized prior messages (real, or estimate when unmeasured)
+	curOut      int  // current message's real cumulative output (0 until its message_delta)
+	curMeasured bool // the current message reported a message_delta (its real output is known)
+	turnRunes   int  // streamed text runes of the current message (estimate source when unmeasured)
+	lastEmit    int  // max output already shown (display floor + throttle baseline)
 }
 
-// runesPerTokenEstimate converts streamed output runes into a CONSERVATIVE token estimate for the
-// in-flight message. It biases low (real output runs ≈4 chars/token, sometimes more) so the live
-// figure tends to settle UP to the exact provider count when message_delta lands rather than snapping
-// down — a clean "finishing" motion instead of a backward step.
+// runesPerTokenEstimate converts streamed output runes into a CONSERVATIVE token estimate for an
+// unmeasured in-flight message. It biases low (real output runs ≈4 chars/token, sometimes more) so the
+// estimate usually sits under the real count and the figure settles UP to the exact total at completion.
 const runesPerTokenEstimate = 5
 
-// estOut is the running output figure: finalized prior messages' real output, plus the current
-// message's real cumulative once message_delta reports it, else the conservative runes estimate.
-func (a *streamAccum) estOut() int {
-	if a.curOut > 0 {
-		return a.doneOut + a.curOut
+// curContribution is the current message's output so far for the ACCOUNTING total: its real cumulative
+// count once message_delta reported it, else the conservative runes estimate (so an unmeasured message
+// still contributes). The real count wins for a measured message; the display floor (lastEmit) handles
+// any visual dip separately, so the accounting is never inflated by an over-running estimate.
+func (a *streamAccum) curContribution() int {
+	if a.curMeasured {
+		return a.curOut
 	}
-	return a.doneOut + a.turnRunes/runesPerTokenEstimate
+	return a.turnRunes / runesPerTokenEstimate
 }
+
+// estOut is the running output figure: finalized prior messages plus the current message's contribution.
+func (a *streamAccum) estOut() int { return a.doneOut + a.curContribution() }
 
 // foldInputCache lifts input/cache from a usage object (message_start, message_delta, or the
 // assembled assistant line): input is the peak (it only grows with context), cache the latest
@@ -241,6 +245,9 @@ const activityUsageStep = 24
 // climbing estimate grew past the throttle. Nil-safe for the writer (scanLiveUsage accumulates only).
 func maybeEmitUsage(w *activityWriter, a *streamAccum, force bool) {
 	out := a.estOut()
+	if out < a.lastEmit {
+		out = a.lastEmit // display floor: never show less than already shown, even when a real count is lower
+	}
 	if a.inTok == 0 && out == 0 && a.cache == 0 {
 		return
 	}
@@ -283,8 +290,13 @@ func parseStreamLine(line []byte, w *activityWriter, a *streamAccum) {
 		}
 		switch sl.Event.Type {
 		case "message_start":
-			a.doneOut += a.curOut // finalize the prior message's real output
+			// Finalize the prior message into the exact accounting total: its REAL count when it reported
+			// a message_delta, else its runes estimate (an unmeasured provider's output isn't lost). The
+			// display floor in maybeEmitUsage keeps the board from dipping; it never feeds back here, so a
+			// measured message is never overcounted. A new message restarts at 0.
+			a.doneOut += a.curContribution()
 			a.curOut = 0
+			a.curMeasured = false
 			a.turnRunes = 0
 			if sl.Event.Message != nil {
 				a.foldInputCache(sl.Event.Message.Usage)
@@ -299,52 +311,105 @@ func parseStreamLine(line []byte, w *activityWriter, a *streamAccum) {
 			a.foldInputCache(sl.Event.Usage)
 			if sl.Event.Usage != nil {
 				a.curOut = sl.Event.Usage.OutputTokens // this message's cumulative output — latest wins, never summed
+				a.curMeasured = true
 			}
 			maybeEmitUsage(w, a, true)
 		}
 	}
 }
 
-// maxLiveScan bounds the per-poll running-status scan of a detached job's .out (StatusFor runs every
-// board tick). A normal output is far smaller; only a multi-MiB output is tail-truncated, where the
-// live figure is best-effort anyway and the terminal classify still reads the whole file.
-const maxLiveScan = 4 << 20 // 4 MiB
-
-// readTailCapped returns up to the last max bytes of the file (the whole file when smaller). The read
-// is HARD-capped via io.LimitReader, so a child appending to the same .out between the stat and the
-// read can never make this poll read more than max — the extra bytes are picked up on the next poll.
-// A tail cut may split the first line; scanLiveUsage skips an unparseable line, so it loses that one.
-func readTailCapped(path string, max int64) []byte {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	if fi, statErr := f.Stat(); statErr == nil && fi.Size() > max {
-		if _, seekErr := f.Seek(fi.Size()-max, io.SeekStart); seekErr != nil {
-			return nil
-		}
-	}
-	data, _ := io.ReadAll(io.LimitReader(f, max))
-	return data
+// scanState is a detached job's persisted scan checkpoint (<jobID>.scan): the byte offset consumed so
+// far plus the running accumulator. Each StatusFor poll parses ONLY the .out bytes appended since the
+// last one, so the per-poll cost is bounded to the new bytes and the running total is kept for the
+// whole capture no matter how large it grows. Best-effort: a missing/torn checkpoint just restarts the
+// scan from offset 0 — the figure is always re-derivable from (off, accumulator) + the bytes after off,
+// so concurrent pollers need no lock (a raced stale write only makes the next poll re-parse a little).
+type scanState struct {
+	Off       int64 `json:"off"`
+	DoneOut   int   `json:"done_out"`
+	CurOut    int   `json:"cur_out"`
+	Measured  bool  `json:"measured"` // the in-flight message has reported a message_delta
+	TurnRunes int   `json:"turn_runes"`
+	InTok     int   `json:"in_tok"`
+	Cache     int   `json:"cache"`
+	LastOut   int   `json:"last_out"` // display floor: the max output already shown (never dips across polls)
 }
 
-// scanLiveUsage runs the same accumulation as the live sink over a (possibly partial) stream-json
-// capture and returns the running usage, or nil when nothing has been reported yet. The background
-// lane has no live writer (its child is detached), so StatusFor calls this each poll to fill a running
-// job's Usage from its growing .out — making its board token count climb without a sidecar.
-func scanLiveUsage(stdout []byte) *Usage {
-	a := &streamAccum{}
-	sc := bufio.NewScanner(bytes.NewReader(stdout))
-	sc.Buffer(make([]byte, 0, 64*1024), maxChildOutput)
-	for sc.Scan() {
-		parseStreamLine(sc.Bytes(), nil, a) // nil writer: accumulate only, never emit
+func (st scanState) accum() *streamAccum {
+	return &streamAccum{inTok: st.InTok, cache: st.Cache, doneOut: st.DoneOut, curOut: st.CurOut,
+		curMeasured: st.Measured, turnRunes: st.TurnRunes, lastEmit: st.LastOut}
+}
+
+// usage is the figure shown to the board: the exact accounting total, floored at LastOut so it never
+// dips across polls (a low real count never undoes a higher figure already shown). nil until anything
+// has been reported.
+func (st scanState) usage() *Usage {
+	out := st.accum().estOut()
+	if out < st.LastOut {
+		out = st.LastOut
 	}
-	out := a.estOut()
-	if a.inTok == 0 && out == 0 && a.cache == 0 {
+	if st.InTok == 0 && out == 0 && st.Cache == 0 {
 		return nil
 	}
-	return &Usage{InputTokens: a.inTok, OutputTokens: out, CacheReadInputTokens: a.cache}
+	return &Usage{InputTokens: st.InTok, OutputTokens: out, CacheReadInputTokens: st.Cache}
+}
+
+// scanLiveUsage updates a detached job's running usage by parsing only the stream-json .out bytes
+// appended since the last poll (tracked by the <jobID>.scan checkpoint) and persisting the advanced
+// checkpoint. The background lane has no live writer (its child is detached), so StatusFor calls this
+// each poll to make the job's board token count climb without a sidecar. Returns nil when nothing has
+// been reported yet.
+func scanLiveUsage(outPath, statePath string) *Usage {
+	st := loadScanState(statePath)
+	f, err := os.Open(outPath)
+	if err != nil {
+		return st.usage()
+	}
+	defer f.Close()
+	if fi, statErr := f.Stat(); statErr != nil || st.Off > fi.Size() {
+		st = scanState{} // unreadable, or the capture is shorter than our offset (rotated) → restart
+	}
+	if _, err := f.Seek(st.Off, io.SeekStart); err != nil {
+		return st.usage()
+	}
+	data, err := io.ReadAll(f) // only the new bytes since st.Off
+	if err != nil {
+		return st.usage()
+	}
+	a := st.accum()
+	// Parse only COMPLETE lines (through the last newline); a partial trailing line still being written
+	// is left for the next poll, so a delta is never half-counted.
+	if nl := bytes.LastIndexByte(data, '\n'); nl >= 0 {
+		for _, line := range bytes.Split(data[:nl], []byte{'\n'}) {
+			parseStreamLine(line, nil, a) // nil writer: accumulate only, never emit
+		}
+		floor := a.estOut()
+		if floor < st.LastOut {
+			floor = st.LastOut // carry the display floor forward — the shown figure never dips
+		}
+		st = scanState{Off: st.Off + int64(nl) + 1, DoneOut: a.doneOut, CurOut: a.curOut, Measured: a.curMeasured,
+			TurnRunes: a.turnRunes, InTok: a.inTok, Cache: a.cache, LastOut: floor}
+		saveScanState(statePath, st)
+	}
+	return st.usage()
+}
+
+// loadScanState reads a job's scan checkpoint; a missing or torn file degrades to the zero state
+// (a full re-scan), so a crash mid-write never corrupts the count.
+func loadScanState(path string) scanState {
+	var st scanState
+	if data, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(data, &st)
+	}
+	return st
+}
+
+// saveScanState persists the advanced checkpoint, best-effort: the checkpoint is a regenerable cache
+// (re-derivable from the .out), so a lost or torn write just costs the next poll a re-parse.
+func saveScanState(path string, st scanState) {
+	if data, err := json.Marshal(st); err == nil {
+		_ = os.WriteFile(path, data, 0o600)
+	}
 }
 
 // ToolArgPreview renders a tool_use input as a single safe line: the primary argument value
