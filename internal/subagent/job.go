@@ -43,16 +43,20 @@ var maxPromptBytes = 10 << 20 // 10 MiB
 // secret (prompt/answer are intentionally NOT persisted here) — just enough to
 // poll the process and re-classify its captured stdout later.
 type jobMeta struct {
-	JobID         string `json:"job_id"`
-	PID           int    `json:"pid"`
-	PGID          int    `json:"pgid"`
-	Provider      string `json:"provider"`
-	Model         string `json:"model"`
-	StartedAt     string `json:"started_at"`
-	Status        string `json:"status"`
-	Resume        string `json:"resume,omitempty"`
-	OutputFormat  string `json:"output_format,omitempty"`
-	JSON          bool   `json:"json"`
+	JobID        string `json:"job_id"`
+	PID          int    `json:"pid"`
+	PGID         int    `json:"pgid"`
+	Provider     string `json:"provider"`
+	Model        string `json:"model"`
+	StartedAt    string `json:"started_at"`
+	Status       string `json:"status"`
+	Resume       string `json:"resume,omitempty"`
+	OutputFormat string `json:"output_format,omitempty"`
+	JSON         bool   `json:"json"`
+	// Stream marks a background job whose .out is stream-json (not a single json
+	// envelope): StatusFor scans it for live usage while running and routes the
+	// dead-branch classify through extractResultLine. Absent on a legacy json meta.
+	Stream        bool   `json:"stream,omitempty"`
 	LeadSessionID string `json:"lead_session_id,omitempty"`
 	// SettingsPath is the claude `--settings <profile>` for a BACKGROUND job: the
 	// per-provider profile path, unique enough to bind meta.PID to its claude child
@@ -125,9 +129,11 @@ var materializePromptFn = materializePromptReader
 // child runs with its OWN process group and NO deadline so it survives the
 // parent cc-fleet exiting (poll it with StatusFor / subagent-status).
 //
-// Background runs always use claude's `--output-format json` so StatusFor can
-// rely on the envelope rather than a placeholder exit code, making text-mode
-// background failures classify correctly instead of false-reporting `done`.
+// Background runs always stream claude's `--output-format stream-json` (with
+// partial messages): StatusFor scans the growing .out for a live, climbing token
+// count while the job runs, and classifies the terminal type:"result" line via
+// extractResultLine. launchBackground OWNS this inner format — no caller field
+// decides it — so a text-mode background failure still classifies correctly.
 //
 // Any failure between cmd.Start and the final Release triggers a process-group
 // SIGTERM (200ms grace) → SIGKILL → Wait → file cleanup so we never leak a
@@ -141,11 +147,13 @@ func launchBackground(req Request, binaryPath, profilePath, model, effective, do
 		return fail(ErrCodeFailed, fmt.Sprintf("mkdir jobs dir: %v", err), req.Provider, "")
 	}
 
-	// Force inner JSON so StatusFor classifies via the envelope, not exitCode=0.
-	// Outer JSON/text formatting is unaffected (it only changes how
-	// reportSubagent prints the final Result).
+	// Stream the inner output as stream-json (+ partial messages) so StatusFor can
+	// scan the .out for a live token count and classify the terminal result line.
+	// buildArgv's switch checks StreamActivity FIRST, so setting it here is the sole
+	// authority on the inner format regardless of the caller's OutputFormat/JSON.
+	// Outer JSON/text formatting is unaffected (the persisted meta keeps req's).
 	innerReq := req
-	innerReq.OutputFormat = "json"
+	innerReq.StreamActivity = true
 
 	jobID := uuid.NewString()
 	outPath := filepath.Join(dir, jobID+".out")
@@ -247,15 +255,15 @@ func launchBackground(req Request, binaryPath, profilePath, model, effective, do
 		Resume:    req.Resume,
 		PersistIO: req.PersistIO, // finalize (via StatusFor) writes .answer only when carried here
 		// Persist the outer (user-facing) format flags so subagent-status can
-		// still render the operator's preferred shape (text vs JSON).
-		// OutputFormat stays as the caller asked; JSON is force-set true below
-		// regardless of the caller, because the inner argv is ALWAYS
-		// --output-format json for background launches, so StatusFor must
-		// classify stdout as an envelope. Without it, a text-mode background job
-		// whose child wrote a JSON error envelope would be blessed as
-		// status:"done" by the text-mode fallback.
+		// still render the operator's preferred shape (text vs JSON). OutputFormat
+		// stays as the caller asked; JSON is force-set true regardless of the
+		// caller so StatusFor treats the .out as an envelope (the inner stream-json
+		// carries a type:"result" line classify reads via extractResultLine).
+		// Without it, a text-mode background job whose child wrote a JSON error
+		// envelope would be blessed as status:"done" by the text-mode fallback.
 		OutputFormat:  req.OutputFormat,
 		JSON:          true,
+		Stream:        true, // the .out is stream-json: scan-for-live-usage + extract-result-line on classify
 		LeadSessionID: req.LeadSessionID,
 		SettingsPath:  profilePath, // binds this pid to its claude child (reuse guard)
 		RunID:         req.RunID,
@@ -464,7 +472,7 @@ func StatusFor(jobID string) Result {
 	}
 
 	if processAlive(meta.PID, meta.SettingsPath, meta.ProcStart) {
-		return Result{
+		res := Result{
 			OK:            true,
 			JobID:         jobID,
 			Status:        "running",
@@ -482,24 +490,44 @@ func StatusFor(jobID string) Result {
 			SlimDowngrade: meta.SlimDowngrade,
 			Attempt:       meta.Attempt,
 		}
+		// A detached job has no live activity writer, so scan its growing stream-json
+		// .out for the running token count — making its board figure climb mid-run.
+		// The read is tail-bounded so a poll stays cheap on a very large output (the
+		// terminal classify below still reads the whole file for the exact count).
+		if meta.Stream {
+			res.Usage = scanLiveUsage(readTailCapped(filepath.Join(dir, jobID+".out"), maxLiveScan))
+		}
+		return res
 	}
 
 	// Dead → classify the captured output. The detached child was Released, so we can't reap a real
-	// exit code; the (json) envelope or (text) answer is the only terminal signal.
+	// exit code; the terminal envelope is the only signal. This runs ONCE per job (the result is then
+	// cached), so it reads the whole .out: a stream-json transcript's type:"result" line carries the
+	// full answer and can sit anywhere, so the classify read must be complete — only the per-poll
+	// running scan above is tail-bounded (best-effort live; the terminal must be exact).
 	outPath := filepath.Join(dir, jobID+".out")
 	errPath := filepath.Join(dir, jobID+".err")
 	stdout, _ := os.ReadFile(outPath)
 	stderr, _ := os.ReadFile(errPath)
 	innerJSON := meta.JSON || meta.OutputFormat == "json"
-	// A detached json leaf can be seen dead a moment before its envelope write lands. When the
+	// A stream-json .out is multi-line NDJSON; classify wants the single type:"result" line, so
+	// distill it (the sync StreamActivity path does the same). A legacy json .out passes through.
+	if meta.Stream {
+		stdout = extractResultLine(stdout)
+	}
+	// A detached leaf can be seen dead a moment before its result write lands. When the result
 	// capture is empty, re-read once after a short delay before classifying, so a late write
 	// isn't cached as a failure. The capture file's EXISTENCE is the detached marker (only a
 	// detached launch creates it; sync metas never do) — not the profile path, which a native
-	// (reserved `claude`) job legitimately lacks. Non-empty output skips the wait.
+	// (reserved `claude`) job legitimately lacks. A non-empty result skips the wait.
 	if _, statErr := os.Stat(outPath); statErr == nil && innerJSON && strings.TrimSpace(string(stdout)) == "" {
 		time.Sleep(statusConfirmDelay)
-		stdout, _ = os.ReadFile(outPath)
 		stderr, _ = os.ReadFile(errPath)
+		raw, _ := os.ReadFile(outPath)
+		if meta.Stream {
+			raw = extractResultLine(raw)
+		}
+		stdout = raw
 	}
 	var res Result
 	if vanishedWithoutResult(stdout, innerJSON) {

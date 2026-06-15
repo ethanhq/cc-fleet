@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"syscall"
@@ -98,13 +99,13 @@ func TestLaunchBackground_CleanupOnWriteMetaFailure(t *testing.T) {
 	}
 }
 
-// TestLaunchBackground_ForcesInnerJSON: even when the caller asks for text-mode
+// TestLaunchBackground_ForcesStreamJSON: even when the caller asks for text-mode
 // output (req.OutputFormat = "text"), background launches MUST run claude with
-// --output-format json so StatusFor can classify via the envelope rather than a
-// placeholder exit code. We detect this by snooping the meta's OutputFormat
-// (which stays "text" — the outer print format), then asserting the actual argv
-// contained "--output-format json".
-func TestLaunchBackground_ForcesInnerJSON(t *testing.T) {
+// --output-format stream-json (+ partial messages) so StatusFor can scan live
+// usage and classify the terminal result line. We detect this by asserting the
+// actual argv emitted the coupled --output-format stream-json plus the partial
+// flag, while the meta's OutputFormat stays "text" (the outer print format).
+func TestLaunchBackground_ForcesStreamJSON(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", t.TempDir())
@@ -164,10 +165,13 @@ exit 0
 	}
 	// The flag and its value must be ADJACENT (the script writes one arg per
 	// line): two loose tokens anywhere in the argv would not prove
-	// `--output-format json` was actually emitted as a coupled pair.
+	// `--output-format stream-json` was actually emitted as a coupled pair.
 	argv := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if !argvHasAdjacent(argv, "--output-format", "json") {
-		t.Errorf("background argv missing adjacent --output-format json:\n%s", string(data))
+	if !argvHasAdjacent(argv, "--output-format", "stream-json") {
+		t.Errorf("background argv missing adjacent --output-format stream-json:\n%s", string(data))
+	}
+	if !slices.Contains(argv, "--include-partial-messages") {
+		t.Errorf("background argv missing --include-partial-messages:\n%s", string(data))
 	}
 
 	// Reap detached child.
@@ -175,12 +179,12 @@ exit 0
 }
 
 // TestLaunchBackground_OuterTextStatusEnvelopeAware: with outer text-mode but
-// Background=true, the inner argv is forced to --output-format json AND StatusFor
-// MUST classify stdout as an envelope. meta.JSON is forced true for background
-// launches so the `innerJSON := meta.JSON || meta.OutputFormat == "json"`
-// decision doesn't fall to the text-mode classifier, which would bless a JSON
-// error envelope as status:"done". This pokes that path end-to-end (fake-claude
-// exits with an error envelope, then we poll StatusFor and assert status:"failed").
+// Background=true, the inner argv is forced to stream-json AND StatusFor MUST
+// classify the terminal result line as an envelope. meta.JSON is forced true for
+// background launches so the `innerJSON := meta.JSON || meta.OutputFormat == "json"`
+// decision doesn't fall to the text-mode classifier, which would bless an error
+// envelope as status:"done". This pokes that path end-to-end (fake-claude emits a
+// stream-json result line with an error, then we poll StatusFor for status:"failed").
 func TestLaunchBackground_OuterTextStatusEnvelopeAware(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
@@ -191,9 +195,9 @@ func TestLaunchBackground_OuterTextStatusEnvelopeAware(t *testing.T) {
 	// ErrCodeRateLimited under the envelope-aware branch. In the text-mode
 	// fallback, this same stdout would be treated as a successful plain-text
 	// result and reported as status:"done".
-	const errorEnvelope = `{"type":"result","subtype":"error","is_error":true,"api_error_status":429,
- "result":"rate limit exceeded","num_turns":1,"total_cost_usd":0,
- "modelUsage":{},"permission_denials":[]}`
+	// A single-line stream-json result line (the inner format is now stream-json, so the
+	// terminal envelope arrives as one NDJSON line that extractResultLine distills).
+	const errorEnvelope = `{"type":"result","subtype":"error","is_error":true,"api_error_status":429,"result":"rate limit exceeded","num_turns":1,"total_cost_usd":0,"modelUsage":{},"permission_denials":[]}`
 
 	script := `#!/bin/sh
 printf '%s' '` + errorEnvelope + `'

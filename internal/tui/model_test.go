@@ -1475,6 +1475,24 @@ func TestLoadBoardTmuxMissingSkipsEndedSynthesis(t *testing.T) {
 	}
 }
 
+// TestLoadWfData_SynthesizesBackgroundLiveSnapshot: a detached background job writes no .activity
+// sidecar, so loadWfData synthesizes a live snapshot from its poll-time Usage — making its standalone
+// row climb. A terminal job gets none (only a running row overrides with the live figure).
+func TestLoadWfData_SynthesizesBackgroundLiveSnapshot(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	running := subagent.Result{JobID: "bg11111111111111", Status: "running",
+		Usage: &subagent.Usage{InputTokens: 5000, OutputTokens: 320}}
+	_, activity, _ := loadWfData([]subagent.Result{running})
+	if snap := activity["bg11111111111111"]; !snap.hasUsage || snap.inTok != 5000 || snap.outTok != 320 {
+		t.Fatalf("a running background job must get a synthesized live snapshot, got %+v", snap)
+	}
+	done := subagent.Result{JobID: "bg22222222222222", Status: "done",
+		Usage: &subagent.Usage{InputTokens: 5000, OutputTokens: 320}}
+	if _, activity, _ := loadWfData([]subagent.Result{done}); len(activity) != 0 {
+		t.Fatalf("a terminal job must not get a synthesized live snapshot: %+v", activity)
+	}
+}
+
 // TestBoardJobsErrOwnLine: a jobs-scan failure renders on its own line and does NOT clobber
 // a surfaced hide/show outcome.
 func TestBoardJobsErrOwnLine(t *testing.T) {

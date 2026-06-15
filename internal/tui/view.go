@@ -1085,14 +1085,21 @@ func leafDuration(j subagent.Result) string {
 // Live from the activity snapshot while running, the accurate final from the Result once done; the
 // tool count always comes from the snapshot (the final Result doesn't carry it).
 func (m Model) leafCounts(j subagent.Result) (in, out, tools int) {
+	in, out = m.liveTokens(j)
+	return in, out, m.wfActivity[j.JobID].toolCount()
+}
+
+// liveTokens resolves a job's (peak-input, cumulative-output) token pair: the final Result usage,
+// overridden by the live activity snapshot while the job runs. Shared by leafCounts and jobTokens so
+// every surface (run header, workflow rows, subagent rows) reads the same 500ms-refreshed source.
+func (m Model) liveTokens(j subagent.Result) (in, out int) {
 	if j.Usage != nil {
 		in, out = j.Usage.InputTokens, j.Usage.OutputTokens
 	}
-	snap := m.wfActivity[j.JobID]
-	if j.Status == "running" && snap.hasUsage {
+	if snap := m.wfActivity[j.JobID]; j.Status == "running" && snap.hasUsage {
 		in, out = snap.inTok, snap.outTok
 	}
-	return in, out, snap.toolCount()
+	return in, out
 }
 
 // agentDetailLines is the focused agent's inline detail (the run drill's agent right pane, scrollable): status/model
@@ -1798,17 +1805,9 @@ func (m Model) leafStatsLine(j subagent.Result) string {
 	return line
 }
 
-// jobTokens is the job's (peak-context, cumulative-output) token pair: the final Result
-// usage, overridden by the live activity snapshot while the focused job still runs.
-func (m Model) jobTokens(j subagent.Result) (in, out int) {
-	if j.Usage != nil {
-		in, out = j.Usage.InputTokens, j.Usage.OutputTokens
-	}
-	if j.Status == "running" && m.asDetailJobID == j.JobID && m.asDetailSnap.hasUsage {
-		in, out = m.asDetailSnap.inTok, m.asDetailSnap.outTok
-	}
-	return in, out
-}
+// jobTokens is the subagent row/card token pair — the shared live resolution, so any row (not just
+// the focused one) climbs live.
+func (m Model) jobTokens(j subagent.Result) (in, out int) { return m.liveTokens(j) }
 
 // viewAsBoxes is L2: the session header above the stacked boxes — Dynamic Workflows
 // (master-detail: run rail | the previewed run's phase rows), Agent Teams (master-detail:

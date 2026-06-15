@@ -510,16 +510,25 @@ func synthesizeEnded(live []teardown.Teammate, meta map[string]sessiontitle.Meta
 // excluded from the live "ok" / teammate-count rollups.
 const endedStatus = "ended"
 
-// loadWfData assembles the workflow half of a refresh from an already-listed job set: the
-// run manifests plus each RunID-tagged leaf's activity sidecar (live tokens + tool calls).
+// loadWfData assembles the live-token half of a refresh from an already-listed job set: the run
+// manifests plus each job's activity snapshot keyed by JobID — a workflow leaf or a sync subagent
+// from its <jobID>.activity sidecar, a detached background job synthesized from its poll-time Usage
+// (it writes no sidecar). This feeds both the workflow run headers and the standalone subagent rows,
+// so every running agent's token count climbs on the 500ms light tick.
 func loadWfData(jobs []subagent.Result) ([]subagent.WorkflowRun, map[string]activitySnapshot, error) {
 	activity := map[string]activitySnapshot{}
 	for _, j := range jobs {
-		if j.RunID == "" || j.JobID == "" {
+		if j.JobID == "" {
 			continue
 		}
 		if snap, ok := readLeafActivity(j.JobID); ok {
 			activity[j.JobID] = snap
+			continue
+		}
+		// No sidecar (a detached background job): surface its running Usage — filled live by
+		// StatusFor's stream-json scan — so its row climbs like a sync leaf's.
+		if j.Status == "running" && j.Usage != nil && (j.Usage.InputTokens > 0 || j.Usage.OutputTokens > 0) {
+			activity[j.JobID] = activitySnapshot{inTok: j.Usage.InputTokens, outTok: j.Usage.OutputTokens, hasUsage: true}
 		}
 	}
 	runs, err := subagent.ListRuns()
@@ -572,7 +581,7 @@ func wfLiveTick(epoch int) tea.Cmd {
 // startWfLive starts the 500ms light chain when a refresh sees a running leaf and no chain
 // is already live; the chain stops itself (clearing the flag) once nothing runs.
 func (m *Model) startWfLive() tea.Cmd {
-	if m.wfLiveOn || !m.anyLeafRunning() {
+	if m.wfLiveOn || !m.anyAgentRunning() {
 		return nil
 	}
 	m.wfLiveOn = true
@@ -991,6 +1000,23 @@ func (m Model) anyLeafRunning() bool {
 	}
 	return false
 }
+
+// anyJobRunning reports whether any STANDALONE subagent job is live — so the 500ms light chain also
+// ticks for a background subagent's climbing token count, not just for workflow runs. Workflow leaves
+// (RunID set) are covered by anyLeafRunning via the 500ms-fresh m.workflowJobs; m.jobs only refreshes
+// on the 3s full tick, so scanning it for leaves too would keep the chain alive on a stale row.
+func (m Model) anyJobRunning() bool {
+	for _, j := range m.jobs {
+		if j.RunID == "" && j.Status == "running" {
+			return true
+		}
+	}
+	return false
+}
+
+// anyAgentRunning is the live-tick predicate: a workflow leaf/run OR a standalone job is running.
+// Both the start gate and the keep-alive gate use it, so the chain can't start then die after a tick.
+func (m Model) anyAgentRunning() bool { return m.anyLeafRunning() || m.anyJobRunning() }
 
 // paneVisMsg carries the outcome of an inline hide/show so the board can surface
 // a failure (its code/reason/suggestion) instead of silently relying on the next
@@ -1492,7 +1518,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case wfLiveTickMsg:
 		if m.screen == screenSpawn && msg.epoch == m.boardEpoch {
-			if m.anyLeafRunning() {
+			if m.anyAgentRunning() {
 				return m, tea.Batch(loadWfLight(msg.epoch), wfLiveTick(msg.epoch))
 			}
 			m.wfLiveOn = false // nothing runs — the chain ends; a later refresh restarts it

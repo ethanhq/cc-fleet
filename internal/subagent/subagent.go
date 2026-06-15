@@ -478,8 +478,10 @@ func buildArgv(binaryPath, profilePath, model string, req Request, slim slimArgv
 	switch {
 	case req.StreamActivity:
 		// stream-json (requires --verbose) so per-message tool_use + usage can be tailed live;
-		// the terminal type:"result" line is byte-identical to --output-format json for classify.
-		argv = append(argv, "--output-format", "stream-json", "--verbose")
+		// --include-partial-messages streams text_delta + a per-message message_delta usage so the
+		// token count climbs WITHIN a turn, not only at its end. The terminal type:"result" line is
+		// byte-identical to --output-format json for classify.
+		argv = append(argv, "--output-format", "stream-json", "--verbose", "--include-partial-messages")
 	case req.JSON || req.OutputFormat == "json":
 		argv = append(argv, "--output-format", "json")
 	}

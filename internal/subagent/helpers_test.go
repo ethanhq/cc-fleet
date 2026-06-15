@@ -12,13 +12,10 @@ import (
 // process/exec helpers (writeFakeBin, writeMinimalProviders, deadReapedPID,
 // readPID, waitGone) live in helpers_unix_test.go.
 
-// Real inner envelopes captured from a smoke run.
-const smokeSuccessJSON = `{"type":"result","subtype":"success","is_error":false,"api_error_status":null,
- "duration_ms":3654,"duration_api_ms":3385,"ttft_ms":3397,"num_turns":1,"stop_reason":"end_turn",
- "session_id":"84c5b474-aaaa","total_cost_usd":0.258409,
- "usage":{"input_tokens":50750,"cache_read_input_tokens":18,"output_tokens":186,"service_tier":"standard"},
- "modelUsage":{"mimo-v2-flash":{"inputTokens":50750,"outputTokens":186,"costUSD":0.258409}},
- "result":"SUBAGENT_SMOKE_OK=42","permission_denials":[],"terminal_reason":"completed"}`
+// Real inner envelope captured from a smoke run. ONE line: claude emits the terminal result as a
+// single NDJSON line (stream-json) / single json object, and the background scan distills it via
+// extractResultLine, which is line-oriented — a multi-line fixture would not be found.
+const smokeSuccessJSON = `{"type":"result","subtype":"success","is_error":false,"api_error_status":null,"duration_ms":3654,"duration_api_ms":3385,"ttft_ms":3397,"num_turns":1,"stop_reason":"end_turn","session_id":"84c5b474-aaaa","total_cost_usd":0.258409,"usage":{"input_tokens":50750,"cache_read_input_tokens":18,"output_tokens":186,"service_tier":"standard"},"modelUsage":{"mimo-v2-flash":{"inputTokens":50750,"outputTokens":186,"costUSD":0.258409}},"result":"SUBAGENT_SMOKE_OK=42","permission_denials":[],"terminal_reason":"completed"}`
 
 const smoke429BalanceJSON = `{"type":"result","subtype":"success","is_error":true,"api_error_status":429,
  "duration_ms":178257,"duration_api_ms":0,"num_turns":1,"stop_reason":"stop_sequence",

@@ -68,13 +68,16 @@ func TestToolArgPreview(t *testing.T) {
 }
 
 // TestActivitySink_CapFirstAndParses: the sink tees to the byte-cap FIRST (overflow still fires) and
-// writes tool/usage rows parsed from the stream to the activity sidecar.
+// writes tool/usage rows parsed from the partial-message stream to the activity sidecar — input/cache
+// from message_start, the tool from the assistant line, output reconciled from message_delta.
 func TestActivitySink_CapFirstAndParses(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "x.activity")
 	out := &cappedWriter{limit: 1 << 20}
 	w := newActivityWriter(path)
 	sink := newActivitySink(out, w)
-	sink.Write([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo hi"}}],"usage":{"input_tokens":10,"output_tokens":2,"cache_read_input_tokens":3}}}` + "\n"))
+	sink.Write([]byte(`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":10,"cache_read_input_tokens":3}}}}` + "\n"))
+	sink.Write([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo hi"}}]}}` + "\n"))
+	sink.Write([]byte(`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":42}}}` + "\n"))
 	sink.Write([]byte(`{"type":"result","subtype":"success","result":"ok"}` + "\n"))
 	sink.close()
 
@@ -82,17 +85,23 @@ func TestActivitySink_CapFirstAndParses(t *testing.T) {
 		t.Fatal("sink must tee bytes into the cap")
 	}
 	recs := readActivity(t, path)
-	if len(recs) != 2 {
-		t.Fatalf("got %d activity records, want 2 (tool + usage); %+v", len(recs), recs)
+	var tool, usage *activityRecord
+	for i := range recs {
+		switch recs[i].Kind {
+		case "tool":
+			tool = &recs[i]
+		case "usage":
+			usage = &recs[i] // keep the latest usage row (what the board reads)
+		}
 	}
-	if recs[0].Kind != "tool" || recs[0].Tool != "Bash" || recs[0].Arg != "echo hi" {
-		t.Errorf("tool record = %+v", recs[0])
+	if tool == nil || tool.Tool != "Bash" || tool.Arg != "echo hi" {
+		t.Errorf("tool record = %+v", tool)
 	}
-	if recs[1].Kind != "usage" || recs[1].In != 10 || recs[1].Out != 2 || recs[1].Cache != 3 {
-		t.Errorf("usage record = %+v", recs[1])
+	if usage == nil || usage.In != 10 || usage.Out != 42 || usage.Cache != 3 {
+		t.Errorf("usage record = %+v", usage)
 	}
-	if recs[0].Seq != 1 || recs[1].Seq != 2 {
-		t.Errorf("seqs not monotonic: %d, %d", recs[0].Seq, recs[1].Seq)
+	if len(recs) == 0 || recs[0].Seq != 1 {
+		t.Errorf("seq must start at 1, got %+v", recs)
 	}
 }
 
@@ -137,6 +146,26 @@ func TestFinalizeSyncJob_KeepsSafeMetricsStripsAnswer(t *testing.T) {
 	}
 }
 
+// TestReadTailCapped_BoundsRead: the running-status scan must never read more than the cap, even when
+// the file is far larger (the bound is what keeps the per-poll cost flat on a big background output).
+func TestReadTailCapped_BoundsRead(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "big.out")
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", 500)), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := readTailCapped(path, 100); len(got) != 100 {
+		t.Fatalf("read %d bytes, want exactly the 100-byte cap", len(got))
+	}
+	// A file under the cap is returned whole.
+	small := filepath.Join(t.TempDir(), "small.out")
+	if err := os.WriteFile(small, []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if got := readTailCapped(small, 100); string(got) != "hello" {
+		t.Fatalf("small file should return whole, got %q", got)
+	}
+}
+
 func readActivity(t *testing.T, path string) []activityRecord {
 	t.Helper()
 	f, err := os.Open(path)
@@ -155,79 +184,107 @@ func readActivity(t *testing.T, path string) []activityRecord {
 	return out
 }
 
-// TestParseStreamLine_EstimatesOutput: when an assistant message streams text but NO usage (the
-// provider case), parseStreamLine emits a live OUTPUT estimate (~runes/3) so the board count climbs.
-func TestParseStreamLine_EstimatesOutput(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "x.activity")
+// TestParseStreamLine_EstimatesThenReconciles: a content_block_delta streams text → a live runes-based
+// estimate climbs (so the board moves mid-turn); message_delta then reconciles output to the message's
+// real figure (replacing the estimate, not adding to it).
+func TestParseStreamLine_EstimatesThenReconciles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "x.activity")
 	w := newActivityWriter(path)
-	outRunes, outTokens, inTokens := 0, 0, 0
-	line := []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"` + strings.Repeat("字", 30) + `"}]}}`)
-	parseStreamLine(line, w, &outRunes, &outTokens, &inTokens)
-	data, _ := os.ReadFile(path)
-	if !strings.Contains(string(data), `"out":10`) { // 30 runes / 3, no real usage yet
-		t.Fatalf("expected an estimated output usage row (~10), got:\n%s", data)
+	a := &streamAccum{}
+	// 150 runes / 5 → 30 estimate (past the throttle), emitted live.
+	parseStreamLine([]byte(`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"`+strings.Repeat("字", 150)+`"}}}`), w, a)
+	if data, _ := os.ReadFile(path); !strings.Contains(string(data), `"out":30`) {
+		t.Fatalf("expected a live output estimate (~30) from streamed text, got:\n%s", data)
 	}
-	// A measured message adds its real output (99) on top of the carried estimate of the earlier
-	// unmeasured message (10) → 109; the measured message's own text is not double-counted as estimate.
-	line2 := []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"x"}],"usage":{"input_tokens":5,"output_tokens":99}}}`)
-	parseStreamLine(line2, w, &outRunes, &outTokens, &inTokens)
-	if data, _ := os.ReadFile(path); !strings.Contains(string(data), `"out":109`) {
-		t.Fatalf("the measured output (99) should add to the carried estimate (10) → 109, got:\n%s", data)
+	parseStreamLine([]byte(`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":99}}}`), w, a)
+	if data, _ := os.ReadFile(path); !strings.Contains(string(data), `"out":99`) {
+		t.Fatalf("message_delta should reconcile output to the real 99, got:\n%s", data)
 	}
 }
 
-// TestParseStreamLine_CumulativeOutput: successive real per-message output_tokens accumulate into a
-// monotonic leaf total (50 then 120) — never the later single message's 70 — so the count climbs and
-// never steps backward.
-func TestParseStreamLine_CumulativeOutput(t *testing.T) {
+// TestParseStreamLine_CrossMessageOutput: per-message real outputs accumulate ACROSS messages (a new
+// message_start finalizes the prior message's count), so a multi-turn leaf's total climbs 50 → 120.
+func TestParseStreamLine_CrossMessageOutput(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "c.activity")
 	w := newActivityWriter(path)
-	outRunes, outTokens, inTokens := 0, 0, 0
-	parseStreamLine([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"a"}],"usage":{"output_tokens":50}}}`), w, &outRunes, &outTokens, &inTokens)
-	parseStreamLine([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"b"}],"usage":{"output_tokens":70}}}`), w, &outRunes, &outTokens, &inTokens)
+	a := &streamAccum{}
+	parseStreamLine([]byte(`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":50}}}`), w, a)
+	parseStreamLine([]byte(`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{}}}}`), w, a)
+	parseStreamLine([]byte(`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":70}}}`), w, a)
 	data, _ := os.ReadFile(path)
 	if !strings.Contains(string(data), `"out":50`) || !strings.Contains(string(data), `"out":120`) {
-		t.Fatalf("expected cumulative output rows 50 then 120, got:\n%s", data)
-	}
-	if strings.Contains(string(data), `"out":70`) {
-		t.Fatalf("the later message's raw 70 must not be emitted (it should sum to 120), got:\n%s", data)
+		t.Fatalf("expected cross-message rows 50 then 120 (50 + the second message's 70), got:\n%s", data)
 	}
 }
 
-// TestParseStreamLine_NoBackwardWhenRealFollowsEstimate: an unmeasured message's estimate (300 runes →
-// 100) is CARRIED, not undercut, when a later measured message lands — its real output (10) ADDS to the
-// carried estimate (→ 110), so the count climbs and never steps backward across the estimate→real edge.
-func TestParseStreamLine_NoBackwardWhenRealFollowsEstimate(t *testing.T) {
+// TestParseStreamLine_CumulativeDeltaNotSummed: multiple message_delta events WITHIN one message carry
+// a growing CUMULATIVE output; the latest wins (30 then 40 → 40), never summed (would be 70).
+func TestParseStreamLine_CumulativeDeltaNotSummed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "d.activity")
+	w := newActivityWriter(path)
+	a := &streamAccum{}
+	parseStreamLine([]byte(`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":30}}}`), w, a)
+	parseStreamLine([]byte(`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":40}}}`), w, a)
+	data, _ := os.ReadFile(path)
+	if !strings.Contains(string(data), `"out":40`) {
+		t.Fatalf("the latest cumulative output (40) must win, got:\n%s", data)
+	}
+	if strings.Contains(string(data), `"out":70`) {
+		t.Fatalf("two cumulative deltas in one message must NOT be summed to 70, got:\n%s", data)
+	}
+}
+
+// TestParseStreamLine_EstimateReconcilesToReal: the live figure is APPROXIMATE — an over-running
+// estimate (400 runes / 5 → 80) yields to the authoritative per-message count (10) when message_delta
+// lands. It tracks the truth rather than holding an inflated estimate; the exact final is Result.Usage.
+func TestParseStreamLine_EstimateReconcilesToReal(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "m.activity")
 	w := newActivityWriter(path)
-	outRunes, outTokens, inTokens := 0, 0, 0
-	parseStreamLine([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"`+strings.Repeat("x", 300)+`"}]}}`), w, &outRunes, &outTokens, &inTokens)
-	parseStreamLine([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"y"}],"usage":{"output_tokens":10}}}`), w, &outRunes, &outTokens, &inTokens)
+	a := &streamAccum{}
+	parseStreamLine([]byte(`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"`+strings.Repeat("x", 400)+`"}}}`), w, a)
+	parseStreamLine([]byte(`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":10}}}`), w, a)
 	var outs []int
 	for _, r := range readActivity(t, path) {
 		if r.Kind == "usage" {
 			outs = append(outs, r.Out)
 		}
 	}
-	if len(outs) != 2 || outs[0] != 100 || outs[1] != 110 {
-		t.Fatalf("expected the estimate (100) then real-added-to-carried-estimate (110), got %v", outs)
+	if len(outs) != 2 || outs[0] != 80 || outs[1] != 10 {
+		t.Fatalf("expected the estimate (80) then a reconcile to the real count (10), got %v", outs)
 	}
 }
 
-// TestParseStreamLine_InputSeedCarry: input is seeded (the prompt estimate) and carried, so a tool-only
-// assistant message (no usage, no text) still emits a usage row with the seeded input — the board's
-// live token count is never a literal 0; a real, larger usage.input_tokens then supersedes the seed.
+// TestParseStreamLine_InputSeedCarry: input is seeded (the prompt estimate); message_start force-emits
+// it right away so the board's context figure shows before any output, and a real, larger
+// usage.input_tokens then supersedes the seed.
 func TestParseStreamLine_InputSeedCarry(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "i.activity")
 	w := newActivityWriter(path)
-	outRunes, outTokens, inTokens := 0, 0, 1200 // input seeded from the prompt estimate
-	parseStreamLine([]byte(`{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"ls"}}]}}`), w, &outRunes, &outTokens, &inTokens)
+	a := &streamAccum{inTok: 1200} // input seeded from the prompt estimate
+	parseStreamLine([]byte(`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{}}}}`), w, a)
 	if data, _ := os.ReadFile(path); !strings.Contains(string(data), `"in":1200`) {
-		t.Fatalf("a tool-only message must still emit the seeded input (1200), got:\n%s", data)
+		t.Fatalf("message_start must emit the seeded input (1200), got:\n%s", data)
 	}
-	parseStreamLine([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"x"}],"usage":{"input_tokens":5000,"output_tokens":10}}}`), w, &outRunes, &outTokens, &inTokens)
+	parseStreamLine([]byte(`{"type":"stream_event","event":{"type":"message_delta","usage":{"input_tokens":5000,"output_tokens":10}}}`), w, a)
 	if data, _ := os.ReadFile(path); !strings.Contains(string(data), `"in":5000`) {
 		t.Fatalf("a real input_tokens (5000) must supersede the seed, got:\n%s", data)
+	}
+}
+
+// TestScanLiveUsage_PartialAndReconciled: the background poll scan returns a climbing estimate from a
+// partial capture (text deltas, no message_delta yet) and the reconciled real output once message_delta
+// lands; a capture with no usage at all returns nil.
+func TestScanLiveUsage_PartialAndReconciled(t *testing.T) {
+	partial := []byte(`{"type":"stream_event","event":{"type":"message_start","message":{"usage":{"input_tokens":2000}}}}` + "\n" +
+		`{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"` + strings.Repeat("x", 80) + `"}}}` + "\n")
+	if u := scanLiveUsage(partial); u == nil || u.InputTokens != 2000 || u.OutputTokens != 16 {
+		t.Fatalf("partial scan: want in=2000 out=16 (80 runes/5), got %+v", u)
+	}
+	full := append(append([]byte{}, partial...), []byte(`{"type":"stream_event","event":{"type":"message_delta","usage":{"output_tokens":42}}}`+"\n")...)
+	if u := scanLiveUsage(full); u == nil || u.OutputTokens != 42 {
+		t.Fatalf("full scan: want out=42 (reconciled), got %+v", u)
+	}
+	if scanLiveUsage([]byte(`{"type":"system"}`+"\n")) != nil {
+		t.Fatalf("a capture with no usage should return nil")
 	}
 }
