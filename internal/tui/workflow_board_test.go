@@ -500,6 +500,30 @@ func TestWfPromptFold_TogglesOnEnter(t *testing.T) {
 	}
 }
 
+// TestWfRefresh_UpdatesStandaloneJobs: the 500ms light chain carries the full job list, so a standalone
+// background subagent's row (sourced from m.jobs) refreshes at 500ms — its status flips to done and its
+// usage tracks the final the moment it finishes, with no down-jump or stuck "running" between 3s ticks.
+func TestWfRefresh_UpdatesStandaloneJobs(t *testing.T) {
+	m := runsModel(t, nil, nil, map[string]activitySnapshot{})
+	ep := m.boardEpoch
+	bg := "bg11111111111111"
+	// A light refresh shows the standalone job running (RunID empty = standalone, sourced from m.jobs).
+	running := subagent.Result{JobID: bg, Status: "running", Usage: &subagent.Usage{InputTokens: 5000, OutputTokens: 40}}
+	m, _ = step(t, m, wfRefreshMsg{jobs: []subagent.Result{running}, epoch: ep, seq: 1})
+	if len(m.jobs) != 1 || m.jobs[0].Status != "running" {
+		t.Fatalf("the light chain must populate the standalone row in m.jobs, got %+v", m.jobs)
+	}
+	// The job finishes: the next light refresh flips it to done + final usage, no waiting for the 3s tick.
+	done := subagent.Result{JobID: bg, Status: "done", Usage: &subagent.Usage{InputTokens: 5000, OutputTokens: 72}}
+	m, _ = step(t, m, wfRefreshMsg{jobs: []subagent.Result{done}, epoch: ep, seq: 2})
+	if len(m.jobs) != 1 || m.jobs[0].Status != "done" {
+		t.Fatalf("the light chain must flip the standalone row to done, got %+v", m.jobs)
+	}
+	if in, out := m.liveTokens(m.jobs[0]); in != 5000 || out != 72 {
+		t.Fatalf("a finished standalone row must show its final usage, not a stale or dropped figure, got %d/%d", in, out)
+	}
+}
+
 // TestBoardMsg_FullStateAppliesWhenJobsLoseToLightChain: a boardMsg whose JOB rows lost the shared-seq
 // race to a faster wfRefreshMsg must still apply its full-refresh-only state (teammates/tmux/pins) — that
 // state rides its own boardMsg-only seq, which the light chain never bumps — while its stale job rows are

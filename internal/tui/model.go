@@ -609,6 +609,12 @@ func floorActivity(prev, next map[string]activitySnapshot) map[string]activitySn
 			if ps.outTok > ns.outTok {
 				ns.outTok = ps.outTok
 			}
+			// Tool sigs accumulate within an attempt, so the longer list is the newer read; keep it rather
+			// than a shorter one carried by an out-of-order refresh (seq orders by ListJobs, not the sidecar
+			// read), so the tool count + Activity feed never tick backward while in/out are floored.
+			if len(ps.sigs) > len(ns.sigs) {
+				ns.sigs = ps.sigs
+			}
 			ns.hasUsage = ns.hasUsage || ps.hasUsage
 			next[id] = ns
 		}
@@ -627,12 +633,14 @@ func wfTagged(jobs []subagent.Result) []subagent.Result {
 	return out
 }
 
-// wfRefreshMsg carries a LIGHT workflow-only refresh (run manifests + leaf jobs + activity
-// sidecars — never teammate discovery or pane capture), driven by the 500ms live chain so a
-// running run's counters climb smoothly between the 3s full refreshes. Owned by screenSpawn,
-// boardEpoch-gated like boardMsg.
+// wfRefreshMsg carries a LIGHT refresh (the full subagent job list + run manifests + activity sidecars —
+// never teammate discovery or pane capture), driven by the 500ms live chain so a running run's counters
+// AND a standalone background subagent's row climb smoothly between the 3s full refreshes. jobs is the
+// full ListJobs result (mirror boardMsg) so a standalone row's status/usage refresh at 500ms too, not
+// only on the 3s tick. Owned by screenSpawn, boardEpoch-gated like boardMsg.
 type wfRefreshMsg struct {
 	jobs     []subagent.Result
+	jobsErr  error
 	runs     []subagent.WorkflowRun
 	activity map[string]activitySnapshot
 	epoch    int
@@ -647,10 +655,13 @@ type wfLiveTickMsg struct{ epoch int }
 // loadWfLight reads only the workflow data (no teammate discovery, no pane capture).
 func loadWfLight(epoch int) tea.Cmd {
 	return func() tea.Msg {
-		all, _ := subagent.ListJobs()
+		all, jobsErr := subagent.ListJobs()
 		seq := boardRefreshSeq.Add(1) // stamp at the job-status read, before loadWfData (see loadBoard)
-		runs, activity, _ := loadWfData(all)
-		return wfRefreshMsg{jobs: wfTagged(all), runs: runs, activity: activity, epoch: epoch, seq: seq}
+		runs, activity, wfErr := loadWfData(all)
+		if jobsErr == nil {
+			jobsErr = wfErr
+		}
+		return wfRefreshMsg{jobs: all, jobsErr: jobsErr, runs: runs, activity: activity, epoch: epoch, seq: seq}
 	}
 }
 
@@ -1086,8 +1097,8 @@ func (m Model) anyLeafRunning() bool {
 
 // anyJobRunning reports whether any STANDALONE subagent job is live — so the 500ms light chain also
 // ticks for a background subagent's climbing token count, not just for workflow runs. Workflow leaves
-// (RunID set) are covered by anyLeafRunning via the 500ms-fresh m.workflowJobs; m.jobs only refreshes
-// on the 3s full tick, so scanning it for leaves too would keep the chain alive on a stale row.
+// (RunID set) are covered by anyLeafRunning via m.workflowJobs; this scans only RunID=="" rows so a
+// finished leaf can't keep the chain alive through a standalone scan.
 func (m Model) anyJobRunning() bool {
 	for _, j := range m.jobs {
 		if j.RunID == "" && j.Status == "running" {
@@ -1607,7 +1618,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.lastRefreshSeq = msg.seq
 		prevBox, hadBox := m.boxRowRef()
-		m.workflowJobs = msg.jobs
+		// The light chain carries the full job list too, so a standalone subagent row's status/usage
+		// refresh at 500ms — otherwise it lags 3s behind its own live snapshot and falls back to a stale,
+		// lower usage (a visible down-jump) and a stuck "running" when the job finishes between full ticks.
+		m.jobs = msg.jobs
+		m.boardJobsErr = msg.jobsErr
+		m.workflowJobs = wfTagged(msg.jobs)
 		m.workflowRuns = msg.runs
 		m.wfActivity = floorActivity(m.wfActivity, msg.activity)
 		m.rerootSpawn()

@@ -1543,6 +1543,13 @@ func TestFloorActivity_KeepsTokensMonotonic(t *testing.T) {
 	if _, ok := fresh["j1"]; ok {
 		t.Fatal("a job absent from the new map must not be carried")
 	}
+	// A same-attempt out-of-order refresh carrying FEWER tool sigs must not shrink the count: sigs
+	// accumulate within an attempt, so the longer list is the newer read.
+	prevSigs := map[string]activitySnapshot{"j1": {inTok: 100, outTok: 50, hasUsage: true, attempt: 1, sigs: []string{"A", "B", "C"}}}
+	short := floorActivity(prevSigs, map[string]activitySnapshot{"j1": {inTok: 120, outTok: 60, hasUsage: true, attempt: 1, sigs: []string{"A"}}})
+	if len(short["j1"].sigs) != 3 {
+		t.Fatalf("a same-attempt refresh with fewer sigs must not shrink the tool list, got %d", len(short["j1"].sigs))
+	}
 	// A restart reuses the job id with a higher Attempt and a fresh low count — the floor must NOT pin it
 	// to the prior attempt's total; the new low snapshot wins.
 	prevA1 := map[string]activitySnapshot{"j1": {inTok: 5000, outTok: 800, hasUsage: true, attempt: 1}}
