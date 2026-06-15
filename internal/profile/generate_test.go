@@ -43,8 +43,9 @@ func TestGenerateForProvider_Snapshot(t *testing.T) {
 	}
 	v := sampleProvider()
 	const helper = "/usr/local/bin/cc-fleet"
-	// A single-model provider (no strong/fast/effort): every Claude Code model tier
-	// is pinned to the default so no built-in claude-* id can escape to the provider.
+	// A single-model provider (no strong/fast/effort): the opus/sonnet/haiku alias
+	// slots are pinned to the default so no built-in claude-* id can escape to the
+	// provider, and the subagent slot is "inherit" (subagents keep their own model:).
 	const want = `{
   "apiKeyHelper": "/usr/local/bin/cc-fleet keyget deepseek",
   "env": {
@@ -52,7 +53,7 @@ func TestGenerateForProvider_Snapshot(t *testing.T) {
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash",
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-flash",
     "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-flash",
-    "CLAUDE_CODE_SUBAGENT_MODEL": "deepseek-v4-flash"
+    "CLAUDE_CODE_SUBAGENT_MODEL": "inherit"
   }
 }`
 
@@ -114,7 +115,7 @@ func TestGenerateForProvider_TiersEffortAndStrip1M(t *testing.T) {
 		"ANTHROPIC_DEFAULT_OPUS_MODEL":   "deepseek-v4-max", // strong, [1m] stripped
 		"ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-pro", // default, [1m] stripped
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL":  "deepseek-v4-flash",
-		"CLAUDE_CODE_SUBAGENT_MODEL":     "deepseek-v4-pro", // default
+		"CLAUDE_CODE_SUBAGENT_MODEL":     "inherit", // subagents keep their own model:
 	}
 	for k, w := range want {
 		if back.Env[k] != w {

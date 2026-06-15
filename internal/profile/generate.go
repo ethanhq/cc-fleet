@@ -67,20 +67,22 @@ func GenerateForProvider(v *config.Provider, helperBinary string) ([]byte, error
 	// emitted verbatim so the profile stays byte-stable), windows double-quotes for
 	// cmd/PowerShell. The provider KEY never enters this string (keyget resolves it
 	// at runtime), so quoting protects only the path + provider name.
-	// Pin every Claude Code model slot to a provider model so a teammate/subagent
-	// never falls back to a built-in claude-* id the provider can't serve — the
-	// haiku slot drives background work (titles, context compaction, quick
-	// classification), so leaving it unset breaks long sessions against a provider
-	// base_url. The main model is the --model flag; these cover the opus/sonnet/
-	// haiku aliases and the Task-subagent model. The [1m] context marker is
-	// stripped here: only the main model (via --model) carries it, where Claude
-	// Code's strip-before-request is the documented behavior.
+	// Pin the opus/sonnet/haiku alias slots to provider models so a teammate or
+	// subagent resolving one of those aliases never falls back to a built-in
+	// claude-* id the provider can't serve — the haiku slot drives background work
+	// (titles, context compaction, quick classification), so leaving it unset breaks
+	// long sessions against a provider base_url. The main model is the --model flag.
+	// CLAUDE_CODE_SUBAGENT_MODEL is "inherit" so a subagent keeps its own model:
+	// frontmatter (resolved through those alias slots) instead of being forced onto
+	// one fixed model. The [1m] context marker is stripped from the alias slots: only
+	// the main model (via --model) carries it, where Claude Code's strip-before-request
+	// is the documented behavior.
 	env := map[string]string{
 		"ANTHROPIC_BASE_URL":             v.BaseURL,
 		"ANTHROPIC_DEFAULT_OPUS_MODEL":   config.Strip1M(v.StrongModelOrDefault()),
 		"ANTHROPIC_DEFAULT_SONNET_MODEL": config.Strip1M(v.DefaultModel),
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL":  config.Strip1M(v.FastModelOrDefault()),
-		"CLAUDE_CODE_SUBAGENT_MODEL":     config.Strip1M(v.DefaultModel),
+		"CLAUDE_CODE_SUBAGENT_MODEL":     "inherit",
 	}
 	pf := profileFile{
 		APIKeyHelper: quoteArg(helperBinary) + " keyget " + quoteArg(v.Name),
