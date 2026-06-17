@@ -600,3 +600,70 @@ func TestCodexSourceNote(t *testing.T) {
 		t.Fatalf("own note = %q", own)
 	}
 }
+
+// A picker taller than the pane windows on the cursored row so the selection and
+// its detail stay on screen, with ↑/↓ "more" markers; a pane tall enough to fit
+// the whole list is returned unwindowed.
+func TestAddPicker_WindowsTallListOnCursor(t *testing.T) {
+	m := NewModel()
+	m, _ = press(t, m, "enter") // + Add -> grouped picker, cursor 0
+
+	// Tall pane: the whole list fits, so it is returned unwindowed (no markers).
+	m.height = 60
+	joined := strings.Join(m.addPickerLines(m.tmplCursor), "\n")
+	if !strings.Contains(joined, Templates[0].Label) || !strings.Contains(joined, "Codex") {
+		t.Fatalf("tall pane should list every row:\n%s", joined)
+	}
+	if strings.Contains(joined, "↑") || strings.Contains(joined, "↓") {
+		t.Fatalf("tall pane should not window (no markers):\n%s", joined)
+	}
+
+	// Short pane: the list overflows, so it windows on the cursor. At the top the
+	// cursored row shows with a ↓ marker; at the bottom it scrolls into view with
+	// a ↑ marker. The window never exceeds the pane height.
+	m.height = 24 // boardBodyHeight 14, far shorter than the ~28-line list
+	top := m.addPickerLines(m.tmplCursor)
+	joined = strings.Join(top, "\n")
+	if len(top) > m.boardBodyHeight() {
+		t.Fatalf("top window = %d lines, want <= %d:\n%s", len(top), m.boardBodyHeight(), joined)
+	}
+	if !strings.Contains(joined, Templates[0].Label) || !strings.Contains(joined, "↓") {
+		t.Fatalf("top window should show the cursored row and a ↓ marker:\n%s", joined)
+	}
+
+	// Mid-list: the cursor sits between hidden rows on both sides, so BOTH markers
+	// render — the only case that exercises windowBounds' centered start branch.
+	m = pressN(t, m, "down", 6) // to a middle Anthropic row
+	mid := m.addPickerLines(m.tmplCursor)
+	joined = strings.Join(mid, "\n")
+	if len(mid) > m.boardBodyHeight() {
+		t.Fatalf("mid window = %d lines, want <= %d:\n%s", len(mid), m.boardBodyHeight(), joined)
+	}
+	if !strings.Contains(joined, Templates[6].Label) ||
+		!strings.Contains(joined, "↑") || !strings.Contains(joined, "↓") {
+		t.Fatalf("mid window should show the cursored row and both ↑/↓ markers:\n%s", joined)
+	}
+
+	// Floor: at the minimum pane height the detail can't share the pane, so the
+	// window is clamped to bodyH — the bound still holds and the cursored row stays.
+	m.height = 12 // boardBodyHeight floors to 5
+	floor := m.addPickerLines(m.tmplCursor)
+	joined = strings.Join(floor, "\n")
+	if len(floor) > m.boardBodyHeight() {
+		t.Fatalf("floor window = %d lines, want <= %d:\n%s", len(floor), m.boardBodyHeight(), joined)
+	}
+	if !strings.Contains(joined, Templates[6].Label) {
+		t.Fatalf("floor window should still show the cursored row:\n%s", joined)
+	}
+	m.height = 24 // restore for the bottom-edge check
+
+	m = pressN(t, m, "down", codexIdx()-6) // continue to the last row (Codex)
+	bottom := m.addPickerLines(m.tmplCursor)
+	joined = strings.Join(bottom, "\n")
+	if len(bottom) > m.boardBodyHeight() {
+		t.Fatalf("bottom window = %d lines, want <= %d:\n%s", len(bottom), m.boardBodyHeight(), joined)
+	}
+	if !strings.Contains(joined, "Codex") || !strings.Contains(joined, "↑") {
+		t.Fatalf("bottom window should show Codex and a ↑ marker:\n%s", joined)
+	}
+}

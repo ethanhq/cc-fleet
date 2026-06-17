@@ -2882,9 +2882,12 @@ func (m Model) viewPickTemplate() string {
 
 // addPickerLines renders the grouped provider list. cursor >= 0 highlights that
 // flat item index and appends its seed preview; cursor < 0 is a read-only preview
-// (used as the home list's "+ Add provider…" hover detail).
+// (used as the home list's "+ Add provider…" hover detail). When the highlighted
+// list is taller than the pane it windows on the cursored row — keeping the
+// highlighted row visible — the way viewModelPick does.
 func (m Model) addPickerLines(cursor int) []string {
 	var lines []string
+	cursorLine := 0
 	idx := 0
 	for gi, g := range addGroups() {
 		if gi > 0 {
@@ -2897,16 +2900,45 @@ func (m Model) addPickerLines(cursor int) []string {
 			if idx == cursor {
 				marker = cursorStyle.Render("❯ ")
 				label = selectedStyle.Render(it.label)
+				cursorLine = len(lines)
 			}
 			lines = append(lines, "  "+marker+label)
 			idx++
 		}
 	}
+	detailStart := len(lines)
 	if cursor >= 0 {
 		lines = append(lines, "")
 		lines = append(lines, m.addItemDetail()...)
 	}
-	return lines
+	bodyH := m.boardBodyHeight()
+	if cursor < 0 || len(lines) <= bodyH {
+		return lines
+	}
+	// The list overflows the pane: window the rows on the cursored line so the
+	// highlight stays visible, keep its detail pinned below, and flag the hidden
+	// rows with ↑/↓ markers (two rows are reserved for them). On a tiny pane the
+	// detail alone can outrun the budget, so the result is clamped to bodyH — the
+	// cursored row sits near the top of the window and survives the clamp.
+	detail := lines[detailStart:]
+	avail := bodyH - len(detail) - 2
+	if avail < 1 {
+		avail = 1
+	}
+	start, end := windowBounds(cursorLine, detailStart, avail)
+	var out []string
+	if start > 0 {
+		out = append(out, faintStyle.Render(fmt.Sprintf("  ↑ %d more", start)))
+	}
+	out = append(out, lines[start:end]...)
+	if end < detailStart {
+		out = append(out, faintStyle.Render(fmt.Sprintf("  ↓ %d more", detailStart-end)))
+	}
+	out = append(out, detail...)
+	if len(out) > bodyH {
+		out = out[:bodyH]
+	}
+	return out
 }
 
 // addItemDetail is the seed/source preview for the highlighted picker row.
