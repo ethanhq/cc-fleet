@@ -4,7 +4,7 @@ Run any model with an Anthropic- or OpenAI-compatible API — DeepSeek, GLM, Kim
 Qwen, MiniMax, even your Codex subscription — as scripted multi-agent **workflows**,
 real Claude Code **agent-team teammates**, or one-shot **subagents**, driven just
 like native ones. Your main session's own auth (OAuth subscription or API key) is
-untouched; provider workers bill the provider key.
+untouched; each worker bills its own provider — an API key, or your Codex subscription.
 
 No Claude subscription? `ccf run <provider>` starts an interactive session on that
 provider — the same `claude` you know, just on the provider's model.
