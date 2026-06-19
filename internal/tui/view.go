@@ -468,9 +468,9 @@ func (m Model) viewSpawn() string {
 	var b strings.Builder
 	switch {
 	case m.loading:
-		b.WriteString(m.spawnTitle() + "\n\ndiscovering…")
+		b.WriteString(m.boardFallback("discovering…"))
 	case m.spawnErr != nil:
-		b.WriteString(m.spawnTitle() + "\n\n" + errStyle.Render("error: "+m.spawnErr.Error()))
+		b.WriteString(m.boardFallback(errStyle.Render("error: " + m.spawnErr.Error())))
 	case m.asMode == asModeProjects:
 		b.WriteString(m.viewAsProjects())
 	case m.asMode == asModeSessions:
@@ -483,8 +483,8 @@ func (m Model) viewSpawn() string {
 		b.WriteString(m.viewWfAgent())
 	default:
 		if _, ok := m.focusedSession(); !ok {
-			b.WriteString(m.spawnTitle() + "\n\n" +
-				faintStyle.Render("(no live agents — none spawned, and no subagent jobs)"))
+			b.WriteString(m.boardFallback(
+				faintStyle.Render("(no live agents — none spawned, and no subagent jobs)")))
 		} else {
 			b.WriteString(m.viewAsBoxes())
 		}
@@ -519,6 +519,13 @@ func tmuxMissingNotice() string {
 // fallbacks and as the first chrome line every board level renders above its header.
 func (m Model) spawnTitle() string {
 	return titleStyle.Render("cc-fleet · Agents Board") + faintStyle.Render("    tab → Model Providers")
+}
+
+// boardFallback renders a bare board level (loading / error / empty) as the app title over a
+// single message, inset by boardMargin so the title lines up with every populated level and the
+// Model Providers hub — and never shifts horizontally when records arrive.
+func (m Model) boardFallback(body string) string {
+	return indentBox(m.spawnTitle()+"\n\n"+body, boardMargin)
 }
 
 // renderAsFooter is the contextual footer per asMode; the boxes level swaps in the card
@@ -1524,7 +1531,7 @@ func (m Model) renderProjectHeader(p asProject) string {
 func (m Model) viewAsSessions() string {
 	p, ok := m.focusedProjectGroup()
 	if !ok {
-		return m.spawnTitle() + "\n\n" + faintStyle.Render("(no live agents)")
+		return m.boardFallback(faintStyle.Render("(no live agents)"))
 	}
 	var leftLines []string
 	for i, s := range p.sessions {
@@ -1833,8 +1840,8 @@ func (m Model) jobTokens(j subagent.Result) (in, out int) { return m.liveTokens(
 func (m Model) viewAsBoxes() string {
 	s, ok := m.focusedSession()
 	if !ok {
-		return m.spawnTitle() + "\n\n" +
-			faintStyle.Render("(no live agents — none spawned, and no subagent jobs)")
+		return m.boardFallback(
+			faintStyle.Render("(no live agents — none spawned, and no subagent jobs)"))
 	}
 	header := indentBox(m.renderSessionHeader(s), boardMargin) + "\n" + m.headerRule() + "\n"
 	runsBody, teamsBody, jobsBody := m.splitBoxHeights(s)
@@ -2310,7 +2317,7 @@ func (m Model) asEntityRightWidth() int {
 func (m Model) viewAsEntity() string {
 	s, ok := m.focusedSession()
 	if !ok {
-		return m.spawnTitle() + "\n\n" + faintStyle.Render("(no live agents)")
+		return m.boardFallback(faintStyle.Render("(no live agents)"))
 	}
 	listTitle, leftLines := m.asEntityLeftLines()
 	leftW, rightW := m.paneWidths(leftWidth(listTitle, leftLines, m.boardInner()))
