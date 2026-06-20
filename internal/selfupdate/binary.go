@@ -44,6 +44,18 @@ func prepareTarballBinary(ctx context.Context, exe, tag string, out io.Writer) (
 	if err != nil {
 		return "", fmt.Errorf("download checksums.txt: %w", err)
 	}
+	// Verify the release signature over checksums.txt against the embedded public key
+	// BEFORE trusting any sha256: the checksum is same-channel and only proves the archive
+	// matches a hash fetched from the same place — the signature is the trust anchor a
+	// mirror / redirect / arbitrary CCF_BASE_URL cannot forge. Fail closed.
+	sigBytes, err := download(ctx, base+"/checksums.txt.sig")
+	if err != nil {
+		return "", fmt.Errorf("download checksums.txt.sig: %w", err)
+	}
+	if err := verifyChecksumsSig(sumsBytes, sigBytes); err != nil {
+		return "", fmt.Errorf("verify release signature: %w", err)
+	}
+	fmt.Fprintln(out, "  ✔ signature verified")
 	expected := checksumFor(string(sumsBytes), tarName)
 	if expected == "" {
 		return "", fmt.Errorf("no checksum for %s in checksums.txt", tarName)

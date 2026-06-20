@@ -5,6 +5,8 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -248,6 +250,17 @@ func TestRun_TarballEndToEnd(t *testing.T) {
 	tarName := fmt.Sprintf("cc-fleet-%s-%s.tar.gz", runtime.GOOS, runtime.GOARCH)
 	tarGz := buildReleaseTarGz(t, "#!/bin/sh\necho \"cc-fleet version v9.9.9\"\n")
 	sums := fmt.Sprintf("%s  %s\n", sha256Hex(tarGz), tarName)
+	// Sign checksums.txt with a test key and point the embedded verifier at its public
+	// half, so the update verifies the signature before swapping (the real release uses
+	// the production key).
+	tpub, tpriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldKey := releaseVerifyKey
+	releaseVerifyKey = tpub
+	t.Cleanup(func() { releaseVerifyKey = oldKey })
+	sumsSig := base64.StdEncoding.EncodeToString(ed25519.Sign(tpriv, []byte(sums))) + "\n"
 	mux := http.NewServeMux()
 	mux.HandleFunc("/"+repo+"/releases/latest", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Location", "/"+repo+"/releases/tag/v9.9.9")
@@ -258,6 +271,9 @@ func TestRun_TarballEndToEnd(t *testing.T) {
 	})
 	mux.HandleFunc("/"+repo+"/releases/download/v9.9.9/checksums.txt", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(sums))
+	})
+	mux.HandleFunc("/"+repo+"/releases/download/v9.9.9/checksums.txt.sig", func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(sumsSig))
 	})
 	srv := httptest.NewServer(mux)
 	defer srv.Close()

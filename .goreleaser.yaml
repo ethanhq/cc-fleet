@@ -60,11 +60,24 @@ archives:
 checksum:
   name_template: checksums.txt
 
+# Sign checksums.txt with the project's Ed25519 release key (CCF_RELEASE_SIGNING_KEY,
+# a base64 seed). The detached base64 signature is published as checksums.txt.sig and
+# verified by `cc-fleet update` against the public key embedded in the binary. The
+# signer is the repo's own tools/sign-checksums (stdlib Ed25519 — no gpg/cosign).
+signs:
+  - id: checksums
+    artifacts: checksum
+    cmd: go
+    args: ["run", "./tools/sign-checksums", "${artifact}", "${signature}"]
+    signature: "${artifact}.sig"
+
 release:
   github:
     owner: ethanhq
     name: cc-fleet
-  draft: false
+  # Publish as a draft; the release workflow undrafts it only after confirming
+  # checksums.txt.sig is attached, so no unsigned release is ever public.
+  draft: true
   prerelease: auto
 
 changelog:

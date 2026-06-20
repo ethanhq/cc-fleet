@@ -5,8 +5,10 @@ on:
     tags:
       - "v*"
 
+# Read-only by default; only the signing-gated goreleaser job gets contents: write,
+# so a tag-triggered run cannot create or mutate releases before the human approval.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   # Runs before any artifact is built: a stale plugin.json or npm version fails
@@ -20,6 +22,14 @@ jobs:
   goreleaser:
     needs: version-guard
     runs-on: ubuntu-latest
+    # Gate the signing job behind a protected environment: CCF_RELEASE_SIGNING_KEY is an
+    # environment secret with required reviewers, so a pushed tag cannot run release code
+    # with the long-lived signing key until a human approves the deployment.
+    environment: release-signing
+    # Release write capability lives only on this gated job (publishing the release,
+    # uploading assets, undrafting).
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -27,6 +37,12 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+      # Fail the release if the public key embedded in the binary does not match the
+      # signing secret — a mismatch would publish a checksums.txt.sig every updated
+      # client rejects.
+      - run: bash scripts/signing-preflight.sh
+        env:
+          CCF_RELEASE_SIGNING_KEY: ${{ secrets.CCF_RELEASE_SIGNING_KEY }}
       - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
@@ -34,6 +50,17 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CCF_RELEASE_SIGNING_KEY: ${{ secrets.CCF_RELEASE_SIGNING_KEY }}
+      # GoReleaser publishes a DRAFT; confirm the signature asset is attached, then
+      # undraft — so an unsigned release is never public, and a failed signature upload
+      # leaves only a draft to clean up.
+      - run: |
+          gh release view "${GITHUB_REF_NAME}" --json assets --jq '.assets[].name' \
+            | grep -qx 'checksums.txt.sig' \
+            || { echo "release asset checksums.txt.sig missing"; exit 1; }
+          gh release edit "${GITHUB_REF_NAME}" --draft=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   npm-publish:
     needs: [version-guard, goreleaser]
