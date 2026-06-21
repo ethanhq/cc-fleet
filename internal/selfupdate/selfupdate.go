@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -290,37 +291,57 @@ func runLocked(ctx context.Context, opts Options, out io.Writer) error {
 	return nil
 }
 
-// download GETs url (following redirects to the asset CDN) and returns the body,
-// failing explicitly if it exceeds maxAsset rather than silently truncating.
-func download(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// assetHTTPClient follows redirects to the asset CDN under checkAssetRedirect.
+var assetHTTPClient = &http.Client{CheckRedirect: checkAssetRedirect}
+
+// checkAssetRedirect allows an asset redirect only while it stays https and the chain
+// stays within Go's default 10-hop bound — a non-nil CheckRedirect disables that default,
+// so a hostile https mirror can neither downgrade the fetch to http nor loop unboundedly.
+func checkAssetRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) >= 10 {
+		return fmt.Errorf("stopped after %d redirects", len(via))
+	}
+	if req.URL.Scheme != "https" {
+		return fmt.Errorf("refusing insecure redirect to %s://%s", req.URL.Scheme, req.URL.Host)
+	}
+	return nil
+}
+
+// download GETs url (following https-only redirects to the asset CDN) and returns the
+// body, failing explicitly if it exceeds maxAsset rather than silently truncating.
+func download(ctx context.Context, rawURL string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", "cc-fleet")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := assetHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("GET %s: HTTP %d", url, resp.StatusCode)
+		return nil, fmt.Errorf("GET %s: HTTP %d", rawURL, resp.StatusCode)
 	}
 	data, err := io.ReadAll(io.LimitReader(resp.Body, maxAsset+1))
 	if err != nil {
 		return nil, err
 	}
 	if len(data) > maxAsset {
-		return nil, fmt.Errorf("GET %s: response exceeds %d bytes", url, maxAsset)
+		return nil, fmt.Errorf("GET %s: response exceeds %d bytes", rawURL, maxAsset)
 	}
 	return data, nil
 }
 
-// assetBase is the release-download base for a tag (CCF_BASE_URL overrides it
-// for a mirror or a local test, matching install.sh / npm).
-func assetBase(tag string) string {
+// assetBase is the release-download base for a tag. CCF_BASE_URL overrides it for an
+// https mirror or a local https test; a non-https override is rejected so the update
+// source cannot be silently re-pointed at a plaintext host.
+func assetBase(tag string) (string, error) {
 	if b := os.Getenv("CCF_BASE_URL"); b != "" {
-		return b
+		if u, err := url.Parse(b); err != nil || u.Scheme != "https" {
+			return "", fmt.Errorf("CCF_BASE_URL must be an https:// URL, got %q", b)
+		}
+		return b, nil
 	}
-	return fmt.Sprintf("%s/%s/releases/download/%s", githubBase, repo, tag)
+	return fmt.Sprintf("%s/%s/releases/download/%s", githubBase, repo, tag), nil
 }

@@ -33,7 +33,10 @@ func prepareTarballBinary(ctx context.Context, exe, tag string, out io.Writer) (
 
 	osArch := runtime.GOOS + "-" + runtime.GOARCH
 	tarName := fmt.Sprintf("cc-fleet-%s.tar.gz", osArch)
-	base := assetBase(tag)
+	base, err := assetBase(tag)
+	if err != nil {
+		return "", err
+	}
 
 	fmt.Fprintf(out, "  ↓ %s\n", tarName)
 	tarBytes, err := download(ctx, base+"/"+tarName)
