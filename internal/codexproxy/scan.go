@@ -58,6 +58,19 @@ func ChoosePort(preferred int) (int, error) {
 	return 0, fmt.Errorf("no free port in %d-%d; pass --port", defaultPortBase, defaultPortBase+portScanWidth-1)
 }
 
+// ChoosePortBatch picks a usable loopback port not in reserved, scanning the reserved
+// range. Unlike ChoosePort it does not read providers.toml — the caller seeds reserved
+// with the ports of other daemon-backed providers plus any assigned earlier in the same
+// batch, so importing several daemon-backed providers at once never double-assigns.
+func ChoosePortBatch(reserved map[int]bool) (int, error) {
+	for p := defaultPortBase; p < defaultPortBase+portScanWidth; p++ {
+		if !reserved[p] && portUsable(p) {
+			return p, nil
+		}
+	}
+	return 0, fmt.Errorf("no free port in %d-%d for the imported daemon-backed providers", defaultPortBase, defaultPortBase+portScanWidth-1)
+}
+
 // assignedPorts is the set of loopback ports already bound to a daemon-backed
 // provider in providers.toml, so a new provider never reuses one. A config-load
 // failure yields an empty set (the bind check below still guards live ports).

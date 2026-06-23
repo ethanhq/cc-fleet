@@ -15,6 +15,8 @@
 | `remove <provider>` | 删除 provider 及其 profile(`--keep-secret` 保留 key)。 |
 | `list` | 列出已配置的 provider 及状态、缓存信息(`--json` 含默认 provider)。 |
 | `default [provider]` | 查看 / 设置 / 清除全局默认 provider(`--unset`、`--force`)。 |
+| `export` | 把 provider 名册导出成不含密钥的版本化 TOML 包(`--out`、`--provider`、`--json`)。 |
+| `import <bundle>` | 应用 provider 包 —— 整体校验后再合并(`--force` 覆盖并备份;`--json`)。 |
 | `models <provider>` | 查看 provider 的模型档位(default / strong / fast 槽)。 |
 | `refresh <provider>` | 重新查询 `/v1/models` 并更新缓存。 |
 | `keyget <provider>` | 输出一次 provider API key — 由 Claude 的 `apiKeyHelper` 调用。 |
@@ -68,6 +70,32 @@ printf '%s' "$DEEPSEEK_API_KEY" | cc-fleet add deepseek \
 
 - `--model strong` / `--model fast` / `--model default` 按档位表解析。
 - 每个槽位可标 1M 上下文(`[1m]`),provider 可设 effort 档 — TUI 表单或 `add`/`edit` flag 均可配置。
+
+## 导出 / 导入 provider 名册
+
+把 provider 名册作为不含密钥的版本化 TOML 包在机器之间搬运 —— 可 review、可 diff、可入私有 dotfiles 仓库。包里**绝不含密钥**。
+
+```bash
+cc-fleet export --out fleet-providers.toml          # 全部 provider
+cc-fleet export --provider deepseek,glm > roster.toml
+cc-fleet import fleet-providers.toml                # 在新机器上应用
+```
+
+随包走的:每个 provider 的配置(protocol、base URL、OpenAI-protocol 的 upstream URL、models endpoint、模型档位、effort、默认权限、key 轮换、enabled、secret 后端 + 引用)与全局默认。不走的:**密钥本身**(file 后端的密钥留在源机;`pass`/`1password`/`vault`/`keyring` 只带引用),以及 **codex** provider(其登录是机器本地的 —— 导出时省略、导入时跳过)。
+
+`import` 在写入任何东西之前先整体校验,坏包不会动你的名册。与现有 provider 冲突的行默认跳过,除非 `--force`;`--force` 会先备份 `providers.toml`,再用一次原子写替换。daemon-backed(OpenAI-protocol)provider 的 loopback `base_url` 在目标机重新派生 —— 随包走的是它的 `upstream_url`。导入只写配置、绝不联网;profile 在之后重建(派生缓存 —— 若该步报错,重跑 `repair`)。
+
+> 只导入你信任的包:它的 base URL、models endpoint、secret 引用会驱动后续本地 secret 管理器读取与带密钥的请求。
+
+导入后收尾:
+
+```bash
+printf '%s' "$KEY" | cc-fleet edit deepseek --api-key-stdin   # 重新录入 file 后端密钥
+cc-fleet codex login                                          # 任何 codex provider
+cc-fleet doctor
+```
+
+文件里的 `bundle_version` 是包格式版本 —— 刻意与 `providers.toml` 的 `version`(schema 版本)区分开。
 
 ## Subagent — 一次性 headless 调用
 

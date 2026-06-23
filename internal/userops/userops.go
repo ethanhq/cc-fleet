@@ -45,6 +45,8 @@ const (
 	CodeRepairFailed        = "REPAIR_FAILED"
 	CodeUninstallFailed     = "UNINSTALL_FAILED"
 	CodeDefaultAlreadySet   = "DEFAULT_ALREADY_SET"
+	CodeExportFailed        = "EXPORT_FAILED"
+	CodeImportFailed        = "IMPORT_FAILED"
 )
 
 // probeTimeout caps the synchronous /v1/models probe Add performs after
@@ -247,13 +249,48 @@ func Add(req AddRequest) (*AddResult, error) {
 	return withProvidersLock(func() (*AddResult, error) { return addLocked(req) })
 }
 
+// guardProviderForPersistence enforces the per-provider policies that config.Validate
+// (schema only) does not: the reserved native name, and a path-safe file-backend
+// secret_ref. addLocked and Import share it so the two validation paths can't drift — a
+// guard added here applies to both add and import.
+func guardProviderForPersistence(name, secretBackend, secretRef string) error {
+	if name == config.ReservedNativeProvider {
+		return opErr(CodeProviderNameInvalid,
+			fmt.Errorf("name %q is reserved for the native leaf (the official claude CLI on your own login)", name))
+	}
+	if secretBackend == "file" {
+		if err := secrets.SafeRef(secretRef); err != nil {
+			return opErr(CodeInvalidBackend, err)
+		}
+	}
+	return nil
+}
+
+// defaultChangeAllowed reports whether default_provider may be set to name, given the
+// current config and force. Shared by SetDefaultProvider and Import so the default policy
+// can't drift: the reserved native leaf is never the default, the target must exist, and
+// an existing different default is not silently changed without force.
+func defaultChangeAllowed(cfg *config.Config, name string, force bool) error {
+	if name == config.ReservedNativeProvider {
+		return opErr(CodeProviderNameInvalid,
+			fmt.Errorf("%q is the native leaf — explicit-only, it can't be the default provider", name))
+	}
+	if _, ok := cfg.Providers[name]; !ok {
+		return opErr(CodeProviderUnknown, fmt.Errorf("provider %q not in providers.toml", name))
+	}
+	if cfg.DefaultProvider != "" && cfg.DefaultProvider != name && !force {
+		return opErr(CodeDefaultAlreadySet,
+			fmt.Errorf("default provider is already %q; pass --force to change it", cfg.DefaultProvider))
+	}
+	return nil
+}
+
 func addLocked(req AddRequest) (*AddResult, error) {
 	if err := ValidateProviderName(req.Name); err != nil {
 		return nil, opErr(CodeProviderNameInvalid, err)
 	}
-	if req.Name == config.ReservedNativeProvider {
-		return nil, opErr(CodeProviderNameInvalid,
-			fmt.Errorf("name %q is reserved for the native leaf (the official claude CLI on your own login)", req.Name))
+	if err := guardProviderForPersistence(req.Name, req.SecretBackend, req.SecretRef); err != nil {
+		return nil, err
 	}
 
 	cfg, err := config.Load()
@@ -276,9 +313,7 @@ func addLocked(req AddRequest) (*AddResult, error) {
 		if req.SecretRef == "" {
 			return nil, opErr(CodeInvalidBackend, errors.New("--secret-ref is required when --api-key is set"))
 		}
-		if err := secrets.SafeRef(req.SecretRef); err != nil {
-			return nil, opErr(CodeInvalidBackend, err)
-		}
+		// secret_ref path-safety is enforced by guardProviderForPersistence above.
 		if err := writeFileSecret(req.SecretRef, []byte(req.APIKey)); err != nil {
 			return nil, opErr(CodeSecretWriteFailed, err)
 		}
@@ -903,16 +938,8 @@ func SetDefaultProvider(name string, force bool) (*DefaultProviderView, error) {
 		if err := ValidateProviderName(name); err != nil {
 			return struct{}{}, opErr(CodeProviderNameInvalid, err)
 		}
-		if name == config.ReservedNativeProvider {
-			return struct{}{}, opErr(CodeProviderNameInvalid,
-				fmt.Errorf("%q is the native leaf — explicit-only, it can't be the default provider", name))
-		}
-		if _, ok := cfg.Providers[name]; !ok {
-			return struct{}{}, opErr(CodeProviderUnknown, fmt.Errorf("provider %q not in providers.toml", name))
-		}
-		if cfg.DefaultProvider != "" && cfg.DefaultProvider != name && !force {
-			return struct{}{}, opErr(CodeDefaultAlreadySet,
-				fmt.Errorf("default provider is already %q; pass --force to change it", cfg.DefaultProvider))
+		if err := defaultChangeAllowed(cfg, name, force); err != nil {
+			return struct{}{}, err
 		}
 		cfg.DefaultProvider = name
 		if err := config.Save(cfg); err != nil {

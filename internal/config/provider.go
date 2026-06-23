@@ -475,6 +475,13 @@ func (c *Config) Validate() error {
 	if c.Version != SchemaVersion {
 		return fmt.Errorf("config: unsupported version %d (want %d)", c.Version, SchemaVersion)
 	}
+	// Save always writes the top-level `version` scalar, so a provider TABLE named
+	// "version" would make providers.toml un-parseable on the next load (a key that is both
+	// a scalar and a table). Reject it so it can never be written — for every writer (add,
+	// import, edit) at once.
+	if _, clash := c.Providers["version"]; clash {
+		return errors.New(`config: a provider named "version" conflicts with the providers.toml version key — rename the provider`)
+	}
 	// A scalar default_provider key and a provider TABLE named "default_provider" can't
 	// coexist — Save would emit both and the next parse would hit a TOML key/table
 	// collision. Reject the combination so it can never be written (a legacy

@@ -15,6 +15,8 @@ The `cc-fleet` binary is the engine under the skills. Most of the time you let C
 | `remove <provider>` | Delete a provider and its profile (`--keep-secret` preserves the key). |
 | `list` | List configured providers with status and cache info (`--json` includes the default). |
 | `default [provider]` | Show / set / unset the fleet-wide default provider (`--unset`, `--force`). |
+| `export` | Write a keyless TOML bundle of the provider roster for another machine (`--out`, `--provider`, `--json`). |
+| `import <bundle>` | Apply a provider bundle — validates it whole, then merges (`--force` overwrites + backs up; `--json`). |
 | `models <provider>` | Show a provider's configured model roster (default / strong / fast slots). |
 | `refresh <provider>` | Re-query a provider's `/v1/models` and update the cache. |
 | `keyget <provider>` | Print a provider API key once — Claude's `apiKeyHelper` calls this. |
@@ -68,6 +70,32 @@ printf '%s' "$DEEPSEEK_API_KEY" | cc-fleet add deepseek \
 
 - `--model strong` / `--model fast` / `--model default` resolve through the roster.
 - Each slot can carry a 1M-context marker (`[1m]`) and the provider an effort level — both set in the TUI form or via `add`/`edit` flags.
+
+## Export / import the provider roster
+
+Carry your provider roster between machines as a keyless, versioned TOML bundle — review it, diff it, or check it into a private dotfiles repo. The bundle never contains a key.
+
+```bash
+cc-fleet export --out fleet-providers.toml          # all providers
+cc-fleet export --provider deepseek,glm > roster.toml
+cc-fleet import fleet-providers.toml                # apply on the new machine
+```
+
+What travels: each provider's config (protocol, base URL, for OpenAI-protocol providers the upstream URL, models endpoint, model roster, effort, default permission, key rotation, enabled, secret backend + reference) and the global default. What doesn't: the **key itself** (file-backend keys stay on the source; `pass`/`1password`/`vault`/`keyring` rows carry only their reference), and **codex** providers (their login is machine-local — omitted on export, skipped on import).
+
+`import` validates the whole bundle before writing anything, so a bad bundle leaves the roster untouched. A provider that collides with an existing one is skipped unless `--force`, which backs up `providers.toml` first and replaces it in a single atomic write. A daemon-backed (OpenAI-protocol) provider's loopback `base_url` is re-derived on the target — its `upstream_url` is what travels. Import writes config only and never contacts a provider; profiles are rebuilt afterward (a derived cache — re-run `repair` if that step reports a failure).
+
+> Only import a bundle you trust: its base URLs, models endpoints, and secret references drive later local secret-manager reads and key-bearing requests.
+
+After import, finish the setup:
+
+```bash
+printf '%s' "$KEY" | cc-fleet edit deepseek --api-key-stdin   # re-enter file-backend keys
+cc-fleet codex login                                          # for any codex providers
+cc-fleet doctor
+```
+
+The `bundle_version` in the file is the bundle format version — deliberately separate from the `version` (schema) of `providers.toml`.
 
 ## Subagent — one-shot headless calls
 
