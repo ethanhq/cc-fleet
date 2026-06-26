@@ -97,6 +97,7 @@ const (
 	asModeEntity                  // L3: entity list | the focused entity's inline detail card (j/k scroll)
 	asModeRunPhases               // run drill: the focused run's Phases | the selected phase's agents
 	asModeRunAgent                // run drill: agent list | the selected agent's inline detail (j/k scroll)
+	asModeBrowser                 // flat, type-to-filter session browser; Enter opens an entity's existing detail
 )
 
 // Model is the root bubbletea model.
@@ -264,6 +265,20 @@ type Model struct {
 	// wfPromptExpanded toggles the inline detail's prompt between a collapsed "N lines · ⏎ expand"
 	// summary (default) and the full text; reset to collapsed when the focused leaf changes.
 	wfPromptExpanded bool
+
+	// Session browser (asModeBrowser): a flat, newest-first list of past standalone subagent
+	// jobs + workflow runs + team sessions, type-to-filter over title/provider/lane. browserFilter
+	// is the live query (cursor resets to 0 on every edit); browserCursor indexes the FILTERED
+	// rows. browserAnchor is the highlighted row's {kind,id}, re-found after each refresh so an
+	// inserted/removed row above the cursor can't shift Enter onto a different entity. browserOrigin
+	// marks a detail view entered FROM the browser, so esc returns to it (left still does normal
+	// board ascent — preserving the ended-team delete path). browserReturnMode is the board mode
+	// ctrl+f was opened from, restored on esc so the browser closes back to the board, not the hub.
+	browserFilter     string
+	browserCursor     int
+	browserAnchor     browserRef
+	browserOrigin     bool
+	browserReturnMode asMode
 
 	// Active add/edit form.
 	form     form
@@ -1510,10 +1525,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.boardEntryRoute = false
 			m.asProjectCursor, m.asSessionCursor, m.asBoxCursor, m.asEntityCursor, m.asCardScroll = 0, 0, 0, 0, 0
 			m.focusedProject, m.focusedSessionID, m.asMode = asNoFocus, asNoFocus, asModeBoxes
+			m.browserOrigin = false // a fresh board entry has no browser back-link
 		}
 		// Capture the L2 cursor row's TYPED identity before the data changes, so the
 		// cursor can re-find it (a team by name, a job by id) after the refresh.
 		prevBox, hadBox := m.boxRowRef()
+		prevEntity, hadEntity := m.entityRowRef()
 		m.loading = false
 		m.boardSeen = true
 		// Teammate / session-meta / pin state is full-refresh-only (the 500ms light chain never carries it),
@@ -1549,6 +1566,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reanchorBox(prevBox)
 		}
 		m.clampAsCursors()
+		if hadEntity && !m.reanchorEntity(prevEntity) {
+			m.browserOrigin = false // the browser-entered entity is gone; the cursor fell to a sibling
+		}
 		m.asCardScroll = m.clampAsCardScroll(m.asCardScroll)
 		// Load (or live-refresh) the focused entity's detail payload — a reroot can land
 		// the board straight on a detail view. Jobs: a non-terminal focused job re-reads
@@ -1618,6 +1638,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.lastRefreshSeq = msg.seq
 		prevBox, hadBox := m.boxRowRef()
+		prevEntity, hadEntity := m.entityRowRef()
 		// The light chain carries the full job list too, so a standalone subagent row's status/usage
 		// refresh at 500ms — otherwise it lags 3s behind its own live snapshot and falls back to a stale,
 		// lower usage (a visible down-jump) and a stuck "running" when the job finishes between full ticks.
@@ -1631,6 +1652,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.reanchorBox(prevBox)
 		}
 		m.clampAsCursors()
+		if hadEntity && !m.reanchorEntity(prevEntity) {
+			m.browserOrigin = false // the browser-entered entity is gone; the cursor fell to a sibling
+		}
 		m.asCardScroll = m.clampAsCardScroll(m.asCardScroll)
 		return m, m.startWfLive()
 
@@ -2039,8 +2063,16 @@ func (m Model) updateSpawn(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.confirm != nil {
 		return m.updateConfirm(msg) // a confirm modal traps focus: ←/→ select, enter runs the choice (no esc)
 	}
+	// The flat browser is a text-entry mode: every printable rune (incl. r/q) is filter
+	// input, so it routes BEFORE the board-global shortcuts below. Only ctrl+c (handled in
+	// Update) stays global.
+	if m.asMode == asModeBrowser {
+		return m.updateBrowser(msg)
+	}
 	atRunLevel := m.asMode == asModeRunPhases || m.asMode == asModeRunAgent
 	switch msg.String() {
+	case "ctrl+f":
+		return m.openBrowser()
 	case "r":
 		if atRunLevel {
 			break // lowercase r is the workflow restart there; R/ctrl+r still refresh
@@ -2287,10 +2319,25 @@ func (m Model) updateAsEntity(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m.openConfirm(confirmClear, s.sessionID, "Clear this session's finished tasks?")
 		}
 	case "esc":
+		if m.browserOrigin {
+			return m.returnToBrowser() // esc from a browser-entered detail returns to the browser
+		}
 		return m.asAscend(true)
 	case "left":
+		// ← always does normal board ascent (so an ended team reaches its boxes-level delete);
+		// exiting a browser-entered detail this way drops the browser-origin link.
+		m.browserOrigin = false
 		return m.asAscend(false)
 	}
+	return m, nil
+}
+
+// returnToBrowser re-opens the flat browser from a detail view entered via it, re-finding the
+// row that was opened so the cursor lands back on it.
+func (m Model) returnToBrowser() (tea.Model, tea.Cmd) {
+	m.browserOrigin = false
+	m.asMode = asModeBrowser
+	m.reanchorBrowser()
 	return m, nil
 }
 
@@ -2564,6 +2611,12 @@ func (m *Model) rerootSpawn() {
 	projects := groupProjects(sessions, m.sessionMeta)
 
 	switch m.asMode {
+	case asModeBrowser:
+		// The flat browser is a first-class mode: rebuild its rows from the refreshed slices
+		// and re-find the cursor by identity, WITHOUT routing to boxes/projects (the default
+		// path below would eject it back to the board).
+		m.reanchorBrowser()
+		return
 	case asModeRunPhases, asModeRunAgent:
 		// The run drill keeps its place while the run and its session both survive; a
 		// vanished run demotes to the session's boxes, a vanished session re-routes.
@@ -2578,6 +2631,7 @@ func (m *Model) rerootSpawn() {
 		if s, ok := m.focusedSession(); ok {
 			m.asMode = asModeBoxes
 			m.focusedRunID = ""
+			m.browserOrigin = false // the browser-entered run is gone — drop its esc-return link
 			m.focusedProject = sessionProjectDir(s, m.sessionMeta)
 			m.clampAsCursors()
 			return
@@ -2620,6 +2674,9 @@ func (m *Model) rerootSpawn() {
 		}
 	}
 
+	// The focus chain broke and we re-route below (possibly straight into another session's
+	// detail) — none of it was browser-entered, so drop any stale esc-return link.
+	m.browserOrigin = false
 	m.asProjectCursor, m.asSessionCursor, m.asBoxCursor, m.asEntityCursor, m.asCardScroll = 0, 0, 0, 0, 0
 	m.focusedProject, m.focusedSessionID = asNoFocus, asNoFocus
 	switch {
@@ -2777,6 +2834,52 @@ func (m *Model) reanchorBox(prev asBoxRef) {
 	}
 }
 
+// entityRowRef returns the L3 entity under asEntityCursor as a typed identity — a job by id or a
+// teammate by mateKey — so the cursor can re-find its row after a refresh shifts the indices. It
+// reports nothing outside asModeEntity, so a stale asEntitySrc left by an earlier visit can't be
+// read as a live entity focus while the board is in a run drill (which would wrongly drop the run's
+// browser back-link on the next refresh).
+func (m Model) entityRowRef() (browserRef, bool) {
+	if m.asMode != asModeEntity {
+		return browserRef{}, false
+	}
+	if j, ok := m.selectedJob(); ok {
+		return browserRef{kind: browserJob, id: j.JobID}, true
+	}
+	if t, ok := m.selectedTeammate(); ok {
+		return browserRef{kind: browserMate, id: mateKey(t)}, true
+	}
+	return browserRef{}, false
+}
+
+// reanchorEntity re-finds the previously focused L3 entity by its typed identity after a refresh
+// (mirror reanchorBox), reporting whether it was found. A vanished entity leaves the clamped cursor
+// on a sibling — the caller drops browserOrigin in that case, so esc no longer returns to the
+// browser from a row the user never opened from it.
+func (m *Model) reanchorEntity(prev browserRef) bool {
+	if m.asMode != asModeEntity {
+		return false
+	}
+	members, jobs := m.railEntities()
+	switch prev.kind {
+	case browserJob:
+		for i, j := range jobs {
+			if j.JobID == prev.id {
+				m.asEntityCursor = i
+				return true
+			}
+		}
+	case browserMate:
+		for i, t := range members {
+			if mateKey(t) == prev.id {
+				m.asEntityCursor = i
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // clampAsCardScroll bounds the visible card's scroll to [0, lines-viewport] so j/k never
 // scroll past the content (mirror clampCardScroll). The card lives in the entity view OR
 // inline in the L2 Subagents box — each with its own geometry.
@@ -2914,7 +3017,13 @@ func (m Model) updateWfPhases(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "right", "enter":
 		return m.wfDescend()
-	case "esc", "left":
+	case "esc":
+		if m.browserOrigin {
+			return m.returnToBrowser() // esc from a browser-entered run drill returns to the browser
+		}
+		return m.wfAscend()
+	case "left":
+		m.browserOrigin = false // ← does normal ascent and drops the browser-origin link
 		return m.wfAscend()
 	case "x":
 		return m.stopFocusedPhase()
@@ -2946,6 +3055,8 @@ func (m Model) updateWfAgent(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "k":
 		m.wfCardScroll = m.clampCardScroll(m.wfCardScroll - 1)
 	case "left", "esc":
+		// Agent sits below the run's entry level (Phases), so both back keys retrace one level
+		// to Phases, which owns the browser-origin return; the origin survives the retrace.
 		return m.wfAscend()
 	case "right":
 		return m, nil // already at the deepest level

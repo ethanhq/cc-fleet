@@ -481,6 +481,8 @@ func (m Model) viewSpawn() string {
 		b.WriteString(m.viewWfPhases())
 	case m.asMode == asModeRunAgent:
 		b.WriteString(m.viewWfAgent())
+	case m.asMode == asModeBrowser:
+		b.WriteString(m.viewBrowser())
 	default:
 		if _, ok := m.focusedSession(); !ok {
 			b.WriteString(m.boardFallback(
@@ -534,9 +536,9 @@ func (m Model) renderAsFooter() string {
 	var hint string
 	switch m.asMode {
 	case asModeProjects:
-		hint = "↑/↓ project · →/⏎ open · esc/tab providers · r refresh · q quit"
+		hint = "↑/↓ project · →/⏎ open · ctrl+f find · esc/tab providers · r refresh · q quit"
 	case asModeSessions:
-		hint = "↑/↓ session · →/⏎ open · d delete · ← back · r refresh · esc/tab providers · q quit"
+		hint = "↑/↓ session · →/⏎ open · d delete · ← back · ctrl+f find · r refresh · esc/tab providers · q quit"
 	case asModeEntity:
 		// A job IS a record, so it is deletable here; a team's members are not — the team is only
 		// deletable at its outermost (boxes) row. h/s act on live teammate panes, never on jobs.
@@ -549,6 +551,9 @@ func (m Model) renderAsFooter() string {
 		hint = "↑/↓ phase · → agents · r restart · x stop · ←/esc back · R refresh · q quit"
 	case asModeRunAgent:
 		hint = "↑/↓ agent · j/k scroll · ⏎ prompt · r restart agent · x stop · ←/esc back · R refresh · q quit"
+	case asModeBrowser:
+		// q is search text in the browser, so quit is ctrl+c here; esc returns to the board.
+		hint = "type to search · ↑/↓ move · ⏎ open · esc back · ctrl+c quit"
 	default:
 		// save (s) is offered ONLY on a run row — a whole-workflow op belongs to its outermost row.
 		_, onJob := m.boxJob()

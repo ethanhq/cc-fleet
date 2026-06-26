@@ -85,7 +85,7 @@ Platform splits live in `procintrospect` and per-package `_unix.go` / `_windows.
 
 - **Pane identity is (tmux socket, pane id)** — never (team, name). The default server is the empty socket; out-of-tmux teammates live on a per-team `cc-fleet-swarm-<team>` socket. All tmux access goes through the single `tmux.Server` outlet.
 - `config.Load` is **strict**: an invalid `key_rotation`, unknown `secret_backend`, or wrong schema version is rejected at load, not defaulted.
-- The TUI (`tui`) is one Bubbletea app: the provider hub (add/edit forms, key manager, codex login) and a project-first master-detail **Agents Board** over teammates, subagent jobs, and workflow runs — with per-leaf hold/restart, prompt/answer drill-in, and spend columns. `teamhist` keeps ended teams visible as faint snapshot rows; `pinned` marks records as out-of-band files so they survive GC and clears. The whole palette is adaptive (dark/light).
+- The TUI (`tui`) is one Bubbletea app: the provider hub (add/edit forms, key manager, codex login) and a project-first master-detail **Agents Board** over teammates, subagent jobs, and workflow runs — with per-leaf hold/restart, prompt/answer drill-in, spend columns, and a `ctrl+f` flat session browser that filters every past job / run / team by substring and opens the selected one's existing detail. `teamhist` keeps ended teams visible as faint snapshot rows; `pinned` marks records as out-of-band files so they survive GC and clears. The whole palette is adaptive (dark/light).
 
 ## Distribution & self-update (`selfupdate`, `version`)
 
