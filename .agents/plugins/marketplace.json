@@ -1,0 +1,19 @@
+{
+  "name": "cc-fleet",
+  "interface": {
+    "displayName": "cc-fleet"
+  },
+  "plugins": [
+    {
+      "name": "cc-fleet",
+      "source": {
+        "source": "local",
+        "path": "./codex-plugin"
+      },
+      "policy": {
+        "installation": "AVAILABLE"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

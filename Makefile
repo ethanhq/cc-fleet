@@ -28,7 +28,16 @@ SHARED_DOCS := cli-reference.md providers.md routing.md troubleshooting.md
 # skills/ tree here; `skill-drift-check` fails if they diverge.
 LOCAL_SKILLS := .claude/skills
 
-.PHONY: build install install-bin install-skill skill-sync skill-drift-check uninstall test clean smoke cross-compile release-archive release-prep version-guard
+# The self-contained Codex plugin. Its two SKILL.md are hand-maintained (purpose-written
+# for codex). Its cc-fleet-shared dir carries ONLY providers.md — a GENERATED copy of the
+# canonical one (a plugin install copies the whole tree, so a linked doc must live inside
+# it). The other shared docs are Claude-lane-specific (team / native-Agent / the TeamCreate
+# self-heal), so the codex skills handle those inline or via `cc-fleet <cmd> --help` rather
+# than linking them. `codex-plugin-sync` regenerates providers.md; the drift-check fails if
+# it diverges.
+CODEX_PLUGIN := codex-plugin
+
+.PHONY: build install install-bin install-skill skill-sync skill-drift-check codex-plugin-sync codex-plugin-drift-check uninstall test clean smoke cross-compile release-archive release-prep version-guard
 
 build:
 	@mkdir -p $(BIN_DIR)
@@ -100,6 +109,19 @@ skill-drift-check:
 	@diff -rq skills/$(SKILL_SHARED) $(LOCAL_SKILLS)/$(SKILL_SHARED) \
 	  && echo "skill-drift-check: installed copy matches canonical" \
 	  || { echo "skill-drift-check: DRIFT in $(SKILL_SHARED) — run 'make skill-sync'"; exit 1; }
+
+# Regenerate the Codex plugin's providers.md from the canonical copy. Run after editing
+# skills/cc-fleet-shared/providers.md. The two codex SKILL.md are hand-maintained.
+codex-plugin-sync:
+	@mkdir -p $(CODEX_PLUGIN)/skills/$(SKILL_SHARED)
+	@cp skills/$(SKILL_SHARED)/providers.md $(CODEX_PLUGIN)/skills/$(SKILL_SHARED)/providers.md
+	@echo "Synced $(CODEX_PLUGIN)/skills/$(SKILL_SHARED)/providers.md from canonical"
+
+# Fail if the plugin's providers.md has drifted from canonical (run 'make codex-plugin-sync').
+codex-plugin-drift-check:
+	@diff -q skills/$(SKILL_SHARED)/providers.md $(CODEX_PLUGIN)/skills/$(SKILL_SHARED)/providers.md \
+	  && echo "codex-plugin-drift-check: providers.md matches canonical" \
+	  || { echo "codex-plugin-drift-check: DRIFT — run 'make codex-plugin-sync'"; exit 1; }
 
 # Removes the binary, the ccf symlink, and any skills `make install-skill` placed
 # (the prefixed per-lane + shared dirs, and the legacy cc-fleet dir if present).

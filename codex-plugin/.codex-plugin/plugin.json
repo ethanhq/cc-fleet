@@ -1,0 +1,41 @@
+{
+  "name": "cc-fleet",
+  "version": "0.1.0",
+  "description": "Fan out provider LLM subagents and multi-phase JS workflows from Codex via the cc-fleet CLI — DeepSeek / GLM / Kimi / Qwen / MiniMax, or your Codex/Claude subscription. Each worker receives its credential on demand, never through its env or argv. Requires the cc-fleet and claude binaries on PATH (installed separately).",
+  "author": {
+    "name": "Ethan Guo",
+    "email": "ethanguo.dev@gmail.com"
+  },
+  "homepage": "https://github.com/ethanhq/cc-fleet",
+  "repository": "https://github.com/ethanhq/cc-fleet",
+  "license": "Apache-2.0",
+  "keywords": [
+    "codex",
+    "cc-fleet",
+    "subagent",
+    "workflow",
+    "provider",
+    "deepseek",
+    "glm",
+    "kimi",
+    "qwen",
+    "minimax"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "cc-fleet",
+    "shortDescription": "Fan out provider-LLM subagents and workflows from Codex.",
+    "longDescription": "Drives the cc-fleet CLI from a Codex session: one-shot or batch provider subagents (cc-fleet subagent) and multi-phase JS workflows (cc-fleet workflow), over DeepSeek / GLM / Kimi / Qwen / MiniMax or a Codex/Claude subscription. Workers run on the claude engine; their credentials never touch env or argv. The cc-fleet and claude binaries are installed separately.",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/ethanhq/cc-fleet",
+    "developerName": "Ethan Guo",
+    "defaultPrompt": [
+      "Fan out three cc-fleet subagents to research this in parallel, then combine.",
+      "Run a cc-fleet workflow to audit these files across providers."
+    ]
+  }
+}
