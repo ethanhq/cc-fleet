@@ -44,6 +44,10 @@ type workflowEnvelope struct {
 	WaitOutcome string                  `json:"wait_outcome,omitempty"`
 	Counts      *workflow.WaitCounts    `json:"counts,omitempty"`
 	Held        []workflow.WaitHeldLeaf `json:"held,omitempty"`
+	// result-only fields: a leaf's persisted answer + the leaf it was read from.
+	Answer string `json:"answer,omitempty"`
+	JobID  string `json:"job_id,omitempty"`
+	Label  string `json:"label,omitempty"`
 }
 
 // newWorkflowCmd builds `cc-fleet workflow` — run orchestration over subagent
@@ -60,7 +64,7 @@ so they group into one run tree on the board. List runs and inspect a run's jobs
 		SilenceErrors: true,
 		SilenceUsage:  true,
 	}
-	cmd.AddCommand(newWorkflowNewCmd(), newWorkflowListCmd(), newWorkflowStatusCmd(), newWorkflowRunCmd(), newWorkflowStopCmd(), newWorkflowRestartCmd(), newWorkflowWatchCmd(), newWorkflowWaitCmd(), newWorkflowSavedCmd(), newWorkflowRmCmd(), newWorkflowPruneCmd())
+	cmd.AddCommand(newWorkflowNewCmd(), newWorkflowListCmd(), newWorkflowStatusCmd(), newWorkflowResultCmd(), newWorkflowRunCmd(), newWorkflowStopCmd(), newWorkflowRestartCmd(), newWorkflowWatchCmd(), newWorkflowWaitCmd(), newWorkflowSavedCmd(), newWorkflowRmCmd(), newWorkflowPruneCmd())
 	return cmd
 }
 
@@ -434,6 +438,9 @@ with 'workflow status' or watch the board. --foreground runs inline to completio
 				if opts.LeadSessionID = leadSessionID; opts.LeadSessionID == "" {
 					opts.LeadSessionID = leadsession.Detect()
 				}
+				if opts.LeadSessionID == "" {
+					opts.LeadSessionID = leadsession.CodexThread()
+				}
 			}
 			// SIGINT (Ctrl-C on a --foreground run) and SIGTERM (a kill of the detached
 			// child, e.g. by teardown) cancel the run: queued leaves stop launching,
@@ -654,6 +661,50 @@ func newWorkflowStatusCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit a machine-readable JSON envelope")
+	return cmd
+}
+
+// newWorkflowResultCmd builds `cc-fleet workflow result <run-id> --label <leaf>` — read a
+// finished leaf's answer (the persisted <jobID>.answer side file) that `status` and `wait`
+// deliberately omit. An explicit pull, kept separate so the status/wait surfaces stay
+// answer-free.
+func newWorkflowResultCmd() *cobra.Command {
+	var asJSON bool
+	var label string
+	cmd := &cobra.Command{
+		Use:           "result <run-id> --label <leaf>",
+		Short:         "Read a finished leaf's answer from a workflow run",
+		Args:          cobra.ExactArgs(1),
+		SilenceErrors: true,
+		SilenceUsage:  true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if label == "" {
+				return reportWorkflowErr(fmt.Errorf("--label <leaf> is required: status/wait omit answers, so name the leaf whose answer to read"), asJSON)
+			}
+			_, jobs, err := subagent.RunStatus(args[0])
+			if err != nil {
+				return reportWorkflowErr(err, asJSON)
+			}
+			jobID, err := matchLeaf(jobs, label)
+			if err != nil {
+				return reportWorkflowErr(err, asJSON)
+			}
+			answer, ok, err := subagent.ReadAnswer(jobID)
+			if err != nil {
+				return reportWorkflowErr(err, asJSON)
+			}
+			if !ok {
+				return reportWorkflowErr(fmt.Errorf("no answer for leaf %q (job %s): it is unfinished or ran with --no-persist-io", label, jobID), asJSON)
+			}
+			if asJSON {
+				return emitWorkflow(workflowEnvelope{OK: true, RunID: args[0], Label: label, JobID: jobID, Answer: answer})
+			}
+			fmt.Println(answer)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&label, "label", "", "Leaf label or job id whose answer to read")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit a machine-readable JSON envelope")
 	return cmd
 }

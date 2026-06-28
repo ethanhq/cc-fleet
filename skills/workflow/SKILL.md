@@ -99,6 +99,7 @@ A failed leaf's `error_code` is in `workflow status --json` (`jobs[]`) and in th
 | `SUBAGENT_TIMEOUT` | Raise the leaf's `timeout` or split the task; a leaf with no `timeout` defaults to 300s. |
 | `SUBAGENT_OUTPUT_TOO_LARGE` | The leaf's output exceeded the byte cap — have it write to a file and answer concisely; a blind retry overflows again. |
 | `SUBAGENT_STOPPED` | An operator stopped it (`stop --leaf` / run stop) — terminal, NOT a failure; never auto-retry. |
+| `SUBAGENT_MAX_TURNS` | A leaf hit the `--max-turns` cap. | Raise the leaf's `max_turns` and re-run / `restart --leaf` — a research / multi-file leaf needs ~1 turn per file read or command (give it 30–50, or omit the cap). |
 | `SUBAGENT_FAILED` / `PROVIDER_API_ERROR` | Inspect (`workflow status`); `restart --leaf` once, or propose a provider switch (ask first). A `provider: "claude"` leaf on a logged-out machine fails here (the error preview names the login problem, no dedicated code) — tell the user to log in to Claude Code interactively. |
 | `FINGERPRINT_MISSING` / `FINGERPRINT_STALE` | Self-heal flow in cc-fleet-shared/troubleshooting.md (`STALE` = no claude binary — the flow can't help; fix Claude Code / PATH). |
 | `CODEX_PROXY_UNAVAILABLE` / `CODEX_CLOUDFLARE_BLOCKED` | `cc-fleet codex login` / free the port; a Cloudflare block → switch network, don't rotate credentials. |
@@ -151,12 +152,12 @@ while (gaps.length < 10) {           // loop-until-dry (the runtime hard-caps 10
 
 // one final synthesis node on your OWN subscription — a single judgement leaf, not a fan-out
 const verdict = await agent("Rank these gaps by severity and name the top three:\n"
-                            + gaps.join("\n"), {provider: "claude", model: "opus"});
+                            + gaps.join("\n"), {provider: "claude", model: "opus", label: "verdict"});
 
 log(`done: ${maps.length} maps, ${checklists.length} checklists, ${gaps.length} gaps`);
 return { maps, checklists, gaps, verdict };
 ```
-One run, three phases, a barriered fan-out, a no-barrier pipeline, a bounded loop-until-dry, and a single `claude` synthesis node — all sequenced by the script in a cc-fleet process, off your context.
+One run, three phases, a barriered fan-out, a no-barrier pipeline, a bounded loop-until-dry, and a single `claude` synthesis node — all sequenced by the script in a cc-fleet process, off your context. The script's top-level `return` value is NOT persisted or retrievable — to read the run's output, fetch a labeled leaf's answer with `cc-fleet workflow result "$RUN" --label verdict --json`.
 
 ## Anti-patterns
 - A script for a single flat independent batch → /cc-fleet:subagent.

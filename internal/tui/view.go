@@ -2848,6 +2848,11 @@ func (m Model) sessionLabel(id string) string {
 	if id == "" {
 		return "(no session)"
 	}
+	// A codex-launched job/run carries a "codex:<thread>" launcher id (no Claude
+	// session, no /rename title) — render it as a distinct launcher header.
+	if thread, ok := strings.CutPrefix(id, "codex:"); ok {
+		return "codex " + shortSessionID(sessiontitle.CleanTitle(thread))
+	}
 	// Scrub both the opaque session id and any /rename title with CleanTitle so the board header
 	// strips ANSI/BEL/OSC control bytes (not just whitespace) before display.
 	clean := sessiontitle.CleanTitle(id)

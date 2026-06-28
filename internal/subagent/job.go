@@ -396,6 +396,28 @@ func ReapJob(jobID string) error {
 	return nil
 }
 
+// ReadAnswer returns the persisted answer side file (<jobID>.answer) for a finished
+// job and whether it exists. The answer is written only when the job ran with
+// PersistIO (the result cache itself is answer-stripped), so a missing file means
+// the job is unfinished or ran with --no-persist-io — not an error.
+func ReadAnswer(jobID string) (string, bool, error) {
+	if err := ids.ValidateJobID(jobID); err != nil {
+		return "", false, fmt.Errorf("invalid job id %q", jobID)
+	}
+	dir, err := jobsDir()
+	if err != nil {
+		return "", false, err
+	}
+	b, err := os.ReadFile(filepath.Join(dir, jobID+".answer"))
+	if os.IsNotExist(err) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return string(b), true, nil
+}
+
 // StatusFor reports a background job's status. While the process is alive it
 // returns status=running; once dead it classifies the captured stdout with the
 // SAME classifier as the sync path, caches the terminal Result to

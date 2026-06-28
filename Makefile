@@ -196,18 +196,18 @@ release-archive: cross-compile
 	rm -rf "$$stage_root"; \
 	echo "Built 4 release archives in $(DIST_DIR)/"
 
-# Bump the plugin manifest + npm package version in lockstep before tagging a
-# release (VERSION=vX.Y.Z). version-guard asserts these match the tag at release.
+# Bump the Claude + Codex plugin manifests and the npm package version in lockstep
+# before tagging a release (VERSION=vX.Y.Z). version-guard asserts these match the tag.
 release-prep:
 	@test -n "$(VERSION)" || { echo "usage: make release-prep VERSION=vX.Y.Z"; exit 1; }
 	@v="$(VERSION)"; v="$${v#v}"; \
-	  for f in .claude-plugin/plugin.json npm/package.json; do \
+	  for f in .claude-plugin/plugin.json npm/package.json codex-plugin/.codex-plugin/plugin.json; do \
 	    tmp=$$(mktemp); \
 	    sed 's/\("version"[[:space:]]*:[[:space:]]*"\)[^"]*"/\1'"$$v"'"/' "$$f" > "$$tmp" && mv "$$tmp" "$$f"; \
 	  done; \
-	  echo "release-prep: set plugin.json + npm/package.json to $$v — commit, then tag v$$v"
+	  echo "release-prep: set plugin.json + npm/package.json + codex-plugin manifest to $$v — commit, then tag v$$v"
 
-# Assert plugin.json == npm/package.json == VERSION (the release-time guard, run
-# locally). VERSION defaults to the latest git tag.
+# Assert the plugin manifests == npm/package.json == VERSION (the release-time guard,
+# run locally). VERSION defaults to the latest git tag.
 version-guard:
 	@bash scripts/version-guard.sh "$(or $(VERSION),$$(git describe --tags --abbrev=0))"

@@ -282,10 +282,14 @@ func Run(parent context.Context, req Request) Result {
 
 	// Prefer the explicit flag, but when cc-fleet is launched from a Claude Bash
 	// tool without a team context, infer the current parent Claude session from
-	// Claude Code's own ~/.claude/sessions/<pid>.json registry. Failure is benign:
-	// the job remains in the legacy "(no session)" board bucket.
+	// Claude Code's own ~/.claude/sessions/<pid>.json registry; failing that, fall
+	// back to the Codex launcher id when run from a Codex session (CODEX_THREAD_ID).
+	// Precedence: explicit flag > Claude session > Codex thread > "(no session)".
 	if req.LeadSessionID == "" {
 		req.LeadSessionID = detectLeadSession()
+	}
+	if req.LeadSessionID == "" {
+		req.LeadSessionID = leadsession.CodexThread()
 	}
 
 	// 6. Resolve the EFFECTIVE profile (version gate, fail-open to full with a

@@ -223,6 +223,7 @@ const (
 	// cc-fleet layer.
 	ErrCodeTimeout        = "SUBAGENT_TIMEOUT"          // --timeout deadline fired before claude returned
 	ErrCodeFailed         = "SUBAGENT_FAILED"           // non-zero exit with no parseable envelope / internal error
+	ErrCodeMaxTurns       = "SUBAGENT_MAX_TURNS"        // claude stopped at the --max-turns cap (raise the cap and retry)
 	ErrCodeStopped        = "SUBAGENT_STOPPED"          // a still-running leaf finalized by `workflow stop` (a stop, not a failure)
 	ErrCodeOutputTooLarge = "SUBAGENT_OUTPUT_TOO_LARGE" // child stdout/stderr exceeded the byte cap; group killed
 )

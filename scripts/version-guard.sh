@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Assert the plugin manifest and npm package versions match the release tag, so
-# a release can never ship a stale .claude-plugin/plugin.json (the marketplace
-# serves the committed manifest) or a mismatched npm package. Run as a release
+# Assert the Claude + Codex plugin manifests and the npm package version match the
+# release tag, so a release can never ship a stale .claude-plugin/plugin.json or
+# codex-plugin manifest (each marketplace serves the committed manifest) or a
+# mismatched npm package. Run as a release
 # prerequisite BEFORE any artifact is built; a mismatch fails the release loudly.
 # We never auto-bump on a tag — fix it with `make release-prep VERSION=vX.Y.Z`,
 # commit, then re-tag.
@@ -18,6 +19,7 @@ jsonver() { sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$
 
 plugin_ver="$(jsonver .claude-plugin/plugin.json)"
 npm_ver="$(jsonver npm/package.json)"
+codex_ver="$(jsonver codex-plugin/.codex-plugin/plugin.json)"
 
 fail=0
 if [ "$plugin_ver" != "$tag" ]; then
@@ -28,8 +30,12 @@ if [ "$npm_ver" != "$tag" ]; then
   echo "version-guard: npm/package.json version=$npm_ver != tag=$tag" >&2
   fail=1
 fi
+if [ "$codex_ver" != "$tag" ]; then
+  echo "version-guard: codex-plugin/.codex-plugin/plugin.json version=$codex_ver != tag=$tag" >&2
+  fail=1
+fi
 if [ "$fail" -ne 0 ]; then
   echo "version-guard: run 'make release-prep VERSION=v$tag', commit, then re-tag." >&2
   exit 1
 fi
-echo "version-guard: plugin.json, npm/package.json, and tag all at $tag"
+echo "version-guard: plugin.json, npm/package.json, codex-plugin manifest, and tag all at $tag"

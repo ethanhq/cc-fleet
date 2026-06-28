@@ -1,6 +1,6 @@
 ---
 name: subagent
-description: Run a one-shot or flat parallel batch of provider LLM subagents (headless `cc-fleet subagent`) that return a result. Use when fanning out N independent tasks, doing bulk per-file work, or calling a specialized provider model (DeepSeek / GLM / Kimi / Qwen / MiniMax). NOT a multi-phase pipeline with dependencies or resume (that is /cc-fleet:workflow); NOT ordinary local shell/coding the main session should just do.
+description: Fan out a one-shot or flat parallel batch of cc-fleet PROVIDER subagents (headless `cc-fleet subagent`) that return a result — DeepSeek / GLM / Kimi / Qwen / MiniMax, or a Codex/Claude subscription. Trigger ONLY to delegate a task to a cc-fleet provider worker (parallel research, bulk per-file work, a specialized model). Do NOT trigger for a multi-phase pipeline (that is /cc-fleet:workflow), for ordinary local shell/coding, or for editing or researching cc-fleet's own code.
 ---
 
 # subagent — one-shot / batch / background provider subagent
@@ -11,7 +11,7 @@ When this skill cites `cc-fleet-shared/<file>.md`, read `../cc-fleet-shared/<fil
 
 `cc-fleet subagent` runs a provider model headless and returns the result directly on your shell's stdout — no tmux pane, no team, no locks. A one-shot provider agent whose model can be a provider id. It reuses the same provider selection and fingerprint gate as the rest of cc-fleet. It's the lightweight synchronous branch.
 
-**Preflight (first fan-out per session).** Run `cc-fleet doctor --json` once before your first batch and read the check statuses. If a **Core** check is failing (claude binary present / fingerprint), tell the user to install or fix Claude Code — it is the worker engine. Provider API keys are configured separately in cc-fleet, so a provider model needs the claude **binary** but not a Claude subscription.
+**Preflight (first fan-out per session).** Run `cc-fleet doctor --json` once and read the per-check results. The ONLY hard stops are the **claude binary** check and the **fingerprint** check (the worker engine) — if either fails, tell the user to install or fix Claude Code, and stop. Do **not** stop on the "all configured providers' keys reachable" check: it aggregates every enabled provider, so one unrelated provider — especially a daemon-backed `codex` / `openai-*`, whose loopback proxy is only up during a spawn — flips `ok:false` / exit 1 while your target provider is fine. Provider API keys are configured separately in cc-fleet, so a provider model needs the claude **binary** but not a Claude subscription. To check the provider you'll actually use, run `cc-fleet models <provider> --json` (`PROVIDER_UNKNOWN` ⇒ not configured); that confirms it's configured + enabled, not that it's reachable — the run itself proves reachability.
 
 ## When to use it
 - **One-shot research / analysis / judgement** — you want an answer, not a long-lived colleague.
@@ -40,7 +40,7 @@ cc-fleet subagent deepseek --model strong \
   --label "codex/cc-fleet/quicksort" --json
 ```
 
-**Label every job.** A codex-parented job shows `(no session)` on the Agents Board, so `--label "codex/<cwd-basename>/<short>"` is how you identify and clean it up later.
+**Label every job.** A codex-launched job is grouped on the Agents Board under your Codex launcher (a `codex <thread>` header, not `(no session)`); a `--label "codex/<cwd-basename>/<short>"` still helps you tell your jobs apart within that group.
 
 **Expected-large output** → redirect `--json` to a file and read the file, sidestepping any shell-output cap: `cc-fleet subagent … --json > out.json`, then read `out.json`.
 
@@ -87,7 +87,8 @@ Useful flags (full list: `cc-fleet subagent --help`):
 | `PROVIDER_API_ERROR` | Other provider failure (5xx / overloaded). | Retry once or propose a switch. |
 | `CODEX_PROXY_UNAVAILABLE` | The codex conversion daemon could not start (no login, or the loopback port is held). | Tell the user: `cc-fleet codex login`, or free / change the port (`cc-fleet codex add --port <n>`). |
 | `CODEX_CLOUDFLARE_BLOCKED` | The ChatGPT backend's edge blocked this IP/client — not a key problem. | Switch network/IP or retry later; don't rotate credentials. |
-| `SUBAGENT_FAILED` | claude exited with no parseable result (or turn/budget exhaustion). For a `claude` native leaf on a logged-out machine, this is the login failure — the error preview names it (no dedicated code). | Inspect; retry or switch provider. A logged-out native leaf → tell the user to log in to Claude Code interactively. |
+| `SUBAGENT_MAX_TURNS` | claude hit the `--max-turns` cap without finishing (the spent cost is surfaced — not silently $0). | Raise `--max-turns` (or omit it) and retry — a read-heavy / multi-file task needs ~1 turn per file read or command; a genuinely long task can use `--background`. |
+| `SUBAGENT_FAILED` | claude exited with no parseable result (or budget exhaustion). For a `claude` native leaf on a logged-out machine, this is the login failure — the error preview names it (no dedicated code). | Inspect; retry or switch provider. A logged-out native leaf → tell the user to log in to Claude Code interactively. |
 | `SUBAGENT_OUTPUT_TOO_LARGE` | The child's stdout/stderr exceeded the byte cap; the run was killed. | Have it write its output to a file and return a short answer (or narrow the ask) — a blind retry overflows again. |
 | `SUBAGENT_STOPPED` | An operator stopped the job (`workflow stop` / a leaf stop) — terminal, NOT a failure. | Never auto-retry; surface it. |
 
@@ -109,7 +110,7 @@ cc-fleet subagent --prompt "<long task>" --label "codex/<cwd-basename>/<short>" 
 # → {"ok":true,"job_id":"<uuid>","status":"running","output_file":"…","pid":…}
 cc-fleet subagent-status <job_id> --wait --timeout 120s --json
 ```
-`subagent-status --wait` blocks up to `--timeout`, then exits **124** while the job is still pending — re-issue it in chunks until it settles (codex has no background-task wake). Exit dispatch: **0** done (envelope has `.result`) · **1** failed OR stopped — check `.status` first: `stopped` is an operator stop, never auto-retry; `failed` → dispatch on `.error_code` · **3** held (a workflow-leaf an operator parked — surface it, never wait it out) · **124** still pending (re-issue) · **130** interrupted. Never spawn an agent to poll.
+`subagent-status --wait` blocks up to `--timeout`, then exits **124** while the job is still pending — re-issue it in chunks until it settles (codex has no background-task wake). If the codex shell yields with "Process running with session id …", that backgrounded `--wait` is STILL the live wait — do NOT start a second one; let it return (size each `--timeout` shorter than your shell's foreground window so it returns cleanly). Exit dispatch: **0** done (envelope has `.result`) · **1** failed OR stopped — check `.status` first: `stopped` is an operator stop, never auto-retry; `failed` → dispatch on `.error_code` · **3** held (a workflow-leaf an operator parked — surface it, never wait it out) · **124** still pending (re-issue) · **130** interrupted. Never spawn an agent to poll.
 
 `cc-fleet subagent-gc --json` prunes finished job files.
 

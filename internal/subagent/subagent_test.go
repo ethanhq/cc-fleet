@@ -164,17 +164,20 @@ func TestClassify(t *testing.T) {
 		}
 	})
 
-	t.Run("error_max_turns subtype → subagent failed", func(t *testing.T) {
-		js := `{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":8,"errors":[{"message":"max turns"}]}`
+	t.Run("error_max_turns subtype → SUBAGENT_MAX_TURNS", func(t *testing.T) {
+		js := `{"type":"result","subtype":"error_max_turns","is_error":true,"num_turns":8,"total_cost_usd":0.12,"errors":[{"message":"max turns"}]}`
 		res := classify(req, "m", []byte(js), nil, 1, false, true)
-		if res.ErrorCode != ErrCodeFailed {
-			t.Fatalf("want SUBAGENT_FAILED, got %s", res.ErrorCode)
+		if res.OK || res.ErrorCode != ErrCodeMaxTurns {
+			t.Fatalf("want SUBAGENT_MAX_TURNS, got OK=%v code=%s", res.OK, res.ErrorCode)
 		}
-		if !strings.Contains(res.ErrorMsg, "error_max_turns") {
-			t.Fatalf("error_msg should name the subtype: %q", res.ErrorMsg)
+		if !strings.Contains(res.ErrorMsg, "max-turns") {
+			t.Fatalf("error_msg should name the cap: %q", res.ErrorMsg)
 		}
-		// max_turns gets an actionable sibling hint (raise the cap / use
-		// --background) via the suggestion.
+		// Spent cost is surfaced so a turn-capped leaf doesn't read as "$0 wasted".
+		if res.CostUSD != 0.12 {
+			t.Fatalf("spent cost must be surfaced, got %v", res.CostUSD)
+		}
+		// max_turns gets an actionable hint (raise the cap / use --background).
 		if !strings.Contains(res.Suggestion, "--max-turns") || !strings.Contains(res.Suggestion, "--background") {
 			t.Fatalf("max_turns suggestion should mention raising --max-turns + --background: %q", res.Suggestion)
 		}

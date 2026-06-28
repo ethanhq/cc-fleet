@@ -154,6 +154,7 @@ spawn 进阶 flag:`--verify`/`--no-verify`(spawn 后的 settle 校验 — 仅当
 RUN=$(cc-fleet workflow run audit.js)        # detached;只打印 run id
 cc-fleet workflow run audit.js --foreground  # 前台跑(调试用)
 cc-fleet workflow status "$RUN" --json       # manifest + 全部 leaf(run → phase → agent)
+cc-fleet workflow result "$RUN" --label <leaf> --json  # 读某个完成 leaf 的答案(status/wait 不带答案)
 cc-fleet workflow list --json                # 所有 run,新的在前
 cc-fleet workflow watch "$RUN"               # 流式输出事件直到终态
 cc-fleet workflow wait "$RUN" --timeout 10m  # 静默阻塞直到 run 落定

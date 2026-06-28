@@ -34,6 +34,9 @@ jobs:
             exit 1
           fi
       - run: go vet ./...
+      - name: codex-plugin drift check
+        if: runner.os != 'Windows'
+        run: make codex-plugin-drift-check
       - name: test (all)
         if: runner.os != 'Windows'
         run: go test -race ./...

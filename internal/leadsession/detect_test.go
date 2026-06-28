@@ -29,6 +29,21 @@ func TestDetectFromPIDFindsAncestorSession(t *testing.T) {
 	}
 }
 
+func TestCodexThread(t *testing.T) {
+	t.Setenv("CODEX_THREAD_ID", "")
+	if got := CodexThread(); got != "" {
+		t.Fatalf("CodexThread empty env = %q, want \"\"", got)
+	}
+	t.Setenv("CODEX_THREAD_ID", "  019f094d-thread  ")
+	if got := CodexThread(); got != "codex:019f094d-thread" {
+		t.Fatalf("CodexThread = %q, want codex:019f094d-thread", got)
+	}
+	t.Setenv("CODEX_THREAD_ID", "ab\x07cd")
+	if got := CodexThread(); got != "codex:abcd" {
+		t.Fatalf("CodexThread control-byte strip = %q, want codex:abcd", got)
+	}
+}
+
 func TestDetectFromPIDRejectsRecycledPID(t *testing.T) {
 	requireLinux(t)
 

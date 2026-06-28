@@ -130,7 +130,9 @@ func classify(req Request, model string, stdout, stderr []byte, exitCode int, ti
 		r.CostUSD = inner.TotalCostUSD
 		r.Suggestion = budgetSuggestion(inner.TotalCostUSD)
 	case "error_max_turns":
-		r.Suggestion = "Hit the --max-turns cap; raise it (or run a long task with --background) and retry"
+		// Surface the spent cost so a turn-capped leaf doesn't read as "$0 wasted";
+		// the actionable hint comes from suggestionFor(ErrCodeMaxTurns).
+		r.CostUSD = inner.TotalCostUSD
 	}
 	return r
 }
@@ -158,8 +160,12 @@ func classifyError(inner innerEnvelope) string {
 		return ErrCodeProviderAPIError
 	case 0:
 		// No HTTP status. The turn/budget/exec-exhaustion variants carry subtype
-		// error_* (and errors[] instead of result) — surface them as
-		// SUBAGENT_FAILED, not a provider API error.
+		// error_* (and errors[] instead of result). error_max_turns gets its own
+		// code so a caller can dispatch "raise --max-turns" precisely; the rest
+		// surface as SUBAGENT_FAILED, not a provider API error.
+		if inner.Subtype == "error_max_turns" {
+			return ErrCodeMaxTurns
+		}
 		if strings.HasPrefix(inner.Subtype, "error_") {
 			return ErrCodeFailed
 		}
@@ -195,6 +201,11 @@ func errorMessage(code string, inner innerEnvelope) string {
 			return fmt.Sprintf("provider API error (HTTP %d)", inner.APIErrorStatus)
 		}
 		return "provider API error"
+	case ErrCodeMaxTurns:
+		if inner.TotalCostUSD > 0 {
+			return "claude hit the --max-turns cap after spending $" + formatUSD(inner.TotalCostUSD)
+		}
+		return "claude hit the --max-turns cap without a result"
 	case ErrCodeFailed:
 		// Budget exhaustion gets a friendly message that names the cap + spent $;
 		// other error_* subtypes (e.g. error_max_turns) keep the subtype-named
@@ -270,6 +281,8 @@ func suggestionFor(code string) string {
 		return "Real long task → raise --timeout (or use --background) and retry; suspected hang → switch provider or fall back"
 	case ErrCodeProviderAPIError:
 		return "Retry once or switch provider"
+	case ErrCodeMaxTurns:
+		return "Raise --max-turns (or omit it) and retry — a read-heavy leaf needs ~1 turn per file read or command; a long task can use --background"
 	case ErrCodeFailed:
 		return "Inspect the error; retry or switch provider"
 	case ErrCodeOutputTooLarge:

@@ -154,6 +154,7 @@ Spawn extras: `--verify`/`--no-verify` (the post-spawn settle check — paid onl
 RUN=$(cc-fleet workflow run audit.js)        # detached; prints ONLY the run id
 cc-fleet workflow run audit.js --foreground  # inline (debugging)
 cc-fleet workflow status "$RUN" --json       # manifest + every leaf (run → phase → agent)
+cc-fleet workflow result "$RUN" --label <leaf> --json  # read a finished leaf's ANSWER (status/wait omit answers)
 cc-fleet workflow list --json                # all runs, newest first
 cc-fleet workflow watch "$RUN"               # stream events until terminal
 cc-fleet workflow wait "$RUN" --timeout 10m  # block silently until the run settles

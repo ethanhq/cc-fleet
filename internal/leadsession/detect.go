@@ -39,6 +39,36 @@ func DetectFromPID(pid int) string {
 	return id
 }
 
+// CodexThread returns a launcher id derived from the Codex shell environment, or
+// "" when cc-fleet was not launched by Codex. Codex exports CODEX_THREAD_ID into
+// the env of the shell commands it runs, so a job launched from a Codex session —
+// which has no Claude session for Detect to find — can still be attributed and
+// grouped on the board instead of collapsing into "(no session)". The "codex:"
+// prefix namespaces the value away from Claude session ids (UUIDs carry no ':').
+// Consult this only AFTER Detect returns "" so a real Claude session always wins.
+func CodexThread() string {
+	thread := sanitizeID(strings.TrimSpace(os.Getenv("CODEX_THREAD_ID")))
+	if thread == "" {
+		return ""
+	}
+	return "codex:" + thread
+}
+
+// sanitizeID strips control bytes and caps length so a launcher-derived id is
+// safe as a board grouping key and rendered title.
+func sanitizeID(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return -1
+		}
+		return r
+	}, s)
+	if len(s) > 128 {
+		s = s[:128]
+	}
+	return s
+}
+
 // DetectPIDWithStart walks upward from the current parent PID and returns the
 // first ancestor PID whose Claude session registry entry validates (same
 // fail-closed PID-reuse check Detect() uses), plus that PID's validated /proc

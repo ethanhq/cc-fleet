@@ -88,7 +88,8 @@ Useful flags (full list in cc-fleet-shared/cli-reference.md):
 | `PROVIDER_API_ERROR` | Other provider failure (5xx / overloaded). | Retry once or propose a switch. |
 | `CODEX_PROXY_UNAVAILABLE` | The codex conversion daemon could not start (no login, or the loopback port is held). | Tell the user: `cc-fleet codex login`, or free / change the port (`cc-fleet codex add --port <n>`). |
 | `CODEX_CLOUDFLARE_BLOCKED` | The ChatGPT backend's edge blocked this IP/client — not a key problem. | Switch network/IP or retry later; don't rotate credentials. |
-| `SUBAGENT_FAILED` | claude exited with no parseable result (or turn/budget exhaustion). For a `claude` native leaf on a logged-out machine, this is the login failure — the error preview names it (no dedicated code). | Inspect; retry or switch provider. A logged-out native leaf → tell the user to log in to Claude Code interactively. |
+| `SUBAGENT_MAX_TURNS` | claude hit the `--max-turns` cap without finishing (the spent cost is surfaced — not silently $0). | Raise `--max-turns` (or omit it) and retry — a read-heavy / multi-file task needs ~1 turn per file read or command; a genuinely long task can use `--background`. |
+| `SUBAGENT_FAILED` | claude exited with no parseable result (or budget exhaustion). For a `claude` native leaf on a logged-out machine, this is the login failure — the error preview names it (no dedicated code). | Inspect; retry or switch provider. A logged-out native leaf → tell the user to log in to Claude Code interactively. |
 | `SUBAGENT_OUTPUT_TOO_LARGE` | The child's stdout/stderr exceeded the byte cap; the run was killed. | Have it write its output to a file and return a short answer (or narrow the ask) — a blind retry overflows again. |
 | `SUBAGENT_STOPPED` | An operator stopped the job (`workflow stop` / a leaf stop) — terminal, NOT a failure. | Never auto-retry; surface it. |
 

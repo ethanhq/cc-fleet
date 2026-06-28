@@ -1,6 +1,6 @@
 ---
 name: workflow
-description: Orchestrate a MULTI-PHASE, dependent, or resumable run over many provider subagents from a JS script, off the main context (`cc-fleet workflow`). Use for fan-out→barrier→synthesis, per-item pipelines, loop-until-dry, or a run that must survive a kill and `--resume` from its journal. NOT a flat fan-out of independent tasks (that is /cc-fleet:subagent — cheaper, no script); NOT trivial single-shot work for the main session.
+description: Orchestrate a MULTI-PHASE, dependent, or resumable run over many cc-fleet PROVIDER subagents from a JS script, off the main context (`cc-fleet workflow`). Use for fan-out→barrier→synthesis, per-item pipelines, loop-until-dry, or a run that must survive a kill and `--resume` from its journal. Trigger ONLY to run a cc-fleet provider workflow. NOT a flat fan-out of independent tasks (that is /cc-fleet:subagent — cheaper, no script); NOT trivial single-shot work; NOT for editing or researching cc-fleet's own workflow code.
 ---
 
 # workflow — multi-phase JS orchestration over provider subagents
@@ -12,7 +12,7 @@ When this skill cites `cc-fleet-shared/<file>.md`, read the file at `../cc-fleet
 A **workflow** is a JavaScript script that fans out provider `cc-fleet subagent` leaves and runs in a **cc-fleet process, OFF the main session's context**. You write the script; `cc-fleet workflow run` executes it. The orchestration plan lives in script variables (CPU, ~0 of your tokens) — you are invoked only when *authoring* the script, not on every scheduling decision. The API mirrors the native Claude Code Workflow tool — write the script exactly as you would a native workflow; the only addition is the `provider` option on `agent()`.
 
 ## Preflight (once per session)
-On the first workflow run in a session, run `cc-fleet doctor --json` (your shell tool). cc-fleet drives the `claude` CLI as the leaf **worker engine**, so a failed **Core** check — no claude binary, or a stale / missing fingerprint — means no leaf can run: stop, tell the user to install or fix Claude Code, then re-check. Optional (tmux) checks only warn — workflow needs no tmux.
+On the first workflow run in a session, run `cc-fleet doctor --json` (your shell tool) and read the per-check results. The ONLY hard stops are the **claude binary** check and the **fingerprint** check — cc-fleet drives the `claude` CLI as the leaf worker engine, so if either fails no leaf can run: stop and tell the user to install or fix Claude Code. Do **not** stop on the "providers reachable" check — it aggregates every enabled provider, so one unrelated provider (especially a daemon-backed `codex` / `openai-*`, whose loopback proxy is only up during a spawn) flips the run to exit 1 while your target provider is fine. tmux checks are optional — workflow needs no tmux.
 
 ## When to use it
 - **Multi-phase or dynamic** orchestration over many provider subagents: fan-out + barrier, per-item pipeline, loop-until-dry, branch-on-result, with a board run-tree.
@@ -73,7 +73,9 @@ cc-fleet workflow wait "$RUN" --timeout 3m --json  # block silently until the ru
 ```
 The run is detached so it outlives this call and your session stays responsive.
 
-A codex-launched run has no Claude lead session, so it lands in the board's `(no session)` bucket — give each leaf a `label` (the script opt; `--label` on a bare `cc-fleet subagent`) and a clear `meta.name` so you can pick your run out of that bucket.
+A codex-launched run is grouped on the board under your Codex launcher (a `codex <thread>` header, not `(no session)`) — still give each leaf a `label` (the script opt; `--label` on a bare `cc-fleet subagent`) and the run a clear `meta.name` so you can pick yours out within that group.
+
+**Where to write the script.** For a one-off research / analysis run, write the script to `/tmp/cc-fleet-<name>.js` — do NOT add it to the user's repo unless they ask to keep the workflow. For read-only research, give the leaves `profile: "slim-ro"` and write the prompts so the leaves do not edit files.
 
 ## Waiting on a run: block in chunks (codex has no background wake)
 codex has no background-task wake, so you **await a run by blocking the shell in bounded chunks** — codex tolerates a long blocking command, and chunked blocking *is* the await. Keep the run id and re-issue `wait` until the run settles:
@@ -83,8 +85,10 @@ cc-fleet workflow wait "$RUN" --timeout 2m --json   # one chunk; re-issue while 
 ```
 `wait` returns the moment the run settles OR the window elapses. While the run is still progressing it exits **124** with `wait_outcome` `timeout` (a heartbeat, not a verdict) — re-issue the SAME `wait "$RUN"` for the next chunk. **Always keep `$RUN`**: a timed-out wait loses nothing, a fresh `wait "$RUN"` just resumes blocking and the run carries on detached. Never spawn an agent to poll, and never tight-loop `status` — `wait` is the blocking primitive.
 
+If the codex shell yields with "Process running with session id …", that backgrounded `wait` is STILL the live wait — do NOT issue a second `wait "$RUN"` (a needless concurrent wait); let it return. Size each `--timeout` chunk SHORTER than your shell's foreground window so the command returns cleanly rather than being backgrounded. (Omitting `--timeout` / passing `--timeout 0` blocks in one shot until the run settles — use only when you mean to block to the very end and will reattach to the yielded session; the chunked pattern is the default.)
+
 Make the FIRST chunk short (2–3m — a provider auth/balance failure surfaces on the first leaf call), then 10–15m per re-issue. Dispatch each returned chunk on `wait_outcome` (+ exit code):
-- **`terminal`** (exit 0 done/stopped · exit 1 failed) — fetch the detail with `cc-fleet workflow status "$RUN" --json` (it carries `run_error` and the per-leaf `jobs[]`; the wait envelope deliberately omits them) and report.
+- **`terminal`** (exit 0 done/stopped · exit 1 failed) — fetch the detail with `cc-fleet workflow status "$RUN" --json` (it carries `run_error` and the per-leaf `jobs[]`; the wait envelope deliberately omits them) and report. To read a leaf's actual ANSWER (status/wait omit answers), use `cc-fleet workflow result "$RUN" --label <leaf> --json` — so label the leaves whose output you'll want.
 - **`engine_gone`** (exit 1) — the detached engine died without finalizing; propose `cc-fleet workflow run audit.js --resume "$RUN"` (the journal replays the finished leaves).
 - **`parked`** (exit 3) — every remaining leaf is held. FIRST re-check `cc-fleet workflow status "$RUN" --json`: leaves running/queued again means it was a transient (the engine was between leaves) → re-issue `wait`. Still parked → name the envelope's `held` leaves to the user and propose `cc-fleet workflow restart "$RUN" --leaf <job|label>`; never wait it out.
 - **`timeout`** (exit 124) — still running. Compare `counts` / `spent_usd` / `spent_tokens` with the previous chunk: progress → one short progress line and re-issue with a longer `--timeout` (10–15m); zero delta over several chunks → inspect (`workflow status`; is one long leaf still inside its own `timeout`?) and escalate only on a real anomaly, else re-issue.
@@ -104,6 +108,7 @@ A failed leaf's structured `error_code` is in `workflow status --json` (`jobs[]`
 | `SUBAGENT_TIMEOUT` | Raise the leaf's `timeout` or split the task; a leaf with no `timeout` defaults to 300s. |
 | `SUBAGENT_OUTPUT_TOO_LARGE` | The leaf's output exceeded the byte cap — have it write to a file and answer concisely; a blind retry overflows again. |
 | `SUBAGENT_STOPPED` | An operator stopped it (`stop --leaf` / run stop) — terminal, NOT a failure; never auto-retry. |
+| `SUBAGENT_MAX_TURNS` | A leaf hit the `--max-turns` cap. | Raise the leaf's `max_turns` and re-run / `restart --leaf` — a research / multi-file leaf needs ~1 turn per file read or command (give it 30–50, or omit the cap). |
 | `SUBAGENT_FAILED` / `PROVIDER_API_ERROR` | Inspect (`workflow status`); `restart --leaf` once, or propose a provider switch (ask first). A `provider: "claude"` leaf on a logged-out machine fails here (the error preview names the login problem, no dedicated code) — tell the user to log in to Claude Code interactively. |
 | `FINGERPRINT_MISSING` / `FINGERPRINT_STALE` | `MISSING` = a corrupt `~/.config/cc-fleet/fingerprint.json` (rare): `cc-fleet doctor --json` confirms; remove that file to fall back to the bundled recipe, then retry. `STALE` = no claude binary — fix Claude Code / PATH. |
 | `CODEX_PROXY_UNAVAILABLE` / `CODEX_CLOUDFLARE_BLOCKED` | `cc-fleet codex login` / free the port; a Cloudflare block → switch network, don't rotate credentials. |
@@ -156,12 +161,12 @@ while (gaps.length < 10) {           // loop-until-dry (the runtime hard-caps 10
 
 // one final synthesis node on your OWN subscription — a single judgement leaf, not a fan-out
 const verdict = await agent("Rank these gaps by severity and name the top three:\n"
-                            + gaps.join("\n"), {provider: "claude", model: "opus"});
+                            + gaps.join("\n"), {provider: "claude", model: "opus", label: "verdict"});
 
 log(`done: ${maps.length} maps, ${checklists.length} checklists, ${gaps.length} gaps`);
 return { maps, checklists, gaps, verdict };
 ```
-One run, three phases, a barriered fan-out, a no-barrier pipeline, a bounded loop-until-dry, and a single `claude` synthesis node — all sequenced by the script in a cc-fleet process, off your context.
+One run, three phases, a barriered fan-out, a no-barrier pipeline, a bounded loop-until-dry, and a single `claude` synthesis node — all sequenced by the script in a cc-fleet process, off your context. The script's top-level `return` value is NOT persisted or retrievable — to read the run's output, fetch a labeled leaf's answer with `cc-fleet workflow result "$RUN" --label verdict --json`.
 
 ## Anti-patterns
 - A script for a single flat independent batch → /cc-fleet:subagent.
