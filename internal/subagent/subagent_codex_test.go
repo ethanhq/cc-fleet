@@ -13,6 +13,37 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 )
 
+// resolveLeadSession enforces the launcher precedence: an explicit flag wins, else
+// the parent Claude session, else the Codex launcher id (CODEX_THREAD_ID), else "".
+func TestResolveLeadSession(t *testing.T) {
+	orig := detectLeadSession
+	t.Cleanup(func() { detectLeadSession = orig })
+
+	// An explicit flag wins over both a live Claude session and a codex thread.
+	detectLeadSession = func() string { return "claude-sess" }
+	t.Setenv("CODEX_THREAD_ID", "thread-xyz")
+	if got := resolveLeadSession("explicit-1"); got != "explicit-1" {
+		t.Fatalf("explicit flag should win, got %q", got)
+	}
+
+	// No flag → the Claude session beats the codex thread.
+	if got := resolveLeadSession(""); got != "claude-sess" {
+		t.Fatalf("Claude session should beat codex thread, got %q", got)
+	}
+
+	// No flag and no Claude session → fall back to the codex launcher id.
+	detectLeadSession = func() string { return "" }
+	if got := resolveLeadSession(""); got != "codex:thread-xyz" {
+		t.Fatalf("should fall back to codex thread, got %q", got)
+	}
+
+	// Nothing available → "" (the board's "(no session)").
+	t.Setenv("CODEX_THREAD_ID", "")
+	if got := resolveLeadSession(""); got != "" {
+		t.Fatalf("no launcher should yield empty, got %q", got)
+	}
+}
+
 // A codex daemon-ensure failure is fail-before-mutation: classified result and
 // no profile file left behind.
 func TestRun_CodexDaemonFailure_FailsBeforeProfileWrite(t *testing.T) {

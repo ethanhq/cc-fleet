@@ -53,6 +53,36 @@ func TestStatusFor_RunningJobStaysRunning(t *testing.T) {
 	}
 }
 
+func TestReadAnswer(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	t.Setenv("HOME", t.TempDir())
+	dir := filepath.Join(xdg, "cc-fleet", jobsDirName)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	jobID := "22222222-2222-2222-2222-222222222222"
+
+	// Missing .answer → ok=false, no error (job unfinished or ran --no-persist-io).
+	if ans, ok, err := ReadAnswer(jobID); err != nil || ok || ans != "" {
+		t.Fatalf("missing answer: want (\"\", false, nil), got (%q, %v, %v)", ans, ok, err)
+	}
+
+	// Present → the file's contents come back verbatim.
+	want := "the synthesized verdict"
+	if err := os.WriteFile(filepath.Join(dir, jobID+".answer"), []byte(want), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if ans, ok, err := ReadAnswer(jobID); err != nil || !ok || ans != want {
+		t.Fatalf("present answer: want (%q, true, nil), got (%q, %v, %v)", want, ans, ok, err)
+	}
+
+	// An invalid job id is rejected before any path is built (no traversal).
+	if _, _, err := ReadAnswer("../etc/passwd"); err == nil {
+		t.Fatal("invalid job id must error")
+	}
+}
+
 func TestListJobs_EmptyDir(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // jobs dir won't exist
 	t.Setenv("HOME", t.TempDir())

@@ -89,6 +89,20 @@ func LoadFingerprint() (*fingerprint.Fingerprint, error) { return loadFP() }
 // without relying on the process tree they run under.
 var detectLeadSession = leadsession.Detect
 
+// resolveLeadSession applies the launcher-grouping precedence for a job: an
+// explicit flag wins, else the parent Claude session (detectLeadSession), else the
+// Codex launcher id (CODEX_THREAD_ID) when run from a Codex session, else "" — the
+// board's "(no session)".
+func resolveLeadSession(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if s := detectLeadSession(); s != "" {
+		return s
+	}
+	return leadsession.CodexThread()
+}
+
 // ensureProviderProxy ensures the codex conversion daemon for a codex provider
 // (a no-op for every other provider). A package var so tests can stub it without
 // launching a real daemon process.
@@ -280,17 +294,10 @@ func Run(parent context.Context, req Request) Result {
 		dg.Logf("subagent: probe skipped — the native leaf has no models endpoint")
 	}
 
-	// Prefer the explicit flag, but when cc-fleet is launched from a Claude Bash
-	// tool without a team context, infer the current parent Claude session from
-	// Claude Code's own ~/.claude/sessions/<pid>.json registry; failing that, fall
-	// back to the Codex launcher id when run from a Codex session (CODEX_THREAD_ID).
-	// Precedence: explicit flag > Claude session > Codex thread > "(no session)".
-	if req.LeadSessionID == "" {
-		req.LeadSessionID = detectLeadSession()
-	}
-	if req.LeadSessionID == "" {
-		req.LeadSessionID = leadsession.CodexThread()
-	}
+	// Infer the launcher when no explicit flag was passed — a parent Claude session
+	// (Claude Code's ~/.claude/sessions/<pid>.json registry), else the Codex launcher
+	// id (CODEX_THREAD_ID) when run from a Codex session, else "(no session)".
+	req.LeadSessionID = resolveLeadSession(req.LeadSessionID)
 
 	// 6. Resolve the EFFECTIVE profile (version gate, fail-open to full with a
 	//    reason). Done AFTER the fingerprint gate, against the SAME fp whose binary
