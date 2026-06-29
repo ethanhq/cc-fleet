@@ -1,6 +1,6 @@
-// Package sessiontitle resolves human-readable Claude Code session titles from
-// transcript metadata. It is read-only and best-effort: callers fall back to the
-// session UUID when no title can be resolved.
+// Package sessiontitle resolves human-readable session titles: Claude Code titles from
+// transcript metadata, and Codex session titles from a rollout's first user prompt. It is
+// read-only and best-effort: callers fall back to the session id when none can be resolved.
 package sessiontitle
 
 import (

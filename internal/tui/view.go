@@ -42,7 +42,8 @@ var (
 	modalBodyStyle  = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "233", Dark: "255"}) // centered-modal body text — full contrast; a modal floats over the board and must outshine it
 	borderStyle     = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "233", Dark: "255"}) // master-detail box frame — the strongest line (full contrast, like native)
 	sessionHdrStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "32", Dark: "39"})
-	teamHdrStyle    = lipgloss.NewStyle().Bold(true) // team section header (flush-left bold title)
+	codexHdrStyle   = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.AdaptiveColor{Light: "92", Dark: "141"}) // violet — codex launcher marker (the ◇, vs the claude blue ◆)
+	teamHdrStyle    = lipgloss.NewStyle().Bold(true)                                                              // team section header (flush-left bold title)
 	errStyle        = lipgloss.NewStyle().Foreground(errColor)
 	okStyle         = lipgloss.NewStyle().Foreground(okColor)
 	noteStyle       = lipgloss.NewStyle().Foreground(lipgloss.AdaptiveColor{Light: "94", Dark: "214"})  // contextual Note hints — a warm tone above the gray body
@@ -347,6 +348,53 @@ func railSeparator(leftW int) string {
 		n = 4
 	}
 	return " " + faintStyle.Render(strings.Repeat("─", n))
+}
+
+// labeledDivider is a dim rail separator "── <label> ──" filled to width, marking a
+// launcher-group boundary in a session list. It mirrors mateOutputSection's stamp rule (the
+// fill is measured before styling so faintStyle's ANSI does not skew it).
+func labeledDivider(label string, width int) string {
+	stamp := "── " + label + " "
+	if fill := width - 1 - lipgloss.Width(stamp); fill > 0 {
+		stamp += strings.Repeat("─", fill)
+	}
+	return " " + faintStyle.Render(stamp)
+}
+
+func codexDivider(width int) string     { return labeledDivider("codex", width) }
+func noSessionDivider(width int) string { return labeledDivider("no session", width) }
+
+// launcherDividerRows splices the codex / no-session dividers into the rendered session rows at
+// the launcher-group boundaries (sessions are rank-sorted claude → codex → "(no session)") and
+// returns the render rows + the window cursor shifted past any divider inserted at or before the
+// data cursor. Dividers are render-only — the data cursor still indexes sessions — and appear
+// only when codex is present, so a codex-free project renders byte-identically.
+func launcherDividerRows(rows []string, sessions []asSession, cursor, width int) ([]string, int) {
+	if firstCodexSession(sessions) < 0 {
+		return rows, cursor
+	}
+	dividers := map[int]string{}
+	if ci := firstCodexSession(sessions); ci > 0 {
+		dividers[ci] = codexDivider(width)
+	}
+	if ni := firstNoSessionIndex(sessions); ni > 0 {
+		dividers[ni] = noSessionDivider(width)
+	}
+	if len(dividers) == 0 {
+		return rows, cursor
+	}
+	out := make([]string, 0, len(rows)+len(dividers))
+	renderCursor := cursor
+	for i := range rows {
+		if d, ok := dividers[i]; ok {
+			out = append(out, d)
+			if cursor >= i {
+				renderCursor++
+			}
+		}
+		out = append(out, rows[i])
+	}
+	return out, renderCursor
 }
 
 // providerRail renders the provider list grouped by wire class (one header per
@@ -1496,6 +1544,8 @@ func (m Model) viewAsProjects() string {
 		for _, s := range p.sessions {
 			rightLines = append(rightLines, m.renderSessionRow(s, rightW))
 		}
+		// Same codex / no-session dividers the L1 Sessions pane shows — this preview has no cursor.
+		rightLines, _ = launcherDividerRows(rightLines, p.sessions, 0, rightW)
 	}
 	bodyH := m.boardBodyHeight()
 	leftLines = windowLines(leftLines, m.asProjectCursor, bodyH)
@@ -1548,18 +1598,21 @@ func (m Model) viewAsSessions() string {
 		} else {
 			label = liveStyle.Render(label)
 		}
-		leftLines = append(leftLines, marker+sessionHdrStyle.Render("◆ ")+label)
+		leftLines = append(leftLines, marker+sessionMarker(s.sessionID)+label)
 	}
 	leftW, rightW := m.paneWidths(leftWidth("Sessions", leftLines, m.boardInner()))
 	rightTitle := "overview"
 	if m.asSessionCursor < len(p.sessions) {
-		rightTitle = trunc(m.sessionLabel(p.sessions[m.asSessionCursor].sessionID), rightW-6)
+		rightTitle = trunc(m.sessionTitleWithLauncher(p.sessions[m.asSessionCursor].sessionID), rightW-6)
 	}
 	rightLines := m.sessionOverviewLines(p, rightW)
 	bodyH := m.boardBodyHeight()
-	leftLines = windowLines(leftLines, m.asSessionCursor, bodyH)
+	// Splice the codex / no-session launcher dividers in (render-only; the cursor still indexes
+	// p.sessions) and window to the shifted render cursor.
+	renderLines, renderCursor := launcherDividerRows(leftLines, p.sessions, m.asSessionCursor, leftW)
+	renderLines = windowLines(renderLines, renderCursor, bodyH)
 	return indentBox(m.renderProjectHeader(p), boardMargin) + "\n" + m.headerRule() + "\n" +
-		indentBox(renderBoard("Sessions", leftLines, rightTitle, rightLines, leftW, rightW, bodyH, 0), boardMargin)
+		indentBox(renderBoard("Sessions", renderLines, rightTitle, rightLines, leftW, rightW, bodyH, 0), boardMargin)
 }
 
 // sessionOverviewLines is the L1 right pane: the cursored session's ACTUAL rows under
@@ -1606,11 +1659,11 @@ func (m Model) sessionOverviewLines(p asProject, rightW int) []string {
 	return lines
 }
 
-// renderSessionRow is one session row in the L0 right pane: "◆ <title (short id)>" left,
-// the created time right-aligned — the header already carries the cursored project's
-// counts, so the row keeps its width for the title.
+// renderSessionRow is one session row in the L0 right pane: the launcher marker (◆ claude /
+// ◇ codex) + "<title (short id)>" left, the created time right-aligned — the header already
+// carries the cursored project's counts, so the row keeps its width for the title.
 func (m Model) renderSessionRow(s asSession, width int) string {
-	left := sessionHdrStyle.Render("◆ ") + liveStyle.Render(trunc(m.sessionLabel(s.sessionID), 44))
+	left := sessionMarker(s.sessionID) + liveStyle.Render(trunc(m.sessionLabel(s.sessionID), 44))
 	return joinRowEnds(left, faintStyle.Render(asCreated(s)), width)
 }
 
@@ -1706,7 +1759,7 @@ func (m Model) renderSessionHeader(s asSession) string {
 			right += " · created " + c
 		}
 	}
-	return line1 + "\n\n" + headerSummaryLine(m.sessionLabel(s.sessionID), right, bw)
+	return line1 + "\n\n" + headerSummaryLine(m.sessionTitleWithLauncher(s.sessionID), right, bw)
 }
 
 // headerEntityStats is the cursored row's own stat summary for the session header: a job's
@@ -2848,10 +2901,17 @@ func (m Model) sessionLabel(id string) string {
 	if id == "" {
 		return "(no session)"
 	}
-	// A codex-launched job/run carries a "codex:<thread>" launcher id (no Claude
-	// session, no /rename title) — render it as a distinct launcher header.
+	// A codex-launched job/run carries a "codex:<thread>" launcher id (no Claude session,
+	// no /rename title); the label is just the thread id — the launcher shows visually via
+	// sessionMarker (a violet ◇) and the header's launcher tag, not a text prefix.
 	if thread, ok := strings.CutPrefix(id, "codex:"); ok {
-		return "codex " + shortSessionID(sessiontitle.CleanTitle(thread))
+		short := shortSessionID(sessiontitle.CleanTitle(thread))
+		// Show the thread's first-prompt title (resolved into sessionMeta, like `codex resume`)
+		// as "title (id)" — matching a claude session's shape; bare id when none is resolved.
+		if title := sessiontitle.CleanTitle(m.sessionMeta[id].Title); title != "" {
+			return trunc(title, 48) + " (" + short + ")"
+		}
+		return short
 	}
 	// Scrub both the opaque session id and any /rename title with CleanTitle so the board header
 	// strips ANSI/BEL/OSC control bytes (not just whitespace) before display.
@@ -2861,6 +2921,43 @@ func (m Model) sessionLabel(id string) string {
 	}
 	// No recorded title: the full id IS the label — an 8-char stub would waste the slot.
 	return clean
+}
+
+// sessionMarker is a session row's per-launcher glyph, so a row stays identifiable when the
+// divider is off-screen: a hollow violet "◇" for codex, the filled blue "◆" for claude, and a
+// dim "◆" for a launcher-unknown "(no session)" row (so it isn't mistaken for the claude blue).
+func sessionMarker(id string) string {
+	switch {
+	case strings.HasPrefix(id, "codex:"):
+		return codexHdrStyle.Render("◇ ")
+	case id == "":
+		return faintStyle.Render("◆ ")
+	default:
+		return sessionHdrStyle.Render("◆ ")
+	}
+}
+
+// sessionLauncherTag names a session's launcher for a header that draws no ◆/◇ marker:
+// "codex", "claude", or "" for "(no session)" (whose label already says so).
+func sessionLauncherTag(id string) string {
+	switch {
+	case id == "":
+		return ""
+	case strings.HasPrefix(id, "codex:"):
+		return "codex"
+	default:
+		return "claude"
+	}
+}
+
+// sessionTitleWithLauncher is a session's label for a box-frame / session header, prefixed
+// with its launcher tag (codex / claude) — those headers carry no ◆/◇ marker, so the tag is
+// where the launcher is named.
+func (m Model) sessionTitleWithLauncher(id string) string {
+	if tag := sessionLauncherTag(id); tag != "" {
+		return tag + " · " + m.sessionLabel(id)
+	}
+	return m.sessionLabel(id)
 }
 
 func shortSessionID(id string) string {

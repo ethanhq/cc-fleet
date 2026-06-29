@@ -132,7 +132,37 @@ func (m Model) browserRows() []browserRow {
 		}
 		return a.ref.id < b.ref.id // stable tiebreak
 	})
+	// When any codex-launched row is present, group codex rows below the non-codex ones (and
+	// "(no session)" rows below codex), keeping the newest-first order within each group. With
+	// zero codex rows the list keeps pure newest-first order, so a codex-free browser is unchanged.
+	if browserFirstCodex(rows) >= 0 {
+		sort.SliceStable(rows, func(i, j int) bool {
+			return browserSessionRank(rows[i]) < browserSessionRank(rows[j])
+		})
+	}
 	return rows
+}
+
+// browserSessionRank orders a browser row by its launcher session for codex grouping,
+// reusing sessionRank — the launcher id lives in a different field per kind: a run's in
+// sessionID, a job's / team's in leadSessionID.
+func browserSessionRank(r browserRow) int {
+	id := r.leadSessionID
+	if r.ref.kind == browserRun {
+		id = r.sessionID
+	}
+	return sessionRank(id)
+}
+
+// browserFirstCodex returns the index of the first codex-launched row, or -1 when there is
+// none. Used before grouping (>=0 ⇒ codex present) and after (the divider boundary).
+func browserFirstCodex(rows []browserRow) int {
+	for i, r := range rows {
+		if browserSessionRank(r) == 1 {
+			return i
+		}
+	}
+	return -1
 }
 
 // runProvider is a run's display provider: the first leaf's provider (a run is usually
@@ -167,7 +197,9 @@ func teamProvider(t asTeam) string {
 // teamTitle names a team row: "<team> · <session>" so the same team across sessions stays
 // distinguishable, falling back to the session label when a team has no name.
 func teamTitle(m Model, sessionID, team string) string {
-	sess := m.sessionLabel(sessionID)
+	// sessionTitleWithLauncher (not the bare label) so a codex team row still names its
+	// launcher — the browser divider alone isn't reliable (skipped at index 0, scrolls away).
+	sess := m.sessionTitleWithLauncher(sessionID)
 	if name := sessiontitle.CleanTitle(team); name != "" {
 		return trunc(name, 24) + " · " + sess
 	}
@@ -434,7 +466,15 @@ func (m Model) viewBrowser() string {
 			visible = 1
 		}
 		start, end := windowBounds(m.browserCursor, len(rows), visible)
+		// One dim "── codex ──" divider where codex rows begin (rows are codex-grouped), only
+		// when non-codex rows sit above. Render-only: browserCursor/windowBounds index data
+		// rows; the divider is one extra line, absorbed by the viewport's spare line (a window
+		// of N entries is 3N-1 lines against a ~3N budget).
+		firstCodex := browserFirstCodex(rows)
 		for i := start; i < end; i++ {
+			if firstCodex > 0 && i == firstCodex {
+				body = append(body, codexDivider(m.boardInner()))
+			}
 			body = append(body, m.browserEntryLines(rows[i], i, start, end, len(rows))...)
 			if i < end-1 {
 				body = append(body, "")

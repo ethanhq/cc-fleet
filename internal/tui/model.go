@@ -473,7 +473,15 @@ func loadBoard(epoch int) tea.Cmd {
 		if jobsErr == nil {
 			jobsErr = wfErr
 		}
-		meta := sessiontitle.ResolveMeta(leadSessionIDs(items, jobs, runs))
+		ids := leadSessionIDs(items, jobs, runs)
+		meta := sessiontitle.ResolveMeta(ids)
+		// Merge in codex thread titles (each codex session's first user prompt, à la
+		// `codex resume`) so a codex row shows a name instead of a bare thread id.
+		for codexID, title := range sessiontitle.ResolveCodexTitles(ids) {
+			e := meta[codexID]
+			e.Title = title
+			meta[codexID] = e
+		}
 		// Record live teams + synthesize ended ones AFTER annotation, so a pane
 		// capture can never overwrite a synthetic row's `ended` status. Both run
 		// only on a successful discovery: with tmux missing the live set is
@@ -935,6 +943,58 @@ func groupSessions(teammates []teardown.Teammate, jobs []subagent.Result, runs [
 		return false // stable: encounter order as the tiebreaker
 	})
 	return out
+}
+
+// sessionRank orders a session by launcher for the board's codex grouping: real
+// non-codex first (0), codex-launched (1), then "(no session)" (2). The shared key
+// behind sinkCodexSessions and the browser's row grouping.
+func sessionRank(id string) int {
+	switch {
+	case id == "":
+		return 2
+	case strings.HasPrefix(id, "codex:"):
+		return 1
+	default:
+		return 0
+	}
+}
+
+// sinkCodexSessions groups codex-launched sessions below the non-codex ones (and above
+// "(no session)", which stays last), keeping the newest-first order within each group. A
+// list with no codex session is returned unchanged, so a codex-free board renders identically.
+func sinkCodexSessions(sessions []asSession) []asSession {
+	out := make([]asSession, len(sessions))
+	copy(out, sessions)
+	if firstCodexSession(out) < 0 {
+		return out // no codex launcher → leave the order exactly as given
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		return sessionRank(out[i].sessionID) < sessionRank(out[j].sessionID)
+	})
+	return out
+}
+
+// firstCodexSession returns the index of the first codex-launched session in a slice, or -1
+// when there are none. In a codex-sunk slice that index is the divider boundary; sinkCodexSessions
+// also calls it on an unsorted slice just to detect whether any codex session is present.
+func firstCodexSession(sessions []asSession) int {
+	for i, s := range sessions {
+		if sessionRank(s.sessionID) == 1 {
+			return i
+		}
+	}
+	return -1
+}
+
+// firstNoSessionIndex returns the index of the launcher-unknown "(no session)" row in a
+// codex-sunk slice (it sorts last), or -1 when there is none.
+func firstNoSessionIndex(sessions []asSession) int {
+	for i, s := range sessions {
+		if s.sessionID == "" {
+			return i
+		}
+	}
+	return -1
 }
 
 // boardTick schedules the next auto-refresh tick for the given epoch.
@@ -2529,8 +2589,16 @@ func (m Model) asSessions() []asSession {
 	return groupSessions(m.teammates, m.jobs, m.wfGroups())
 }
 
-// asProjects is the session tree bucketed by recorded working directory.
-func (m Model) asProjects() []asProject { return groupProjects(m.asSessions(), m.sessionMeta) }
+// asProjects is the session tree bucketed by recorded working directory, with each
+// project's sessions codex-sunk (codex-launched sessions grouped below the non-codex
+// ones) — applied AFTER groupProjects so the sink never reorders the projects themselves.
+func (m Model) asProjects() []asProject {
+	projects := groupProjects(m.asSessions(), m.sessionMeta)
+	for i := range projects {
+		projects[i].sessions = sinkCodexSessions(projects[i].sessions)
+	}
+	return projects
+}
 
 // focusedProjectGroup returns the project the sessions/boxes levels are rooted on.
 func (m Model) focusedProjectGroup() (asProject, bool) {
