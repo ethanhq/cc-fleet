@@ -22,6 +22,8 @@ Every third-party worker is a real `claude` process with its LLM backend swapped
 
 No Claude subscription? `ccf run <provider>` starts an interactive session driven by that provider — **the same `claude` you know**, just running on the provider's model.
 
+cc-fleet can be driven from Codex too: a Codex plugin gives a Codex session the same fan-out — `cc-fleet subagent` and `cc-fleet workflow`, with the `claude` engine as the worker. (Teammates stay Claude-Code-only.)
+
 ## Install
 
 **0. Install Claude Code first** — cc-fleet drives the official `claude` CLI, so install it if you don't have it yet (skip if `claude` is already on your PATH):
@@ -45,6 +47,8 @@ curl -fsSL https://raw.githubusercontent.com/ethanhq/cc-fleet/main/install.sh | 
 ```powershell
 irm https://raw.githubusercontent.com/ethanhq/cc-fleet/main/install.ps1 | iex
 ```
+
+**Codex plugin** — to drive cc-fleet from a Codex session, after the install above run `codex plugin marketplace add ethanhq/cc-fleet` then `codex plugin add cc-fleet`.
 
 > Other channels (npm / go install / Releases / source) and adding the Claude Code plugin, installer overrides, and requirements & maintenance live in **[Install & maintenance](docs/install.md)**.
 
@@ -268,6 +272,12 @@ ccf workflow run audit.js --resume "$RUN"   # replay the journal, finished leave
 **Structured result**: with `--json` you get a result object with fixed fields, easy for scripts to parse — besides the answer text it includes the model id that actually responded, the call's spend, token usage, turns, and session_id.
 
 **Run key nodes on your own subscription**: as with Workflow, setting the provider to the reserved name `claude` (`ccf subagent claude --model opus …`) uses your own Claude login and bills your subscription — good for a synthesis-and-finish node, not large parallel batches.
+
+---
+
+### 🧩 Drive from Codex
+
+cc-fleet plugs into **OpenAI Codex** too: a Codex plugin lets a Codex session fan out the same provider workers — one-shot or batch **subagents** (`cc-fleet subagent`) and multi-phase JS **workflows** (`cc-fleet workflow`), each a real `claude` process on the provider's model. Install it with `codex plugin marketplace add ethanhq/cc-fleet` then `codex plugin add cc-fleet` (the `cc-fleet` and `claude` binaries install separately). The teammate lane stays Claude-Code-only; from Codex you get the subagent and workflow fan-out.
 
 ---
 
