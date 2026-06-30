@@ -49,9 +49,10 @@ const (
 	screenPickTemplate
 	screenForm
 	screenModelPick
-	screenKeys      // EDIT form → "Manage API keys →": per-provider multi-key manager
-	screenSetup     // first-run agent-teams setup nudge; shown before the hub
-	screenCodexAuth // CLI-auth → codex: committing → consent → device-code login, modal-rendered
+	screenKeys          // EDIT form → "Manage API keys →": per-provider multi-key manager
+	screenSetup         // first-run agent-teams setup nudge; shown before the hub
+	screenInstallClaude // first-run install-Claude nudge; precedes the agent-teams nudge
+	screenCodexAuth     // CLI-auth → codex: committing → consent → device-code login, modal-rendered
 )
 
 // addCategory is the provider class a picker row belongs to.
@@ -319,6 +320,12 @@ type Model struct {
 	setupCursor int
 	setupMsg    string
 
+	// First-run install-Claude nudge (screenInstallClaude, precedes screenSetup).
+	// installCursor selects a choice; installMsg, once set, replaces the choices
+	// with the installer outcome that any key dismisses.
+	installCursor int
+	installMsg    string
+
 	loading  bool
 	quitting bool
 
@@ -329,14 +336,18 @@ type Model struct {
 
 // NewModel returns the initial model. It normally parks on the Model Providers list
 // (the hub) with loading=true so Init can kick off the provider load. On a first
-// run where agent-teams looks unconfigured (and the user hasn't dismissed the
-// nudge), it instead opens on the agent-teams setup screen; the hub loads when
-// the user leaves setup via toList.
+// run it instead opens on a setup screen: the install-Claude nudge when no claude
+// binary is found (and the offer isn't dismissed), else the agent-teams nudge when
+// that looks unconfigured (and undismissed). The hub loads when the user leaves the
+// last nudge via toList.
 //
 // NewModel is only ever called from tui.Run, which cmd/cc-fleet gates to the
-// bare-interactive both-TTY path — so the onboarding probe here never runs for
+// bare-interactive both-TTY path — so the onboarding probes here never run for
 // spawn/subagent/piped/agent callers.
 func NewModel() Model {
+	if onboarding.NeedsClaudeInstall() {
+		return Model{screen: screenInstallClaude}
+	}
 	if onboarding.NeedsAgentTeamsSetup() {
 		return Model{screen: screenSetup}
 	}
@@ -344,10 +355,10 @@ func NewModel() Model {
 }
 
 // Init satisfies tea.Model: load the provider list so the home screen is
-// populated as soon as the program starts. On the setup screen there's nothing
-// to load yet — toList kicks off loadProviders when the user proceeds.
+// populated as soon as the program starts. On a first-run nudge screen there's
+// nothing to load yet — toList kicks off loadProviders when the user proceeds.
 func (m Model) Init() tea.Cmd {
-	if m.screen == screenSetup {
+	if m.screen == screenSetup || m.screen == screenInstallClaude {
 		return nil
 	}
 	return loadProviders
@@ -1973,6 +1984,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case claudeInstallDoneMsg:
+		return m.applyClaudeInstallResult(msg.err), nil
+
 	case tea.KeyMsg:
 		if msg.Type == tea.KeyCtrlC {
 			m.quitting = true
@@ -1993,6 +2007,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateKeys(msg)
 		case screenSetup:
 			return m.updateSetup(msg)
+		case screenInstallClaude:
+			return m.updateInstallClaude(msg)
 		case screenCodexAuth:
 			return m.updateCodexAuth(msg)
 		}

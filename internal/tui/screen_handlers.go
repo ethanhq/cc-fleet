@@ -21,14 +21,15 @@ type screenHandler struct {
 // package must appear exactly once; TestHandlersRegistry_AllScreensRegistered
 // enumerates the constants and fails if any are missing.
 var handlers = map[screen]screenHandler{
-	screenList:         {update: Model.updateList, view: Model.viewList},
-	screenSpawn:        {update: Model.updateSpawn, view: Model.viewSpawn},
-	screenPickTemplate: {update: Model.updatePickTemplate, view: Model.viewPickTemplate},
-	screenForm:         {update: Model.updateForm, view: Model.viewForm},
-	screenModelPick:    {update: Model.updateModelPick, view: Model.viewModelPick},
-	screenKeys:         {update: Model.updateKeys, view: Model.viewKeys},
-	screenSetup:        {update: Model.updateSetup, view: Model.viewSetup},
-	screenCodexAuth:    {update: Model.updateCodexAuth, view: Model.viewCodexAuth},
+	screenList:          {update: Model.updateList, view: Model.viewList},
+	screenSpawn:         {update: Model.updateSpawn, view: Model.viewSpawn},
+	screenPickTemplate:  {update: Model.updatePickTemplate, view: Model.viewPickTemplate},
+	screenForm:          {update: Model.updateForm, view: Model.viewForm},
+	screenModelPick:     {update: Model.updateModelPick, view: Model.viewModelPick},
+	screenKeys:          {update: Model.updateKeys, view: Model.viewKeys},
+	screenSetup:         {update: Model.updateSetup, view: Model.viewSetup},
+	screenInstallClaude: {update: Model.updateInstallClaude, view: Model.viewInstallClaude},
+	screenCodexAuth:     {update: Model.updateCodexAuth, view: Model.viewCodexAuth},
 }
 
 // allScreens returns every screen constant defined in this package, in the
@@ -43,6 +44,7 @@ func allScreens() []screen {
 		screenModelPick,
 		screenKeys,
 		screenSetup,
+		screenInstallClaude,
 		screenCodexAuth,
 	}
 }

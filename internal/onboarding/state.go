@@ -3,7 +3,8 @@
 // fix it WITH CONSENT, and persists the user's decision so later runs never
 // re-nag. (tmux, the other teammate prerequisite, is NOT nudged on first run —
 // doctor surfaces the OS-specific install hint instead, via TmuxInstallHint in
-// osinfo.go.)
+// osinfo.go.) A second nudge offers to install the `claude` binary itself when
+// none is found.
 //
 // agent-teams *runtime enablement* can NOT be observed by an external process
 // (it's a Claude runtime state, commonly default-on via GrowthBook with no env
@@ -16,10 +17,11 @@
 // also lives in agentteams.go; it is cc-fleet's only write to the user's main
 // settings, fired only when the user explicitly chooses "enable it for me".
 //
-// The orchestration (TUI screen, TTY gating) lives in internal/tui; this
-// package holds the pure, unit-testable pieces: decision persistence
-// (state.go), agent-teams config detection + settings merge (agentteams.go),
-// and the OS-specific tmux install hint (osinfo.go).
+// The orchestration (setup screens, TTY gating) lives in internal/tui; this
+// package holds the pure, unit-testable pieces: decision persistence (state.go),
+// agent-teams config detection + settings merge (agentteams.go), the OS-specific
+// tmux install hint (osinfo.go), and the claude-binary install detection +
+// installer command (claude.go).
 //
 // It is invoked ONLY from the bare-interactive TUI path, so it never blocks
 // headless / agent callers.
@@ -43,14 +45,18 @@ const stateVersion = 1
 //
 //   - AgentTeamsAck: the user dealt with the agent-teams setup screen (any
 //     choice), so it never shows again.
+//   - ClaudeInstallAck: the install-Claude offer is settled — either dismissed
+//     for good ("I'll install it myself") or a successful installer run — so it
+//     never shows again. "Later", a failed install, and an exit-0 install that
+//     left claude unfindable do NOT set it: the offer returns next launch.
 //
-// We do NOT persist a capability cache. agent-teams *configuration* is detected
-// fresh each run (cheap, reliable); *runtime enablement* is never detected —
-// it's a Claude runtime state an external process can't observe; the ack only
-// records that the user dealt with the one-time nudge.
+// We do NOT persist a capability cache. agent-teams *configuration* and the
+// claude binary's presence are both detected fresh each run (cheap, reliable);
+// the acks only record that the user dealt with a one-time nudge.
 type State struct {
-	Version       int  `json:"version"`
-	AgentTeamsAck bool `json:"agent_teams_ack"`
+	Version          int  `json:"version"`
+	AgentTeamsAck    bool `json:"agent_teams_ack"`
+	ClaudeInstallAck bool `json:"claude_install_ack"`
 }
 
 // StatePath returns ~/.config/cc-fleet/onboarding.json (XDG-aware via

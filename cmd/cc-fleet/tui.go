@@ -28,10 +28,10 @@ func shouldEnterTUI(args []string, stdinTTY, stdoutTTY bool) bool {
 // handled=true when the TUI ran (so the caller skips printing help) and surfaces
 // any tea.Program error.
 //
-// First-run onboarding (tmux + agent-teams setup screens) lives INSIDE the TUI:
-// tui.NewModel opens on a setup screen when needed. Because the TUI is gated here
-// to the bare-interactive both-TTY path, spawn/subagent/piped/agent callers never
-// see the setup screens.
+// First-run onboarding (the install-Claude and agent-teams setup screens) lives
+// INSIDE the TUI: tui.NewModel opens on a setup screen when needed. Because the
+// TUI is gated here to the bare-interactive both-TTY path, spawn/subagent/piped/
+// agent callers never see the setup screens.
 func runTUIIfInteractive(args []string, verbose bool) (handled bool, err error) {
 	stdinTTY := term.IsTerminal(os.Stdin.Fd())
 	stdoutTTY := term.IsTerminal(os.Stdout.Fd())

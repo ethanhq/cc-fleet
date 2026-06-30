@@ -105,6 +105,8 @@ func (m Model) View() string {
 		return s
 	case screenSetup:
 		return m.viewSetup()
+	case screenInstallClaude:
+		return m.viewInstallClaude()
 	case screenCodexAuth:
 		return m.viewCodexAuth()
 	}
@@ -3195,8 +3197,8 @@ var setupOptions = []string{
 	"skip — I'll only use subagent / workflow / run",
 }
 
-// renderSetupOptions renders a cursor-highlighted option list for the
-// agent-teams setup nudge.
+// renderSetupOptions renders a cursor-highlighted option list for a first-run
+// setup nudge (the agent-teams and install-Claude screens share it).
 func renderSetupOptions(opts []string, cursor int) string {
 	var b strings.Builder
 	for i, opt := range opts {

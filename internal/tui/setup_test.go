@@ -12,11 +12,11 @@ import (
 )
 
 // TestMain gives the whole package a hermetic baseline: a throwaway HOME with
-// onboarding already acked, so NewModel() opens straight on the hub rather than
-// a first-run setup screen. Without it the model tests would read the real
-// user's HOME and pass or fail depending on whether agent-teams happens to be
-// configured there. The onboarding tests override HOME per-test via setupEnv(t)
-// to exercise the nudges.
+// onboarding already acked and a stub `claude` on PATH, so NewModel() opens
+// straight on the hub rather than a first-run nudge screen. Without it the model
+// tests would read the real user's HOME and depend on whether agent-teams is
+// configured / claude is installed there. Per-test envs (setupEnv) inherit this
+// PATH; the install-Claude tests override it to hide claude.
 func TestMain(m *testing.M) {
 	home, err := os.MkdirTemp("", "cc-fleet-tui")
 	if err != nil {
@@ -24,6 +24,18 @@ func TestMain(m *testing.M) {
 	}
 	os.Setenv("HOME", home)
 	os.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	binDir := filepath.Join(home, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		panic(err)
+	}
+	stub := "claude"
+	if runtime.GOOS == "windows" {
+		stub = "claude.exe"
+	}
+	if err := os.WriteFile(filepath.Join(binDir, stub), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		panic(err)
+	}
+	os.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	if err := (onboarding.State{AgentTeamsAck: true}).Save(); err != nil {
 		panic(err)
 	}

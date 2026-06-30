@@ -55,6 +55,18 @@ func Detect() (binaryPath, version string, err error) {
 	return binaryPath, version, nil
 }
 
+// Located reports whether a `claude` binary can be found (PATH or the per-version
+// layout) WITHOUT executing it — a presence-only probe for first-run gating that
+// must not pay a `claude --version` subprocess on the common, already-installed
+// path. Returns the absolute path and true when found.
+func Located() (string, bool) {
+	path, err := locate()
+	if err != nil {
+		return "", false
+	}
+	return path, true
+}
+
 // locate returns the absolute path of the `claude` binary or ErrNotFound. The
 // PATH lookup runs first because that's what the user's shell does; the
 // per-version layout fallback covers the case where claude was installed via
