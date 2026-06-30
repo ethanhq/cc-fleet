@@ -1,6 +1,6 @@
 {
   "name": "@ethanhq/cc-fleet",
-  "version": "0.2.9",
+  "version": "0.3.0",
   "description": "Run any model with an Anthropic- or OpenAI-compatible API — even your Codex subscription — as Claude Code workflows, agent-team teammates, or one-shot subagents. Your main session's own auth (OAuth or API key) is untouched.",
   "bin": {
     "cc-fleet": "bin/launcher.js",
