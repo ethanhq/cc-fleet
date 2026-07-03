@@ -381,8 +381,10 @@ func StopRun(runID string) (WorkflowRun, error) {
 	}
 	run.Status = "stopped"
 	run.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	run.EnginePID = 0 // a stopped run has no engine; clear the stale pid
-	run.EngineProcStart = ""
+	// Keep EnginePID + EngineProcStart: for a reaped DETACHED run they are the death evidence
+	// RunEngineProvablyNotLive relies on (a positively-dead recorded pid — the token also disproves
+	// a recycled pid). A foreground run recorded 0 and stays 0, so it correctly reads NOT provably
+	// dead — nothing was reaped and its engine may still be writing. A resume re-stamps both.
 	if serr := SaveRun(run); serr != nil {
 		return WorkflowRun{}, serr
 	}
@@ -521,6 +523,20 @@ func EngineAlive(run WorkflowRun) bool {
 	return argvIsRunEngine(argv, run.RunID)
 }
 
+// RunEngineProvablyNotLive reports whether run's engine is DEFINITIVELY gone, so an external
+// reclaimer (the worktree sweep / PurgeRun's temp-root drop) may safely reclaim what the engine
+// left. The ONLY death proof is a recorded detached engine identity that is positively dead: a
+// run carrying an EnginePID whose process is dead or has been recycled to a different one
+// (!EngineAlive). Terminal status ALONE is not proof — StopRun flips a live FOREGROUND run to
+// "stopped" while reaping nothing (EnginePID 0 matches none of its kill branches), leaving its
+// engine writing under a stopped manifest; and a foreground/pre-stamp run records EnginePID 0 yet
+// may still be live. StopRun retains a reaped engine's pid + start token precisely so this check
+// has that evidence. Mirrors StopRun's fail-SAFE guard: never reclaim under a pid we cannot
+// positively disprove.
+func RunEngineProvablyNotLive(run WorkflowRun) bool {
+	return run.EnginePID > 0 && !EngineAlive(run)
+}
+
 // PurgeRun deletes a run entirely — the board's manual "delete" (the board never auto-clears, so runs
 // accumulate). A VERIFIABLY-LIVE detached engine is stopped AND confirmed dead before any file is
 // removed: the engine is recreate-safe (it rewrites a dropped manifest on its next save), so deleting
@@ -546,6 +562,17 @@ func PurgeRun(runID string) error {
 			return fmt.Errorf("subagent: run %s engine did not stop in time; delete aborted", runID)
 		}
 	}
+	// Decide the worktree-temp purge NOW, while the manifest still exists: the RemoveAll near
+	// the end deletes the run's isolation-worktree WORKDIRS, which — unlike the git registration
+	// a later sweep reclaims — are not recreate-safe, so they must never be dropped under a live
+	// engine's leaves. Purge only when the run is PROVABLY dead: a successful stop left a terminal
+	// status, and a crashed detached run reads dead; a running FOREGROUND run (EnginePID 0) is not
+	// provably dead, so its live leaves keep their cwd for their own cleanup or a later sweep. A
+	// re-read failure (record already gone) fails closed → skip.
+	worktreePurgeable := false
+	if run, rerr := ReadRun(runID); rerr == nil {
+		worktreePurgeable = RunEngineProvablyNotLive(run)
+	}
 	dir, err := jobsDir()
 	if err != nil {
 		return err
@@ -562,6 +589,19 @@ func PurgeRun(runID string) error {
 				_ = pinned.Unpin(pinned.Job, jobID) // explicit delete clears any leaf pin marker
 			}
 		}
+	}
+	// Drop the run's isolation-worktree temp workdirs BEFORE removing the manifest — only for a
+	// provably-dead run (decided above) and only when the run id is a safe path segment. Removing the
+	// workdir first means a successful removal (or a crash right after it) leaves the workdir gone
+	// while the manifest still proves death, so the next same-repo sweep reclaims the git registration
+	// via its workdir-missing clause; deleting the manifest first would strand that registration if
+	// this RemoveAll then failed (unknown segment + present workdir = spared forever). Best-effort — a
+	// failed removal never fails the purge; the residual clears on reboot, after which it is
+	// reclaimable. ValidateJobID (top) already rejects separators, so of the worktree-root-remapped
+	// forms only a '.'/':' can reach here; a run id bearing one leaves its workdirs to the next
+	// same-repo engine's startup sweep.
+	if worktreePurgeable && !strings.ContainsAny(runID, `.:/\`) {
+		_ = os.RemoveAll(filepath.Join(os.TempDir(), "cc-fleet-worktrees", runID))
 	}
 	removeRun(filepath.Join(dir, runsDirName), runID)
 	_ = pinned.Unpin(pinned.Run, runID) // explicit delete is the sanctioned removal of a pinned run

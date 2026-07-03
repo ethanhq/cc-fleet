@@ -52,13 +52,35 @@ func restartLocked(ctx context.Context, runID, journalKey string) error {
 	return err
 }
 
-// ensureRestartable is the shared pre-restart barrier: the saved script must be
-// readable (with the explicit pre-JS-engine refusal) and a still-"running" run's
-// engine must be verifiably GONE before any journal rewrite (it O_APPENDs to it).
+// resumeBlockedReason reports why a run must not be resumed or restarted (nil when it may). The sole
+// block is the ambiguous {stopped, EnginePID 0} record: a Ctrl-C'd foreground engine writes it in its
+// shutdown defer then exits (dead), and StopRun's blind flip of a still-LIVE foreground engine it
+// couldn't reap writes the identical record — indistinguishable. Resuming the live one would start a
+// second engine sharing this manifest/journal/worktree segment, whose later-dead pid would falsely
+// condemn the survivor's live worktrees to the sweep; refuse both so a segment is never co-owned.
+// (Pre-retained-pid StopRun left stopped-detached runs at {stopped,0} too.) Shared by Launch's resume
+// preflight and ensureRestartable so both refuse identically — the latter BEFORE any journal rewrite.
+func resumeBlockedReason(run subagent.WorkflowRun) error {
+	if run.Status == "stopped" && run.EnginePID == 0 {
+		return fmt.Errorf("workflow: run %s was stopped and its foreground engine's death cannot be verified; confirm its terminal process has exited, then delete it (workflow rm) or launch fresh", run.RunID)
+	}
+	return nil
+}
+
+// ensureRestartable is the shared pre-restart barrier: the run must be resumable
+// (resumeBlockedReason), the saved script must be readable (with the explicit pre-JS-engine
+// refusal), and a still-"running" run's engine must be verifiably GONE before any journal rewrite
+// (it O_APPENDs to it).
 func ensureRestartable(runID string) (string, error) {
 	run, err := subagent.ReadRun(runID)
 	if err != nil {
 		return "", err
+	}
+	// Refuse an unresumable run BEFORE the caller rewrites the journal (removeJournalKey/Keys), so a
+	// restart never leaves a mutate-then-fail half-state — the journal must not be touched under an
+	// engine whose death can't be verified. Same predicate Launch's preflight uses, so no drift.
+	if reason := resumeBlockedReason(run); reason != nil {
+		return "", reason
 	}
 	scriptPath, err := subagent.RunScriptPath(runID)
 	if err != nil {

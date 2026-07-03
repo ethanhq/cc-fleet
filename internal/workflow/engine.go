@@ -242,6 +242,16 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 	if ctlErr == nil {
 		eng.startCtlPoller(ctlPath)
 	}
+	// Reclaim OTHER runs' stale isolation-worktree registrations left in the user's repo by
+	// crashed/SIGKILLed engines — provably-dead known runs, plus any whose workdir has vanished.
+	// This run's OWN segment is never reclaimed here (it could belong to a still-live blind-stopped
+	// twin); own-segment cleanup happens in the resume launcher, under a death proof. A non-git cwd
+	// never created any worktree, so skip silently.
+	if cwd, cerr := os.Getwd(); cerr == nil {
+		if root, gerr := gitTopLevel(cwd); gerr == nil {
+			sweepRunWorktreesFn(root)
+		}
+	}
 
 	defer func() {
 		if r := recover(); r != nil {
@@ -398,62 +408,100 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 		if verr := subagent.ValidateRunID(opts.Resume); verr != nil {
 			return "", fmt.Errorf("workflow: invalid resume id: %w", verr)
 		}
-		existing, rerr := subagent.ReadRun(opts.Resume)
-		if rerr != nil {
-			return "", fmt.Errorf("workflow: cannot resume: %w", rerr)
+		// The resume preflight — read prior → refuse-guard → death-proof own-segment sweep → inherit
+		// options → rewrite the manifest to "running" — must be ATOMIC against a concurrent resume of
+		// the same id: two resumers reading the SAME provably-dead prior would both sweep, and the
+		// loser's stale proof would delete the winner's live worktrees. A DETACHED resume already runs
+		// under the caller's per-run lock (the CLI wraps Launch; Restart wraps stop+drop+Launch), which
+		// additionally spans launchDetached + WaitEngineStarted — so it must NOT re-lock (that would
+		// deadlock Restart; the flock is not reentrant). A FOREGROUND resume reaches Launch with no
+		// lock held (the CLI leaves it unwrapped precisely so the lock is never held around the inline
+		// Execute below), so it self-serializes just this preflight and releases before Execute. Once
+		// the preflight has flipped the manifest to "running" (EnginePID 0), any later resumer is
+		// rejected by the refuse-guard.
+		preflight := func() error {
+			existing, rerr := subagent.ReadRun(opts.Resume)
+			if rerr != nil {
+				return fmt.Errorf("workflow: cannot resume: %w", rerr)
+			}
+			run = existing
+			// Inherit the recorded default-resolution (do NOT re-resolve — a mid-run change of
+			// default_provider must never re-key an omitted-provider leaf). A PRE-feature manifest
+			// carries neither field; resolve+stamp once here so a provider-less script resumed on an
+			// old run still has a default.
+			if run.DefaultProvider == "" && run.DefaultProviderError == "" {
+				run.DefaultProvider, run.DefaultProviderError = resolveRunDefault()
+			}
+			// One engine per run: refuse to resume a run that still has a LIVE engine — a verifiably-live
+			// detached one, or a foreground/unreapable run (EnginePID<=0) still claiming to run. The board
+			// Restart path stops the old engine first; a crashed/killed detached run (recorded pid now
+			// dead) falls through and resumes as-is. Under the lock this also rejects a SECOND resumer:
+			// the winner has already flipped the manifest to running. (Mirrors restart.go's fail-closed
+			// liveness check.)
+			if run.Status == "running" && (subagent.EngineAlive(run) || run.EnginePID <= 0) {
+				return fmt.Errorf("workflow: run %s already has a live engine; stop it first", opts.Resume)
+			}
+			// Refuse the ambiguous {stopped, EnginePID 0} state (a live blind-stopped foreground engine is
+			// indistinguishable from a dead Ctrl-C'd one) — resumeBlockedReason carries the full rationale.
+			if reason := resumeBlockedReason(run); reason != nil {
+				return reason
+			}
+			// Reclaim THIS run's own stale isolation worktrees while the prior record still proves
+			// death: the rewrite below (EnginePID cleared, status flipped) erases that evidence, and the
+			// Execute-time sweep never touches its own segment (a blind-stopped-but-live foreground twin
+			// shares this id). Only a provably-dead prior is reclaimed; a not-provably-dead prior (a live
+			// foreground run flipped to "stopped") is spared so its twin's worktrees survive. Atomic
+			// under the lock above, so no concurrent resumer acts on a stale copy of this proof.
+			if subagent.RunEngineProvablyNotLive(existing) {
+				if cwd, cerr := os.Getwd(); cerr == nil {
+					if root, gerr := gitTopLevel(cwd); gerr == nil {
+						sweepOwnSegmentFn(root, existing.RunID)
+					}
+				}
+			}
+			// Replay the run's original launch options on resume so a leaf's content key — and thus its
+			// journal-cache validity — doesn't shift. A non-zero/non-empty opts value overrides; a
+			// zero/empty one inherits the manifest. --no-budget arrives as a -1 sentinel: non-zero so it
+			// skips the inherit, then normalizes to 0 (uncapped) below — so a capped run CAN be resumed
+			// uncapped. (Args/persistIO have no such sentinel.)
+			if opts.ArgsJSON == "" {
+				opts.ArgsJSON = existing.ArgsJSON
+			}
+			if !opts.NoPersistIO {
+				opts.NoPersistIO = existing.NoPersistIO
+			}
+			if opts.BudgetUSD == 0 {
+				opts.BudgetUSD = existing.BudgetUSD
+			}
+			if opts.BudgetTokens == 0 {
+				opts.BudgetTokens = existing.BudgetTokens
+			}
+			// Normalize the -1 uncap sentinel to 0 AFTER the inherit decision (so -1 never inherits),
+			// then re-stamp the budgets so an uncap is durable from resume time.
+			normalizeBudgetSentinels(&opts)
+			run.BudgetUSD = opts.BudgetUSD
+			run.BudgetTokens = opts.BudgetTokens
+			// Restamp liveness + flip to running BEFORE detaching/executing, so a concurrent GC can't
+			// prune this (possibly old) run's manifest + journal before the resumed engine's first
+			// heartbeat (GC recency keys on the later of StartedAt/UpdatedAt). A stamp failure means the
+			// manifest is unwritable — fail the resume rather than launch blind.
+			run.Status = "running"
+			run.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+			run.EnginePID = 0 // clear the prior engine's pid; the new child re-stamps, and WaitEngineStarted waits for exactly that
+			run.EngineProcStart = ""
+			if serr := subagent.SaveRun(run); serr != nil {
+				return fmt.Errorf("workflow: stamp resume liveness: %w", serr)
+			}
+			return nil
 		}
-		run = existing
-		// Inherit the recorded default-resolution (do NOT re-resolve — a mid-run
-		// change of default_provider must never re-key an omitted-provider leaf). A
-		// PRE-feature manifest carries neither field; resolve+stamp once here so a
-		// provider-less script resumed on an old run still has a default.
-		if run.DefaultProvider == "" && run.DefaultProviderError == "" {
-			run.DefaultProvider, run.DefaultProviderError = resolveRunDefault()
+		var perr error
+		if foreground {
+			perr = subagent.WithRunLock(opts.Resume, preflight) // no caller lock on this lane — self-serialize
+		} else {
+			perr = preflight() // already under the caller's per-run lock (CLI / Restart)
 		}
-		// One engine per run: refuse to resume a run that still has a LIVE engine — a verifiably-live
-		// detached one, or a foreground/unreapable run (EnginePID<=0) still claiming to run. The board
-		// Restart path stops the old engine first (so the status is no longer running when it reaches
-		// here); a crashed/killed detached run (recorded pid now dead) falls through and resumes as-is.
-		// This guards the public `workflow run --resume` entry, which would otherwise launch a second
-		// concurrent engine. (Mirrors restart.go's fail-closed liveness check.)
-		if run.Status == "running" && (subagent.EngineAlive(run) || run.EnginePID <= 0) {
-			return "", fmt.Errorf("workflow: run %s already has a live engine; stop it first", opts.Resume)
-		}
-		// Replay the run's original launch options on resume so a leaf's content key — and thus
-		// its journal-cache validity — doesn't shift. A non-zero/non-empty opts value overrides
-		// (e.g. resuming with a larger --budget-usd); a zero/empty one reads as "not set" and
-		// inherits the manifest. The one way to override TO uncapped is --no-budget, which arrives
-		// as a -1 sentinel: it is non-zero so it skips the inherit, then normalizes to 0 (uncapped)
-		// below — so a capped run CAN be resumed uncapped. (Args/persistIO have no such sentinel.)
-		if opts.ArgsJSON == "" {
-			opts.ArgsJSON = existing.ArgsJSON
-		}
-		if !opts.NoPersistIO {
-			opts.NoPersistIO = existing.NoPersistIO
-		}
-		if opts.BudgetUSD == 0 {
-			opts.BudgetUSD = existing.BudgetUSD
-		}
-		if opts.BudgetTokens == 0 {
-			opts.BudgetTokens = existing.BudgetTokens
-		}
-		// Normalize the -1 uncap sentinel to 0 AFTER the inherit decision (so -1 never inherits),
-		// then re-stamp the budgets onto the manifest so an uncap is durable from resume time — the
-		// engine never persists -1, and never re-caps a run the user just uncapped.
-		normalizeBudgetSentinels(&opts)
-		run.BudgetUSD = opts.BudgetUSD
-		run.BudgetTokens = opts.BudgetTokens
-		// Restamp liveness + flip to running BEFORE detaching, so a concurrent GC can't
-		// prune this (possibly old) run's manifest + journal in the window before the
-		// resumed engine writes its first heartbeat (GC recency keys on the later of
-		// StartedAt / UpdatedAt). A stamp failure means the manifest is unwritable — the
-		// run can't be tracked or protected, so fail the resume rather than launch blind.
-		run.Status = "running"
-		run.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-		run.EnginePID = 0 // clear the prior engine's pid; the new child re-stamps, and WaitEngineStarted waits for exactly that
-		run.EngineProcStart = ""
-		if serr := subagent.SaveRun(run); serr != nil {
-			return "", fmt.Errorf("workflow: stamp resume liveness: %w", serr)
+		if perr != nil {
+			return "", perr
 		}
 	} else {
 		minted, perr := Prepare(abs)
