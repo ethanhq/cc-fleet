@@ -117,7 +117,7 @@ func newAddForm(t Template) form {
 		{key: "models_endpoint", label: "Models endpoint", kind: fieldText, input: newTextInput(t.ModelsEndpoint, "https://…/v1/models", false)},
 		{key: "api_key", label: "API key", kind: fieldText, input: newTextInput("", "stored at <name>.key (mode 0600)", true)},
 	}
-	fields = append(fields, modelConfigFields(t.DefaultModel, "", "", "", "")...)
+	fields = append(fields, modelConfigFields(t.DefaultModel, "", "", t.Effort, "")...)
 	f := form{
 		title:  "Add provider",
 		intro:  "↑/↓ move rows · → 1M toggle · enter on [Add] submits · esc cancels",

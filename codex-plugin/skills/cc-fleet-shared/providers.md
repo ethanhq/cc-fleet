@@ -26,6 +26,7 @@ Template seeds for the built-in presets (what the TUI add picker prefills). Sugg
 |---|---|---|
 | `deepseek` | `deepseek-v4-flash` | Use canonical names; legacy aliases silently fall back to default. |
 | `kimi` (Moonshot) | `kimi-latest` | 200k+ context; strong Chinese. |
+| `kimi-code` (Kimi Code) | `kimi-for-coding` | Kimi Code Console API key tied to Kimi membership benefits; preset uses medium effort for Thinking/K2.7. Not Kimi CLI OAuth or Moonshot Platform billing. Use `--profile full` for subagent leaves when K2.7 Thinking behavior matters, because slim disables thinking. |
 | `glm` (智谱, bigmodel.cn) | `glm-4.6` | Domain Chinese, industry vertical. |
 | `zai` (GLM international, z.ai) | `glm-4.6` | Same models as `glm`; separate site + separate key. |
 | `qwen` (DashScope) | `qwen-max` | Endpoint/plan vary by region; consult user docs if `refresh` fails. |

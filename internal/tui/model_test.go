@@ -722,7 +722,7 @@ func TestTemplatesSeedTable(t *testing.T) {
 	for _, tp := range Templates {
 		byName[tp.Name] = tp
 	}
-	for _, name := range []string{"deepseek", "kimi", "glm", "qwen", "minimax"} {
+	for _, name := range []string{"deepseek", "kimi", "kimi-code", "glm", "qwen", "minimax"} {
 		tp, ok := byName[name]
 		if !ok {
 			t.Errorf("missing seed template %q", name)
@@ -731,6 +731,31 @@ func TestTemplatesSeedTable(t *testing.T) {
 		if tp.BaseURL == "" || tp.ModelsEndpoint == "" || tp.DefaultModel == "" {
 			t.Errorf("template %q has an empty seed field: %+v", name, tp)
 		}
+	}
+	kc := byName["kimi-code"]
+	if kc.Label != "Kimi Code" ||
+		kc.BaseURL != "https://api.kimi.com/coding/" ||
+		kc.ModelsEndpoint != "https://api.kimi.com/coding/v1/models" ||
+		kc.DefaultModel != "kimi-for-coding" ||
+		kc.Effort != "medium" {
+		t.Fatalf("kimi-code seed mismatch: %+v", kc)
+	}
+}
+
+func TestAddForm_TemplateEffortPrefill(t *testing.T) {
+	byName := map[string]Template{}
+	for _, tp := range Templates {
+		byName[tp.Name] = tp
+	}
+	kimiCode, ok := byName["kimi-code"]
+	if !ok {
+		t.Fatal("missing kimi-code template")
+	}
+	if got := newAddForm(kimiCode).choiceValue("effort"); got != "medium" {
+		t.Fatalf("kimi-code effort prefill = %q, want medium", got)
+	}
+	if got := newAddForm(byName["deepseek"]).choiceValue("effort"); got != "off" {
+		t.Fatalf("deepseek effort prefill = %q, want off", got)
 	}
 }
 

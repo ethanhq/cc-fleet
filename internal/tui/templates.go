@@ -20,6 +20,7 @@ type Template struct {
 	BaseURL        string // ANTHROPIC_BASE_URL
 	ModelsEndpoint string // /v1/models URL used for the probe + refresh
 	DefaultModel   string // suggested default model id
+	Effort         string // optional suggested reasoning-effort level
 	Note           string // optional caveat shown in the picker preview
 }
 
@@ -78,6 +79,15 @@ var Templates = []Template{
 		BaseURL:        "https://api.moonshot.cn/anthropic",
 		ModelsEndpoint: "https://api.moonshot.cn/anthropic/v1/models",
 		DefaultModel:   "kimi-latest",
+	},
+	{
+		Name:           "kimi-code",
+		Label:          "Kimi Code",
+		BaseURL:        "https://api.kimi.com/coding/",
+		ModelsEndpoint: "https://api.kimi.com/coding/v1/models",
+		DefaultModel:   "kimi-for-coding",
+		Effort:         "medium",
+		Note:           "Kimi Code Console API key; uses Kimi membership quota, not Kimi CLI OAuth or Moonshot Platform billing.",
 	},
 	{
 		Name:           "glm",
