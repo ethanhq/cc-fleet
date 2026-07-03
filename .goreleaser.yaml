@@ -29,7 +29,7 @@ archives:
       - tar.gz
     # Windows ships a .zip (goreleaser auto-appends .exe to the binary);
     # `formats` plural needs goreleaser >=2.6, which the release workflow's
-    # latest-v2 resolution satisfies.
+    # pinned goreleaser v2.16.0 satisfies.
     format_overrides:
       - goos: windows
         formats:
