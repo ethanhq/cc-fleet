@@ -128,3 +128,126 @@ func TestStatusForConfirmDelayRecoversLateEnvelope(t *testing.T) {
 		t.Errorf("recovered result = %q, want \"late answer\"", st.Result)
 	}
 }
+
+// A dead legacy (non-stream) json bg leaf whose .out exceeds the cap fails honestly, even when its
+// under-cap prefix is a VALID result envelope: an over-cap capture is parsed as vanished, never a
+// truncated prefix trusted as done (which would fabricate a result the run never authoritatively wrote).
+func TestStatusFor_OverCapLegacyOutFailsNotFabricated(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir, err := jobsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	statusConfirmDelay = 0
+	origCap := maxChildOutput
+	maxChildOutput = 4096
+	t.Cleanup(func() { maxChildOutput = origCap })
+
+	pid := deadPID(t)
+	m := jobMeta{JobID: "jobcap", PID: pid, PGID: pid, Status: "running", JSON: true, // legacy: Stream=false
+		SettingsPath: "/no/such/profile", Provider: "v", Model: "mm",
+		StartedAt: time.Now().UTC().Format(time.RFC3339)}
+	if err := writeMeta(dir, m); err != nil {
+		t.Fatal(err)
+	}
+	// A valid envelope under the cap, then whitespace past the cap, then garbage: a truncating read
+	// at the cap would strip to the clean envelope and fabricate done; the whole capture is over-cap.
+	envelope := `{"type":"result","subtype":"success","is_error":false,"result":"the answer","num_turns":1,"total_cost_usd":0.001}`
+	content := envelope + strings.Repeat(" ", maxChildOutput) + "GARBAGE-PAST-THE-CAP"
+	if err := os.WriteFile(filepath.Join(dir, "jobcap.out"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st := StatusFor("jobcap")
+	if st.Status != "failed" || st.OK || st.ErrorCode != ErrCodeFailed {
+		t.Fatalf("over-cap legacy .out must fail via failVanished, not fabricate done: %+v", st)
+	}
+	if st.Result == "the answer" {
+		t.Fatalf("fabricated a result from a truncated over-cap prefix: %q", st.Result)
+	}
+}
+
+// A dead stream-json bg leaf whose transcript has an oversized intermediate line before a success
+// result classifies done — the oversized line no longer halts the terminal extract into a failure.
+func TestStatusFor_OversizedStreamClassifiesDone(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir, err := jobsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	statusConfirmDelay = 0
+	origCap := maxChildOutput
+	maxChildOutput = 4096
+	t.Cleanup(func() { maxChildOutput = origCap })
+
+	pid := deadPID(t)
+	m := jobMeta{JobID: "jobov", PID: pid, PGID: pid, Status: "running", JSON: true, Stream: true,
+		SettingsPath: "/no/such/profile", Provider: "v", Model: "mm",
+		StartedAt: time.Now().UTC().Format(time.RFC3339)}
+	if err := writeMeta(dir, m); err != nil {
+		t.Fatal(err)
+	}
+	huge := `{"type":"user","message":{"content":"` + strings.Repeat("x", maxChildOutput*2) + `"}`
+	transcript := strings.Join([]string{
+		`{"type":"system","subtype":"init"}`,
+		huge,
+		`{"type":"result","subtype":"success","is_error":false,"result":"the answer","num_turns":1,"total_cost_usd":0.001}`,
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "jobov.out"), []byte(transcript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st := StatusFor("jobov")
+	if !st.OK || st.Status != "done" || st.Result != "the answer" {
+		t.Fatalf("oversized stream classify: %+v", st)
+	}
+	// The done result is cached (finalize-once).
+	cached, err := os.ReadFile(filepath.Join(dir, "jobov.result.json"))
+	if err != nil {
+		t.Fatalf("terminal result not cached: %v", err)
+	}
+	if !strings.Contains(string(cached), "the answer") {
+		t.Fatalf("cached result missing the answer: %s", cached)
+	}
+}
+
+// A dead stream-json bg leaf whose transcript has an oversized line and NO result line still fails
+// honestly via failVanished — the tolerant extract never fabricates a result.
+func TestStatusFor_ResultlessStreamStillFails(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	dir, err := jobsDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	statusConfirmDelay = 0
+	origCap := maxChildOutput
+	maxChildOutput = 4096
+	t.Cleanup(func() { maxChildOutput = origCap })
+
+	pid := deadPID(t)
+	m := jobMeta{JobID: "jobrl", PID: pid, PGID: pid, Status: "running", JSON: true, Stream: true,
+		SettingsPath: "/no/such/profile", Provider: "v", Model: "mm",
+		StartedAt: time.Now().UTC().Format(time.RFC3339)}
+	if err := writeMeta(dir, m); err != nil {
+		t.Fatal(err)
+	}
+	huge := `{"type":"user","message":{"content":"` + strings.Repeat("x", maxChildOutput*2) + `"}`
+	transcript := strings.Join([]string{
+		`{"type":"system","subtype":"init"}`,
+		huge,
+	}, "\n") + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "jobrl.out"), []byte(transcript), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st := StatusFor("jobrl")
+	if st.Status != "failed" || st.OK || st.ErrorCode != ErrCodeFailed {
+		t.Fatalf("resultless stream must fail via failVanished: %+v", st)
+	}
+}

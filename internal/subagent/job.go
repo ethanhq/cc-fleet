@@ -515,8 +515,8 @@ func StatusFor(jobID string) Result {
 		// A detached job has no live activity writer, so each poll scans its growing stream-json .out
 		// for the running token count, parsing ONLY the bytes appended since the last poll (tracked by
 		// the <jobID>.scan checkpoint) so the cost stays flat and the total is kept for the whole
-		// capture regardless of size. The terminal classify below reads the whole file for the exact
-		// count.
+		// capture regardless of size. The terminal classify below scans the whole capture for the
+		// exact count.
 		if meta.Stream {
 			res.Usage = scanLiveUsage(filepath.Join(dir, jobID+".out"), filepath.Join(dir, jobID+".scan"))
 		}
@@ -525,18 +525,23 @@ func StatusFor(jobID string) Result {
 
 	// Dead → classify the captured output. The detached child was Released, so we can't reap a real
 	// exit code; the terminal envelope is the only signal. This runs ONCE per job (the result is then
-	// cached), so it reads the whole .out: a stream-json transcript's type:"result" line carries the
-	// full answer and can sit anywhere, so the classify read must be complete — only the per-poll
-	// running scan above is incremental (best-effort live; the terminal must be exact).
+	// cached). A stream-json transcript's type:"result" line carries the full answer and can sit
+	// anywhere, so the terminal scan is COMPLETE — it reads to EOF — but streaming and bounded: it
+	// never buffers the capture whole. Only the per-poll running scan above is incremental
+	// (best-effort live; the terminal must be exact).
 	outPath := filepath.Join(dir, jobID+".out")
 	errPath := filepath.Join(dir, jobID+".err")
-	stdout, _ := os.ReadFile(outPath)
-	stderr, _ := os.ReadFile(errPath)
+	stderr := readCapped(errPath, stderrPreviewMax<<7) // stderr only feeds a short preview
 	innerJSON := meta.JSON || meta.OutputFormat == "json"
 	// A stream-json .out is multi-line NDJSON; classify wants the single type:"result" line, so
-	// distill it (the sync StreamActivity path does the same). A legacy json .out passes through.
+	// distill it, streaming so a runaway capture is never loaded whole (the sync StreamActivity
+	// path shares the same extractor). A legacy json .out is a single tiny envelope parsed whole, so
+	// an over-cap capture yields nil (classify as vanished) rather than a trusted truncated prefix.
+	var stdout []byte
 	if meta.Stream {
-		stdout = extractResultLine(stdout)
+		stdout = extractResultLineFile(outPath)
+	} else {
+		stdout = readWholeUnderCap(outPath, int64(maxChildOutput))
 	}
 	// A detached leaf can be seen dead a moment before its result write lands. When the result
 	// capture is empty, re-read once after a short delay before classifying, so a late write
@@ -545,12 +550,12 @@ func StatusFor(jobID string) Result {
 	// (reserved `claude`) job legitimately lacks. A non-empty result skips the wait.
 	if _, statErr := os.Stat(outPath); statErr == nil && innerJSON && strings.TrimSpace(string(stdout)) == "" {
 		time.Sleep(statusConfirmDelay)
-		stderr, _ = os.ReadFile(errPath)
-		raw, _ := os.ReadFile(outPath)
+		stderr = readCapped(errPath, stderrPreviewMax<<7)
 		if meta.Stream {
-			raw = extractResultLine(raw)
+			stdout = extractResultLineFile(outPath)
+		} else {
+			stdout = readWholeUnderCap(outPath, int64(maxChildOutput))
 		}
-		stdout = raw
 	}
 	var res Result
 	if vanishedWithoutResult(stdout, innerJSON) {
@@ -1079,6 +1084,43 @@ func writeMeta(dir string, m jobMeta) error {
 		return err
 	}
 	return os.WriteFile(metaPath(dir, m.JobID), data, 0o600)
+}
+
+// readCapped reads at most limit bytes of a job file, so a runaway capture can't OOM the terminal
+// classify. Best-effort: a missing/unreadable file yields nil, matching os.ReadFile's error handling.
+// It TRUNCATES silently, so use it only where a bounded prefix is acceptable (e.g. a stderr preview).
+func readCapped(path string, limit int64) []byte {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, limit))
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
+// readWholeUnderCap reads a job file only when it fits within limit bytes, returning nil when the
+// capture is larger. The legacy (non-stream) .out is parsed as an authoritative whole-input envelope
+// (parseInner rejects trailing garbage), so an over-cap capture must classify as vanished (honest)
+// rather than trust a truncated prefix that could parse clean and fabricate a done. Best-effort: a
+// missing/unreadable file yields nil, matching os.ReadFile's error handling.
+func readWholeUnderCap(path string, limit int64) []byte {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil
+	}
+	if int64(len(data)) > limit {
+		return nil // over-cap: don't trust a truncated prefix as a complete envelope
+	}
+	return data
 }
 
 func readMeta(dir, jobID string) (jobMeta, error) {

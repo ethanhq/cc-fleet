@@ -76,6 +76,110 @@ func TestExtractResultLine_StructuredOutputLift(t *testing.T) {
 	assertJSONEq(t, res.StructuredOutput, `{"answer":5}`)
 }
 
+// TestExtractResultLine_OversizedLinePrecedingResult: an intermediate line larger than the per-line
+// acceptance cap must not halt the scan — a successful run's terminal type:"result" line is still
+// found and parsed.
+func TestExtractResultLine_OversizedLinePrecedingResult(t *testing.T) {
+	orig := maxChildOutput
+	maxChildOutput = 4096
+	t.Cleanup(func() { maxChildOutput = orig })
+
+	huge := `{"type":"user","message":{"content":[{"type":"tool_result","content":"` +
+		strings.Repeat("x", maxChildOutput*2) + `"}]}}`
+	stream := strings.Join([]string{
+		`{"type":"system","subtype":"init"}`,
+		huge,
+		`{"type":"result","subtype":"success","is_error":false,"result":"the answer","total_cost_usd":0.01}`,
+		`{"type":"system","subtype":"hook_response"}`,
+	}, "\n") + "\n"
+	path := filepath.Join(t.TempDir(), "job.out")
+	if err := os.WriteFile(path, []byte(stream), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	line := extractResultLineFile(path)
+	var e innerEnvelope
+	if err := json.Unmarshal(line, &e); err != nil {
+		t.Fatalf("extracted line not parseable: %v (%q)", err, line)
+	}
+	if e.Type != "result" || e.Result != "the answer" {
+		t.Fatalf("oversized line halted the scan: %+v", e)
+	}
+}
+
+// TestExtractResultLine_OversizedLineIsLast: an oversized line as the last physical line with no
+// result anywhere yields empty — never a fabricated result (classify then fails honestly).
+func TestExtractResultLine_OversizedLineIsLast(t *testing.T) {
+	orig := maxChildOutput
+	maxChildOutput = 4096
+	t.Cleanup(func() { maxChildOutput = orig })
+
+	huge := `{"type":"user","message":{"content":"` + strings.Repeat("x", maxChildOutput*2) + `"}`
+	stream := strings.Join([]string{
+		`{"type":"system","subtype":"init"}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}`,
+		huge,
+	}, "\n") // no trailing newline: the oversized line is the final one
+	path := filepath.Join(t.TempDir(), "job.out")
+	if err := os.WriteFile(path, []byte(stream), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	if got := extractResultLineFile(path); len(got) != 0 {
+		t.Fatalf("resultless capture must yield empty, got %q", got)
+	}
+}
+
+// TestExtractResultLine_OversizedResultLineIsDiscarded: a type:"result" line that itself exceeds the
+// per-line acceptance cap is discarded like any oversized line, so the extract yields empty — an
+// over-cap result maps to no-result (classify then fails honestly), never a fabrication.
+func TestExtractResultLine_OversizedResultLineIsDiscarded(t *testing.T) {
+	orig := maxChildOutput
+	maxChildOutput = 4096
+	t.Cleanup(func() { maxChildOutput = orig })
+
+	hugeResult := `{"type":"result","subtype":"success","is_error":false,"result":"` +
+		strings.Repeat("x", maxChildOutput*2) + `"}`
+	stream := strings.Join([]string{
+		`{"type":"system","subtype":"init"}`,
+		`{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}`,
+		hugeResult,
+	}, "\n") + "\n"
+	path := filepath.Join(t.TempDir(), "job.out")
+	if err := os.WriteFile(path, []byte(stream), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	if got := extractResultLineFile(path); len(got) != 0 {
+		t.Fatalf("over-cap result line must be discarded (yield empty), got %q", got)
+	}
+}
+
+// TestExtractResultLine_MemoryBounded: several oversized lines totaling many multiples of the cap
+// still let the result line be found — the streaming reader never buffers a whole oversized body.
+func TestExtractResultLine_MemoryBounded(t *testing.T) {
+	orig := maxChildOutput
+	maxChildOutput = 4096
+	t.Cleanup(func() { maxChildOutput = orig })
+
+	big := strings.Repeat("x", maxChildOutput*3)
+	stream := strings.Join([]string{
+		`{"type":"user","message":{"content":"` + big + `"}`,
+		`{"type":"user","message":{"content":"` + big + `"}`,
+		`{"type":"result","subtype":"success","is_error":false,"result":"found it"}`,
+		`{"type":"user","message":{"content":"` + big + `"}`,
+	}, "\n") + "\n"
+	path := filepath.Join(t.TempDir(), "job.out")
+	if err := os.WriteFile(path, []byte(stream), 0o600); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+	line := extractResultLineFile(path)
+	var e innerEnvelope
+	if err := json.Unmarshal(line, &e); err != nil {
+		t.Fatalf("extracted line not parseable: %v (%q)", err, line)
+	}
+	if e.Type != "result" || e.Result != "found it" {
+		t.Fatalf("result not found among oversized lines: %+v", e)
+	}
+}
+
 // TestToolArgPreview: the primary arg value is extracted (known key first), key-masked, length-capped.
 func TestToolArgPreview(t *testing.T) {
 	cases := map[string]string{

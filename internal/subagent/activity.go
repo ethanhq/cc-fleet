@@ -489,15 +489,40 @@ func clampArg(s string) string {
 }
 
 // extractResultLine scans stream-json stdout for the single `type:"result"` envelope line and
+// returns it for classify. Thin wrapper over the streaming reader for the in-memory sync path.
+func extractResultLine(stdout []byte) []byte {
+	return extractResultLineReader(bytes.NewReader(stdout))
+}
+
+// extractResultLineFile scans a stream-json capture file for the terminal result line without
+// loading the whole capture, so a runaway background transcript can't OOM the classify.
+func extractResultLineFile(path string) []byte {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	return extractResultLineReader(f)
+}
+
+// extractResultLineReader scans NDJSON stream-json for the single `type:"result"` envelope line and
 // returns it for classify. The result line is NOT guaranteed to be last (a trailing SessionStart
 // hook_response can follow it), so we scan rather than take the tail; the LAST result line wins if
-// (defensively) more than one appears. An empty return makes classify fall back to SUBAGENT_FAILED.
-func extractResultLine(stdout []byte) []byte {
+// (defensively) more than one appears. Reading is line-by-line and streaming: a physical line over
+// maxChildOutput is drained and discarded without ever being fully buffered, so the scan neither
+// halts nor OOMs. A result line that itself exceeds the cap is discarded like any other oversized
+// line and maps to the honest no-result failure — the same terminal outcome as before this change
+// (practically unreachable: a result envelope is a compact model answer, orders of magnitude under
+// the cap). An empty return makes classify fall back to SUBAGENT_FAILED.
+func extractResultLineReader(r io.Reader) []byte {
 	var out []byte
-	sc := bufio.NewScanner(bytes.NewReader(stdout))
-	sc.Buffer(make([]byte, 0, 64*1024), maxChildOutput)
-	for sc.Scan() {
-		line := sc.Bytes()
+	br := bufio.NewReader(r)
+	var line []byte // accumulates one logical line across ReadSlice refills
+	oversized := false
+	keep := func() {
+		if oversized {
+			return
+		}
 		var head struct {
 			Type string `json:"type"`
 		}
@@ -505,5 +530,36 @@ func extractResultLine(stdout []byte) []byte {
 			out = append(out[:0], line...) // keep the latest result line
 		}
 	}
-	return out
+	for {
+		chunk, err := br.ReadSlice('\n')
+		if err == bufio.ErrBufferFull {
+			// Physical line longer than the reader buffer. Grow up to the acceptance cap, then
+			// discard the rest of the line without buffering it.
+			if !oversized {
+				if len(line)+len(chunk) > maxChildOutput {
+					oversized = true
+					line = line[:0]
+				} else {
+					line = append(line, chunk...)
+				}
+			}
+			continue
+		}
+		if len(chunk) > 0 {
+			if !oversized && len(line)+len(chunk) <= maxChildOutput {
+				line = append(line, chunk...)
+			} else {
+				oversized = true
+			}
+		}
+		if err == nil { // complete line (chunk includes the trailing '\n')
+			keep()
+			line = line[:0]
+			oversized = false
+			continue
+		}
+		// io.EOF (or a read error): a final line without a trailing newline is still complete.
+		keep()
+		return out
+	}
 }
