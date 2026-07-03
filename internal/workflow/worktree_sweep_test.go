@@ -52,14 +52,18 @@ func addWorktree(t *testing.T, repo, path string) {
 	}
 }
 
-// worktreeListed reports whether path appears in `git worktree list`.
+// worktreeListed reports whether path appears in `git worktree list`. BOTH the porcelain output and
+// the sought path are canonicalized (canonPath: macOS /private, Windows 8.3→long) and normalized
+// (normPath: forward slashes + case-fold on Windows). Folding only the sought side — as a naive
+// Contains(out, normPath(path)) does — misses on Windows, where porcelain reports mixed-case paths
+// (the production pathUnder already folds both sides, so this only fixes the test lookup).
 func worktreeListed(t *testing.T, repo, path string) bool {
 	t.Helper()
 	out, err := runGit(repo, "worktree", "list", "--porcelain")
 	if err != nil {
 		t.Fatalf("worktree list: %v %s", err, out)
 	}
-	return strings.Contains(out, normPath(path))
+	return strings.Contains(normPath(out), normPath(canonPath(path)))
 }
 
 // TestSweepRunWorktreesScoped: the Execute-time sweep applies one uniform rule — remove a
