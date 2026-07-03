@@ -24,6 +24,13 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
+      - uses: actions/setup-node@v4
+        if: runner.os == 'Linux'
+        with:
+          node-version: "20"
+      - name: test (npm postinstall verify)
+        if: runner.os == 'Linux'
+        run: node --test npm/install.test.js
       - name: gofmt
         if: runner.os != 'Windows'
         run: |

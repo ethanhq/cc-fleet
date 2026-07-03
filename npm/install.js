@@ -13,6 +13,47 @@ const { execFileSync } = require("child_process");
 const REPO = "ethanhq/cc-fleet";
 const version = require("./package.json").version;
 
+// Base64 Ed25519 PUBLIC key the release pipeline signs checksums.txt with. It mirrors
+// releaseSigningKeyB64 in internal/selfupdate/signing.go; signing-preflight.sh fails the
+// release unless the two literals (and the key derived from the signing secret) match.
+const RELEASE_SIGNING_KEY_B64 = "dAbMy8Omb0En+n0xZNGTjKsNHDdwBipwqy+jHXGpZjw=";
+
+// verifyChecksumsSig verifies a base64 Ed25519 detached signature (sigBuf) over the EXACT
+// bytes of checksums.txt (sumsBuf) against the embedded release public key. It is the trust
+// anchor checked before any sha256 is trusted, and fails closed on a malformed embedded key,
+// a malformed/wrong-length signature, or a verification mismatch — a mirror / redirect /
+// arbitrary CCF_BASE_URL cannot forge it.
+function verifyChecksumsSig(sumsBuf, sigBuf) {
+  const raw = Buffer.from(RELEASE_SIGNING_KEY_B64, "base64");
+  if (raw.length !== 32) {
+    throw new Error("release signing key unavailable (malformed embedded public key)");
+  }
+  // Wrap the raw 32-byte key in a DER SPKI header so createPublicKey accepts it.
+  const spki = Buffer.concat([
+    Buffer.from("302a300506032b6570032100", "hex"),
+    raw,
+  ]);
+  const key = crypto.createPublicKey({ key: spki, format: "der", type: "spki" });
+  // Trim only ASCII whitespace (String.trim strips U+FEFF/BOM, Go's strings.TrimSpace strips
+  // U+0085/NEL — they disagree at the edges); any exotic whitespace then survives into the
+  // canonical round-trip below and fails it, so this path is never more permissive than the
+  // Go verifier.
+  const trimmed = sigBuf.toString("utf8").replace(/^[\t\n\v\f\r ]+|[\t\n\v\f\r ]+$/g, "");
+  const sig = Buffer.from(trimmed, "base64");
+  if (sig.length !== 64) {
+    throw new Error(`signature is ${sig.length} bytes, want 64`);
+  }
+  // Buffer.from decodes base64 permissively (ignoring stray characters and missing padding);
+  // the Go verifier's base64.StdEncoding.DecodeString rejects both. Require a canonical
+  // round-trip so a corrupted .sig cannot pass here yet be rejected by `cc-fleet update`.
+  if (sig.toString("base64") !== trimmed) {
+    throw new Error("signature is not canonical base64");
+  }
+  if (!crypto.verify(null, sumsBuf, key, sig)) {
+    throw new Error("checksums.txt signature does not match the release key");
+  }
+}
+
 const PLATFORM = { linux: "linux", darwin: "darwin", win32: "windows" }[
   process.platform
 ];
@@ -33,10 +74,24 @@ const archive = WIN
   ? `cc-fleet-${PLATFORM}-${ARCH}.zip`
   : `cc-fleet-${PLATFORM}-${ARCH}.tar.gz`;
 const binName = WIN ? "cc-fleet.exe" : "cc-fleet";
-// CCF_BASE_URL overrides the asset base for a mirror or a local test.
-const base =
-  process.env.CCF_BASE_URL ||
-  `https://github.com/${REPO}/releases/download/v${version}`;
+// CCF_BASE_URL overrides the asset base for an https mirror or a local https test; a
+// non-https override is rejected so the source cannot be silently re-pointed at plaintext.
+const base = (() => {
+  const override = process.env.CCF_BASE_URL;
+  if (override) {
+    let u;
+    try {
+      u = new URL(override);
+    } catch {
+      throw new Error(`CCF_BASE_URL must be an https:// URL, got ${JSON.stringify(override)}`);
+    }
+    if (u.protocol !== "https:") {
+      throw new Error(`CCF_BASE_URL must be an https:// URL, got ${JSON.stringify(override)}`);
+    }
+    return override;
+  }
+  return `https://github.com/${REPO}/releases/download/v${version}`;
+})();
 
 // GET that follows redirects (GitHub release assets redirect to a CDN).
 function get(url, redirects = 0) {
@@ -72,10 +127,16 @@ async function main() {
   const binDir = path.join(__dirname, "bin");
   fs.mkdirSync(binDir, { recursive: true });
 
-  const [archiveBuf, sumsBuf] = await Promise.all([
+  const [archiveBuf, sumsBuf, sigBuf] = await Promise.all([
     get(`${base}/${archive}`),
     get(`${base}/checksums.txt`),
+    get(`${base}/checksums.txt.sig`),
   ]);
+
+  // Verify the release signature over checksums.txt against the embedded public key BEFORE
+  // trusting any sha256: the checksum is same-channel and only proves the archive matches a
+  // hash fetched from the same place; the signature is the trust anchor. Fail closed.
+  verifyChecksumsSig(sumsBuf, sigBuf);
 
   const expected = checksumFor(sumsBuf.toString("utf8"), archive);
   if (!expected) throw new Error(`no checksum for ${archive} in checksums.txt`);
@@ -113,7 +174,11 @@ async function main() {
   );
 }
 
-main().catch((err) => {
-  console.error(`cc-fleet: install failed: ${err.message}`);
-  process.exit(1);
-});
+if (require.main === module) {
+  main().catch((err) => {
+    console.error(`cc-fleet: install failed: ${err.message}`);
+    process.exit(1);
+  });
+}
+
+module.exports = { RELEASE_SIGNING_KEY_B64, verifyChecksumsSig, checksumFor };

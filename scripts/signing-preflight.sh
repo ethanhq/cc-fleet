@@ -13,6 +13,22 @@ if [ -z "$embedded" ]; then
   exit 1
 fi
 
+# The npm postinstall channel embeds the same key literal (RELEASE_SIGNING_KEY_B64 in
+# npm/install.js). Assert the two agree so a key rotation that misses install.js fails the
+# release. This half is secret-free — it runs before the derived-key check below.
+npm_embedded="$(sed -n 's/.*RELEASE_SIGNING_KEY_B64[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' npm/install.js | head -1)"
+if [ -z "$npm_embedded" ]; then
+  echo "signing-preflight: could not read RELEASE_SIGNING_KEY_B64 from npm/install.js" >&2
+  exit 1
+fi
+if [ "$embedded" != "$npm_embedded" ]; then
+  echo "signing-preflight: npm/install.js public key does not match internal/selfupdate/signing.go" >&2
+  echo "  signing.go:  $embedded" >&2
+  echo "  install.js:  $npm_embedded" >&2
+  echo "signing-preflight: update RELEASE_SIGNING_KEY_B64 in npm/install.js to the release key." >&2
+  exit 1
+fi
+
 # Derives the public key from $CCF_RELEASE_SIGNING_KEY; fails if the secret is unset/malformed.
 derived="$(go run ./tools/sign-checksums -pubkey)"
 
