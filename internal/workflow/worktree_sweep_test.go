@@ -69,7 +69,7 @@ func worktreeListed(t *testing.T, repo, path string) bool {
 func TestSweepRunWorktreesScoped(t *testing.T) {
 	repo := initSweepRepo(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	tempBase := filepath.Join(os.TempDir(), "cc-fleet-worktrees")
+	tempBase := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees") // match git porcelain (macOS /private, win long path)
 
 	const (
 		runDead        = "run-dead"
@@ -156,7 +156,7 @@ func TestSweepRunWorktreesNonGit(t *testing.T) {
 func TestSweepRunWorktreesMapGuard(t *testing.T) {
 	repo := initSweepRepo(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	tempBase := filepath.Join(os.TempDir(), "cc-fleet-worktrees")
+	tempBase := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees") // match git porcelain (macOS /private, win long path)
 	const liveID = "a-b"
 	t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(tempBase, liveID)) })
 
@@ -187,7 +187,7 @@ func TestSweepRunWorktreesMapGuard(t *testing.T) {
 func TestSweepOwnSegment(t *testing.T) {
 	repo := initSweepRepo(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	tempBase := filepath.Join(os.TempDir(), "cc-fleet-worktrees")
+	tempBase := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees") // match git porcelain (macOS /private, win long path)
 
 	t.Run("path-safe id reclaims its own segment", func(t *testing.T) {
 		const id = "own-seg"
@@ -229,7 +229,7 @@ func TestPurgeThenSweepReclaimsRegistration(t *testing.T) {
 	repo := initSweepRepo(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
-	tempBase := filepath.Join(os.TempDir(), "cc-fleet-worktrees")
+	tempBase := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees") // match git porcelain (macOS /private, win long path)
 
 	const id = "purge-reclaim" // path-safe
 	t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(tempBase, id)) })
@@ -304,7 +304,7 @@ func TestSweepEngineWiring(t *testing.T) {
 		if calls != 1 {
 			t.Fatalf("sweep called %d times, want 1", calls)
 		}
-		if normPath(gotRoot) != normPath(repo) {
+		if normPath(gotRoot) != normPath(canonPath(repo)) { // gitTopLevel canonicalizes; match it
 			t.Errorf("sweep root = %q, want repo %q", gotRoot, repo)
 		}
 	})
@@ -371,7 +371,7 @@ func TestResumeLauncherOwnSegmentSweep(t *testing.T) {
 			if gotRun != id {
 				t.Errorf("own sweep runID = %q, want %q", gotRun, id)
 			}
-			if normPath(gotRoot) != normPath(repo) {
+			if normPath(gotRoot) != normPath(canonPath(repo)) { // gitTopLevel canonicalizes; match it
 				t.Errorf("own sweep root = %q, want repo %q", gotRoot, repo)
 			}
 		})
@@ -542,7 +542,7 @@ func TestBlindStoppedForegroundChainWorktreeSurvives(t *testing.T) {
 	repo := initSweepRepo(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
-	tempBase := filepath.Join(os.TempDir(), "cc-fleet-worktrees")
+	tempBase := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees") // match git porcelain (macOS /private, win long path)
 
 	const id = "chain-fg"
 	t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(tempBase, id)) })

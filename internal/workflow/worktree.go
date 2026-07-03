@@ -95,7 +95,7 @@ func sweepRunWorktrees(root string) {
 	if err != nil {
 		return
 	}
-	globalPrefix := filepath.Join(os.TempDir(), "cc-fleet-worktrees") + string(os.PathSeparator)
+	globalPrefix := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees") + string(os.PathSeparator)
 	deadBySegment := map[string]bool{}
 	if runs, lerr := subagent.ListRuns(); lerr == nil {
 		for _, r := range runs {
@@ -134,7 +134,7 @@ func sweepOwnSegment(root, runID string) {
 	if sanitizeRunID(runID) != runID {
 		return // non-path-safe: the segment is shared with colliding ids — never reclaim it
 	}
-	segDir := filepath.Join(os.TempDir(), "cc-fleet-worktrees", runID)
+	segDir := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees", runID)
 	if out, err := runGit(root, "worktree", "list", "--porcelain"); err == nil {
 		segPrefix := segDir + string(os.PathSeparator)
 		for _, line := range strings.Split(out, "\n") {
@@ -174,13 +174,15 @@ func normPath(p string) string {
 }
 
 // gitTopLevel returns the repo root containing dir, or a clear error when dir is not in a
-// git repository (worktree isolation requires one).
+// git repository (worktree isolation requires one). The path is canonicalized (canonPath) so the
+// stored root matches the canonical form git porcelain uses — idempotent, since `rev-parse
+// --show-toplevel` already resolves symlinks / 8.3 short names, but explicit and platform-uniform.
 func gitTopLevel(dir string) (string, error) {
 	out, err := runGit(dir, "rev-parse", "--show-toplevel")
 	if err != nil {
 		return "", fmt.Errorf("isolation='worktree' requires a git repository (cwd is not one): %v", err)
 	}
-	return strings.TrimSpace(out), nil
+	return canonPath(strings.TrimSpace(out)), nil
 }
 
 // runGit runs a git command in dir with a cred-scrubbed env and returns combined output.
