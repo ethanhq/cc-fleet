@@ -1195,7 +1195,11 @@ func readWholeUnderCap(path string, limit int64) []byte {
 
 func readMeta(dir, jobID string) (jobMeta, error) {
 	var m jobMeta
-	data, err := os.ReadFile(metaPath(dir, jobID))
+	// readFileRetry, not os.ReadFile: writeMeta renames the meta into place (AtomicWrite), so on
+	// windows a concurrent reader can hit a transient ERROR_SHARING_VIOLATION for the instant the
+	// replace holds the target. The retry absorbs only that window; a real read/parse error still
+	// surfaces. No-op on unix (rename never yields it).
+	data, err := readFileRetry(metaPath(dir, jobID))
 	if err != nil {
 		return m, err
 	}
