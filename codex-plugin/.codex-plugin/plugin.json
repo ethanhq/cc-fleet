@@ -1,6 +1,6 @@
 {
   "name": "cc-fleet",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "description": "Fan out provider LLM subagents and multi-phase JS workflows from Codex via the cc-fleet CLI — DeepSeek / GLM / Kimi / Qwen / MiniMax, or your Codex/Claude subscription. Each worker receives its credential on demand, never through its env or argv. Requires the cc-fleet and claude binaries on PATH (installed separately).",
   "author": {
     "name": "Ethan Guo",
