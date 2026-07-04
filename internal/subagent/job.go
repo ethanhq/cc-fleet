@@ -787,8 +787,11 @@ func gcRunManifests(jobsDir string, cutoff time.Time, pins pinned.Set) {
 		}
 		// No surviving member. Keep only a manifest that PROVES it is still recent
 		// (a fresh, not-yet-populated run); an unreadable/unparseable manifest can't
-		// prove recency → treated as an aged orphan and removed below.
-		if data, rerr := os.ReadFile(filepath.Join(dir, name)); rerr == nil {
+		// prove recency → treated as an aged orphan and removed below. readFileRetry
+		// absorbs a transient Windows sharing violation so a fresh/resuming run isn't
+		// misread as unprovable; a persistent read error still falls through to PurgeRun,
+		// which then fails closed (deletes nothing) rather than reap under a live engine.
+		if data, rerr := readFileRetry(filepath.Join(dir, name)); rerr == nil {
 			var run WorkflowRun
 			if json.Unmarshal(data, &run) == nil {
 				if runIsRecent(run, cutoff) {

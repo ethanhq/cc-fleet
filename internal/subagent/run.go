@@ -251,6 +251,13 @@ func RunScriptPath(runID string) (string, error) { return runSidecarPath(runID, 
 // error instead of a JS parse failure.
 func LegacyRunScriptPath(runID string) (string, error) { return runSidecarPath(runID, ".star") }
 
+// errRunManifestUnreadable tags a non-ErrNotExist FAILURE TO READ a run manifest (a genuine I/O
+// fault, or a Windows sharing violation the read retry couldn't outlast) — distinct from a
+// genuinely-absent manifest (os.ErrNotExist) and from one read fine but corrupt (a JSON parse error).
+// Destructive/liveness callers fail CLOSED on it: a transient read failure must never be mistaken for
+// engine death and let them delete/finalize under a live run.
+var errRunManifestUnreadable = errors.New("subagent: run manifest unreadable")
+
 // ReadRun loads a manifest by id. runID is validated first because it becomes a
 // filesystem path component (guards against a "../" escape via the CLI/status path).
 func ReadRun(runID string) (WorkflowRun, error) {
@@ -261,15 +268,22 @@ func ReadRun(runID string) (WorkflowRun, error) {
 	if err != nil {
 		return WorkflowRun{}, err
 	}
-	data, err := os.ReadFile(filepath.Join(dir, runID+".json"))
+	// readFileRetry, not os.ReadFile: SaveRun renames the manifest into place (AtomicWrite), so on
+	// windows a concurrent reader can hit a transient ERROR_SHARING_VIOLATION for the instant the
+	// replace holds the target. The retry absorbs only that window; a persistent failure still surfaces.
+	data, err := readFileRetry(filepath.Join(dir, runID+".json"))
 	if err != nil {
-		// Canonical, path-free "not found" so an unknown-run id doesn't leak the
-		// config-dir layout into the CLI's JSON error envelope (a genuine I/O fault
-		// keeps its context for debugging).
 		if errors.Is(err, os.ErrNotExist) {
-			return WorkflowRun{}, fmt.Errorf("run %q not found", runID)
+			// Canonical, path-free "not found" so an unknown-run id doesn't leak the config-dir layout
+			// into the CLI's JSON error envelope. Wraps os.ErrNotExist so a destructive/liveness caller
+			// can tell a genuinely-absent manifest (safe to treat as gone) from an unreadable one.
+			return WorkflowRun{}, fmt.Errorf("run %q not found: %w", runID, os.ErrNotExist)
 		}
-		return WorkflowRun{}, err
+		// A non-ErrNotExist read failure — a genuine I/O fault, or a Windows sharing violation the retry
+		// couldn't outlast. Tag it errRunManifestUnreadable (keeping the raw context) so PurgeRun /
+		// WaitEngineStopped fail CLOSED rather than mistake a transient read for engine death. A manifest
+		// read fine but corrupt is NOT this class — it surfaces below as a parse error (deletable junk).
+		return WorkflowRun{}, fmt.Errorf("%w: run %q: %w", errRunManifestUnreadable, runID, err)
 	}
 	var run WorkflowRun
 	if err := json.Unmarshal(data, &run); err != nil {
@@ -299,7 +313,10 @@ func ListRuns() ([]WorkflowRun, error) {
 		if e.IsDir() || !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		data, rerr := os.ReadFile(filepath.Join(dir, name))
+		// readFileRetry absorbs a transient Windows sharing violation so a LIVE run isn't dropped from
+		// the listing mid-write; a persistent read/parse error still skips that manifest. Skipping is
+		// fail-safe for the reclaim/prune consumers — a run that can't be listed is never reclaimed.
+		data, rerr := readFileRetry(filepath.Join(dir, name))
 		if rerr != nil {
 			continue
 		}
@@ -792,7 +809,15 @@ func PurgeRun(runID string) error {
 	if err := ids.ValidateJobID(runID); err != nil {
 		return err
 	}
-	if run, rerr := ReadRun(runID); rerr == nil {
+	run, rerr := ReadRun(runID)
+	if errors.Is(rerr, errRunManifestUnreadable) {
+		// The manifest exists but its read failed transiently/IO — we can tell neither a live engine
+		// from a gone one. Fail closed: delete nothing, so a transient Windows sharing violation can
+		// never drop a live run's record/jobs/worktrees. ErrNotExist (genuinely gone) and a parse error
+		// (corrupt junk) both fall through to the removal below — the accumulated junk this clears.
+		return rerr
+	}
+	if rerr == nil {
 		if run.EnginePID > 0 {
 			switch ClassifyDetachedEngine(run) {
 			case DetachedLive:
@@ -988,15 +1013,22 @@ func isLiveOrUnverifiable(run WorkflowRun) bool {
 }
 
 // WaitEngineStopped polls a run's engine liveness until it is gone or the deadline passes (true once
-// EngineAlive is false / the manifest is unreadable, false on timeout). EngineAlive fails SOFT (an
-// alive-but-UNVERIFIABLE pid — argv + token unreadable — reads as alive), so a stuck poll times out into
-// the caller's fail-closed path rather than declaring death and touching files under a still-live engine.
-// Shared by StopRun's reap, PurgeRun (delete), and workflow.Restart.
+// EngineAlive is false / the manifest is genuinely absent, false on timeout). Only os.ErrNotExist —
+// the manifest deleted out from under us — counts as stopped; a transient/other read error (a Windows
+// sharing violation, an I/O fault, a corrupt manifest) does NOT, so a read that can't confirm death
+// times out into the caller's fail-closed path rather than declaring the engine gone. EngineAlive
+// itself also fails SOFT (an alive-but-UNVERIFIABLE pid reads as alive). Shared by StopRun's reap,
+// PurgeRun (delete), and workflow.Restart.
 func WaitEngineStopped(runID string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for {
 		run, err := ReadRun(runID)
-		if err != nil || !EngineAlive(run) {
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return true // the manifest is genuinely gone → engine stopped
+			}
+			// A read we can't trust (transient/IO/corrupt): keep polling; don't declare death.
+		} else if !EngineAlive(run) {
 			return true
 		}
 		if time.Now().After(deadline) {
