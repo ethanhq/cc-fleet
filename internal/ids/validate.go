@@ -12,6 +12,20 @@ import (
 	"strings"
 )
 
+// WorktreeSegment maps a run id to a single path-safe segment for the isolation-worktree temp root,
+// collapsing the path separators and the worktree-root-remapping characters ('/' '\' '.' ':') to '-'.
+// It is NON-injective — ids "a.b", "a:b", and "a-b" all yield segment "a-b" — so one segment can be
+// co-owned by several run ids; a caller reclaiming a segment by identity must treat it as path-safe
+// only when it equals its own id (WorktreeSegment(id) == id).
+func WorktreeSegment(id string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r == '.' || r == ':' {
+			return '-'
+		}
+		return r
+	}, id)
+}
+
 // ErrInvalidTeamName is returned by ValidateTeamName for any input that fails
 // the path-safety rules. Use errors.Is for dispatch.
 var ErrInvalidTeamName = errors.New("invalid team name")

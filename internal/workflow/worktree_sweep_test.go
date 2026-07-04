@@ -154,9 +154,9 @@ func TestSweepRunWorktreesNonGit(t *testing.T) {
 	sweepRunWorktrees(t.TempDir())
 }
 
-// TestSweepRunWorktreesMapGuard: sanitizeRunID collapses '.'/':'/separators to '-', so ids
-// "a.b"/"a:b"/"a-b" share segment "a-b". Only PATH-SAFE ids populate deadBySegment, so a DEAD
-// non-path-safe twin can't last-writer-wins the segment and condemn a live run that maps to it.
+// TestSweepRunWorktreesMapGuard: ids.WorktreeSegment collapses '.'/':'/separators to '-', so ids
+// "a.b"/"a:b"/"a-b" share segment "a-b". The segment verdict reclaims only under a PATH-SAFE
+// dead+leaf-free owner, so a DEAD non-path-safe twin can't provoke reclaiming a live run that maps to it.
 func TestSweepRunWorktreesMapGuard(t *testing.T) {
 	repo := initSweepRepo(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -196,6 +196,11 @@ func TestSweepOwnSegment(t *testing.T) {
 	t.Run("path-safe id reclaims its own segment", func(t *testing.T) {
 		const id = "own-seg"
 		t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(tempBase, id)) })
+		// The launcher calls sweepOwnSegment only after confirming the prior run provably dead; the
+		// verdict now requires that KNOWN dead+leaf-free owner (fail-closed on a missing entry).
+		if err := subagent.SaveRun(subagent.WorkflowRun{RunID: id, StartedAt: "2026-01-01T00:00:00Z", Status: "stopped", EnginePID: 0x7ffffffe}); err != nil {
+			t.Fatal(err)
+		}
 		wt := filepath.Join(tempBase, id, "wt")
 		addWorktree(t, repo, wt)
 
@@ -506,9 +511,11 @@ await agent("x", {provider: "v"});
 	if leafKey == "" {
 		t.Fatal("precondition: expected a member leaf with a journal key")
 	}
-	// Force the completed run into the ambiguous {stopped,0} state, leaving its journal + member jobs.
+	// Force the completed run into the ambiguous OLD-record {stopped, 0, no fg identity} state — the
+	// pre-field transition shape (clear the fg fields the real run just stamped) → FgUnknown → refused.
 	run, _ := subagent.ReadRun(id)
 	run.Status, run.EnginePID = "stopped", 0
+	run.FgEnginePID, run.FgEngineProcStart = 0, ""
 	if err := subagent.SaveRun(run); err != nil {
 		t.Fatal(err)
 	}
@@ -681,8 +688,9 @@ func TestResumeForegroundSerializesAgainstHeldLock(t *testing.T) {
 	t.Cleanup(func() { sweepOwnSegmentFn = oldOwn; sweepRunWorktreesFn = oldAll })
 
 	t.Chdir(repo)
-	// A detached-lane holder of the per-run lock that wins the preflight: it flips the run "running"
-	// before releasing, mirroring what a detached resume does under the CLI/Restart lock.
+	// A holder of the per-run lock that wins the preflight: it flips the run to a running state with no
+	// verifiable engine identity ({running, 0, no fg} → FgUnknown) before releasing, mirroring a winner
+	// whose fg identity is not yet re-stamped. The loser must block on the lock, then be refused.
 	holding, release := make(chan struct{}), make(chan struct{})
 	go func() {
 		_ = subagent.WithRunLock(id, func() error {
@@ -690,6 +698,7 @@ func TestResumeForegroundSerializesAgainstHeldLock(t *testing.T) {
 			<-release
 			r, _ := subagent.ReadRun(id)
 			r.Status, r.EnginePID = "running", 0
+			r.FgEnginePID, r.FgEngineProcStart = 0, ""
 			return subagent.SaveRun(r)
 		})
 	}()
@@ -705,7 +714,7 @@ func TestResumeForegroundSerializesAgainstHeldLock(t *testing.T) {
 	close(release)
 
 	err := <-done
-	if err == nil || !strings.Contains(err.Error(), "already has a live engine") {
+	if err == nil || !strings.Contains(err.Error(), "foreground") {
 		t.Errorf("foreground resume must be refused after the holder flipped the run to running, got %v", err)
 	}
 	if sweeps != 0 {

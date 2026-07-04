@@ -191,6 +191,8 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 		persistIO:          !opts.NoPersistIO, // the board's inline prompt/answer detail is default-on
 		enginePID:          detachedEnginePID(opts),
 		engineProcStart:    detachedEngineProcStart(opts),
+		fgEnginePID:        fgEnginePID(opts),
+		fgEngineProcStart:  fgEngineProcStart(opts),
 		metaModel:          meta.Model, // default model for agents that omit model
 		whenToUse:          meta.WhenToUse,
 		budgetTotal:        opts.BudgetUSD,
@@ -235,10 +237,16 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 	if ctlErr == nil {
 		_ = os.Remove(ctlPath)
 	}
-	// Stamp the manifest once up front: records EnginePID (so `workflow stop` can reap
-	// this process), flips a resumed run to "running", and refreshes UpdatedAt from the
-	// start (GC recency) — before the first leaf, closing the mint→first-leaf window.
-	eng.saveManifest("running", "")
+	// Stamp the manifest once up front: records EnginePID (so `workflow stop` can reap this process),
+	// flips a resumed run to "running", and refreshes UpdatedAt from the start (GC recency) — before the
+	// first leaf, closing the mint→first-leaf window. FATAL: if this identity stamp cannot persist, the
+	// engine must not run — it returns BEFORE the startup sweep and any leaf/worktree work. This upholds
+	// the launcher's invariant that a manifest still reading EnginePID 0 means the child created NO
+	// worktrees (finalizeFailedDetach relies on it): a best-effort stamp that silently failed would let
+	// the child sweep + create worktrees under an EnginePID-0 manifest, stranding them on a later abort.
+	if serr := eng.saveManifest("running", ""); serr != nil {
+		return fmt.Errorf("workflow: record engine identity for run %s: %w", runID, serr)
+	}
 	if ctlErr == nil {
 		eng.startCtlPoller(ctlPath)
 	}
@@ -264,7 +272,7 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 		case err != nil:
 			status, errText = "failed", err.Error()
 		}
-		eng.saveManifest(status, errText)
+		_ = eng.saveManifest(status, errText)
 	}()
 
 	_, execErr := eng.run(scriptPath, normalized, opts)
@@ -287,6 +295,32 @@ func detachedEnginePID(opts Options) int {
 // (Windows). Empty for a foreground run or when the platform can't read it.
 func detachedEngineProcStart(opts Options) string {
 	if opts.RunID == "" {
+		return ""
+	}
+	start, _ := procintrospect.ProcStart(os.Getpid())
+	return start
+}
+
+// fgEnginePID is os.Getpid() for a FOREGROUND engine (the inline `workflow run --foreground` path,
+// opts.RunID empty) and 0 for the detached child. It is the inverse of detachedEnginePID: recorded as
+// liveness EVIDENCE separate from EnginePID (which stays 0 for foreground), so a resumer can tell a
+// dead foreground run from a live one WITHOUT letting `workflow stop` claim a kill on a terminal-
+// attached process.
+func fgEnginePID(opts Options) int {
+	if opts.RunID == "" {
+		return os.Getpid()
+	}
+	return 0
+}
+
+// fgEngineProcStart is the FOREGROUND engine's own start token, stamped next to fgEnginePID as its
+// liveness identity. Empty for the detached child or when the platform can't read it — and an empty
+// token is deliberately still stamped alongside the (always-recorded) pid: a recorded pid without a
+// token proves more than nothing (it degrades the fg evidence to FgUnknown, which the reclaim guards
+// refuse rather than delete under a possibly-live engine — it names the process to wait out), whereas
+// skipping the stamp would collapse to the legacy proof-less shape those guards treat as deletable.
+func fgEngineProcStart(opts Options) string {
+	if opts.RunID != "" {
 		return ""
 	}
 	start, _ := procintrospect.ProcStart(os.Getpid())
@@ -393,6 +427,11 @@ func resolveRunDefault() (provider, errCode string) {
 	return name, ""
 }
 
+// executeFn is a seam for Launch's FOREGROUND inline run so a test can drive the resume preflight
+// (which stamps the launcher's own fg identity) and observe the manifest WITHOUT running the engine —
+// production is Execute.
+var executeFn = Execute
+
 func Launch(ctx context.Context, scriptPath string, opts Options, foreground bool) (string, error) {
 	abs, err := filepath.Abs(scriptPath)
 	if err != nil {
@@ -404,6 +443,7 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 	// Resume reuses an existing run id (validated + confirmed to exist) so the engine
 	// replays its journal; a fresh run mints a new manifest from the script's meta.
 	var run subagent.WorkflowRun
+	var priorRecord *subagent.WorkflowRun // resume only: the pre-rewrite snapshot, to restore its death proof if the detached launch fails
 	if opts.Resume != "" {
 		if verr := subagent.ValidateRunID(opts.Resume); verr != nil {
 			return "", fmt.Errorf("workflow: invalid resume id: %w", verr)
@@ -425,6 +465,8 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 				return fmt.Errorf("workflow: cannot resume: %w", rerr)
 			}
 			run = existing
+			snap := existing // the PRIOR record (its death proof), before the rewrite below erases it
+			priorRecord = &snap
 			// Inherit the recorded default-resolution (do NOT re-resolve — a mid-run change of
 			// default_provider must never re-key an omitted-provider leaf). A PRE-feature manifest
 			// carries neither field; resolve+stamp once here so a provider-less script resumed on an
@@ -432,17 +474,17 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 			if run.DefaultProvider == "" && run.DefaultProviderError == "" {
 				run.DefaultProvider, run.DefaultProviderError = resolveRunDefault()
 			}
-			// One engine per run: refuse to resume a run that still has a LIVE engine — a verifiably-live
-			// detached one, or a foreground/unreapable run (EnginePID<=0) still claiming to run. The board
-			// Restart path stops the old engine first; a crashed/killed detached run (recorded pid now
+			// One engine per run: refuse to resume a run with a verifiably-live DETACHED engine (a second
+			// engine would run on one journal). A foreground/unreapable run (EnginePID<=0) is decided by
+			// resumeBlockedReason below from its recorded fg identity; a crashed detached run (pid now
 			// dead) falls through and resumes as-is. Under the lock this also rejects a SECOND resumer:
-			// the winner has already flipped the manifest to running. (Mirrors restart.go's fail-closed
-			// liveness check.)
-			if run.Status == "running" && (subagent.EngineAlive(run) || run.EnginePID <= 0) {
+			// the winner flipped the manifest to running (fg identity cleared → FgUnknown → refused).
+			if run.Status == "running" && subagent.EngineAlive(run) {
 				return fmt.Errorf("workflow: run %s already has a live engine; stop it first", opts.Resume)
 			}
-			// Refuse the ambiguous {stopped, EnginePID 0} state (a live blind-stopped foreground engine is
-			// indistinguishable from a dead Ctrl-C'd one) — resumeBlockedReason carries the full rationale.
+			// Vet the FOREGROUND cases (EnginePID<=0): a provably-dead fg engine (Ctrl-C'd/crashed) is
+			// resumable; a live one is refused; an absent/unverifiable identity keeps the conservative
+			// refusal — resumeBlockedReason carries the full rationale (shared with restart).
 			if reason := resumeBlockedReason(run); reason != nil {
 				return reason
 			}
@@ -489,6 +531,17 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 			run.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
 			run.EnginePID = 0 // clear the prior engine's pid; the new child re-stamps, and WaitEngineStarted waits for exactly that
 			run.EngineProcStart = ""
+			// On the FOREGROUND lane the launcher IS the engine process, so stamp its OWN fg identity in
+			// this same save: a crash before Execute's first save then still leaves a proof-bearing record
+			// (FgAlive now, FgDead once this pid exits), never a proof-less {running,0,no-fg} that resume
+			// would refuse forever. On the DETACHED lane the child stamps EnginePID, so clear the fg fields.
+			if foreground {
+				run.FgEnginePID = os.Getpid()
+				run.FgEngineProcStart, _ = procintrospect.ProcStart(os.Getpid())
+			} else {
+				run.FgEnginePID = 0
+				run.FgEngineProcStart = ""
+			}
 			if serr := subagent.SaveRun(run); serr != nil {
 				return fmt.Errorf("workflow: stamp resume liveness: %w", serr)
 			}
@@ -540,12 +593,11 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 		}
 	}
 	if foreground {
-		return run.RunID, Execute(ctx, abs, run.RunID, opts)
+		return run.RunID, executeFn(ctx, abs, run.RunID, opts)
 	}
-	pid, reaper, lerr := launchDetached(abs, run.RunID, opts)
+	pid, reaper, lerr := launchDetachedFn(abs, run.RunID, opts)
 	if lerr != nil {
-		run.Status = "failed"
-		_ = subagent.SaveRun(run)
+		finalizeFailedDetach(run.RunID, run, priorRecord, "")
 		return "", lerr
 	}
 	if !WaitEngineStarted(run.RunID, pid) {
@@ -554,8 +606,7 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 		// overwrite the failed manifest and run on as a second engine.
 		reaper.kill()
 		_ = reaper.wait()
-		run.Status, run.Error, run.EnginePID = "failed", "workflow: engine did not register within the startup budget", 0
-		_ = subagent.SaveRun(run)
+		finalizeFailedDetach(run.RunID, run, priorRecord, "workflow: engine did not register within the startup budget")
 		return "", fmt.Errorf("workflow: engine failed to start")
 	}
 	// Registered: reap the child asynchronously so it never lingers as a zombie under a
@@ -563,6 +614,41 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 	// goroutine completes; init then adopts and reaps the orphan.
 	go func() { _ = reaper.wait() }()
 	return run.RunID, nil
+}
+
+// launchDetachedFn is a seam so a test can fail the detached spawn without a real re-exec — production
+// is launchDetached.
+var launchDetachedFn = launchDetached
+
+// finalizeFailedDetach writes the manifest after a FAILED detached launch/resume without destroying a
+// death proof. Runs under the caller's per-run lock (the detached lane holds it across launchDetached +
+// WaitEngineStarted), re-reading the manifest to decide:
+//   - the child self-STAMPED its pid (EnginePID != 0): it may have created isolation worktrees (those
+//     follow the stamp) and its pid is the death evidence; the caller already killed+reaped it, so cur
+//     reads a DEAD detached pid → provably dead / reclaimable. Mark it failed KEEPING that pid.
+//   - else this was a RESUME (prior != nil): the child never stamped, so it created NO worktrees — the
+//     failed attempt must NOT erase the prior death proof (a {failed,0,no-fg} record reads
+//     not-provably-dead, stranding the run's leaked worktrees forever). Restore the PRIOR record.
+//   - else a FRESH launch (or an unreadable manifest): mark the minted run failed.
+func finalizeFailedDetach(runID string, minted subagent.WorkflowRun, prior *subagent.WorkflowRun, failMsg string) {
+	if cur, rerr := subagent.ReadRun(runID); rerr == nil && cur.EnginePID != 0 {
+		cur.Status = "failed"
+		if failMsg != "" {
+			cur.Error = failMsg
+		}
+		_ = subagent.SaveRun(cur)
+		return
+	}
+	if prior != nil {
+		_ = subagent.SaveRun(*prior)
+		return
+	}
+	minted.Status = "failed"
+	if failMsg != "" {
+		minted.Error = failMsg
+	}
+	minted.EnginePID = 0
+	_ = subagent.SaveRun(minted)
 }
 
 // engineStartupBudget bounds how long a launcher waits — under the per-run execution lock —

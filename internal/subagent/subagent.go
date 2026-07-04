@@ -376,7 +376,9 @@ func Run(parent context.Context, req Request) Result {
 	registered := reg == registerOK
 	var res Result
 	if registered {
-		defer func() { finalizeSyncJob(jobID, res) }()
+		// The REAPED finalize: this deferred call runs only after runClaude returns, so the child is
+		// provably reaped (or cmd.Start never launched one) — the evidence that clears a false-pending stamp.
+		defer func() { finalizeSyncJobReaped(jobID, res) }()
 	} else if slim.promptFile != "" {
 		defer func() { _ = os.Remove(slim.promptFile) }()
 	}
@@ -397,7 +399,16 @@ func Run(parent context.Context, req Request) Result {
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-	stdout, stderr, exitCode, runErr := runClaude(ctx, fp.BinaryPath, argv, env, req.PromptReader, req.WorkingDir, act)
+	// Record the sync leaf's claude CHILD identity once it starts — meta.PID is the engine (a proxy a
+	// SIGKILL breaks), so the worktree reclaimers need the child's own pid+token to tell a live orphan
+	// from a dead leaf. Capture THIS spawn's attempt so a late write can't stamp a restarted row (the
+	// attempt guard). Only for a registered job (a held/failed registration has no meta to update).
+	var onStart func(int)
+	if registered && jobID != "" {
+		attempt := req.Attempt
+		onStart = func(childPID int) { recordChildIdentity(jobID, childPID, attempt) }
+	}
+	stdout, stderr, exitCode, runErr := runClaude(ctx, fp.BinaryPath, argv, env, req.PromptReader, req.WorkingDir, act, onStart)
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	dg.Logf("subagent: claude exited code %d (timeout=%v)", exitCode, timedOut)
 
@@ -538,7 +549,7 @@ type slimArgv struct {
 // standalone func so tests can drive it with a fake binary. It never streams to
 // the parent's stdio: stdout/stderr are captured to byte-capped buffers, and a
 // stream that overflows maxChildOutput kills the group and returns errOutputTooLarge.
-func runClaude(ctx context.Context, binaryPath string, argv, env []string, stdin io.Reader, workingDir string, act *activityWriter) (stdout, stderr []byte, exitCode int, err error) {
+func runClaude(ctx context.Context, binaryPath string, argv, env []string, stdin io.Reader, workingDir string, act *activityWriter, onStart func(childPID int)) (stdout, stderr []byte, exitCode int, err error) {
 	cmd := exec.CommandContext(ctx, binaryPath)
 	cmd.Args = argv // argv[0] == binaryPath by construction
 	cmd.Env = env
@@ -608,6 +619,9 @@ func runClaude(ctx context.Context, binaryPath string, argv, env []string, stdin
 	// the old cmd.Run() error path: exitCode -1, no escalation, empty captures.
 	if err = cmd.Start(); err == nil {
 		pg.afterStart(cmd)
+		if onStart != nil {
+			onStart(cmd.Process.Pid) // record the CHILD identity (sync leaf's orphan-liveness evidence)
+		}
 		err = cmd.Wait()
 	}
 

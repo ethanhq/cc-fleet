@@ -19,6 +19,7 @@ import (
 
 	"github.com/ethanhq/cc-fleet/internal/childenv"
 	"github.com/ethanhq/cc-fleet/internal/config"
+	"github.com/ethanhq/cc-fleet/internal/fileutil"
 	"github.com/ethanhq/cc-fleet/internal/ids"
 	"github.com/ethanhq/cc-fleet/internal/pinned"
 	"github.com/ethanhq/cc-fleet/internal/procintrospect"
@@ -71,6 +72,24 @@ type jobMeta struct {
 	// carries a new start time, so equality proves identity. Empty (legacy meta /
 	// capture failure) degrades to the bare liveness check.
 	ProcStart string `json:"proc_start,omitempty"`
+	// ChildPID / ChildProcStart identify a SYNC leaf's `claude -p` CHILD (its own pid + kernel start
+	// token, captured right after Start) — the piece meta.PID does NOT carry, since a sync job's PID is
+	// the ENGINE, whose liveness only "proxies" the leaf (a proxy a bare SIGKILL breaks: the child, in
+	// its own process group with cwd = the isolation worktree, outlives it). The worktree reclaimers
+	// read them to tell a live orphaned leaf from a dead one — identity OUTRANKS any cached result,
+	// because after the engine dies StatusFor synthesizes a terminal (failVanished) for a still-live
+	// orphan. A background job leaves them zero (its PID already IS the child); an old sync meta too.
+	ChildPID       int    `json:"child_pid,omitempty"`
+	ChildProcStart string `json:"child_proc_start,omitempty"`
+	// ChildIdentityPending marks a SYNC member (RunID != "") registered but not yet past the
+	// cmd.Start→recordChildIdentity window: ChildPID is not stamped yet, but a crash in that ~ms window
+	// leaves a LIVE orphan whose identity was never recorded. It is the discriminator that lets automated
+	// cleanup (GC/PurgeJobs) keep such a meta as veto evidence WITHOUT keeping every identity-less legacy
+	// meta (which lacks this field → false, preserving the GC contract for pre-change jobs). recordChildIdentity clears
+	// it in the same write that stamps ChildPID; a REAPED terminal finalize (runClaude returned → child
+	// provably not running) also clears it — and zeroes the engine-proxy PID — so a cmd.Start failure
+	// can't strand a false pending veto that force-keeps the meta forever.
+	ChildIdentityPending bool `json:"child_identity_pending,omitempty"`
 	// ProxyPort is the loopback conversion-daemon port this job's provider rides
 	// (0 for a non-daemon-backed provider). The Windows codexproxy daemon counts
 	// live workers from the job store instead of process argv, and this field is
@@ -706,6 +725,13 @@ func GC(olderThan time.Duration) Result {
 		if pins.Has(pinned.Job, jobID) || (meta.RunID != "" && pins.Has(pinned.Run, meta.RunID)) {
 			continue
 		}
+		// A member leaf whose recorded CHILD is alive-or-unverifiable — OR whose identity write is still
+		// PENDING (the Start window) — is kept regardless of age or a cached terminal: it is the veto
+		// evidence a colliding worktree segment relies on (a SIGKILLed engine's orphan outlives the
+		// engine; StatusFor may have synthesized a terminal for it).
+		if isLiveOrPendingOrphanEvidence(meta) {
+			continue
+		}
 		// A cached <id>.result.json is the authoritative terminal signal.
 		// processAlive can lie under PID reuse (sync jobs record the cc-fleet
 		// PID with empty SettingsPath, so a recycled PID looks alive forever).
@@ -770,7 +796,15 @@ func gcRunManifests(jobsDir string, cutoff time.Time, pins pinned.Set) {
 				}
 			}
 		}
-		removeRun(dir, runID)
+		// Remove the aged manifest through the CHOKEPOINT (WithRunLock + PurgeRun), not a bare removeRun:
+		// PurgeRun drops a leaked isolation WORKDIR before the manifest (its physical segment snapshot),
+		// so the run is never left as an unknown-present strand, and its refusal gates skip a run whose
+		// engine is still live or that has a live-orphan member (as PruneRuns/ClearFinished do). Ordering
+		// vs the job-meta pass above is immaterial: that pass reaps only DEAD members (a live-orphan one is
+		// kept, which also keeps this manifest via survivingRunIDs), and PurgeRun removes the segment's
+		// workdirs by that physical snapshot — not by member metas — so its ordered cleanup holds no matter
+		// which members were already reaped.
+		_ = WithRunLock(runID, func() error { _ = PurgeRun(runID); return nil })
 	}
 	sweepOrphanRunSidecars(dir, cutoff, false, pins)
 }
@@ -877,12 +911,22 @@ func PurgeJobs() (dir string, removedFinished []string, running []string, err er
 			continue
 		}
 		jobID := strings.TrimSuffix(name, ".json")
+		meta, merr := readMeta(dir, jobID)
+		// A member leaf whose recorded CHILD is alive-or-unverifiable, OR still identity-PENDING (the
+		// Start window), is kept regardless of a cached terminal — the veto evidence a colliding worktree
+		// segment relies on (mirrors GC). Keeping it also keeps its run's manifest (runningRuns), so the
+		// chokepoint purge never reaches the run under the possibly-live orphan.
+		if merr == nil && isLiveOrPendingOrphanEvidence(meta) {
+			running = append(running, jobID)
+			runningRuns[meta.RunID] = true
+			continue
+		}
 		// result-cache-first liveness (mirrors GC): a cached terminal result means
 		// done regardless of pid; only without it do we consult processAlive. A
 		// meta we can't read can't be polled, so it falls through to removal.
 		resultPath := filepath.Join(dir, jobID+".result.json")
 		if _, resultErr := os.Stat(resultPath); resultErr != nil {
-			if meta, merr := readMeta(dir, jobID); merr == nil && (processAlive(meta.PID, meta.SettingsPath, meta.ProcStart) || queuedPlaceholder(meta)) {
+			if merr == nil && (processAlive(meta.PID, meta.SettingsPath, meta.ProcStart) || queuedPlaceholder(meta)) {
 				running = append(running, jobID)
 				if meta.RunID != "" {
 					runningRuns[meta.RunID] = true
@@ -896,29 +940,38 @@ func PurgeJobs() (dir string, removedFinished []string, running []string, err er
 		removedFinished = append(removedFinished, jobID)
 	}
 
-	purgeRunManifests(dir, runningRuns)
+	survived := purgeRunManifests(dir, runningRuns)
 
 	sort.Strings(removedFinished)
 	sort.Strings(running)
 
-	// Drop the dir when nothing is left running. RemoveAll (not Remove) so a leftover
-	// per-run .lock file — deliberately not a GC'd sidecar — can't strand the dir at an
-	// exclusive uninstall; with nothing running, no lock is held, so this is safe.
-	if len(running) == 0 {
+	// Drop the jobs dir only when NOTHING survived: no live member job (len(running)==0) AND no run
+	// PurgeRun refused (survived — a live foreground / unverifiable engine leaves its manifest but has no
+	// running member job, so `running` alone would miss it and this wholesale RemoveAll would erase its
+	// manifest/journal/ctl under a live engine, bypassing the chokepoint). When survivors exist the
+	// partial-cleanup path already ran: it removed every finished/dead member job group + every
+	// provably-dead run (manifest + workdir, via PurgeRun) + orphan sidecars, and KEPT the refused run's
+	// manifest/sidecars, its live member jobs, and the dir itself. RemoveAll (not Remove) so a leftover
+	// per-run .lock (not a GC'd sidecar) can't strand the dir at an exclusive uninstall; nothing surviving
+	// means no lock is held.
+	if len(running) == 0 && !survived {
 		_ = os.RemoveAll(dir)
 	}
 	return dir, removedFinished, running, nil
 }
 
-// purgeRunManifests removes every run manifest whose RunID has no live member
-// (runningRuns), then removes the now-empty runs/ dir best-effort. A missing runs/
-// dir is a no-op. Keeping the runs/ dir empty-and-removable is what lets PurgeJobs
-// finally os.Remove the jobs dir when nothing is running.
-func purgeRunManifests(jobsDir string, runningRuns map[string]bool) {
+// purgeRunManifests removes every run manifest whose RunID has no live member (runningRuns) through the
+// chokepoint (skip-on-refusal), then removes the now-empty runs/ dir best-effort. A missing runs/ dir is
+// a no-op. Returns whether any run PurgeRun REFUSED (a live foreground / unverifiable engine keeps its
+// manifest) — so the caller must NOT wholesale-remove the jobs dir on top of it, which would erase under
+// a live engine a run the chokepoint deliberately kept. A leftover per-run .lock does NOT count as a
+// survivor (it is a lock artifact, cleared by the caller's RemoveAll). Keeping the runs/ dir
+// empty-and-removable is what lets PurgeJobs finally drop the jobs dir when nothing is running.
+func purgeRunManifests(jobsDir string, runningRuns map[string]bool) (survived bool) {
 	dir := filepath.Join(jobsDir, runsDirName)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return // no runs dir → nothing to purge
+		return false // no runs dir → nothing survived
 	}
 	for _, e := range entries {
 		name := e.Name()
@@ -932,10 +985,22 @@ func purgeRunManifests(jobsDir string, runningRuns map[string]bool) {
 		if runningRuns[runID] {
 			continue // live member → keep this run's manifest
 		}
-		removeRun(dir, runID)
+		// Route through the CHOKEPOINT (WithRunLock + PurgeRun), not a bare removeRun: PurgeRun drops a
+		// leaked isolation WORKDIR before the manifest (its physical segment snapshot) so nothing strands
+		// unknown-present, and its gates skip a live engine / live-orphan member. Ordering vs the member
+		// pass above is immaterial (same property as gcRunManifests): that pass reaps only DEAD members —
+		// a live-orphan one is KEPT, so runningRuns holds it and this loop already skipped it above — and
+		// PurgeRun removes the segment's workdirs by physical snapshot, not by member metas.
+		_ = WithRunLock(runID, func() error {
+			if PurgeRun(runID) != nil {
+				survived = true // REFUSED (live engine) → its manifest remains; the jobs dir must be kept
+			}
+			return nil
+		})
 	}
 	sweepOrphanRunSidecars(dir, time.Time{}, true, pinned.Set{}) // uninstall: empty pin set → drop every orphan sidecar so the dir can empty
-	_ = os.Remove(dir)                                           // succeeds only when empty (all manifests + sidecars gone)
+	_ = os.Remove(dir)                                           // best-effort: removes the runs/ dir when empty (a leftover per-run .lock, cleared by the caller's RemoveAll, is the only non-survivor that can block it)
+	return survived
 }
 
 // procRoot is the procfs mount point. A package var so tests can point the
@@ -1083,7 +1148,12 @@ func writeMeta(dir string, m jobMeta) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(metaPath(dir, m.JobID), data, 0o600)
+	// AtomicWrite (temp + rename), not a plain WriteFile: the meta is load-bearing death evidence
+	// (ChildPID) that runLeafScan reads, so a reader must never see a half-written file — a torn write
+	// would read as a corrupt/partial meta. The single meta outlet, so every writer (registerSyncJob on
+	// the spawn path, recordChildIdentity, the hold-protocol rewrites, finalize) is atomic; the temp
+	// files are `.<name>.*.tmp` and every jobs-dir scanner skips non-".json" names.
+	return fileutil.AtomicWrite(metaPath(dir, m.JobID), data, 0o600)
 }
 
 // readCapped reads at most limit bytes of a job file, so a runaway capture can't OOM the terminal
@@ -1261,6 +1331,10 @@ func registerSyncJob(jobID string, req Request, model string, effective, downgra
 		PersistIO:     req.PersistIO,
 		PromptProfile: effective,
 		SlimDowngrade: downgrade,
+		// A SYNC MEMBER starts in the identity-pending state — the child pid is stamped later by
+		// recordChildIdentity (after cmd.Start). Marks the Start-window so a crash there keeps its
+		// veto evidence; a standalone sync job (no run) never needs it.
+		ChildIdentityPending: req.RunID != "",
 		// SettingsPath deliberately empty (see processAlive). Sync writes no .out
 		// file, so the deferred result cache is the authoritative done signal.
 	}
@@ -1288,6 +1362,36 @@ func registerSyncJob(jobID string, req Request, model string, effective, downgra
 		_ = os.WriteFile(filepath.Join(dir, jobID+".prompt"), []byte(req.IOPrompt), 0o600)
 	}
 	return registerOK
+}
+
+// recordChildIdentity captures a SYNC leaf's `claude -p` CHILD pid + start token into its meta right
+// after Start — the engine-as-proxy meta.PID does not identify the child, which a bare SIGKILL can
+// orphan alive. A jobMetaMu read-modify-write that updates ONLY ChildPID/ChildProcStart, preserving
+// every other field (Status/PID/PGID/attempt/hold bookkeeping). It writes even onto a HELD row: the
+// hold protocol premarks {held, PID 0} BEFORE killing the child, so an engine crash in that window
+// leaves a LIVE orphan only this recorded identity can protect from the reclaimers — and adding the
+// child fields cannot resurrect a parked row (StatusFor still classifies by Status=="held", the
+// reclaimers read ChildPID). A GONE meta is skipped. The attempt guard rejects a stale write across a
+// restart: a held→restarted leaf bumps meta.Attempt, so a late attempt-N child must never stamp an
+// attempt-M row (and vice versa).
+func recordChildIdentity(jobID string, childPID, attempt int) {
+	if jobID == "" || childPID <= 0 {
+		return
+	}
+	dir, err := jobsDir()
+	if err != nil {
+		return
+	}
+	tok, _ := procStartFn(childPID)
+	jobMetaMu.Lock()
+	defer jobMetaMu.Unlock()
+	meta, rerr := readMeta(dir, jobID)
+	if rerr != nil || meta.Attempt != attempt {
+		return
+	}
+	meta.ChildPID, meta.ChildProcStart = childPID, tok
+	meta.ChildIdentityPending = false // identity now recorded — the Start window is closed
+	_ = writeMetaFn(dir, meta)
 }
 
 // MintQueuedLeaf records a leaf the workflow engine has admitted but not yet given a pool slot:
@@ -1396,7 +1500,7 @@ func ReleaseHeldLeafStopped(jobID, msg string) {
 	}
 	meta.Status = "stopped"
 	_ = writeMetaFn(dir, meta)
-	finalizeSyncJobLocked(jobID, fail(ErrCodeStopped, msg, meta.Provider, ""))
+	finalizeSyncJobLocked(jobID, fail(ErrCodeStopped, msg, meta.Provider, ""), false)
 }
 
 // NormalizeHeldLeaf clears a held pre-mark that lost its race: the directive landed
@@ -1447,6 +1551,11 @@ func RequeueLeaf(jobID string, attempt int) {
 	if err != nil {
 		return
 	}
+	// ChildPID/ChildProcStart are left untouched: the prior child is already reaped (reads dead), and
+	// registerSyncJob resets them to {ChildPID 0, pending} before the next attempt's cmd.Start. A refactor
+	// must never let a stale nonzero ChildPID coexist with a newly-started child — the reclaim guards veto
+	// on a recorded ChildPID, so preserving it across requeue, or starting the child before re-registering,
+	// would let a sweep delete a live worktree.
 	meta.Status = "queued"
 	meta.PID, meta.PGID = 0, 0
 	meta.Attempt = attempt
@@ -1502,28 +1611,37 @@ func normalizeStaleHold(dir, runID, jobID string) {
 	}
 	meta.Status = "stopped" // ahead of the finalize so the suppression branch can't fire
 	_ = writeMetaFn(dir, meta)
-	finalizeSyncJobLocked(jobID, fail(ErrCodeStopped, "run restarted while the leaf was held", meta.Provider, ""))
+	finalizeSyncJobLocked(jobID, fail(ErrCodeStopped, "run restarted while the leaf was held", meta.Provider, ""), false)
 }
 
-// finalizeSyncJob flips a sync job from running → done/failed by writing a
-// SANITIZED terminal result cache: status + provider/model/started + the SAFE
-// metrics (Usage / cost / turns / duration — claude's own metering, which the
-// board's Workflows view needs to show a done leaf's tokens + "done · N turns"
-// outcome) + canonical error fields, with the answer text (res.Result) and Raw
-// STRIPPED so no provider reply is ever persisted to disk for a sync run (the caller
-// already got it on stdout). A subsequent StatusFor/ListJobs serves this cache.
-// jobID=="" (register failed) is a no-op; it is called from a defer so it runs on
-// the normal return path that produced res. The read→suppress-or-write section runs
-// under jobMetaMu (a HoldLeaf landing between the meta read and the cache write
-// would otherwise strand a terminal cache under a hold); lifecycle paths already
-// holding the mutex call finalizeSyncJobLocked directly.
+// finalizeSyncJob is the SYNTHETIC-safe entry (childReaped=false): an external reclaimer that did NOT
+// run this attempt's runClaude cannot prove the child is dead, so it preserves a pending stamp (a
+// crashed engine's orphan may still be live). The in-process attempt path uses finalizeSyncJobReaped.
 func finalizeSyncJob(jobID string, res Result) {
 	jobMetaMu.Lock()
 	defer jobMetaMu.Unlock()
-	finalizeSyncJobLocked(jobID, res)
+	finalizeSyncJobLocked(jobID, res, false)
 }
 
-func finalizeSyncJobLocked(jobID string, res Result) {
+// finalizeSyncJobReaped is the in-process attempt path: runClaude RETURNED, so cmd.Wait reaped the
+// child (or cmd.Start never launched one) — the child is PROVABLY not running (childReaped=true), which
+// lets the terminal write clear a still-pending identity stamp.
+func finalizeSyncJobReaped(jobID string, res Result) {
+	jobMetaMu.Lock()
+	defer jobMetaMu.Unlock()
+	finalizeSyncJobLocked(jobID, res, true)
+}
+
+// finalizeSyncJobLocked flips a sync job from running → done/failed by writing a SANITIZED terminal
+// result cache: status + provider/model/started + the SAFE metrics (Usage / cost / turns / duration —
+// claude's own metering, which the board's Workflows view needs to show a done leaf's tokens +
+// "done · N turns" outcome) + canonical error fields, with the answer text (res.Result) and Raw STRIPPED
+// so no provider reply is ever persisted to disk for a sync run (the caller already got it on stdout). A
+// subsequent StatusFor/ListJobs serves this cache. jobID=="" (register failed) is a no-op. The
+// read→suppress-or-write section runs under jobMetaMu (a HoldLeaf landing between the meta read and the
+// cache write would otherwise strand a terminal cache under a hold); the public wrappers acquire it,
+// lifecycle paths already holding it call this directly.
+func finalizeSyncJobLocked(jobID string, res Result, childReaped bool) {
 	if jobID == "" {
 		return
 	}
@@ -1572,6 +1690,14 @@ func finalizeSyncJobLocked(jobID string, res Result) {
 	default:
 		cached.Status = "failed"
 	}
+	// A REAPED terminal finalize (childReaped: runClaude returned, so cmd.Wait reaped the child or
+	// cmd.Start never launched one) proves a still-PENDING leaf has NO live process. Clear the pending
+	// stamp AND the engine-proxy PID so the leaf reads process-free — else a cmd.Start failure (onStart
+	// never ran) strands a false-pending veto that force-keeps the meta and blocks the run's worktree
+	// reclamation forever. Pending survives ONLY paths that cannot verify the child: an engine SIGKILL
+	// never reaches finalize, a synthetic reclaim (childReaped=false) preserves it, and the held-stopped
+	// suppression below returns before this clears anything.
+	clearPending := childReaped && meta.ChildIdentityPending
 	// A held meta marks a leaf-stop directive in flight (HoldLeaf ran before the kill).
 	// The killed attempt's stopped-class finalize is SUPPRESSED — a terminal cache during
 	// a hold would hand GC an authoritative "finished" for a live frame. Any other
@@ -1579,9 +1705,23 @@ func finalizeSyncJobLocked(jobID string, res Result) {
 	// normalize the meta to match, so no stale held meta survives a settle.
 	if meta.Status == "held" {
 		if cached.Status == "stopped" {
+			// SUPPRESS the terminal cache (a cache under a hold hands GC a finished frame), but the
+			// in-process reap still PROVES the child isn't running — clear a false-pending stamp + the
+			// engine-proxy PID so it can't force-keep the row forever once the hold is released. The row
+			// stays held (queuedPlaceholder keeps it as the live frame it is).
+			if clearPending {
+				meta.ChildIdentityPending, meta.PID = false, 0
+				_ = writeMetaFn(dir, meta)
+			}
 			return
 		}
 		meta.Status = cached.Status
+		if clearPending {
+			meta.ChildIdentityPending, meta.PID = false, 0
+		}
+		_ = writeMetaFn(dir, meta)
+	} else if clearPending {
+		meta.ChildIdentityPending, meta.PID = false, 0
 		_ = writeMetaFn(dir, meta)
 	}
 	if data, merr := json.Marshal(cached); merr == nil {

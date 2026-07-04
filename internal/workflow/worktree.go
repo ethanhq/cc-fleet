@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/ethanhq/cc-fleet/internal/childenv"
+	"github.com/ethanhq/cc-fleet/internal/ids"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
@@ -45,7 +46,7 @@ func createWorktree(runID string) (string, func(), error) {
 	if err != nil {
 		return "", nil, err
 	}
-	base := filepath.Join(os.TempDir(), "cc-fleet-worktrees", sanitizeRunID(runID))
+	base := filepath.Join(os.TempDir(), "cc-fleet-worktrees", ids.WorktreeSegment(runID))
 	if err := os.MkdirAll(base, 0o700); err != nil {
 		return "", nil, fmt.Errorf("worktree base: %w", err)
 	}
@@ -73,11 +74,15 @@ func removeWorktree(root, wt string) {
 // and removes a candidate iff a DEATH PROOF holds — one uniform rule, nothing reclaimed on
 // identity alone:
 //
-//	(a) the segment is KNOWN to this config store's ListRuns AND its owning run is provably dead
-//	    (RunEngineProvablyNotLive); or
+//	(a) the segment's verdict (subagent.SegmentReclaimVerdicts) clears — a path-safe owner is provably
+//	    engine-dead AND leaf-free (Reclaimer) AND no owner, path-safe or a colliding twin, is alive/
+//	    unverifiable or leaf-bearing (!Vetoed). Engine death alone does NOT prove the workdir is unused:
+//	    a SIGKILLed engine's claude leaf children (own process groups, cwd = the worktree) outlive it,
+//	    and a colliding live twin shares the segment; or
 //	(b) the candidate workdir no longer exists on disk — git treats such a registration as prunable,
-//	    a live isolation leaf cannot be running in a deleted cwd, and this also reclaims a run whose
-//	    manifest was already purged out from under a leaked registration.
+//	    a live isolation leaf cannot be running in a deleted cwd (so clause (b) needs no leaf check),
+//	    and this also reclaims a run whose manifest was already purged out from under a leaked
+//	    registration.
 //
 // An UNKNOWN segment whose workdir still EXISTS is left alone: absence from THIS store's list is
 // not proof of death — a different config store (another HOME/XDG_CONFIG_HOME) may own a live run
@@ -86,24 +91,25 @@ func removeWorktree(root, wt string) {
 // twin's worktrees — the twin shares this run's id); a resumed engine's own stale worktrees are
 // reclaimed in the launcher under a death proof (sweepOwnSegment). A live foreground engine, a
 // still-running detached engine, and an alive-but-unverifiable pid are all left untouched, as are
-// the user's own worktrees (they never live under the temp prefix). Segments are sanitizeRunID(id);
+// the user's own worktrees (they never live under the temp prefix). Segments are ids.WorktreeSegment(id);
 // because that collapses '.'/':'/separators to '-' (non-injective: ids "a.b"/"a:b"/"a-b" all yield
-// "a-b"), only PATH-SAFE ids populate deadBySegment, keeping it injective so a dead twin can't
-// last-writer-wins overwrite a live run's liveness.
+// "a-b"), the reclaim verdict is SEGMENT-level (subagent.SegmentReclaimVerdicts): a non-path-safe twin
+// never RECLAIMS (identity reclaim is path-safe-only) yet, while alive, always VETOES its segment — so
+// a live "a.b" can't lose its workdirs to a dead "a-b", and a dead twin can't provoke reclaiming a live
+// one.
 func sweepRunWorktrees(root string) {
 	out, err := runGit(root, "worktree", "list", "--porcelain")
 	if err != nil {
 		return
 	}
 	globalPrefix := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees") + string(os.PathSeparator)
-	deadBySegment := map[string]bool{}
-	if runs, lerr := subagent.ListRuns(); lerr == nil {
-		for _, r := range runs {
-			if sanitizeRunID(r.RunID) == r.RunID { // path-safe → equals its own segment
-				deadBySegment[r.RunID] = subagent.RunEngineProvablyNotLive(r)
-			}
-		}
-	}
+	// Ownership is keyed by SEGMENT (ids.WorktreeSegment), not exact id, and engine death does NOT prove
+	// leaf death (a SIGKILLed engine's claude leaf children — own process groups, cwd = the worktree —
+	// outlive it). One ListRuns pass + one leaf scan aggregates, per segment, a Reclaimer (a path-safe
+	// dead+leaf-free owner) and a Vetoed flag (ANY owner — path-safe or a colliding twin — alive/
+	// unverifiable or leaf-bearing). A scan failure (!verdictsOK) makes every present-workdir reclamation
+	// unsafe. The workdir-MISSING clause needs no verdict — a vanished cwd cannot host a running process.
+	verdicts, verdictsOK := subagent.SegmentReclaimVerdicts()
 	for _, line := range strings.Split(out, "\n") {
 		wt, ok := strings.CutPrefix(strings.TrimSpace(line), "worktree ")
 		if !ok {
@@ -113,37 +119,47 @@ func sweepRunWorktrees(root string) {
 			continue
 		}
 		seg := runSegment(globalPrefix, wt)
-		dead, known := deadBySegment[seg]
+		v := verdicts[seg]
 		_, statErr := os.Stat(wt)
-		remove := (known && dead) || os.IsNotExist(statErr)
+		presentReclaimable := verdictsOK && v.Reclaimer && !v.Vetoed
+		remove := presentReclaimable || os.IsNotExist(statErr)
 		if !remove {
-			continue // unknown-but-present, or a known-live run — another store may own it
+			continue // unknown/live/leaf-bearing present, or a segment a live owner vetoes
 		}
 		removeWorktree(root, wt)
 	}
 }
 
 // sweepOwnSegment reclaims ONLY runID's own isolation-worktree segment in root's .git — every
-// registration under cc-fleet-worktrees/<sanitizeRunID(id)>/ plus the segment dir. It is the resume
-// launcher's own-stale-worktree cleanup, run there (not in the Execute-time sweep) and only after
-// the prior record is confirmed provably dead: the launcher holds the death evidence that the
-// manifest rewrite then erases. A non-path-safe id is a no-op — its segment collides with other ids
-// under sanitizeRunID, so reclaiming it could delete a twin's live worktrees (the guard PurgeRun and
-// deadBySegment apply). Best-effort, no error return.
+// registration under cc-fleet-worktrees/<ids.WorktreeSegment(id)>/ plus the segment dir. It is the
+// resume launcher's own-stale-worktree cleanup, run there (not in the Execute-time sweep) and only
+// after the prior record is confirmed provably dead: the launcher holds the death evidence that the
+// manifest rewrite then erases. A non-path-safe id is a no-op — its segment collides with other ids,
+// so reclaiming it could delete a twin's live worktrees. Since the launcher already established the
+// prior run's death, it adds only the SEGMENT-level veto check: it reclaims unless an owner of the
+// segment — the run's own orphan leaf, or a colliding twin — is alive/leaf-bearing. Best-effort.
 func sweepOwnSegment(root, runID string) {
-	if sanitizeRunID(runID) != runID {
+	if ids.WorktreeSegment(runID) != runID {
 		return // non-path-safe: the segment is shared with colliding ids — never reclaim it
+	}
+	verdicts, ok := subagent.SegmentReclaimVerdicts()
+	// Fail closed: a MISSING entry (no known owner) or a non-reclaimer/vetoed one skips — only a
+	// KNOWN path-safe dead+leaf-free owner with no live/colliding twin reclaims.
+	if v, present := verdicts[runID]; !ok || !present || !v.Reclaimer || v.Vetoed {
+		return
 	}
 	segDir := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees", runID)
 	if out, err := runGit(root, "worktree", "list", "--porcelain"); err == nil {
 		segPrefix := segDir + string(os.PathSeparator)
 		for _, line := range strings.Split(out, "\n") {
 			if wt, ok := strings.CutPrefix(strings.TrimSpace(line), "worktree "); ok && pathUnder(segPrefix, wt) {
-				removeWorktree(root, wt)
+				removeWorktree(root, wt) // only the porcelain-listed (snapshot) registrations
 			}
 		}
 	}
-	_ = os.RemoveAll(segDir)
+	// Remove the segment dir only if now EMPTY — a post-snapshot colliding fresh-uuid workdir (unlisted,
+	// so not removed above) keeps it, so os.Remove (not RemoveAll) leaks-not-deletes it.
+	_ = os.Remove(segDir)
 }
 
 // runSegment returns the run-id path segment (the first component after the global
@@ -195,14 +211,4 @@ func runGit(dir string, args ...string) (string, error) {
 	cmd.Stderr = &buf
 	err := cmd.Run()
 	return buf.String(), err
-}
-
-// sanitizeRunID keeps a run id safe as a single path segment for the temp worktree root.
-func sanitizeRunID(id string) string {
-	return strings.Map(func(r rune) rune {
-		if r == '/' || r == '\\' || r == '.' || r == ':' {
-			return '-'
-		}
-		return r
-	}, id)
 }

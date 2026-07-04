@@ -5,35 +5,6 @@ import (
 	"testing"
 )
 
-// TestEngineProcStartMatches covers the start-token engine identity used where
-// argv is unreadable: a matching token positively identifies the engine, a
-// mismatch (recycled pid) rejects it, and an empty token never matches (those
-// manifests keep the argv-only behavior).
-func TestEngineProcStartMatches(t *testing.T) {
-	orig := procStartFn
-	t.Cleanup(func() { procStartFn = orig })
-	self := os.Getpid()
-
-	procStartFn = func(int) (string, bool) { return "tok-1", true }
-	if !engineProcStartMatches(WorkflowRun{EnginePID: self, EngineProcStart: "tok-1"}) {
-		t.Error("a matching start token must identify the engine")
-	}
-	if engineProcStartMatches(WorkflowRun{EnginePID: self, EngineProcStart: "tok-0"}) {
-		t.Error("a mismatched start token (recycled pid) must not match")
-	}
-	if engineProcStartMatches(WorkflowRun{EnginePID: self, EngineProcStart: ""}) {
-		t.Error("an empty recorded token must never match")
-	}
-	if engineProcStartMatches(WorkflowRun{EnginePID: 0, EngineProcStart: "tok-1"}) {
-		t.Error("EnginePID<=0 must never match")
-	}
-
-	procStartFn = func(int) (string, bool) { return "", false }
-	if engineProcStartMatches(WorkflowRun{EnginePID: self, EngineProcStart: "tok-1"}) {
-		t.Error("an unreadable live token must not match")
-	}
-}
-
 // TestEngineAlive_StartToken covers the argv-unavailable branch: a recorded
 // token decides liveness (match → alive, mismatch → gone), and only a
 // token-less manifest keeps the legacy fail-soft-to-alive behavior.
@@ -133,34 +104,5 @@ func TestProcessAlive_GuardComposition(t *testing.T) {
 	procStartFn = func(int) (string, bool) { return "", false }
 	if !processAlive(self, "/p/minimax.json", "tok-1") {
 		t.Error("an unreadable token must fall back to the (matching) argv guard")
-	}
-}
-
-// TestEngineIdentityMatches pins StopRun's kill guard: readable argv alone
-// decides (a token match must not override an argv mismatch); the token decides
-// only where argv is unreadable.
-func TestEngineIdentityMatches(t *testing.T) {
-	origArgv, origStart := reuseGuardArgv, procStartFn
-	t.Cleanup(func() { reuseGuardArgv, procStartFn = origArgv, origStart })
-	self := os.Getpid()
-	run := WorkflowRun{RunID: "r1", EnginePID: self, EngineProcStart: "tok-1"}
-	engineArgv := []string{"cc-fleet", "workflow", "run", "--run-id", "r1", "s.js"}
-	procStartFn = func(int) (string, bool) { return "tok-1", true }
-
-	reuseGuardArgv = func(int) ([]string, bool) { return engineArgv, true }
-	if !engineIdentityMatches(run) {
-		t.Error("matching argv must identify the engine")
-	}
-	reuseGuardArgv = func(int) ([]string, bool) { return []string{"some", "other"}, true }
-	if engineIdentityMatches(run) {
-		t.Error("an argv mismatch must veto even a matching token")
-	}
-	reuseGuardArgv = func(int) ([]string, bool) { return nil, false }
-	if !engineIdentityMatches(run) {
-		t.Error("argv-unreadable must fall back to the (matching) token")
-	}
-	procStartFn = func(int) (string, bool) { return "tok-0", true }
-	if engineIdentityMatches(run) {
-		t.Error("argv-unreadable with a mismatched token must not identify")
 	}
 }

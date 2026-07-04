@@ -168,7 +168,7 @@ func TestPurgeRun_RemovesRunAndJobs(t *testing.T) {
 		t.Fatalf("NewRun: %v", err)
 	}
 	jobID := regSyncJob(Request{Provider: "v", RunID: run.RunID, Phase: "p", Label: "a"}, "m")
-	finalizeSyncJob(jobID, Result{OK: true})
+	finalizeSyncJobReaped(jobID, Result{OK: true}) // a real finished leaf: the in-process reap clears the pending stamp
 	if got := StatusFor(jobID); got.RunID != run.RunID {
 		t.Fatalf("setup: job not tagged with the run, got %+v", got)
 	}

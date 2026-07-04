@@ -68,7 +68,7 @@ func TestRunClaude_TimeoutKillsProcessTree(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	start := time.Now()
-	_, _, _, _ = runClaude(ctx, bin, []string{bin}, os.Environ(), nil, "", nil)
+	_, _, _, _ = runClaude(ctx, bin, []string{bin}, os.Environ(), nil, "", nil, nil)
 	if elapsed := time.Since(start); elapsed > 12*time.Second {
 		t.Fatalf("runClaude took %v with a sleeping grandchild; tree-kill model broken", elapsed)
 	}
