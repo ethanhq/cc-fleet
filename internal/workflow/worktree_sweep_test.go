@@ -15,6 +15,19 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
+// storeWorktreeBase is this store's canonicalized isolation-worktree temp root as the sweeps see it
+// (canonPath(os.TempDir())/cc-fleet-worktrees/<WorktreeStoreID>), so a test seeds workdirs where
+// production looks after the per-store namespacing. Both read the same process env in-test, so the
+// store id always matches production.
+func storeWorktreeBase(t *testing.T) string {
+	t.Helper()
+	id, err := subagent.WorktreeStoreID()
+	if err != nil {
+		t.Fatalf("WorktreeStoreID: %v", err)
+	}
+	return filepath.Join(canonPath(os.TempDir()), subagent.WorktreeTempName, id)
+}
+
 // initSweepRepo makes a committed git repo and chdirs into it, returning its root.
 func initSweepRepo(t *testing.T) string {
 	t.Helper()
@@ -68,12 +81,13 @@ func worktreeListed(t *testing.T, repo, path string) bool {
 
 // TestSweepRunWorktreesScoped: the Execute-time sweep applies one uniform rule — remove a
 // registration only under a DEATH PROOF: a KNOWN provably-dead run (clause a) or a vanished workdir
-// (clause b). A live/known-not-dead run, an UNKNOWN still-present segment (another config store may
-// own it), and the user's own worktree are all left untouched. It never privileges its own segment.
+// (clause b). A live/known-not-dead run, an UNKNOWN still-present segment (this store's own
+// manifest-less orphan), and the user's own worktree are all left untouched. It never privileges its
+// own segment.
 func TestSweepRunWorktreesScoped(t *testing.T) {
 	repo := initSweepRepo(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	tempBase := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees") // match git porcelain (macOS /private, win long path)
+	tempBase := storeWorktreeBase(t)
 
 	const (
 		runDead        = "run-dead"
@@ -116,8 +130,8 @@ func TestSweepRunWorktreesScoped(t *testing.T) {
 	// The user's OWN worktree, elsewhere (never under the temp prefix) — must survive.
 	userWt := filepath.Join(t.TempDir(), "user-wt")
 	addWorktree(t, repo, userWt)
-	// An UNKNOWN segment (no manifest) whose workdir EXISTS — another config store may own a live
-	// run we can't see, so it must be left alone.
+	// An UNKNOWN segment (no manifest) whose workdir EXISTS — this store's own manifest-less orphan
+	// (no proof of death), so it must be left alone.
 	unknownHereWt := filepath.Join(tempBase, runUnknownHere, "wt")
 	addWorktree(t, repo, unknownHereWt)
 	// An UNKNOWN segment whose workdir is GONE — prunable (clause b), swept with no record to consult.
@@ -142,7 +156,7 @@ func TestSweepRunWorktreesScoped(t *testing.T) {
 		t.Error("the user's own worktree must never be touched")
 	}
 	if !worktreeListed(t, repo, unknownHereWt) {
-		t.Error("an unknown segment whose workdir still exists must be left alone (another store may own it)")
+		t.Error("an unknown segment whose workdir still exists must be left alone (this store's own manifest-less orphan)")
 	}
 	if worktreeListed(t, repo, unknownGoneWt) {
 		t.Error("an unknown segment whose workdir is gone must be swept (clause b)")
@@ -160,7 +174,7 @@ func TestSweepRunWorktreesNonGit(t *testing.T) {
 func TestSweepRunWorktreesMapGuard(t *testing.T) {
 	repo := initSweepRepo(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	tempBase := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees") // match git porcelain (macOS /private, win long path)
+	tempBase := storeWorktreeBase(t)
 	const liveID = "a-b"
 	t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(tempBase, liveID)) })
 
@@ -191,7 +205,7 @@ func TestSweepRunWorktreesMapGuard(t *testing.T) {
 func TestSweepOwnSegment(t *testing.T) {
 	repo := initSweepRepo(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	tempBase := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees") // match git porcelain (macOS /private, win long path)
+	tempBase := storeWorktreeBase(t)
 
 	t.Run("path-safe id reclaims its own segment", func(t *testing.T) {
 		const id = "own-seg"
@@ -231,6 +245,132 @@ func TestSweepOwnSegment(t *testing.T) {
 	})
 }
 
+// TestSweepOwnSegmentSnapshotBeforeVerdict (codex r33): sweepOwnSegment must snapshot the segment's
+// registrations BEFORE it computes the reclaim verdict — the ordering sweepRunWorktrees and PurgeRun
+// already use. A colliding twin ("own.seg", same segment "own-seg") runs under a DIFFERENT run id, so
+// its run lock never serializes against this sweep; if it registers a fresh worktree in the
+// snapshot→verdict window, the stale "reclaimable" verdict must NOT delete it. Modeled by a verdict
+// seam that registers the twin's worktree as the verdict is taken: with the pre-verdict snapshot the
+// twin is out of the removal set and survives, while the own dead run is still reclaimed. Under the
+// pre-fix (verdict-then-snapshot) ordering the twin would be listed and wrongly removed.
+func TestSweepOwnSegmentSnapshotBeforeVerdict(t *testing.T) {
+	repo := initSweepRepo(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	tempBase := storeWorktreeBase(t)
+	const id = "own-seg"
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(tempBase, id)) })
+
+	if err := subagent.SaveRun(subagent.WorkflowRun{RunID: id, StartedAt: "2026-01-01T00:00:00Z", Status: "stopped", EnginePID: 0x7ffffffe}); err != nil {
+		t.Fatal(err)
+	}
+	ownWt := filepath.Join(tempBase, id, "own-wt")
+	addWorktree(t, repo, ownWt)
+
+	// The colliding twin's worktree, registered ONLY when the verdict is computed — i.e. after the
+	// snapshot in the fixed ordering. It has no manifest, so the real verdict still reports segment
+	// "own-seg" reclaimable; the twin models the createWorktree→saveManifest window of a live owner.
+	twinWt := filepath.Join(tempBase, id, "twin-wt")
+	orig := reclaimVerdicts
+	var once sync.Once
+	reclaimVerdicts = func() (map[string]subagent.SegmentReclaim, bool) {
+		once.Do(func() { addWorktree(t, repo, twinWt) })
+		return orig()
+	}
+	t.Cleanup(func() { reclaimVerdicts = orig })
+
+	sweepOwnSegment(repo, id)
+
+	if worktreeListed(t, repo, ownWt) {
+		t.Error("the own dead run's registration must still be reclaimed")
+	}
+	if !worktreeListed(t, repo, twinWt) {
+		t.Error("a colliding twin's worktree that appeared in the snapshot→verdict window must SURVIVE (snapshot-before-verdict)")
+	}
+	if _, err := os.Stat(twinWt); err != nil {
+		t.Errorf("the twin's workdir must survive on disk (err=%v)", err)
+	}
+}
+
+// TestSweepRunWorktreesForeignStoreSpared (codex r34): the isolation-worktree temp root is namespaced by
+// config store (subagent.WorktreeStoreID) and the sweep is scoped to THIS store's prefix. A worktree NOT
+// under this store's prefix — a foreign store (another HOME/XDG sharing os.TempDir()+repo), or a
+// pre-namespacing flat-path leftover — is structurally invisible to the sweep and must survive, even
+// when this store's verdict marks the colliding segment reclaimable (it can't see the foreign store's
+// live run, so it records no veto). Under the pre-fix shared flat namespace this store would have
+// deleted the foreign live worktree. Modeled with the foreign worktree at the shared
+// cc-fleet-worktrees/<segment> root a foreign/older store uses, registered in the same repo.
+func TestSweepRunWorktreesForeignStoreSpared(t *testing.T) {
+	repo := initSweepRepo(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir()) // this store
+
+	base := storeWorktreeBase(t) // cc-fleet-worktrees/<this store id>
+	flatRoot := filepath.Join(canonPath(os.TempDir()), subagent.WorktreeTempName)
+	t.Cleanup(func() {
+		_ = os.RemoveAll(filepath.Join(base, "a-b"))
+		_ = os.RemoveAll(filepath.Join(flatRoot, "a-b"))
+	})
+
+	// This store owns a dead path-safe "a-b" → its verdict marks segment a-b reclaimable (a foreign
+	// store's live "a.b" lives in the foreign runs dir, invisible here, so nothing vetoes).
+	if err := subagent.SaveRun(subagent.WorkflowRun{RunID: "a-b", StartedAt: "2026-01-01T00:00:00Z", Status: "stopped", EnginePID: 0x7ffffffe}); err != nil {
+		t.Fatal(err)
+	}
+	ownDeadWt := filepath.Join(base, "a-b", "wt")
+	addWorktree(t, repo, ownDeadWt)
+	// A worktree OUTSIDE this store's prefix (a foreign store's live workdir), registered in the SAME repo.
+	foreignWt := filepath.Join(flatRoot, "a-b", "wt")
+	addWorktree(t, repo, foreignWt)
+
+	sweepRunWorktrees(repo)
+
+	if worktreeListed(t, repo, ownDeadWt) {
+		t.Error("this store's own dead worktree must be reclaimed")
+	}
+	if !worktreeListed(t, repo, foreignWt) {
+		t.Error("a worktree outside this store's prefix must be invisible to the sweep and SURVIVE")
+	}
+	if _, err := os.Stat(foreignWt); err != nil {
+		t.Errorf("the foreign worktree's workdir must survive on disk (err=%v)", err)
+	}
+}
+
+// TestSweepRunWorktreesLegacyFlatVanishedPruned (codex r35): a worktree under the shared cc-fleet-worktrees
+// root but OUTSIDE this store's prefix (a foreign store's, or a pre-namespacing flat leftover) is pruned
+// by clause (b) when its workdir has VANISHED — a deleted cwd can host no live process, whichever store
+// owned it — while a PRESENT such workdir (possibly a foreign store's live cwd) is spared. This drains
+// legacy leftovers without reopening the r34 cross-store deletion.
+func TestSweepRunWorktreesLegacyFlatVanishedPruned(t *testing.T) {
+	repo := initSweepRepo(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	flatRoot := filepath.Join(canonPath(os.TempDir()), subagent.WorktreeTempName)
+	t.Cleanup(func() {
+		_ = os.RemoveAll(filepath.Join(flatRoot, "a-b"))
+		_ = os.RemoveAll(filepath.Join(flatRoot, "c-d"))
+	})
+
+	// A legacy/foreign flat registration whose workdir is GONE → clause (b) prunes it.
+	goneWt := filepath.Join(flatRoot, "a-b", "wt")
+	addWorktree(t, repo, goneWt)
+	if err := os.RemoveAll(goneWt); err != nil {
+		t.Fatal(err)
+	}
+	// A PRESENT flat workdir (a foreign store's possibly-live cwd) → spared.
+	presentWt := filepath.Join(flatRoot, "c-d", "wt")
+	addWorktree(t, repo, presentWt)
+
+	sweepRunWorktrees(repo)
+
+	if worktreeListed(t, repo, goneWt) {
+		t.Error("a flat registration whose workdir vanished must be pruned (clause b)")
+	}
+	if !worktreeListed(t, repo, presentWt) {
+		t.Error("a PRESENT flat workdir (possibly a foreign store's live cwd) must be spared")
+	}
+	if _, err := os.Stat(presentWt); err != nil {
+		t.Errorf("the present flat workdir must survive on disk (err=%v)", err)
+	}
+}
+
 // TestPurgeThenSweepReclaimsRegistration: purging a provably-dead run drops its worktree WORKDIR
 // before the manifest (PurgeRun does no git ops by design), so the leftover git registration is
 // reclaimed by a later same-repo sweep via the workdir-missing clause.
@@ -238,7 +378,7 @@ func TestPurgeThenSweepReclaimsRegistration(t *testing.T) {
 	repo := initSweepRepo(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
-	tempBase := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees") // match git porcelain (macOS /private, win long path)
+	tempBase := storeWorktreeBase(t)
 
 	const id = "purge-reclaim" // path-safe
 	t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(tempBase, id)) })
@@ -553,7 +693,7 @@ func TestBlindStoppedForegroundChainWorktreeSurvives(t *testing.T) {
 	repo := initSweepRepo(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
-	tempBase := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees") // match git porcelain (macOS /private, win long path)
+	tempBase := storeWorktreeBase(t)
 
 	const id = "chain-fg"
 	t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(tempBase, id)) })

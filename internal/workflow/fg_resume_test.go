@@ -127,7 +127,7 @@ func TestSweepReclaimsByFgIdentity(t *testing.T) {
 			repo := initSweepRepo(t)
 			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 			t.Setenv("HOME", t.TempDir())
-			tempBase := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees")
+			tempBase := storeWorktreeBase(t)
 			const id = "fg-sweep" // path-safe
 			t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(tempBase, id)) })
 			if err := subagent.SaveRun(subagent.WorkflowRun{RunID: id, StartedAt: "2026-01-01T00:00:00Z", Status: c.status, EnginePID: 0, FgEnginePID: c.fgPID, FgEngineProcStart: c.fgTok}); err != nil {

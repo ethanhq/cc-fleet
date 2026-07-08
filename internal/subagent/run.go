@@ -1,6 +1,8 @@
 package subagent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +19,46 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/ids"
 	"github.com/ethanhq/cc-fleet/internal/pinned"
 )
+
+// WorktreeTempName is the shared root dir under os.TempDir() for isolation-worktree temp workdirs;
+// beneath it each config store gets its own WorktreeStoreID() subdir.
+const WorktreeTempName = "cc-fleet-worktrees"
+
+// WorktreeStoreID is a stable, filesystem-safe identifier for THIS config store — a short hash of
+// config.ConfigDir. The isolation-worktree temp root lives under os.TempDir(), which is NOT per-store,
+// so two config stores (different HOME/XDG_CONFIG_HOME) running in the same git repo could otherwise
+// collide on a worktree SEGMENT and have one store's reclaim delete the other's LIVE worktree — a
+// store-local reclaim verdict can't see a foreign store's runs, so it records no veto. Namespacing the
+// temp root by store id puts a foreign store's worktrees under a DIFFERENT prefix, so they never enter
+// this store's sweep/purge candidate set (structural, not a runtime ownership check).
+func WorktreeStoreID() (string, error) {
+	dir, err := config.ConfigDir()
+	if err != nil {
+		return "", err
+	}
+	// Absolutize (and clean) before hashing so the id reflects the ACTUAL physical store, not the raw
+	// config string: a relative XDG_CONFIG_HOME resolves against cwd, so two processes at different cwds
+	// are DIFFERENT stores that must not share a worktree namespace (else the cross-store reclaim hole
+	// reopens). filepath.Abs resolves relative-to-cwd and Cleans '..'/'.'/trailing slashes; a symlinked
+	// alias hashing differently only over-isolates (each store cleans its own), which is safe.
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(abs))
+	return hex.EncodeToString(sum[:8]), nil
+}
+
+// WorktreeStoreDir is this store's isolation-worktree temp root: os.TempDir()/cc-fleet-worktrees/<storeID>.
+// A run's own segment is WorktreeStoreDir()/<ids.WorktreeSegment(runID)>. The path is un-canonicalized
+// (os.TempDir() form) for creation/removal; a caller matching git porcelain paths canonicalizes itself.
+func WorktreeStoreDir() (string, error) {
+	id, err := WorktreeStoreID()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(os.TempDir(), WorktreeTempName, id), nil
+}
 
 // runsDirName holds run manifests under the jobs dir: ConfigDir/subagent-jobs/runs.
 // A manifest <runId>.json is the canonical phase sequencer for a workflow run; the
@@ -330,6 +372,51 @@ func ListRuns() ([]WorkflowRun, error) {
 		return runs[i].StartedAt > runs[j].StartedAt
 	})
 	return runs, nil
+}
+
+// listRunsForReclaim is ListRuns specialized for the worktree-reclaim verdict, with one difference that
+// matters for fail-closed safety: a manifest whose read FAILS transiently/IO (a non-ErrNotExist fault
+// the retry couldn't outlast) is NOT silently dropped — its run id (the filename stem) is returned in
+// unreadable so the verdict can VETO that segment. ListRuns' silent skip is right for a listing but
+// wrong here: a colliding live owner ("a.b", segment "a-b") whose manifest is momentarily unreadable
+// would vanish from the run set, letting a dead path-safe twin ("a-b") reclaim the shared workdir under
+// it. A readable-but-corrupt manifest stays a skip (AtomicWrite never tears a readable file, so it is
+// genuine junk that must stay reclaimable — matching the parse-error-stays-deletable rule); a file that
+// vanished between the dir scan and the read (ErrNotExist) is a skip too (genuinely gone).
+func listRunsForReclaim() (runs []WorkflowRun, unreadable []string, ok bool) {
+	dir, err := runsDir()
+	if err != nil {
+		return nil, nil, false
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil, true // nothing has run yet
+		}
+		return nil, nil, false
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		data, rerr := readFileRetry(filepath.Join(dir, name))
+		if rerr != nil {
+			if errors.Is(rerr, os.ErrNotExist) {
+				continue // vanished between the dir scan and the read — genuinely gone
+			}
+			// A persistent read/IO fault leaves the run behind this manifest unknowable → fail closed by
+			// flagging it so the verdict VETOes its segment. SaveRun writes <runID>.json, so the id is the stem.
+			unreadable = append(unreadable, strings.TrimSuffix(name, ".json"))
+			continue
+		}
+		var run WorkflowRun
+		if json.Unmarshal(data, &run) != nil {
+			continue // readable but corrupt → deletable junk
+		}
+		runs = append(runs, run)
+	}
+	return runs, unreadable, true
 }
 
 // runIsRecent reports whether a run's last activity — the LATER of StartedAt and the
@@ -746,7 +833,7 @@ type SegmentReclaim struct {
 	Reclaimer bool
 }
 
-// SegmentReclaimVerdicts builds the per-segment reclaim verdict in ONE ListRuns pass + ONE leaf scan
+// SegmentReclaimVerdicts builds the per-segment reclaim verdict in ONE runs-dir pass + ONE leaf scan
 // (the perf shape the sweep needs — it checks many segments without rescanning). A scan/list failure
 // returns ok=false so callers spare every present workdir (fail-safe).
 func SegmentReclaimVerdicts() (map[string]SegmentReclaim, bool) {
@@ -754,19 +841,30 @@ func SegmentReclaimVerdicts() (map[string]SegmentReclaim, bool) {
 	if !ok {
 		return nil, false
 	}
-	runs, err := ListRuns()
-	if err != nil {
+	runs, unreadable, ok := listRunsForReclaim()
+	if !ok {
 		return nil, false
 	}
 	out := map[string]SegmentReclaim{}
-	// Project the leaf-liveness evidence into segment vetoes FIRST — independent of ListRuns. A member
-	// job meta's RunID is authoritative on its own, so a live leaf vetoes its segment even when the run's
-	// MANIFEST is unreadable (ListRuns silently skips a corrupt runs/<id>.json). This closes the
-	// corrupt-manifest sibling of the corrupt-meta hole: a live colliding owner (a.b whose manifest is
-	// corrupt) still vetoes segment a-b, so a dead path-safe a-b can never delete a.b's live workdir. An
-	// unreadable manifest only costs the Reclaimer half (it can never CONFIRM a reclaimer) — which stays
-	// fail-closed via the unknown-segment spare.
+	// Two vetoes are applied BEFORE the run loop, each independent of a readable manifest:
+	//
+	// (1) leaf liveness. A member job meta's RunID is authoritative on its own, so a live leaf vetoes its
+	// segment even when the run's manifest is corrupt (readable but bad JSON — skipped by
+	// listRunsForReclaim). This closes the corrupt-manifest sibling of the corrupt-meta hole: a live
+	// colliding owner (a.b whose manifest is truncated) still vetoes segment a-b, so a dead path-safe a-b
+	// can never delete a.b's live workdir.
 	for runID := range live {
+		seg := ids.WorktreeSegment(runID)
+		v := out[seg]
+		v.Vetoed = true
+		out[seg] = v
+	}
+	// (2) unreadable manifest. A manifest whose read FAILED (a transient/IO fault, not absent, not
+	// corrupt) leaves its run's engine liveness unknowable — and, unlike (1), there may be NO leaf meta
+	// yet (the owner is still inside createWorktree→registration). Fail CLOSED: veto its segment so a dead
+	// path-safe twin mapping to the same segment can't reclaim the shared workdir under the possibly-live
+	// owner.
+	for _, runID := range unreadable {
 		seg := ids.WorktreeSegment(runID)
 		v := out[seg]
 		v.Vetoed = true
@@ -870,8 +968,9 @@ func PurgeRun(runID string) error {
 	// refuses). An unverifiable-foreground run (not worktreePurgeable) skips this and deletes its record.
 	var segSnapshot []os.DirEntry
 	segDir := ""
-	if worktreePurgeable && ids.WorktreeSegment(runID) == runID {
-		d := filepath.Join(os.TempDir(), "cc-fleet-worktrees", runID)
+	storeDir, storeErr := WorktreeStoreDir()
+	if storeErr == nil && worktreePurgeable && ids.WorktreeSegment(runID) == runID {
+		d := filepath.Join(storeDir, runID)
 		if entries, rerr := segReadDir(d); rerr == nil {
 			verdicts, vok := SegmentReclaimVerdicts()
 			if v, present := verdicts[runID]; !vok || !present || v.Vetoed {

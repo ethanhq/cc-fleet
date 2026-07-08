@@ -470,7 +470,7 @@ func TestGCReapsRunThroughPurgeRunNoStrand(t *testing.T) {
 	}
 	const old = "2000-01-01T00:00:00Z"
 	const runID = "gcrun"
-	segDir := filepath.Join(os.TempDir(), "cc-fleet-worktrees", runID)
+	segDir := filepath.Join(storeWorktreeDir(t), runID)
 	t.Cleanup(func() { _ = os.RemoveAll(segDir) })
 	if err := os.MkdirAll(filepath.Join(segDir, "wt"), 0o700); err != nil { // the leaked workdir
 		t.Fatal(err)
@@ -515,7 +515,7 @@ func TestPurgeJobsReapsRunThroughPurgeRunNoStrand(t *testing.T) {
 	t.Cleanup(func() { procStartFn = origPS })
 
 	// Run A: dead + dead-child member (terminal cache) + a leaked workdir → reaped, workdir gone with it.
-	segA := filepath.Join(os.TempDir(), "cc-fleet-worktrees", "runA")
+	segA := filepath.Join(storeWorktreeDir(t), "runA")
 	t.Cleanup(func() { _ = os.RemoveAll(segA) })
 	if err := os.MkdirAll(filepath.Join(segA, "wt"), 0o700); err != nil {
 		t.Fatal(err)
@@ -524,7 +524,7 @@ func TestPurgeJobsReapsRunThroughPurgeRunNoStrand(t *testing.T) {
 	writeLeafMeta(t, jobMeta{JobID: "ma", RunID: "runA", PID: self, ChildPID: 0x7ffffffe}, true) // dead child + terminal cache
 
 	// Run B: a LIVE-orphan member → kept intact.
-	segB := filepath.Join(os.TempDir(), "cc-fleet-worktrees", "runB")
+	segB := filepath.Join(storeWorktreeDir(t), "runB")
 	t.Cleanup(func() { _ = os.RemoveAll(segB) })
 	if err := os.MkdirAll(filepath.Join(segB, "wt"), 0o700); err != nil {
 		t.Fatal(err)
@@ -929,6 +929,41 @@ func TestCorruptManifestLiveLeafVetoes(t *testing.T) {
 	}
 }
 
+// TestUnreadableManifestVetoesSegment (codex r32): a colliding owner whose MANIFEST read persistently
+// faults (a sharing violation the retry can't outlast, or a real I/O error) AND that has no member leaf
+// yet — the createWorktree→registration window — must still veto its segment. listRunsForReclaim drops
+// such a manifest from the run set, so without the unreadable-manifest veto the dead path-safe twin
+// ("a-b") would become an UNVETOED reclaimer for the SHARED segment and delete the live owner's workdir
+// under it. The leaf projection can't cover this case: there is no leaf meta to read yet. Distinct from
+// the corrupt-manifest sibling above — a readable-but-corrupt manifest stays deletable; an UNREADABLE
+// one fails closed.
+func TestUnreadableManifestVetoesSegment(t *testing.T) {
+	newReadRetryEnv(t)
+	origPS := procStartFn
+	procStartFn = func(int) (string, bool) { return "tok", true }
+	t.Cleanup(func() { procStartFn = origPS })
+
+	writeRunForTest(t, WorkflowRun{RunID: "a-b", StartedAt: "2026-01-01T00:00:00Z", Status: "stopped", EnginePID: deadEnginePID}) // dead path-safe reclaimer
+	writeRunForTest(t, WorkflowRun{RunID: "a.b", StartedAt: "2026-01-01T00:00:00Z", Status: "running", EnginePID: os.Getpid()})   // colliding owner, no leaf yet
+	injectManifestRead(t, "a.b", -1)                                                                                              // its manifest read persistently faults
+
+	v, ok := SegmentReclaimVerdicts()
+	if !ok {
+		t.Fatal("an unreadable MANIFEST must not fail the whole scan (that is the corrupt-META rule); it vetoes its own segment")
+	}
+	if !v["a-b"].Vetoed {
+		t.Error("a colliding owner with an UNREADABLE manifest and no leaf yet must VETO segment a-b")
+	}
+
+	wtDir := seedWorktreeTemp(t, "a-b")
+	if err := PurgeRun("a-b"); err == nil || !strings.Contains(err.Error(), "worktree segment") {
+		t.Errorf("PurgeRun(a-b) must refuse while a.b's manifest is unreadable, got %v", err)
+	}
+	if _, err := os.Stat(wtDir); err != nil {
+		t.Errorf("the shared segment must survive the refused purge, err=%v", err)
+	}
+}
+
 // TestPurgeRunSnapshotScopedRemoval (codex r14 TOCTOU): PurgeRun removes exactly the workdirs its
 // VERDICT-TIME segment snapshot listed, and os.Remove's the segment dir only if now empty — so a
 // colliding owner's post-snapshot fresh-uuid workdir (unlisted, via the segReadDir seam) SURVIVES,
@@ -937,7 +972,7 @@ func TestPurgeRunSnapshotScopedRemoval(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 	const runID = "snap-run"
-	segDir := filepath.Join(os.TempDir(), "cc-fleet-worktrees", runID)
+	segDir := filepath.Join(storeWorktreeDir(t), runID)
 	t.Cleanup(func() { _ = os.RemoveAll(segDir) })
 	staleWt := filepath.Join(segDir, "stale-uuid")
 	freshWt := filepath.Join(segDir, "fresh-uuid") // simulates a colliding owner's POST-snapshot creation
@@ -995,7 +1030,7 @@ func TestClearFinishedThroughPurgeRun(t *testing.T) {
 	const sess = "sess-1"
 
 	writeRunForTest(t, WorkflowRun{RunID: "fg-live", SessionID: sess, StartedAt: "2026-01-01T00:00:00Z", Status: "stopped", EnginePID: 0, FgEnginePID: self, FgEngineProcStart: "tok"}) // blind-stopped FgAlive
-	segDir := filepath.Join(os.TempDir(), "cc-fleet-worktrees", "term-run")
+	segDir := filepath.Join(storeWorktreeDir(t), "term-run")
 	t.Cleanup(func() { _ = os.RemoveAll(segDir) })
 	if err := os.MkdirAll(filepath.Join(segDir, "wt"), 0o700); err != nil {
 		t.Fatal(err)

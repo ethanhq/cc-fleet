@@ -6,11 +6,59 @@ import (
 	"testing"
 )
 
-// seedWorktreeTemp creates a cc-fleet-worktrees/<runID> temp tree (mirroring a run's
-// isolation-worktree workdir root), registers its cleanup, and returns its path.
+// TestWorktreeStoreIDDistinctForRelativeConfig (codex r35): WorktreeStoreID must hash an ABSOLUTE config
+// path, so a relative XDG_CONFIG_HOME (which resolves against cwd) yields DISTINCT ids from different
+// cwds — two different physical stores must never share a worktree namespace (else the cross-store
+// reclaim hole reopens). No test in this package runs in parallel, so the process-global chdir is safe.
+func TestWorktreeStoreIDDistinctForRelativeConfig(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", ".xdg") // relative → resolves against cwd
+	root := t.TempDir()
+	sub := filepath.Join(root, "sub")
+	if err := os.MkdirAll(sub, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+
+	if err := os.Chdir(root); err != nil {
+		t.Fatal(err)
+	}
+	idRoot, err := WorktreeStoreID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(sub); err != nil {
+		t.Fatal(err)
+	}
+	idSub, err := WorktreeStoreID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if idRoot == idSub {
+		t.Error("a relative XDG_CONFIG_HOME from different cwds must yield DISTINCT store ids (different physical stores)")
+	}
+}
+
+// storeWorktreeDir is this store's isolation-worktree temp root as production computes it
+// (WorktreeStoreDir), so a test seeds workdirs where createWorktree / PurgeRun look after the per-store
+// namespacing. Both read the same process env, so the store id always matches production in-test.
+func storeWorktreeDir(t *testing.T) string {
+	t.Helper()
+	d, err := WorktreeStoreDir()
+	if err != nil {
+		t.Fatalf("WorktreeStoreDir: %v", err)
+	}
+	return d
+}
+
+// seedWorktreeTemp creates a <store>/<runID> temp tree (mirroring a run's isolation-worktree workdir
+// root), registers its cleanup, and returns its path.
 func seedWorktreeTemp(t *testing.T, runID string) string {
 	t.Helper()
-	wtDir := filepath.Join(os.TempDir(), "cc-fleet-worktrees", runID)
+	wtDir := filepath.Join(storeWorktreeDir(t), runID)
 	if err := os.MkdirAll(filepath.Join(wtDir, "x"), 0o700); err != nil {
 		t.Fatalf("mkdir worktree temp: %v", err)
 	}

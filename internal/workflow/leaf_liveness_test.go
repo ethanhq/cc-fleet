@@ -54,7 +54,7 @@ func TestSweepHonorsLiveLeafWorkdir(t *testing.T) {
 		repo = initSweepRepo(t)
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 		t.Setenv("HOME", t.TempDir())
-		tempBase := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees")
+		tempBase := storeWorktreeBase(t)
 		t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(tempBase, id)) })
 		if err := subagent.SaveRun(subagent.WorkflowRun{RunID: id, StartedAt: "2026-01-01T00:00:00Z", Status: "stopped", EnginePID: 0x7ffffffe}); err != nil {
 			t.Fatal(err)
@@ -102,7 +102,7 @@ func seedDeadRunWorktree(t *testing.T, id string) (repo, wt string) {
 	repo = initSweepRepo(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
-	tempBase := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees")
+	tempBase := storeWorktreeBase(t)
 	t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(tempBase, id)) })
 	if err := subagent.SaveRun(subagent.WorkflowRun{RunID: id, StartedAt: "2026-01-01T00:00:00Z", Status: "stopped", EnginePID: 0x7ffffffe}); err != nil {
 		t.Fatal(err)
@@ -158,7 +158,7 @@ func TestSweepSparesCollidingSegment(t *testing.T) {
 	repo := initSweepRepo(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
-	tempBase := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees")
+	tempBase := storeWorktreeBase(t)
 	t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(tempBase, "a-b")) })
 	if err := subagent.SaveRun(subagent.WorkflowRun{RunID: "a-b", StartedAt: "2026-01-01T00:00:00Z", Status: "stopped", EnginePID: 0x7ffffffe}); err != nil {
 		t.Fatal(err)
@@ -195,7 +195,7 @@ func TestSweepOwnSegmentSnapshotScoped(t *testing.T) {
 	repo := initSweepRepo(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
-	tempBase := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees")
+	tempBase := storeWorktreeBase(t)
 	const id = "own-snap"
 	t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(tempBase, id)) })
 	if err := subagent.SaveRun(subagent.WorkflowRun{RunID: id, StartedAt: "2026-01-01T00:00:00Z", Status: "stopped", EnginePID: 0x7ffffffe}); err != nil {
@@ -233,7 +233,7 @@ func TestSweepSparesCorruptManifestCollision(t *testing.T) {
 	repo := initSweepRepo(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
-	tempBase := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees")
+	tempBase := storeWorktreeBase(t)
 	t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(tempBase, "a-b")) })
 
 	if err := subagent.SaveRun(subagent.WorkflowRun{RunID: "a-b", StartedAt: "2026-01-01T00:00:00Z", Status: "stopped", EnginePID: 0x7ffffffe}); err != nil {
@@ -276,7 +276,7 @@ func TestLegacyFgRunWorktreeUntouched(t *testing.T) {
 	repo := initSweepRepo(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
-	tempBase := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees")
+	tempBase := storeWorktreeBase(t)
 	const id = "legacy-fg" // path-safe
 	t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(tempBase, id)) })
 	wt := filepath.Join(tempBase, id, "wt")

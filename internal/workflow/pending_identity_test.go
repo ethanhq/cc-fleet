@@ -19,7 +19,7 @@ func TestPendingIdentityWorktreeProtected(t *testing.T) {
 	repo := initSweepRepo(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
-	tempBase := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees")
+	tempBase := storeWorktreeBase(t)
 	const id = "pend-run" // path-safe
 	t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(tempBase, id)) })
 	wt := filepath.Join(tempBase, id, "wt")
@@ -87,7 +87,7 @@ func TestPendingHeldMemberVetoesSegment(t *testing.T) {
 	repo := initSweepRepo(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
-	tempBase := filepath.Join(canonPath(os.TempDir()), "cc-fleet-worktrees")
+	tempBase := storeWorktreeBase(t)
 	const id = "held-pend" // path-safe
 	t.Cleanup(func() { _ = os.RemoveAll(filepath.Join(tempBase, id)) })
 	wt := filepath.Join(tempBase, id, "wt")
