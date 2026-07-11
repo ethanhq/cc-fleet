@@ -10,7 +10,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
-// TestExecuteFatalFirstStamp (codex r21): Execute's FIRST identity stamp is fatal — if it can't persist
+// TestExecuteFatalFirstStamp: Execute's FIRST identity stamp is fatal — if it can't persist
 // (disk full / EPERM), Execute returns the error BEFORE the startup sweep and any leaf/worktree work.
 // This upholds the invariant finalizeFailedDetach relies on: a manifest still reading EnginePID 0 means
 // the child created NO worktrees (so restoring the prior death proof strands nothing).
@@ -49,7 +49,7 @@ phase("p");
 	}
 }
 
-// TestFinalizeFailedDetach (codex r20): a failed detached launch must not destroy a death proof.
+// TestFinalizeFailedDetach: a failed detached launch must not destroy a death proof.
 // (a) child self-stamped (EnginePID != 0) → mark failed, KEEP the pid (death evidence, already reaped);
 // (b) RESUME whose child never stamped (EnginePID 0) → restore the PRIOR record's death proof;
 // (c) FRESH launch (no prior) → mark the minted run failed.
@@ -87,7 +87,7 @@ func TestFinalizeFailedDetach(t *testing.T) {
 	}
 }
 
-// TestFailedDetachedResumeRestoresPriorDeathProof (codex r20): end-to-end via the launchDetachedFn
+// TestFailedDetachedResumeRestoresPriorDeathProof: end-to-end via the launchDetachedFn
 // seam — a detached RESUME whose spawn fails must restore the PRIOR record so its death proof survives
 // (the manifest reads provably dead again → the sweep can still reclaim its worktrees), not a
 // {failed,0,no-fg} that would strand them forever.

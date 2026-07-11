@@ -7,7 +7,7 @@ import (
 	"time"
 )
 
-// TestEngineAliveUnverifiableFailsSoft (codex r30): EngineAlive must fail SOFT to alive on an
+// TestEngineAliveUnverifiableFailsSoft: EngineAlive must fail SOFT to alive on an
 // alive-but-UNVERIFIABLE detached pid (argv unreadable AND its recorded token unreadable). The old code
 // collapsed a token-read failure to false, so consumers that read !EngineAlive as death proof —
 // critically WaitEngineStopped's poll after a reap — could succeed prematurely on a still-live engine.
@@ -36,7 +36,7 @@ func TestEngineAliveUnverifiableFailsSoft(t *testing.T) {
 	}
 }
 
-// TestWaitEngineStoppedFailClosedOnUnverifiable (codex r30): WaitEngineStopped must TIME OUT (false) on
+// TestWaitEngineStoppedFailClosedOnUnverifiable: WaitEngineStopped must TIME OUT (false) on
 // an alive-but-unverifiable engine — the fail-closed path — instead of succeeding as it did when
 // EngineAlive collapsed the token failure to false; a genuinely-dead pid still passes immediately. And
 // StopRun's DetachedLive reap path, when the pid won't verify dead, surfaces the did-not-stop error

@@ -6,11 +6,11 @@ import (
 	"testing"
 )
 
-// TestPurgeRunRefusesNonPathSafePendingMember (codex r29): a NON-path-safe run id ("a.b", segment
+// TestPurgeRunRefusesNonPathSafePendingMember: a NON-path-safe run id ("a.b", segment
 // "a-b") skips PurgeRun's path-safe segment verdict, so its whole-run member walk is the ONLY segment
 // guard. A crash-window PENDING member (ChildIdentityPending, no ChildPID) is the sole veto for segment
 // "a-b"; PurgeRun must REFUSE rather than reap its meta, else a colliding dead path-safe "a-b" reclaimer
-// deletes the shared workdir under the possible orphan. The r24 recovery is unchanged: an explicit
+// deletes the shared workdir under the possible orphan. The recovery escape holds: an explicit
 // DeleteJob on the pending job proceeds → the retried PurgeRun proceeds → the segment then reclaims.
 func TestPurgeRunRefusesNonPathSafePendingMember(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())

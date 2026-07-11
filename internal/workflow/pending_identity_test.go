@@ -10,7 +10,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
-// TestPendingIdentityWorktreeProtected (codex r24): a DETACHED dead-engine run with a PENDING
+// TestPendingIdentityWorktreeProtected: a DETACHED dead-engine run with a PENDING
 // identity-less member (Start-window crash) + a present workdir. The pending member's read-side veto
 // protects the workdir: PurgeJobs keeps it (its run stays), the sweep spares it (segment vetoed), and a
 // path-safe PurgeRun refuses. The explicit DeleteJob on the pending job is the record-only recovery
@@ -78,11 +78,11 @@ func TestPendingIdentityWorktreeProtected(t *testing.T) {
 	}
 }
 
-// TestPendingHeldMemberVetoesSegment (codex r25): a HELD premark clears meta.PID, so a Start-window
+// TestPendingHeldMemberVetoesSegment: a HELD premark clears meta.PID, so a Start-window
 // crash after a hold directive leaves {held, PID 0, ChildPID 0, ChildIdentityPending}. The PID>0
 // fallback would read it DEAD (no segment veto); the read side must instead veto it (aligned with the
 // keep-rule). Dead engine + present workdir → sweep spares, path-safe PurgeRun refuses; DeleteJob
-// recovers (r24 chain, held shape).
+// recovers.
 func TestPendingHeldMemberVetoesSegment(t *testing.T) {
 	repo := initSweepRepo(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())

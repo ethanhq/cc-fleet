@@ -759,8 +759,8 @@ func leafProcessMayBeAlive(meta jobMeta) bool {
 // (GC, PurgeJobs, DeleteJob) must PRESERVE such a meta: deleting it would strip the segment's veto and
 // let a colliding reclaimer delete the live child's workdir. Deliberately SCOPED to CHILD-IDENTIFIED
 // metas (RunID != "" && ChildPID > 0): a synthesized terminal cache and a dead meta.PID (the engine
-// proxy) don't matter — the child identity outranks them. An identity-less sync meta (a pre-change job,
-// or a crash before the identity write) is NOT preserved here: its protection is the fail-safe veto
+// proxy) don't matter — the child identity outranks them. An identity-less sync meta (a legacy job
+// predating the identity fields) is NOT preserved here: its protection is the fail-safe veto
 // WHILE it lives, and the GC TTL bounds the exposure (a one-shot claude leaf outliving the TTL is not a
 // realistic lifetime, and preserving identity-less metas forever would break the GC contract).
 func isLiveOrphanVetoEvidence(meta jobMeta) bool {
@@ -772,13 +772,13 @@ func isLiveOrphanVetoEvidence(meta jobMeta) bool {
 // ~ms cmd.Start→recordChildIdentity window leaves a LIVE orphan whose child identity was never
 // recorded; the read-side fail-safe (leafProcessMayBeAlive: sync, no ChildPID, PID>0 → possibly-alive)
 // already vetoes its segment, so AUTOMATED cleanup (GC/PurgeJobs) must KEEP the meta to match — else it
-// reaps the veto evidence and the chokepoint then deletes the workdir under the orphan. Rare + bounded
-// (a crash in that tiny window). The automated keep-rules AND PurgeRun's whole-run member walk use this
-// wider form — the walk is a NON-path-safe id's only segment guard (it skips the path-safe segment
-// verdict, which vetoes pending via leafProcessMayBeAlive). Only the EXPLICIT DeleteJob refusal stays on
-// the narrower isLiveOrphanVetoEvidence, so a DeleteJob on the pending job is the record-only recovery
-// escape (see DeleteJob). A legacy meta lacks the field (false), so the GC contract for pre-change
-// jobs is unchanged.
+// reaps the veto evidence and the chokepoint then deletes the workdir under the orphan. Rare (a crash
+// in that tiny window), and kept regardless of age until an explicit DeleteJob recovers it. The
+// automated keep-rules AND PurgeRun's whole-run member walk use this wider form — the walk is a
+// NON-path-safe id's only segment guard (it skips the path-safe segment verdict, which vetoes pending
+// via leafProcessMayBeAlive). Only the EXPLICIT DeleteJob refusal stays on the narrower
+// isLiveOrphanVetoEvidence, so a DeleteJob on the pending job is the record-only recovery escape (see
+// DeleteJob). A legacy meta lacks the field (false), so the GC contract for legacy jobs is unchanged.
 func isLiveOrPendingOrphanEvidence(meta jobMeta) bool {
 	return isLiveOrphanVetoEvidence(meta) || (meta.RunID != "" && meta.ChildIdentityPending && meta.ChildPID == 0)
 }

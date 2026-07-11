@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// TestWorktreeStoreIDDistinctForRelativeConfig (codex r35): WorktreeStoreID must hash an ABSOLUTE config
+// TestWorktreeStoreIDDistinctForRelativeConfig: WorktreeStoreID must hash an ABSOLUTE config
 // path, so a relative XDG_CONFIG_HOME (which resolves against cwd) yields DISTINCT ids from different
 // cwds — two different physical stores must never share a worktree namespace (else the cross-store
 // reclaim hole reopens). No test in this package runs in parallel, so the process-global chdir is safe.

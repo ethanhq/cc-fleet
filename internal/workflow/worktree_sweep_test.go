@@ -245,7 +245,7 @@ func TestSweepOwnSegment(t *testing.T) {
 	})
 }
 
-// TestSweepOwnSegmentSnapshotBeforeVerdict (codex r33): sweepOwnSegment must snapshot the segment's
+// TestSweepOwnSegmentSnapshotBeforeVerdict: sweepOwnSegment must snapshot the segment's
 // registrations BEFORE it computes the reclaim verdict — the ordering sweepRunWorktrees and PurgeRun
 // already use. A colliding twin ("own.seg", same segment "own-seg") runs under a DIFFERENT run id, so
 // its run lock never serializes against this sweep; if it registers a fresh worktree in the
@@ -291,7 +291,7 @@ func TestSweepOwnSegmentSnapshotBeforeVerdict(t *testing.T) {
 	}
 }
 
-// TestSweepRunWorktreesForeignStoreSpared (codex r34): the isolation-worktree temp root is namespaced by
+// TestSweepRunWorktreesForeignStoreSpared: the isolation-worktree temp root is namespaced by
 // config store (subagent.WorktreeStoreID) and the sweep is scoped to THIS store's prefix. A worktree NOT
 // under this store's prefix — a foreign store (another HOME/XDG sharing os.TempDir()+repo), or a
 // pre-namespacing flat-path leftover — is structurally invisible to the sweep and must survive, even
@@ -334,11 +334,11 @@ func TestSweepRunWorktreesForeignStoreSpared(t *testing.T) {
 	}
 }
 
-// TestSweepRunWorktreesLegacyFlatVanishedPruned (codex r35): a worktree under the shared cc-fleet-worktrees
+// TestSweepRunWorktreesLegacyFlatVanishedPruned: a worktree under the shared cc-fleet-worktrees
 // root but OUTSIDE this store's prefix (a foreign store's, or a pre-namespacing flat leftover) is pruned
 // by clause (b) when its workdir has VANISHED — a deleted cwd can host no live process, whichever store
 // owned it — while a PRESENT such workdir (possibly a foreign store's live cwd) is spared. This drains
-// legacy leftovers without reopening the r34 cross-store deletion.
+// legacy leftovers without deleting a present foreign workdir.
 func TestSweepRunWorktreesLegacyFlatVanishedPruned(t *testing.T) {
 	repo := initSweepRepo(t)
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())

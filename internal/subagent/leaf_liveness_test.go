@@ -106,7 +106,7 @@ func TestSegmentReclaimVerdicts(t *testing.T) {
 	}
 	check("solo", true, false)  // removable
 	check("leafy", false, true) // live leaf → vetoed
-	check("a-b", true, true)    // dead a-b (reclaimer) + LIVE a.b (veto) → NOT removable (the r13 fix)
+	check("a-b", true, true)    // dead a-b (reclaimer) + LIVE a.b (veto) → NOT removable
 	check("x-y", false, false)  // lone non-path-safe dead → no path-safe reclaimer → leak-only
 }
 
@@ -267,7 +267,7 @@ func TestPruneRunsContinuesPastLiveLeaf(t *testing.T) {
 	}
 }
 
-// TestPurgeRunRefusesNonPathSafeLiveMember (codex r18): PurgeRun("a.b") is a valid NON-path-safe id
+// TestPurgeRunRefusesNonPathSafeLiveMember: PurgeRun("a.b") is a valid NON-path-safe id
 // that bypasses the path-safe segment gate, so it must still refuse — id-shape-independent — on its OWN
 // live child-identified member, else it deletes the veto for segment a-b and a dead path-safe a-b
 // reclaimer deletes the live child's workdir. Kill the child → PurgeRun("a.b") succeeds + reclaimable.
@@ -310,9 +310,9 @@ func TestPurgeRunRefusesNonPathSafeLiveMember(t *testing.T) {
 	}
 }
 
-// TestPurgeRunRefusesUnderCollidingSegment (the codex r13 scenario): a dead PATH-SAFE "a-b" shares
+// TestPurgeRunRefusesUnderCollidingSegment: a dead PATH-SAFE "a-b" shares
 // segment "a-b" with a LIVE non-path-safe twin "a.b". PurgeRun("a-b") must NOT RemoveAll the shared
-// segment (where a.b's workdirs live) — it refuses, consistent with the r12 refusal shape — until the
+// segment (where a.b's workdirs live) — it refuses — until the
 // colliding owner exits, then it purges.
 func TestPurgeRunRefusesUnderCollidingSegment(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -338,7 +338,7 @@ func TestPurgeRunRefusesUnderCollidingSegment(t *testing.T) {
 	}
 }
 
-// TestCorruptMemberMetaFailsClosed (codex r15): an unreadable/partial member meta makes the run's
+// TestCorruptMemberMetaFailsClosed: an unreadable/partial member meta makes the run's
 // leaf state unknowable, so runLeafScan fails CLOSED — SegmentReclaimVerdicts returns !ok, PurgeRun
 // refuses, and the worktree survives (never deleted under a possibly-live orphan whose meta was torn).
 func TestCorruptMemberMetaFailsClosed(t *testing.T) {
@@ -374,7 +374,7 @@ func TestCorruptMemberMetaFailsClosed(t *testing.T) {
 	}
 }
 
-// TestWriteMetaAtomicNoTornReads (codex r15): the meta is load-bearing death evidence, so writeMeta
+// TestWriteMetaAtomicNoTornReads: the meta is load-bearing death evidence, so writeMeta
 // must be atomic (temp+rename) — a concurrent reader never sees a partial file. A large payload widens
 // the write window so a NON-atomic (plain truncate+write) meta would surface a torn (parse-error) read.
 func TestWriteMetaAtomicNoTornReads(t *testing.T) {
@@ -418,7 +418,7 @@ func TestWriteMetaAtomicNoTornReads(t *testing.T) {
 	}
 }
 
-// TestPruneRunsSparesLiveDetached (codex r20 correction): PruneRuns is BULK cleanup and never
+// TestPruneRunsSparesLiveDetached: PruneRuns is BULK cleanup and never
 // auto-stops — a verifiably-live detached run (DetachedLive) is SPARED (isLiveOrUnverifiable's tri-state
 // arm, behavior-preserving vs the old EngineAlive arm), while a plainly-dead one is reaped. Uses the
 // test's own pid — safe because a spared run is never PurgeRun'd, so nothing is reaped.
@@ -453,7 +453,7 @@ func TestPruneRunsSparesLiveDetached(t *testing.T) {
 	}
 }
 
-// TestGCReapsRunThroughPurgeRunNoStrand (codex r20): GC's aged-run removal routes through PurgeRun, so
+// TestGCReapsRunThroughPurgeRunNoStrand: GC's aged-run removal routes through PurgeRun, so
 // a dead run + a dead-child member + a leaked workdir (all TTL-expired) is reaped with the workdir
 // removed WITH the manifest (PurgeRun's ordered, physical-snapshot cleanup) — NO unknown-present strand.
 // The job-meta pass reaping the dead member BEFORE the run's PurgeRun is immaterial (PurgeRun removes
@@ -502,7 +502,7 @@ func TestGCReapsRunThroughPurgeRunNoStrand(t *testing.T) {
 	}
 }
 
-// TestPurgeJobsReapsRunThroughPurgeRunNoStrand (codex r21): PurgeJobs's aged-run removal (the
+// TestPurgeJobsReapsRunThroughPurgeRunNoStrand: PurgeJobs's aged-run removal (the
 // uninstall/purge sweep) routes through PurgeRun, so a dead run + a dead-child member + a leaked workdir
 // is reaped with the workdir removed WITH the manifest (no unknown-present strand), while a run with a
 // LIVE-orphan member is kept intact (member pass keeps it → runningRuns → manifest kept).
@@ -549,7 +549,7 @@ func TestPurgeJobsReapsRunThroughPurgeRunNoStrand(t *testing.T) {
 	}
 }
 
-// TestPurgeJobsKeepsDirWhenRunRefused (codex r22): PurgeJobs's final wholesale RemoveAll must not
+// TestPurgeJobsKeepsDirWhenRunRefused: PurgeJobs's final wholesale RemoveAll must not
 // override a PurgeRun refusal. A LIVE foreground run with NO member job (so `running` alone is empty)
 // is refused by PurgeRun → its manifest SURVIVES and the jobs dir is KEPT. Flip it dead → the refusal
 // clears and the full cleanup (incl. the dir removal) proceeds.
@@ -596,7 +596,7 @@ func TestPurgeJobsKeepsDirWhenRunRefused(t *testing.T) {
 	}
 }
 
-// TestUnverifiableDetachedEngineSparesSegment (codex r19): an alive-but-UNVERIFIABLE detached engine
+// TestUnverifiableDetachedEngineSparesSegment: an alive-but-UNVERIFIABLE detached engine
 // (recorded token, but neither argv nor its start token readable — EPERM/hardened) must NOT read as
 // provably dead, so its worktree segment is spared (Vetoed, not Reclaimer). Once the token becomes
 // readable + MISMATCHED (recycled), it reads dead and the segment becomes reclaimable. Covers both the
@@ -631,7 +631,7 @@ func TestUnverifiableDetachedEngineSparesSegment(t *testing.T) {
 	}
 }
 
-// TestUnverifiableDetachedRefusedByPurgeAndPrune (codex r20): a blind-stop collapse can leave
+// TestUnverifiableDetachedRefusedByPurgeAndPrune: a blind-stop collapse can leave
 // {stopped, retained pid alive, token} — an UNVERIFIABLE detached engine (DetachedUnknown). Because it
 // is not PROVABLY dead, PurgeRun refuses it (mirroring FgAlive), PruneRuns spares it, and — since the
 // same DetachedUnknown is what resumeBlockedReason refuses on (workflow) — resume is refused too. Once
@@ -684,11 +684,11 @@ func TestUnverifiableDetachedRefusedByPurgeAndPrune(t *testing.T) {
 	}
 }
 
-// TestPendingIdentityKeptByAutomatedCleanup (codex r24): a sync member still in the
+// TestPendingIdentityKeptByAutomatedCleanup: a sync member still in the
 // cmd.Start→recordChildIdentity window (ChildIdentityPending, no ChildPID) is a possibly-live orphan the
 // read-side fail-safe already vetoes — so AUTOMATED cleanup (GC/PurgeJobs) must KEEP it (else it reaps
 // the veto and the chokepoint deletes the workdir). A NORMAL dead-child member (pending cleared) is
-// still reaped (r17 contract). The EXPLICIT DeleteJob on the pending job PROCEEDS (record-only recovery).
+// still reaped. The EXPLICIT DeleteJob on the pending job PROCEEDS (record-only recovery).
 func TestPendingIdentityKeptByAutomatedCleanup(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
@@ -713,7 +713,7 @@ func TestPendingIdentityKeptByAutomatedCleanup(t *testing.T) {
 		}
 	}
 
-	// GC: a PENDING member survives; a NORMAL dead-child member is reaped (r17 unchanged).
+	// GC: a PENDING member survives; a NORMAL dead-child member is reaped.
 	seed("pend", "a-b", 0, true)
 	seed("norm", "c-d", 0x7ffffffe, false)
 	if res := GC(time.Hour); !res.OK {
@@ -723,7 +723,7 @@ func TestPendingIdentityKeptByAutomatedCleanup(t *testing.T) {
 		t.Error("GC must PRESERVE a pending-identity member (Start-window veto evidence)")
 	}
 	if _, merr := readMeta(dir, "norm"); merr == nil {
-		t.Error("GC must still reap a normal dead-child member (r17 contract unchanged)")
+		t.Error("GC must still reap a normal dead-child member")
 	}
 
 	// Point 3: the pending member vetoes its segment (read-side fail-safe → projection).
@@ -759,7 +759,7 @@ func TestPendingIdentityKeptByAutomatedCleanup(t *testing.T) {
 	}
 }
 
-// TestGCPreservesLiveOrphanVetoEvidence (codex r17): the recency GC must NOT delete a live orphan's
+// TestGCPreservesLiveOrphanVetoEvidence: the recency GC must NOT delete a live orphan's
 // member meta — even TTL-expired, with a SYNTHESIZED terminal cache and a dead meta.PID (engine proxy)
 // — because it is the veto evidence its worktree segment relies on. Once the child reads dead, GC reaps
 // it and the segment becomes reclaimable.
@@ -807,7 +807,7 @@ func TestGCPreservesLiveOrphanVetoEvidence(t *testing.T) {
 	}
 }
 
-// TestPurgeJobsPreservesLiveOrphan (codex r17 audit): PurgeJobs keeps a live-orphan member (reported
+// TestPurgeJobsPreservesLiveOrphan: PurgeJobs keeps a live-orphan member (reported
 // running) despite a synthesized terminal cache — the same veto-evidence rule as GC.
 func TestPurgeJobsPreservesLiveOrphan(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -848,7 +848,7 @@ func TestPurgeJobsPreservesLiveOrphan(t *testing.T) {
 	}
 }
 
-// TestDeleteJobRefusesLiveOrphan (codex r17 audit): the board's per-record delete refuses a live-orphan
+// TestDeleteJobRefusesLiveOrphan: the board's per-record delete refuses a live-orphan
 // member (retryable), mirroring PurgeRun; once the child dies it deletes.
 func TestDeleteJobRefusesLiveOrphan(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
@@ -882,7 +882,7 @@ func TestDeleteJobRefusesLiveOrphan(t *testing.T) {
 	}
 }
 
-// TestCorruptManifestLiveLeafVetoes (codex r16): ListRuns silently skips a corrupt run manifest, but a
+// TestCorruptManifestLiveLeafVetoes: ListRuns silently skips a corrupt run manifest, but a
 // live member leaf's veto stands on its own (its RunID comes from the job meta, not the manifest). So a
 // live colliding owner (a.b whose runs/a.b.json is truncated) still vetoes segment a-b via the leaf
 // projection — a dead path-safe a-b can't reclaim under it. Kill the member → reclaimable again.
@@ -929,7 +929,7 @@ func TestCorruptManifestLiveLeafVetoes(t *testing.T) {
 	}
 }
 
-// TestUnreadableManifestVetoesSegment (codex r32): a colliding owner whose MANIFEST read persistently
+// TestUnreadableManifestVetoesSegment: a colliding owner whose MANIFEST read persistently
 // faults (a sharing violation the retry can't outlast, or a real I/O error) AND that has no member leaf
 // yet — the createWorktree→registration window — must still veto its segment. listRunsForReclaim drops
 // such a manifest from the run set, so without the unreadable-manifest veto the dead path-safe twin
@@ -964,7 +964,7 @@ func TestUnreadableManifestVetoesSegment(t *testing.T) {
 	}
 }
 
-// TestPurgeRunSnapshotScopedRemoval (codex r14 TOCTOU): PurgeRun removes exactly the workdirs its
+// TestPurgeRunSnapshotScopedRemoval: PurgeRun removes exactly the workdirs its
 // VERDICT-TIME segment snapshot listed, and os.Remove's the segment dir only if now empty — so a
 // colliding owner's post-snapshot fresh-uuid workdir (unlisted, via the segReadDir seam) SURVIVES,
 // while the snapshot-listed stale one is removed with the record.
@@ -1016,7 +1016,7 @@ func TestPurgeRunSnapshotScopedRemoval(t *testing.T) {
 	}
 }
 
-// TestClearFinishedThroughPurgeRun (codex r14): ClearFinished routes run deletion through
+// TestClearFinishedThroughPurgeRun: ClearFinished routes run deletion through
 // WithRunLock + PurgeRun, so a blind-stopped FgAlive run is REFUSED (skip-and-continue, survives) and
 // a terminal provably-dead run with a leaked worktree is cleared with its workdir removed WITH the
 // record — the unknown-present strand can no longer happen through this door.

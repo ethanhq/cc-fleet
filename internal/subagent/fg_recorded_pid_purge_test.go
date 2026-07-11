@@ -8,11 +8,11 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/pinned"
 )
 
-// TestFgRecordedLivePidRefused (codex r28b): a foreground record whose FgEnginePID is ALIVE but whose
+// TestFgRecordedLivePidRefused: a foreground record whose FgEnginePID is ALIVE but whose
 // token is empty/unreadable classifies FgUnknown. Because a recorded live pid we cannot disprove must
 // be treated like FgAlive (the detached principle), every automated deletion path — PurgeRun, PruneRuns,
 // ClearFinished, PurgeJobs — must REFUSE/SPARE it (its record survives) until the pid exits (→ FgDead),
-// then all proceed. The r23-adjudicated legacy shape (FgEnginePID<=0, no token) stays deletable.
+// then all proceed. The legacy shape (FgEnginePID<=0, no token) stays deletable.
 func TestFgRecordedLivePidRefused(t *testing.T) {
 	self := os.Getpid()
 
@@ -113,7 +113,7 @@ func TestFgRecordedLivePidRefused(t *testing.T) {
 		}
 	})
 
-	t.Run("legacy no-fg-pid stays deletable (r23 preserved)", func(t *testing.T) {
+	t.Run("legacy no-fg-pid stays deletable", func(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 		t.Setenv("HOME", t.TempDir())
 		// {stopped, 0, no fg fields}: FgUnknown with NO recorded pid — status-based, prunable/deletable.

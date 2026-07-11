@@ -101,9 +101,9 @@ func removeWorktree(root, wt string) {
 // when its workdir has vanished, which needs no verdict — so present foreign workdirs stay untouched
 // while stale registrations don't strand. An UNKNOWN segment under THIS store's prefix whose workdir
 // still EXISTS is left alone: it is this store's own run whose manifest is missing/unreadable (a live
-// one is spared by the verdict's fail-closed handling), not proof of death. This run's OWN segment gets no privileged reclamation here (an earlier design reclaimed it
-// unconditionally, which could delete a blind-stopped-but-live foreground twin's worktrees — the twin
-// shares this run's id); a resumed engine's own stale worktrees are reclaimed in the launcher under a
+// one is spared by the verdict's fail-closed handling), not proof of death. This run's OWN segment gets no privileged
+// reclamation here — unconditional reclaim could delete a blind-stopped-but-live foreground twin's
+// worktrees (the twin shares this run's id); a resumed engine's own stale worktrees are reclaimed in the launcher under a
 // death proof (sweepOwnSegment). A live foreground engine, a still-running detached engine, and an
 // alive-but-unverifiable pid are all left untouched, as are the user's own worktrees (they never live
 // under the temp prefix). Segments are ids.WorktreeSegment(id); because that collapses '.'/':'/separators
@@ -123,9 +123,8 @@ func sweepRunWorktrees(root string) {
 	globalPrefix := filepath.Join(canonPath(os.TempDir()), subagent.WorktreeTempName, storeID) + string(os.PathSeparator)
 	// flatRoot is the SHARED cc-fleet-worktrees root every store (and any pre-namespacing legacy leftover)
 	// sits beneath. A worktree under flatRoot but NOT under globalPrefix belongs to a FOREIGN store or is
-	// a legacy flat leftover: this store's verdict says nothing about it, so it is NEVER verdict-reclaimed
-	// (that store-local verdict on a foreign present workdir was the r34 deletion hole). It is pruned ONLY
-	// when its workdir has vanished — clause (b) needs no verdict (a deleted cwd cannot host a live
+	// a legacy flat leftover: this store's verdict says nothing about it, so it is NEVER verdict-reclaimed.
+	// It is pruned ONLY when its workdir has vanished — clause (b) needs no verdict (a deleted cwd cannot host a live
 	// process, whichever store owned it) — so a stale registration doesn't strand until a manual
 	// `git worktree prune`.
 	flatRoot := filepath.Join(canonPath(os.TempDir()), subagent.WorktreeTempName) + string(os.PathSeparator)
@@ -153,7 +152,7 @@ func sweepRunWorktrees(root string) {
 		}
 		if pathUnder(flatRoot, wt) {
 			// A foreign store's or a legacy flat worktree — verdict-exempt: prune ONLY a vanished workdir
-			// (clause b), never a present one (it may be a foreign store's live cwd — the r34 hole).
+			// (clause b), never a present one (it may be a foreign store's live cwd).
 			if _, statErr := os.Stat(wt); os.IsNotExist(statErr) {
 				removeWorktree(root, wt)
 			}

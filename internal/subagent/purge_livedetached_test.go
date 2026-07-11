@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// TestPurgeRunStopsLiveDetachedEngine (codex r20 correction): PurgeRun's one-action
+// TestPurgeRunStopsLiveDetachedEngine: PurgeRun's one-action
 // delete-a-running-run — a VERIFIABLY-live detached engine (DetachedLive) is stopped AND confirmed dead
 // (reap tree + WaitEngineStopped) before the run is deleted. Drives a REAL killable child in its own
 // process group as the "engine" pid, with a matching argv via the reuseGuardArgv seam, so the reap can

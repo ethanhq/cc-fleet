@@ -85,7 +85,7 @@ type jobMeta struct {
 	// cmd.Start→recordChildIdentity window: ChildPID is not stamped yet, but a crash in that ~ms window
 	// leaves a LIVE orphan whose identity was never recorded. It is the discriminator that lets automated
 	// cleanup (GC/PurgeJobs) keep such a meta as veto evidence WITHOUT keeping every identity-less legacy
-	// meta (which lacks this field → false, preserving the GC contract for pre-change jobs). recordChildIdentity clears
+	// meta (which lacks this field → false, preserving the GC contract for legacy jobs). recordChildIdentity clears
 	// it in the same write that stamps ChildPID; a REAPED terminal finalize (runClaude returned → child
 	// provably not running) also clears it — and zeroes the engine-proxy PID — so a cmd.Start failure
 	// can't strand a false pending veto that force-keeps the meta forever.

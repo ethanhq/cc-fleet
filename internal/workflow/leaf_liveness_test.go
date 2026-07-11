@@ -150,7 +150,7 @@ func TestReclaimSparesHeldPremarkOrphan(t *testing.T) {
 	})
 }
 
-// TestSweepSparesCollidingSegment (the codex r13 scenario): ownership is SEGMENT-level, so a LIVE
+// TestSweepSparesCollidingSegment: ownership is SEGMENT-level, so a LIVE
 // non-path-safe "a.b" and a dead path-safe "a-b" share segment "a-b". BOTH the Execute-time sweep and
 // the launcher own-segment sweep must SPARE the shared workdir (a.b may be using it); once a.b dies it
 // becomes reclaimable.
@@ -188,7 +188,7 @@ func TestSweepSparesCollidingSegment(t *testing.T) {
 	}
 }
 
-// TestSweepOwnSegmentSnapshotScoped (codex r14 TOCTOU): sweepOwnSegment removes only the git-registered
+// TestSweepOwnSegmentSnapshotScoped: sweepOwnSegment removes only the git-registered
 // (porcelain-snapshot) worktrees and os.Remove's the segment dir only if empty — so a workdir NOT in
 // the snapshot (here an unregistered dir, standing in for a post-snapshot fresh-uuid creation) SURVIVES.
 func TestSweepOwnSegmentSnapshotScoped(t *testing.T) {
@@ -221,7 +221,7 @@ func TestSweepOwnSegmentSnapshotScoped(t *testing.T) {
 	}
 }
 
-// TestSweepSparesCorruptManifestCollision (codex r16): a corrupt run manifest is silently skipped by
+// TestSweepSparesCorruptManifestCollision: a corrupt run manifest is silently skipped by
 // ListRuns, but the live member leaf's veto stands on its own (the leaf projection), so a live colliding
 // a.b (with a truncated runs/a.b.json) still vetoes segment a-b. Both the sweep and the own-segment sweep
 // spare the shared workdir; once a.b's member dies it's reclaimable.
@@ -266,7 +266,7 @@ func TestSweepSparesCorruptManifestCollision(t *testing.T) {
 	}
 }
 
-// TestLegacyFgRunWorktreeUntouched (codex r23 rebuttal, executable): a {stopped, EnginePID 0, NO fg
+// TestLegacyFgRunWorktreeUntouched: a {stopped, EnginePID 0, NO fg
 // identity} legacy run is NOT provably dead (FgUnknown), so every cleanup path may remove its RECORD
 // (today's adjudicated behavior) but NEVER touches its WORKDIR or git registration — worktreePurgeable
 // is false so PurgeRun skips the snapshot removal on direct rm / PruneRuns / PurgeJobs (its wholesale
