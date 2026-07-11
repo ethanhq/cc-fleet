@@ -11,6 +11,18 @@ Run a third-party provider model as a real Claude Code teammate in a tmux pane: 
 
 When this skill cites `cc-fleet-shared/<file>.md`, OPEN it with the Read tool at `../cc-fleet-shared/<file>.md` relative to this SKILL.md — the cited content is load-bearing, not optional background.
 
+> **Execution environment — check before running anything.** Confirm your shell
+> tool executes on the host where cc-fleet is installed. In sandboxed or remote
+> agent sessions, a tool named Bash may run on an isolated machine with a
+> different filesystem, PATH, processes, and tmux server — `command not found`,
+> a healthy-looking `doctor` whose leaves can't reach your files, or a wrong
+> working directory usually means you are in a sandbox shell, not that cc-fleet
+> is broken. Route commands through a host-executing bridge tool (for example,
+> desktop-commander) and pass host paths for any files you reference; do not
+> retry the same Bash call expecting different results. If no host-executing
+> tool is available, stop and explain that cc-fleet must run on its
+> installation host.
+
 **Precondition — agent-teams must be ON:** check your own tool list for `SendMessage` / `TeamCreate`; absent → do NOT spawn (an unmessageable pane bills the provider with no work) — enablement + fallback in cc-fleet-shared/routing.md.
 
 ---

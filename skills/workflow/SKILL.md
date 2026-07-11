@@ -9,6 +9,18 @@ description: Orchestrate a MULTI-PHASE, dependent, or resumable run over many pr
 
 When this skill cites `cc-fleet-shared/<file>.md`, OPEN it with the Read tool at `../cc-fleet-shared/<file>.md` relative to this SKILL.md — the cited content is load-bearing, not optional background.
 
+> **Execution environment — check before running anything.** Confirm your shell
+> tool executes on the host where cc-fleet is installed. In sandboxed or remote
+> agent sessions, a tool named Bash may run on an isolated machine with a
+> different filesystem, PATH, processes, and tmux server — `command not found`,
+> a healthy-looking `doctor` whose leaves can't reach your files, or a wrong
+> working directory usually means you are in a sandbox shell, not that cc-fleet
+> is broken. Route commands through a host-executing bridge tool (for example,
+> desktop-commander) and pass host paths for any files you reference; do not
+> retry the same Bash call expecting different results. If no host-executing
+> tool is available, stop and explain that cc-fleet must run on its
+> installation host.
+
 A **workflow** is a JavaScript script that fans out provider `cc-fleet subagent` leaves and runs in a **cc-fleet process, OFF the main session's context**. You write the script; `cc-fleet workflow run` executes it. The orchestration plan lives in script variables (CPU, ~0 of your tokens) — you are invoked only when *authoring* the script, not on every scheduling decision. The API mirrors the native Claude Code Workflow tool — write the script exactly as you would a native workflow; the only addition is the `provider` option on `agent()`.
 
 ## When to use it
