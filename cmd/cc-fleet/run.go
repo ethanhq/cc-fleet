@@ -22,6 +22,7 @@ func newRunCmd() *cobra.Command {
 		model          string
 		permissionMode string
 		dangerSkip     bool
+		noProbe        bool
 	)
 	cmd := &cobra.Command{
 		Use:   "run [provider] [-- <claude args>]",
@@ -53,7 +54,7 @@ func newRunCmd() *cobra.Command {
 				fmt.Fprintln(os.Stderr, "cc-fleet run: stdin and stdout must both be a terminal for an interactive session")
 				os.Exit(1)
 			}
-			if err := run.Run(run.Request{Provider: provider, Model: model, PermissionMode: permMode, ExtraArgs: extra}); err != nil {
+			if err := run.Run(run.Request{Provider: provider, Model: model, PermissionMode: permMode, NoProbe: noProbe, ExtraArgs: extra}); err != nil {
 				fmt.Fprintln(os.Stderr, "cc-fleet run:", err)
 				os.Exit(1)
 			}
@@ -65,6 +66,8 @@ func newRunCmd() *cobra.Command {
 		"Permission mode for the session (default|acceptEdits|plan|auto|bypassPermissions)")
 	cmd.Flags().BoolVar(&dangerSkip, "dangerously-skip-permissions", false,
 		"Skip permission prompts (alias for --permission-mode bypassPermissions)")
+	cmd.Flags().BoolVar(&noProbe, "no-probe", false,
+		"Skip the pre-launch endpoint protocol check")
 	return cmd
 }
 

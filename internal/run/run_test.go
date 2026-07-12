@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/ethanhq/cc-fleet/internal/config"
+	"github.com/ethanhq/cc-fleet/internal/diag"
 	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 )
 
@@ -18,18 +19,25 @@ type launch struct {
 	argv, env []string
 }
 
-// stubSeams swaps resolveBinary + execClaude for the test and returns the
-// capture. binErr != nil makes binary resolution fail (no exec should happen).
+// stubSeams swaps resolveBinary + execClaude + sniffMessagesRoute + ensureDaemon
+// for the test and returns the capture. binErr != nil makes binary resolution
+// fail (no exec should happen). The sniff stub never trips and the ensure stub
+// is a no-op, keeping the suite off the network and off os.Executable() (which
+// EnsureForProvider would otherwise start as a daemon — the test binary itself).
 func stubSeams(t *testing.T, binPath string, binErr error) *launch {
 	t.Helper()
 	got := &launch{}
-	origResolve, origExec := resolveBinary, execClaude
+	origResolve, origExec, origSniff, origEnsure := resolveBinary, execClaude, sniffMessagesRoute, ensureDaemon
 	resolveBinary = func() (string, error) { return binPath, binErr }
 	execClaude = func(_ *config.Provider, bin string, argv, env []string) error {
 		got.called, got.bin, got.argv, got.env = true, bin, argv, env
 		return nil
 	}
-	t.Cleanup(func() { resolveBinary, execClaude = origResolve, origExec })
+	sniffMessagesRoute = func(string) bool { return false }
+	ensureDaemon = func(*config.Provider, *diag.Logger) error { return nil }
+	t.Cleanup(func() {
+		resolveBinary, execClaude, sniffMessagesRoute, ensureDaemon = origResolve, origExec, origSniff, origEnsure
+	})
 	return got
 }
 
@@ -178,6 +186,90 @@ func TestRun_GatesFailBeforeExec(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRun_ProtocolGuard: the pre-exec sniff blocks an Anthropic-protocol
+// provider whose endpoint 404s POST /v1/messages, and ONLY that — the guard
+// is skipped for --no-probe and daemon-backed providers, and a non-tripping
+// sniff launches normally.
+func TestRun_ProtocolGuard(t *testing.T) {
+	t.Run("trip blocks before exec", func(t *testing.T) {
+		seedProvider(t, "deepseek", true, "deepseek-chat")
+		got := stubSeams(t, "/fake/claude", nil)
+		var probed string
+		sniffMessagesRoute = func(base string) bool { probed = base; return true }
+
+		err := Run(Request{Provider: "deepseek"})
+		if err == nil || !strings.Contains(err.Error(), "HTTP 404 to POST /v1/messages") {
+			t.Fatalf("err = %v, want protocol-mismatch error", err)
+		}
+		for _, want := range []string{"deepseek", "--no-probe"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Errorf("error %q lacks %q", err, want)
+			}
+		}
+		// The base_url never appears in the error — a path segment may embed a
+		// credential and the message is exactly what a user pastes into an issue.
+		if strings.Contains(err.Error(), "api.deepseek.example") {
+			t.Errorf("error %q echoes the base_url", err)
+		}
+		if probed != "https://api.deepseek.example/anthropic" {
+			t.Errorf("sniffed %q, want the provider base_url", probed)
+		}
+		if got.called {
+			t.Fatal("a tripped guard reached exec")
+		}
+	})
+
+	t.Run("no trip execs", func(t *testing.T) {
+		seedProvider(t, "deepseek", true, "deepseek-chat")
+		got := stubSeams(t, "/fake/claude", nil)
+		sniffMessagesRoute = func(string) bool { return false }
+
+		if err := Run(Request{Provider: "deepseek"}); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if !got.called {
+			t.Fatal("execClaude was not called")
+		}
+	})
+
+	t.Run("--no-probe skips the sniff", func(t *testing.T) {
+		seedProvider(t, "deepseek", true, "deepseek-chat")
+		got := stubSeams(t, "/fake/claude", nil)
+		sniffMessagesRoute = func(string) bool { t.Error("sniff must not run under NoProbe"); return true }
+
+		if err := Run(Request{Provider: "deepseek", NoProbe: true}); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if !got.called {
+			t.Fatal("execClaude was not called")
+		}
+	})
+
+	t.Run("daemon-backed provider skips the sniff", func(t *testing.T) {
+		seedProvider(t, "deepseek", true, "deepseek-chat")
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatalf("config.Load: %v", err)
+		}
+		v := cfg.Providers["deepseek"]
+		v.Protocol = config.ProtocolOpenAIChat
+		v.BaseURL = "http://127.0.0.1:17997/"
+		v.UpstreamURL = "https://api.openai.example/v1"
+		if err := config.Save(cfg); err != nil {
+			t.Fatalf("config.Save: %v", err)
+		}
+		got := stubSeams(t, "/fake/claude", nil)
+		sniffMessagesRoute = func(string) bool { t.Error("sniff must not run for a daemon-backed provider"); return true }
+
+		if err := Run(Request{Provider: "deepseek"}); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if !got.called {
+			t.Fatal("execClaude was not called")
+		}
+	})
 }
 
 func TestBuildArgv(t *testing.T) {

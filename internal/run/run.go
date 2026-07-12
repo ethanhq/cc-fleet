@@ -18,17 +18,20 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/ids"
 	"github.com/ethanhq/cc-fleet/internal/permmode"
 	"github.com/ethanhq/cc-fleet/internal/profile"
+	"github.com/ethanhq/cc-fleet/internal/providerclass"
 )
 
 // Request is a lane-0 launch request. Model overrides the provider's default_model
 // when non-empty; PermissionMode is a validated permmode value — "" means the
 // caller passed no permission flag, so Run falls back to the provider's configured
-// default_permission (itself possibly "" → no permission flag); ExtraArgs are
-// passed through to claude after cc-fleet's flags.
+// default_permission (itself possibly "" → no permission flag); NoProbe skips the
+// pre-launch endpoint protocol check; ExtraArgs are passed through to claude after
+// cc-fleet's flags.
 type Request struct {
 	Provider       string
 	Model          string
 	PermissionMode string
+	NoProbe        bool
 	ExtraArgs      []string
 }
 
@@ -36,6 +39,14 @@ type Request struct {
 // permission flags itself (before the passthrough). Repeating one in the
 // passthrough would shadow the managed value, so it is rejected up front.
 var reservedFlags = []string{"--settings", "--model", "--permission-mode", "--dangerously-skip-permissions"}
+
+// sniffMessagesRoute and ensureDaemon are seams so tests stay hermetic: the
+// suite must neither touch the network nor let EnsureForProvider start a
+// daemon from os.Executable() — which, in a test, is the test binary itself.
+var (
+	sniffMessagesRoute = providerclass.MessagesRouteMissing
+	ensureDaemon       = codexproxy.EnsureForProvider
+)
 
 // resolveBinary returns the live claude binary path via the same gate spawn and
 // subagent use (bundled-or-cached recipe → resolve → validate). It is a seam so
@@ -95,10 +106,23 @@ func Run(req Request) error {
 		return err
 	}
 
+	// Protocol guard: an Anthropic-protocol provider whose endpoint 404s
+	// POST /v1/messages (an OpenAI-only endpoint added under the Anthropic
+	// "Custom" option) would exec a claude that can only render its generic
+	// "model may not exist" — cc-fleet leaves the process image at exec and can
+	// never rewrite it, so this is the last point an actionable error exists.
+	// The sniff trips only on that positive signal and fails open on everything
+	// else. The error never echoes the base_url: a path segment may embed a
+	// credential, and this text is exactly what a user pastes into an issue.
+	if !req.NoProbe && v.EffectiveProtocol() == "" && sniffMessagesRoute(v.BaseURL) {
+		return fmt.Errorf("provider %q is configured as an Anthropic-protocol provider, but its endpoint answered HTTP 404 to POST /v1/messages — it likely speaks the OpenAI protocol; re-add the provider with an OpenAI protocol, or pass --no-probe to skip this check",
+			req.Provider)
+	}
+
 	// For a codex provider, ensure the conversion daemon is up before the profile
 	// write (and before the exec that replaces this process — there is no
 	// after-exec hook), fail-before-mutation.
-	if err := codexproxy.EnsureForProvider(v, nil); err != nil {
+	if err := ensureDaemon(v, nil); err != nil {
 		return fmt.Errorf("codex proxy unavailable: %w", err)
 	}
 
