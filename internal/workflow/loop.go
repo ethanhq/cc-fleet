@@ -24,6 +24,10 @@ type leafCB struct {
 // e.g. `await new Promise(() => {})`.
 var errNoProgress = errors.New("workflow: the script awaits a promise nothing will ever settle (no leaf in flight; the runtime has no timers)")
 
+// errRunStopped classifies a cooperatively-stopped run; the caller finalizes the
+// manifest "stopped", not "failed".
+var errRunStopped = errors.New("workflow: run stopped")
+
 // post hands a callback from a leaf goroutine to the loop. It never strands a
 // goroutine past the loop's lifetime: loopDone unblocks stragglers after an abnormal
 // loop exit (the run is already finalizing; their job files hold the terminal truth).
@@ -74,6 +78,17 @@ func (e *engine) drive(prom *goja.Promise) (goja.Value, error) {
 			case cb := <-e.cbs:
 				e.runCB(cb)
 			default:
+				// With zero leaves the loop never blocks on the ctx.Done select
+				// below, so this is the ONLY point a stop of a leafless pending
+				// script (e.g. `await new Promise(() => {})` then cancelled) gets
+				// classified — and the backstop for any settle stranded outside
+				// noteSettleErr's reach. The cancelled ctx decides "stopped" here
+				// exactly as at the loop exit; on a live ctx a quiescent pending
+				// promise remains a proven deadlock.
+				if e.stopped || e.runCtx.Err() != nil {
+					e.stopped = true
+					return nil, errRunStopped
+				}
 				return nil, errNoProgress
 			}
 			continue
@@ -91,7 +106,13 @@ func (e *engine) drive(prom *goja.Promise) (goja.Value, error) {
 	// (with its stopped-class rejection) before the loop sees ctx.Done().
 	if e.stopped || e.runCtx.Err() != nil {
 		e.stopped = true
-		return nil, errors.New("workflow: run stopped")
+		return nil, errRunStopped
+	}
+	// A severed settlement on a live ctx (e.g. a stack overflow tripping the VM
+	// mid-cascade) left the script unrecoverable, possibly with the promise still
+	// pending — the recorded cause is the run error, never a nil result.
+	if e.settleErr != nil {
+		return nil, e.settleErr
 	}
 	if prom.State() == goja.PromiseStateRejected {
 		return nil, rejectionError(prom.Result())
@@ -110,6 +131,25 @@ func (e *engine) abort() {
 	e.aborted = true
 	e.releaseHeld()
 	e.cancelLeaves()
+}
+
+// noteSettleErr handles the error goja's promise resolve/reject return (their
+// documented propagate-upwards contract). A non-nil error means an uncatchable — an
+// Interrupt, a stack overflow — tripped the settle's reaction drain and goja dropped
+// the queued jobs: the script's await graph is unrecoverable, so the run aborts with
+// the cause in hand instead of stranding into a false deadlock at quiescence.
+// Loop-held: settles run only in js halves, and abort's callees touch no JS.
+func (e *engine) noteSettleErr(err error) {
+	if err == nil {
+		return
+	}
+	if e.settleErr == nil {
+		e.settleErr = fmt.Errorf("workflow: promise settlement interrupted: %w", err)
+	}
+	if e.runCtx.Err() != nil {
+		e.stopped = true
+	}
+	e.abort()
 }
 
 // drainLeaves cancels and consumes every in-flight leaf state-only — the abnormal-exit
