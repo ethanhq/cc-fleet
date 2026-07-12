@@ -126,6 +126,7 @@ cc-fleet run deepseek --dangerously-skip-permissions
 `cc-fleet run [provider]` 用一个交互式 `claude` REPL 替换当前进程,后端换成该 provider — **省略 provider 时解析到全局默认**(profile 钉住 `apiKeyHelper` + base URL;模型取 provider 的 `default_model`,`--model` 可覆盖)。与 spawn/subagent 不同,这是**你自己**在用 provider,不是 Claude 委派。
 
 - `--permission-mode <mode>` / `--dangerously-skip-permissions` — 会话权限档(互斥)。`run` 直接 exec 二进制,你给 `claude` 配的 shell 别名里的这类 flag 带不过来 — 在这里传。
+- `--no-probe` — 跳过启动前的端点协议检查(启动前 `run` 会看 Anthropic 协议 provider 的端点对 `POST /v1/messages` 的应答;回 404 且非 Anthropic 错误体的 — 典型是被当成 Anthropic 协议添加的 OpenAI-only 端点 — 会带修复提示直接拒绝,而不是让 claude 报笼统的 "model may not exist")。
 - `-- <claude args>` — `--` 之后全部转发给 `claude`。
 
 需要交互式终端。Linux、macOS、Windows 均可用。

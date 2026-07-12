@@ -126,6 +126,7 @@ cc-fleet run deepseek --dangerously-skip-permissions
 `cc-fleet run [provider]` replaces the current process with an interactive `claude` REPL whose backend is the provider — **omit the provider to use the fleet-wide default** (the profile pins the `apiKeyHelper` + base URL; the model is the provider's `default_model` unless `--model` overrides). Unlike spawn/subagent, this is **you** using a provider, not Claude delegating.
 
 - `--permission-mode <mode>` / `--dangerously-skip-permissions` — the session's permission posture (mutually exclusive). `run` execs the binary directly, so a `claude` shell alias that adds such a flag does not carry over — pass it here.
+- `--no-probe` — skip the pre-launch endpoint protocol check (before launching, `run` checks how an Anthropic-protocol provider's endpoint answers `POST /v1/messages`; a bare 404 — typically an OpenAI-only endpoint added as Anthropic-protocol — is rejected with a fix hint instead of claude's generic "model may not exist").
 - `-- <claude args>` — everything after `--` is forwarded to `claude`.
 
 Requires an interactive terminal. Works on Linux, macOS, and Windows.
