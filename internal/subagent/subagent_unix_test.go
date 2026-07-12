@@ -19,7 +19,7 @@ func TestRunClaude_SuccessEnvelope(t *testing.T) {
 	bin := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	stdout, stderr, code, err := runClaude(ctx, bin, []string{bin, "-p", "x"}, os.Environ(), nil, "", nil)
+	stdout, stderr, code, err := runClaude(ctx, bin, []string{bin, "-p", "x"}, os.Environ(), nil, "", nil, nil)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -36,11 +36,32 @@ func TestRunClaude_SuccessEnvelope(t *testing.T) {
 	}
 }
 
+// TestRunClaude_OnStartReceivesLiveChildPID: runClaude invokes onStart right after Start with the
+// claude CHILD's pid — the hook that records a sync leaf's orphan-liveness evidence — and that pid is
+// alive at the moment onStart fires.
+func TestRunClaude_OnStartReceivesLiveChildPID(t *testing.T) {
+	bin := writeFakeBin(t, "#!/bin/sh\nsleep 0.2\nexit 0\n")
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var gotPID int
+	var aliveAtStart bool
+	_, _, _, _ = runClaude(ctx, bin, []string{bin}, os.Environ(), nil, "", nil, func(pid int) {
+		gotPID = pid
+		aliveAtStart = pidAlive(pid)
+	})
+	if gotPID <= 0 {
+		t.Fatalf("onStart must receive the child pid, got %d", gotPID)
+	}
+	if !aliveAtStart {
+		t.Error("the child pid must be alive when onStart fires")
+	}
+}
+
 func TestRunClaude_ErrorEnvelopeExit1(t *testing.T) {
 	bin := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smoke429BalanceJSON+"'\nexit 1\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	stdout, _, code, err := runClaude(ctx, bin, []string{bin, "-p", "x"}, os.Environ(), nil, "", nil)
+	stdout, _, code, err := runClaude(ctx, bin, []string{bin, "-p", "x"}, os.Environ(), nil, "", nil, nil)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1", code)
 	}
@@ -60,7 +81,7 @@ func TestRunClaude_StdinPrompt(t *testing.T) {
 	bin := writeFakeBin(t, "#!/bin/sh\ncat\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	stdout, _, code, _ := runClaude(ctx, bin, []string{bin, "-p"}, os.Environ(), strings.NewReader("piped-prompt"), "", nil)
+	stdout, _, code, _ := runClaude(ctx, bin, []string{bin, "-p"}, os.Environ(), strings.NewReader("piped-prompt"), "", nil, nil)
 	if code != 0 || string(stdout) != "piped-prompt" {
 		t.Fatalf("stdin not piped: code=%d stdout=%q", code, stdout)
 	}
@@ -87,7 +108,7 @@ func TestRunClaude_TimeoutKillsProcessGroup(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	start := time.Now()
-	_, _, _, _ = runClaude(ctx, bin, []string{bin}, os.Environ(), nil, "", nil)
+	_, _, _, _ = runClaude(ctx, bin, []string{bin}, os.Environ(), nil, "", nil, nil)
 	elapsed := time.Since(start)
 
 	// Should return within deadline + grace + slack, not hang on the pipe-holding

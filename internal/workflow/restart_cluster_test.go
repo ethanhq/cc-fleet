@@ -10,19 +10,20 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
-// TestLaunch_ResumeLiveGuard: Launch's resume branch refuses a run that still claims to be running with a
-// live (or foreground/unverifiable EnginePID<=0) engine, so a public `workflow run --resume` can't launch a
-// second engine over a live one. A freshly minted run is Status="running", EnginePID=0 → the guard fires.
+// TestLaunch_ResumeLiveGuard: Launch's resume branch refuses a run that still claims to be running
+// without a verifiably-exited engine. A freshly minted run is Status="running", EnginePID=0 with no
+// foreground identity yet → FgUnknown → refused (its engine can't be confirmed dead), so a public
+// `workflow run --resume` can't launch a second engine over a possibly-live one.
 func TestLaunch_ResumeLiveGuard(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
-	run, err := subagent.NewRunWithMeta("n", "d", "", nil) // mints Status="running", EnginePID=0
+	run, err := subagent.NewRunWithMeta("n", "d", "", nil) // mints Status="running", EnginePID=0, no fg fields
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, lerr := Launch(context.Background(), "/nonexistent.js", Options{Resume: run.RunID}, false)
-	if lerr == nil || !strings.Contains(lerr.Error(), "already has a live engine") {
-		t.Fatalf("Launch --resume of a still-running run must refuse with a live-engine error, got: %v", lerr)
+	if lerr == nil || !strings.Contains(lerr.Error(), "cannot be verified") {
+		t.Fatalf("Launch --resume of a still-running run with no verifiable engine must refuse, got: %v", lerr)
 	}
 }
 
@@ -53,6 +54,10 @@ func TestRestart_StarOnlyRunRefused(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	run, err := subagent.NewRunWithMeta("n", "d", "", nil)
 	if err != nil {
+		t.Fatal(err)
+	}
+	run.Status = "done" // a completed run clears the liveness gate, so the restart reaches the script-availability check
+	if err := subagent.SaveRun(run); err != nil {
 		t.Fatal(err)
 	}
 	lp, err := subagent.LegacyRunScriptPath(run.RunID)

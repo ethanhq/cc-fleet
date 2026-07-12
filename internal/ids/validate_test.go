@@ -175,3 +175,19 @@ func TestValidateJobID_AcceptsUUID(t *testing.T) {
 		}
 	}
 }
+
+// TestWorktreeSegment: the run-id → path-safe segment mapping (relocated from workflow). It collapses
+// separators and the worktree-root-remap chars ('/' '\' '.' ':') to '-', and is NON-injective so a
+// segment can be co-owned (the collision the segment reclaim verdict guards).
+func TestWorktreeSegment(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"a.b", "a-b"}, {"a:b", "a-b"}, {"a-b", "a-b"}, {"x/y", "x-y"}, {`p\q`, "p-q"}, {"plain", "plain"},
+	} {
+		if got := WorktreeSegment(c.in); got != c.want {
+			t.Errorf("WorktreeSegment(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	if WorktreeSegment("a.b") != WorktreeSegment("a-b") {
+		t.Error("a.b and a-b must collapse to the same segment (co-ownership)")
+	}
+}

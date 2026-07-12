@@ -1,6 +1,8 @@
 package subagent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +19,46 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/ids"
 	"github.com/ethanhq/cc-fleet/internal/pinned"
 )
+
+// WorktreeTempName is the shared root dir under os.TempDir() for isolation-worktree temp workdirs;
+// beneath it each config store gets its own WorktreeStoreID() subdir.
+const WorktreeTempName = "cc-fleet-worktrees"
+
+// WorktreeStoreID is a stable, filesystem-safe identifier for THIS config store — a short hash of
+// config.ConfigDir. The isolation-worktree temp root lives under os.TempDir(), which is NOT per-store,
+// so two config stores (different HOME/XDG_CONFIG_HOME) running in the same git repo could otherwise
+// collide on a worktree SEGMENT and have one store's reclaim delete the other's LIVE worktree — a
+// store-local reclaim verdict can't see a foreign store's runs, so it records no veto. Namespacing the
+// temp root by store id puts a foreign store's worktrees under a DIFFERENT prefix, so they never enter
+// this store's sweep/purge candidate set (structural, not a runtime ownership check).
+func WorktreeStoreID() (string, error) {
+	dir, err := config.ConfigDir()
+	if err != nil {
+		return "", err
+	}
+	// Absolutize (and clean) before hashing so the id reflects the ACTUAL physical store, not the raw
+	// config string: a relative XDG_CONFIG_HOME resolves against cwd, so two processes at different cwds
+	// are DIFFERENT stores that must not share a worktree namespace (else the cross-store reclaim hole
+	// reopens). filepath.Abs resolves relative-to-cwd and Cleans '..'/'.'/trailing slashes; a symlinked
+	// alias hashing differently only over-isolates (each store cleans its own), which is safe.
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(abs))
+	return hex.EncodeToString(sum[:8]), nil
+}
+
+// WorktreeStoreDir is this store's isolation-worktree temp root: os.TempDir()/cc-fleet-worktrees/<storeID>.
+// A run's own segment is WorktreeStoreDir()/<ids.WorktreeSegment(runID)>. The path is un-canonicalized
+// (os.TempDir() form) for creation/removal; a caller matching git porcelain paths canonicalizes itself.
+func WorktreeStoreDir() (string, error) {
+	id, err := WorktreeStoreID()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(os.TempDir(), WorktreeTempName, id), nil
+}
 
 // runsDirName holds run manifests under the jobs dir: ConfigDir/subagent-jobs/runs.
 // A manifest <runId>.json is the canonical phase sequencer for a workflow run; the
@@ -63,6 +105,14 @@ type WorkflowRun struct {
 	// our engine. Empty (a pre-token manifest / capture failure) degrades to the
 	// argv-only behavior.
 	EngineProcStart string `json:"engine_proc_start,omitempty"`
+	// FgEnginePID / FgEngineProcStart are a FOREGROUND engine's own pid + kernel start token, stamped
+	// by an inline `workflow run --foreground` engine as liveness EVIDENCE only — deliberately SEPARATE
+	// from EnginePID, which a foreground run keeps at 0 so `workflow stop` never claims a kill on a
+	// terminal-attached process it can't reap. ClassifyFgEngine reads them to tell a dead (Ctrl-C'd or
+	// crashed) foreground run from a still-live one, so the sweep and the resume/restart guards can act
+	// on it. A detached engine leaves them zero; an old (pre-field) record has them zero too.
+	FgEnginePID       int    `json:"fg_engine_pid,omitempty"`
+	FgEngineProcStart string `json:"fg_engine_proc_start,omitempty"`
 	// Error is the failure cause, set when Status is "failed" — so a DETACHED run
 	// (whose stderr went to /dev/null) still records WHY it failed for `workflow
 	// status`. It is a canonical/script-level message (agent() failures carry
@@ -243,6 +293,13 @@ func RunScriptPath(runID string) (string, error) { return runSidecarPath(runID, 
 // error instead of a JS parse failure.
 func LegacyRunScriptPath(runID string) (string, error) { return runSidecarPath(runID, ".star") }
 
+// errRunManifestUnreadable tags a non-ErrNotExist FAILURE TO READ a run manifest (a genuine I/O
+// fault, or a Windows sharing violation the read retry couldn't outlast) — distinct from a
+// genuinely-absent manifest (os.ErrNotExist) and from one read fine but corrupt (a JSON parse error).
+// Destructive/liveness callers fail CLOSED on it: a transient read failure must never be mistaken for
+// engine death and let them delete/finalize under a live run.
+var errRunManifestUnreadable = errors.New("subagent: run manifest unreadable")
+
 // ReadRun loads a manifest by id. runID is validated first because it becomes a
 // filesystem path component (guards against a "../" escape via the CLI/status path).
 func ReadRun(runID string) (WorkflowRun, error) {
@@ -253,15 +310,22 @@ func ReadRun(runID string) (WorkflowRun, error) {
 	if err != nil {
 		return WorkflowRun{}, err
 	}
-	data, err := os.ReadFile(filepath.Join(dir, runID+".json"))
+	// readFileRetry, not os.ReadFile: SaveRun renames the manifest into place (AtomicWrite), so on
+	// windows a concurrent reader can hit a transient ERROR_SHARING_VIOLATION for the instant the
+	// replace holds the target. The retry absorbs only that window; a persistent failure still surfaces.
+	data, err := readFileRetry(filepath.Join(dir, runID+".json"))
 	if err != nil {
-		// Canonical, path-free "not found" so an unknown-run id doesn't leak the
-		// config-dir layout into the CLI's JSON error envelope (a genuine I/O fault
-		// keeps its context for debugging).
 		if errors.Is(err, os.ErrNotExist) {
-			return WorkflowRun{}, fmt.Errorf("run %q not found", runID)
+			// Canonical, path-free "not found" so an unknown-run id doesn't leak the config-dir layout
+			// into the CLI's JSON error envelope. Wraps os.ErrNotExist so a destructive/liveness caller
+			// can tell a genuinely-absent manifest (safe to treat as gone) from an unreadable one.
+			return WorkflowRun{}, fmt.Errorf("run %q not found: %w", runID, os.ErrNotExist)
 		}
-		return WorkflowRun{}, err
+		// A non-ErrNotExist read failure — a genuine I/O fault, or a Windows sharing violation the retry
+		// couldn't outlast. Tag it errRunManifestUnreadable (keeping the raw context) so PurgeRun /
+		// WaitEngineStopped fail CLOSED rather than mistake a transient read for engine death. A manifest
+		// read fine but corrupt is NOT this class — it surfaces below as a parse error (deletable junk).
+		return WorkflowRun{}, fmt.Errorf("%w: run %q: %w", errRunManifestUnreadable, runID, err)
 	}
 	var run WorkflowRun
 	if err := json.Unmarshal(data, &run); err != nil {
@@ -291,7 +355,10 @@ func ListRuns() ([]WorkflowRun, error) {
 		if e.IsDir() || !strings.HasSuffix(name, ".json") {
 			continue
 		}
-		data, rerr := os.ReadFile(filepath.Join(dir, name))
+		// readFileRetry absorbs a transient Windows sharing violation so a LIVE run isn't dropped from
+		// the listing mid-write; a persistent read/parse error still skips that manifest. Skipping is
+		// fail-safe for the reclaim/prune consumers — a run that can't be listed is never reclaimed.
+		data, rerr := readFileRetry(filepath.Join(dir, name))
 		if rerr != nil {
 			continue
 		}
@@ -305,6 +372,51 @@ func ListRuns() ([]WorkflowRun, error) {
 		return runs[i].StartedAt > runs[j].StartedAt
 	})
 	return runs, nil
+}
+
+// listRunsForReclaim is ListRuns specialized for the worktree-reclaim verdict, with one difference that
+// matters for fail-closed safety: a manifest whose read FAILS transiently/IO (a non-ErrNotExist fault
+// the retry couldn't outlast) is NOT silently dropped — its run id (the filename stem) is returned in
+// unreadable so the verdict can VETO that segment. ListRuns' silent skip is right for a listing but
+// wrong here: a colliding live owner ("a.b", segment "a-b") whose manifest is momentarily unreadable
+// would vanish from the run set, letting a dead path-safe twin ("a-b") reclaim the shared workdir under
+// it. A readable-but-corrupt manifest stays a skip (AtomicWrite never tears a readable file, so it is
+// genuine junk that must stay reclaimable — matching the parse-error-stays-deletable rule); a file that
+// vanished between the dir scan and the read (ErrNotExist) is a skip too (genuinely gone).
+func listRunsForReclaim() (runs []WorkflowRun, unreadable []string, ok bool) {
+	dir, err := runsDir()
+	if err != nil {
+		return nil, nil, false
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil, true // nothing has run yet
+		}
+		return nil, nil, false
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		data, rerr := readFileRetry(filepath.Join(dir, name))
+		if rerr != nil {
+			if errors.Is(rerr, os.ErrNotExist) {
+				continue // vanished between the dir scan and the read — genuinely gone
+			}
+			// A persistent read/IO fault leaves the run behind this manifest unknowable → fail closed by
+			// flagging it so the verdict VETOes its segment. SaveRun writes <runID>.json, so the id is the stem.
+			unreadable = append(unreadable, strings.TrimSuffix(name, ".json"))
+			continue
+		}
+		var run WorkflowRun
+		if json.Unmarshal(data, &run) != nil {
+			continue // readable but corrupt → deletable junk
+		}
+		runs = append(runs, run)
+	}
+	return runs, unreadable, true
 }
 
 // runIsRecent reports whether a run's last activity — the LATER of StartedAt and the
@@ -342,47 +454,64 @@ func removeRun(dir, runID string) {
 // means a recycled EnginePID can NEVER make this kill an unrelated process: the pid is
 // reaped only when its argv still proves it is this run's detached `workflow run …
 // --run-id <id>` engine, or — where argv is unreadable (Windows) — when its kernel start
-// token still equals the manifest's recorded one. An already-terminal run is returned
-// untouched (no clobbering a
-// real done/failed). Every other case — a foreground run (EnginePID deliberately 0), an
-// engine already gone (crashed), or a recycled pid whose argv no longer matches — is
-// reaped of nothing and simply flipped to stopped, clearing a stale "running"; the reuse
-// guard ensures such an unverifiable pid is never killed.
+// token still equals the manifest's recorded one. A recorded DETACHED engine is classified TRI-STATE
+// (ClassifyDetachedEngine): DetachedLive → reap + confirm dead + finalize ghosts; DetachedDead
+// (gone / recycled) → finalize ghost leaves then flip stopped; DetachedUnknown (a retained pid alive
+// but argv + start token both unreadable) → REFUSED with an error, status + journal left untouched —
+// flipping it stopped or finalizing under a possibly-live engine would report a false success and let a
+// caller act under it. A foreground run (EnginePID 0) has nothing to reap and simply flips stopped,
+// clearing a stale "running". An already-terminal run is normally returned untouched; the ONE exception
+// is a WEDGED terminal record still carrying a Live or Unknown detached pid (an old collapse, or a
+// race) — it falls through so Live is properly reaped (an escape hatch) and Unknown fails closed. The
+// reuse guard ensures an unverifiable pid is never killed.
 func StopRun(runID string) (WorkflowRun, error) {
 	run, err := ReadRun(runID)
 	if err != nil {
 		return WorkflowRun{}, err
 	}
 	if run.Status != "" && run.Status != "running" {
-		return run, nil // already terminal — don't clobber done/failed/stopped
-	}
-	switch {
-	case run.EnginePID > 0 && pidAlive(run.EnginePID) && engineIdentityMatches(run):
-		// Verifiably this run's live detached engine: reap it + confirm dead before finalizing its leaves.
-		reapEngineTree(run.EnginePID) // reaps the engine + its in-flight leaf children
-		if !WaitEngineStopped(runID, stopReapTimeout) {
-			// Won't die — do NOT flip stopped or clear the pid, or a caller (Restart / PurgeRun) would
-			// falsely read it as dead and act under a still-live engine. Fail closed.
-			return WorkflowRun{}, fmt.Errorf("subagent: run %s engine did not stop in time", runID)
+		// Already terminal → normally nothing live to reap. But a WEDGED terminal record can still carry a
+		// detached pid that classifies Live or Unknown (an old binary-collapse stop that flipped stopped
+		// under an unverifiable engine, or a race): don't no-op then — fall through so a Live engine is
+		// properly reaped + re-verified and an Unknown one fails closed. Terminal + a Dead/absent pid keeps
+		// the no-op (a normal done/failed/stopped record, whose engine exited, reads Dead here).
+		if run.EnginePID <= 0 || ClassifyDetachedEngine(run) == DetachedDead {
+			return run, nil
 		}
-		// Confirmed dead: finalize the engine's mid-flight leaves (left "running" because its
-		// finalizeSyncJob defer died with it) — never racing that defer, since the engine is gone.
-		finalizeRunLeaves(runID)
-	case EngineAlive(run):
-		// The engine MIGHT still be live but we cannot verify it is THIS run's (its argv is unreadable),
-		// so we must neither kill it (fail SAFE) nor flip the run stopped — a caller would then rewrite
-		// the journal / delete / launch under a possibly-live engine. Fail closed.
-		return WorkflowRun{}, fmt.Errorf("subagent: run %s engine (pid %d) is alive but unverifiable; cannot stop safely", runID, run.EnginePID)
-	case run.EnginePID > 0:
-		// A recorded detached pid that is DEFINITIVELY gone (dead, or recycled to a different process):
-		// its mid-flight leaves are ghosts — finalize them. (A foreground EnginePID==0 run has nothing to
-		// reap and no ghost leaves here; it just flips stopped below, clearing a stale "running".)
-		finalizeRunLeaves(runID)
 	}
+	if run.EnginePID > 0 {
+		switch ClassifyDetachedEngine(run) {
+		case DetachedLive:
+			// Verifiably this run's live detached engine: reap it + confirm dead before finalizing its leaves.
+			reapEngineTreeFn(run.EnginePID) // reaps the engine + its in-flight leaf children
+			if !WaitEngineStopped(runID, stopReapTimeout) {
+				// Won't die — do NOT flip stopped or clear the pid, or a caller (Restart / PurgeRun) would
+				// falsely read it as dead and act under a still-live engine. Fail closed.
+				return WorkflowRun{}, fmt.Errorf("subagent: run %s engine did not stop in time", runID)
+			}
+			// Confirmed dead: finalize the engine's mid-flight leaves (left "running" because its
+			// finalizeSyncJob defer died with it) — never racing that defer, since the engine is gone.
+			finalizeRunLeaves(runID)
+		case DetachedUnknown:
+			// A retained detached pid ALIVE but UNVERIFIABLE (argv + start token both unreadable): we can
+			// neither kill-verify nor death-verify it, so we must not flip the run stopped or finalize its
+			// journal under a possibly-live engine. Fail closed; self-clearing once the pid exits (→ Dead).
+			return WorkflowRun{}, fmt.Errorf("subagent: run %s engine (pid %d) is alive but unverifiable; stop it manually or retry once it exits", runID, run.EnginePID)
+		case DetachedDead:
+			// A recorded detached pid DEFINITIVELY gone (dead, or recycled to a different process): its
+			// mid-flight leaves are ghosts — finalize them, then flip stopped below.
+			finalizeRunLeaves(runID)
+		}
+	}
+	// EnginePID <= 0 (a foreground run, or the detached mint→stamp window) has nothing to reap: flip
+	// stopped, clearing a stale "running".
 	run.Status = "stopped"
 	run.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
-	run.EnginePID = 0 // a stopped run has no engine; clear the stale pid
-	run.EngineProcStart = ""
+	// Keep every identity field (EnginePID/EngineProcStart AND FgEnginePID/FgEngineProcStart): they are
+	// the death evidence RunEngineProvablyNotLive / ClassifyFgEngine rely on. For a reaped DETACHED run
+	// the retained pid+token positively read dead. A blind-flipped FOREGROUND run keeps EnginePID 0 but
+	// retains its fg identity, so once its terminal engine exits it reads dead (resumable + reclaimable)
+	// and while alive it reads alive (refused) — never cleared here, only re-stamped by a resume.
 	if serr := SaveRun(run); serr != nil {
 		return WorkflowRun{}, serr
 	}
@@ -391,7 +520,12 @@ func StopRun(runID string) (WorkflowRun, error) {
 
 // stopReapTimeout bounds how long StopRun waits for a reaped engine to actually die before
 // finalizing its leaves — long enough for a SIGTERM'd engine to exit, short enough to not wedge.
-const stopReapTimeout = 5 * time.Second
+// A var so a test can shorten the fail-closed did-not-stop path.
+var stopReapTimeout = 5 * time.Second
+
+// reapEngineTreeFn is StopRun's engine-tree reaper as a test seam (mirrors reapJobTree), so a test can
+// drive the DetachedLive reap path without killing a real process.
+var reapEngineTreeFn = reapEngineTree
 
 // finalizeRunLeaves writes a terminal failure Result for every leaf of runID that a now-dead engine
 // left without a result cache, so a stopped run shows no phantom "running" leaf. The caller invokes it
@@ -448,32 +582,6 @@ func engineCmdlineMatches(pid int, runID string) bool {
 	return argvIsRunEngine(argv, runID)
 }
 
-// engineIdentityMatches is StopRun's kill guard: where argv is readable it
-// alone decides (a token match must not override an argv mismatch — the darwin
-// token is seconds-coarse and a same-second recycle can collide); where argv is
-// unreadable (Windows) the recorded start token decides. Fail SAFE: with
-// neither, never kill.
-func engineIdentityMatches(run WorkflowRun) bool {
-	argv, ok := reuseGuardArgv(run.EnginePID)
-	if ok {
-		return argvIsRunEngine(argv, run.RunID)
-	}
-	return engineProcStartMatches(run)
-}
-
-// engineProcStartMatches reports whether run's recorded engine start token still
-// matches the live pid — the identity check where argv is unreadable (Windows).
-// A recycled pid carries a new start time, so equality positively identifies
-// the engine. An empty token (a pre-token manifest / capture failure) never
-// matches: those runs keep the argv-only behavior.
-func engineProcStartMatches(run WorkflowRun) bool {
-	if run.EngineProcStart == "" || run.EnginePID <= 0 {
-		return false
-	}
-	live, ok := procStartFn(run.EnginePID)
-	return ok && live == run.EngineProcStart
-}
-
 // argvIsRunEngine reports whether argv is this run's detached `workflow run … --run-id <id>`
 // engine — the argv-matching core shared by the StopRun kill-guard (engineCmdlineMatches) and the
 // EngineAlive liveness check. Requiring the "--run-id" flag (which only the detached child carries)
@@ -496,38 +604,299 @@ func argvIsRunEngine(argv []string, runID string) bool {
 	return hasWorkflow && hasRun && hasRunIDFlag && hasID
 }
 
-// EngineAlive reports whether run's DETACHED engine MIGHT still be running. It is a read-only
-// LIVENESS check (it kills nothing), used by a watcher to stop waiting on a stale "running"
-// manifest whose engine is gone. A foreground run (EnginePID 0) or a definitively-dead pid is
-// "not alive". When the pid IS alive, the answer depends on what identity we can read: where
-// argv is readable (unix), require it to still be THIS run's engine so a RECYCLED pid (now an
-// unrelated process) reads as gone — otherwise a SIGKILLed engine whose pid was reused would
-// hold the watcher open forever; where it isn't (Windows), the manifest's recorded start token
-// answers the same question; with neither (a pre-token manifest), trust pidAlive alone, since
-// a false "gone" for a live engine is worse than a rare missed recycled-pid detection. Unlike
-// StopRun (which must fail-SAFE to never-kill an unverifiable pid), this fails-SOFT to
-// keep-watching — neither can ever kill the wrong process.
+// EngineAlive reports whether run's DETACHED engine MIGHT still be running — a read-only LIVENESS check
+// (it kills nothing), used by the watchers to stop waiting on a stale "running" manifest AND by
+// WaitEngineStopped to poll a reaped engine to death. It delegates to the tri-state
+// ClassifyDetachedEngine and fails SOFT to alive: a foreground run (EnginePID 0) is "not alive", and a
+// recorded detached pid is alive unless PROVABLY dead (DetachedDead: pid gone, or a READABLE identity
+// mismatch = a recycled pid, which still reads dead). An alive-but-UNVERIFIABLE pid (argv + start token
+// both unreadable) reads ALIVE — never a false "gone" for a live engine, which a consumer that treats
+// !EngineAlive as death proof (WaitEngineStopped, the watch/wait engine-gone check) would otherwise act
+// on. Unknown requires pidAlive, so treating it as alive is truthful.
 func EngineAlive(run WorkflowRun) bool {
-	if run.EnginePID <= 0 || !pidAlive(run.EnginePID) {
-		return false
+	if run.EnginePID <= 0 {
+		return false // no recorded DETACHED engine (foreground / pre-stamp) — not this check's concern
 	}
-	argv, ok := reuseGuardArgv(run.EnginePID)
-	if !ok {
-		if run.EngineProcStart != "" {
-			return engineProcStartMatches(run)
-		}
-		return true // no argv and no token → can't disprove it's our engine; trust pidAlive
-	}
-	return argvIsRunEngine(argv, run.RunID)
+	return ClassifyDetachedEngine(run) != DetachedDead
 }
 
+// DetachedLiveness classifies a DETACHED engine's recorded identity as a TRI-STATE, the detached
+// counterpart of ClassifyFgEngine. EngineAlive collapses "recycled/dead" and "unverifiable" into one
+// false, which the reclaim path then reads as provably-dead — so an UNVERIFIABLE pid (alive but neither
+// argv nor its start token readable: EPERM / hardened kernel / container) would be reclaimed under a
+// still-running engine. This split keeps EngineAlive unchanged (StopRun's kill/refuse still consume it)
+// while giving RunEngineProvablyNotLive the third answer.
+type DetachedLiveness int
+
+const (
+	// DetachedUnknown: pid alive but its identity is unverifiable (argv unreadable AND its start token
+	// unreadable/unrecorded) — the fail-safe class, NOT proof of death.
+	DetachedUnknown DetachedLiveness = iota
+	// DetachedDead: the recorded pid is gone, OR a READABLE identity proves a different process (recycled).
+	DetachedDead
+	// DetachedLive: the pid is alive and a readable identity still matches THIS run's detached engine.
+	DetachedLive
+)
+
+// ClassifyDetachedEngine classifies run's DETACHED engine (EnginePID + argv/EngineProcStart). Rules:
+// no pid → Unknown; pid gone → Dead; pid alive with READABLE argv → argv decides (match=Live,
+// mismatch=Dead — a readable argv mismatch is decisive, a token match must never override it); pid
+// alive + argv unreadable + a READABLE recorded token → match=Live, mismatch=Dead; pid alive with
+// nothing readable → Unknown. Only Dead is proof the reclaim path may act on.
+func ClassifyDetachedEngine(run WorkflowRun) DetachedLiveness {
+	if run.EnginePID <= 0 {
+		return DetachedUnknown // not a detached run
+	}
+	if !pidAlive(run.EnginePID) {
+		return DetachedDead // the recorded pid is gone
+	}
+	if argv, ok := reuseGuardArgv(run.EnginePID); ok {
+		if argvIsRunEngine(argv, run.RunID) {
+			return DetachedLive
+		}
+		return DetachedDead // readable argv proves a DIFFERENT process (recycled)
+	}
+	if run.EngineProcStart != "" {
+		live, ok := procStartFn(run.EnginePID)
+		if !ok {
+			return DetachedUnknown // pid alive, token unreadable → prove neither ours-alive nor recycled-dead
+		}
+		if live == run.EngineProcStart {
+			return DetachedLive
+		}
+		return DetachedDead // recycled to a different process
+	}
+	return DetachedUnknown // pid alive, nothing readable (pre-token manifest) → not provably dead
+}
+
+// FgLiveness classifies a FOREGROUND run's recorded engine identity for the resume/restart guards
+// and RunEngineProvablyNotLive.
+type FgLiveness int
+
+const (
+	// FgUnknown: no fg identity recorded (a detached or pre-field run), or one whose liveness the
+	// platform can't verify — the fail-safe class, treated as possibly-live.
+	FgUnknown FgLiveness = iota
+	// FgDead: the recorded foreground engine has exited, or its pid was recycled to a different process.
+	FgDead
+	// FgAlive: the recorded foreground engine is still the running process.
+	FgAlive
+)
+
+// ClassifyFgEngine classifies run's FOREGROUND engine identity (FgEnginePID + FgEngineProcStart).
+// There is NO argv check, unlike the detached engine: the original `workflow run --foreground`
+// invocation's argv carries no run id (only the detached re-exec does), so pid + kernel start token
+// is the WHOLE proof on every platform. Rules: no fg pid → FgUnknown; the pid is gone → FgDead; the
+// pid is alive with a readable token that MATCHES → FgAlive; a readable MISMATCHED token → FgDead
+// (recycled); an unreadable (EPERM / unsupported) or unrecorded token → FgUnknown. A token match is
+// thus treated as ALIVE — the fail-safe direction (never resume under a possibly-live fg engine).
+func ClassifyFgEngine(run WorkflowRun) FgLiveness {
+	if run.FgEnginePID <= 0 {
+		return FgUnknown
+	}
+	if !pidAlive(run.FgEnginePID) {
+		return FgDead // the recorded pid is gone
+	}
+	live, ok := procStartFn(run.FgEnginePID)
+	if !ok || run.FgEngineProcStart == "" {
+		return FgUnknown // pid alive but unverifiable — can prove neither ours-alive nor recycled-dead
+	}
+	if live != run.FgEngineProcStart {
+		return FgDead // the pid was recycled to a different process
+	}
+	return FgAlive
+}
+
+// RunEngineProvablyNotLive reports whether run's engine is DEFINITIVELY gone, so an external
+// reclaimer (the worktree sweep / PurgeRun's temp-root drop) may safely reclaim what the engine left.
+// BOTH the detached and foreground branches are tri-state and demand PROOF of death: a recorded
+// DETACHED engine (EnginePID>0) is dead only when ClassifyDetachedEngine==DetachedDead (pid gone or a
+// readable identity mismatch) — an UNVERIFIABLE alive pid (argv+token unreadable) is NOT proof and
+// fails-safe to not-dead, mirroring the fg branch. With no detached pid, a FOREGROUND engine is dead
+// only when ClassifyFgEngine==FgDead; an absent/unverifiable fg identity (a pre-field record, a
+// still-live engine) is NOT proof. StopRun retains a reaped engine's pid + tokens precisely so this
+// check has the evidence.
+func RunEngineProvablyNotLive(run WorkflowRun) bool {
+	if run.EnginePID > 0 {
+		return ClassifyDetachedEngine(run) == DetachedDead
+	}
+	return ClassifyFgEngine(run) == FgDead
+}
+
+// leafProcessMayBeAlive reports whether a member leaf job MIGHT still have a running process — the
+// orphan risk that engine death does NOT settle: a SIGKILLed engine's `claude -p` leaf children run
+// in their OWN process groups (Setpgid) with cwd = the isolation worktree, so they outlive it. The
+// check is IDENTITY-first, never trusting a cached result — a bare engine SIGKILL makes StatusFor
+// synthesize a terminal (failVanished) for a still-LIVE orphan, so the result cache is unreliable:
+//   - BACKGROUND leaf: meta.PID IS the claude child → processAlive decides;
+//   - SYNC leaf with a recorded CHILD identity → the child's own pid+token decides (alive → possibly
+//     alive; dead/recycled → dead) REGARDLESS of any cached result;
+//   - SYNC leaf WITHOUT a child identity (old meta, or a crash between Start and the record): no
+//     verifiable child and the terminal shortcut is unsound → fail-safe POSSIBLY ALIVE, except a
+//     queued/never-execed leaf (PID<=0: no child, no worktree).
+//
+// An orphaned claude leaf is one-shot: it finishes and exits on its own, after which its recorded
+// identity reads dead and the workdir becomes reclaimable — same-boot reclamation with a delay equal
+// to the orphan's remaining runtime.
+func leafProcessMayBeAlive(meta jobMeta) bool {
+	if meta.SettingsPath != "" {
+		return processAlive(meta.PID, meta.SettingsPath, meta.ProcStart) // background: PID is the child
+	}
+	if meta.ChildPID > 0 {
+		return processAlive(meta.ChildPID, "", meta.ChildProcStart) // sync: the recorded child decides
+	}
+	if meta.ChildIdentityPending && meta.ChildPID == 0 {
+		// A sync member (the pending stamp is member-only) still in the Start window: a child may have
+		// started whose identity was never recorded, and PID being 0 (a hold premark clears it) says
+		// nothing about that child. Possibly-alive — aligns the read-side veto with the keep-rule.
+		return true
+	}
+	return meta.PID > 0 // sync, no child identity: execed → fail-safe alive; queued (PID 0) → dead
+}
+
+// isLiveOrphanVetoEvidence reports whether meta is a MEMBER leaf whose recorded CHILD identity is
+// alive-or-unverifiable — the veto evidence a worktree segment relies on. Every job-meta removal path
+// (GC, PurgeJobs, DeleteJob) must PRESERVE such a meta: deleting it would strip the segment's veto and
+// let a colliding reclaimer delete the live child's workdir. Deliberately SCOPED to CHILD-IDENTIFIED
+// metas (RunID != "" && ChildPID > 0): a synthesized terminal cache and a dead meta.PID (the engine
+// proxy) don't matter — the child identity outranks them. An identity-less sync meta (a legacy job
+// predating the identity fields) is NOT preserved here: its protection is the fail-safe veto
+// WHILE it lives, and the GC TTL bounds the exposure (a one-shot claude leaf outliving the TTL is not a
+// realistic lifetime, and preserving identity-less metas forever would break the GC contract).
+func isLiveOrphanVetoEvidence(meta jobMeta) bool {
+	return meta.RunID != "" && meta.ChildPID > 0 && leafProcessMayBeAlive(meta)
+}
+
+// isLiveOrPendingOrphanEvidence widens isLiveOrphanVetoEvidence with the Start-window: a sync member
+// whose identity write is still PENDING (ChildIdentityPending, no ChildPID yet). A crash inside the
+// ~ms cmd.Start→recordChildIdentity window leaves a LIVE orphan whose child identity was never
+// recorded; the read-side fail-safe (leafProcessMayBeAlive: sync, no ChildPID, PID>0 → possibly-alive)
+// already vetoes its segment, so AUTOMATED cleanup (GC/PurgeJobs) must KEEP the meta to match — else it
+// reaps the veto evidence and the chokepoint then deletes the workdir under the orphan. Rare (a crash
+// in that tiny window), and kept regardless of age until an explicit DeleteJob recovers it. The
+// automated keep-rules AND PurgeRun's whole-run member walk use this wider form — the walk is a
+// NON-path-safe id's only segment guard (it skips the path-safe segment verdict, which vetoes pending
+// via leafProcessMayBeAlive). Only the EXPLICIT DeleteJob refusal stays on the narrower
+// isLiveOrphanVetoEvidence, so a DeleteJob on the pending job is the record-only recovery escape (see
+// DeleteJob). A legacy meta lacks the field (false), so the GC contract for legacy jobs is unchanged.
+func isLiveOrPendingOrphanEvidence(meta jobMeta) bool {
+	return isLiveOrphanVetoEvidence(meta) || (meta.RunID != "" && meta.ChildIdentityPending && meta.ChildPID == 0)
+}
+
+// runLeafScan does ONE jobs-dir pass, returning the set of run-ids that have a possibly-alive member
+// leaf and whether the scan succeeded (a scan error → false; callers must then fail safe / spare).
+func runLeafScan() (map[string]bool, bool) {
+	live := map[string]bool{}
+	dir, err := jobsDir()
+	if err != nil {
+		return live, false
+	}
+	entries, rerr := os.ReadDir(dir)
+	if rerr != nil {
+		if errors.Is(rerr, os.ErrNotExist) {
+			return live, true // no jobs yet → no live leaves
+		}
+		return live, false
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasSuffix(name, ".result.json") {
+			continue
+		}
+		jobID := strings.TrimSuffix(name, ".json")
+		meta, merr := readMeta(dir, jobID)
+		if merr != nil {
+			// FAIL CLOSED: an unreadable / partial-JSON member meta makes SOME run's leaf state
+			// unknowable, and the id itself is unreadable so it can't be attributed to one segment —
+			// so the whole scan is untrusted (ok=false). Every consumer then spares/refuses.
+			return nil, false
+		}
+		if meta.RunID == "" {
+			continue // a standalone job (no run) — not a workflow member leaf
+		}
+		if leafProcessMayBeAlive(meta) {
+			live[meta.RunID] = true
+		}
+	}
+	return live, true
+}
+
+// SegmentReclaim is a worktree SEGMENT's reclaimability, aggregated over ALL runs mapping to it
+// (ids.WorktreeSegment) — path-safe or not. Worktree ownership is keyed by SEGMENT, not exact id, so a
+// per-id check would let a live "a.b" (segment "a-b") lose its workdirs to a dead "a-b" being reclaimed.
+// Vetoed: some owner is alive/unverifiable OR has a possibly-live leaf, so the segment's PRESENT
+// workdirs must never be deleted. Reclaimer: some PATH-SAFE owner is provably engine-dead AND leaf-free
+// — identity reclaim stays path-safe-only, so a non-path-safe id never RECLAIMS (leak-only) and, while
+// alive, always VETOES its segment. A present workdir is removable iff Reclaimer && !Vetoed.
+type SegmentReclaim struct {
+	Vetoed    bool
+	Reclaimer bool
+}
+
+// SegmentReclaimVerdicts builds the per-segment reclaim verdict in ONE runs-dir pass + ONE leaf scan
+// (the perf shape the sweep needs — it checks many segments without rescanning). A scan/list failure
+// returns ok=false so callers spare every present workdir (fail-safe).
+func SegmentReclaimVerdicts() (map[string]SegmentReclaim, bool) {
+	live, ok := runLeafScan()
+	if !ok {
+		return nil, false
+	}
+	runs, unreadable, ok := listRunsForReclaim()
+	if !ok {
+		return nil, false
+	}
+	out := map[string]SegmentReclaim{}
+	// Two vetoes are applied BEFORE the run loop, each independent of a readable manifest:
+	//
+	// (1) leaf liveness. A member job meta's RunID is authoritative on its own, so a live leaf vetoes its
+	// segment even when the run's manifest is corrupt (readable but bad JSON — skipped by
+	// listRunsForReclaim). This closes the corrupt-manifest sibling of the corrupt-meta hole: a live
+	// colliding owner (a.b whose manifest is truncated) still vetoes segment a-b, so a dead path-safe a-b
+	// can never delete a.b's live workdir.
+	for runID := range live {
+		seg := ids.WorktreeSegment(runID)
+		v := out[seg]
+		v.Vetoed = true
+		out[seg] = v
+	}
+	// (2) unreadable manifest. A manifest whose read FAILED (a transient/IO fault, not absent, not
+	// corrupt) leaves its run's engine liveness unknowable — and, unlike (1), there may be NO leaf meta
+	// yet (the owner is still inside createWorktree→registration). Fail CLOSED: veto its segment so a dead
+	// path-safe twin mapping to the same segment can't reclaim the shared workdir under the possibly-live
+	// owner.
+	for _, runID := range unreadable {
+		seg := ids.WorktreeSegment(runID)
+		v := out[seg]
+		v.Vetoed = true
+		out[seg] = v
+	}
+	for _, r := range runs {
+		seg := ids.WorktreeSegment(r.RunID)
+		v := out[seg]
+		if RunEngineProvablyNotLive(r) && !live[r.RunID] {
+			if seg == r.RunID { // a PATH-SAFE dead + leaf-free owner → an identity reclaimer
+				v.Reclaimer = true
+			}
+		} else {
+			v.Vetoed = true // an alive/unverifiable engine or a possibly-live leaf protects the segment
+		}
+		out[seg] = v
+	}
+	return out, true
+}
+
+// segReadDir is a seam so a test can drive the verdict-time segment snapshot — a workdir the snapshot
+// omits (a colliding owner's post-snapshot fresh-uuid creation) must survive PurgeRun's removal.
+var segReadDir = os.ReadDir
+
 // PurgeRun deletes a run entirely — the board's manual "delete" (the board never auto-clears, so runs
-// accumulate). A VERIFIABLY-LIVE detached engine is stopped AND confirmed dead before any file is
-// removed: the engine is recreate-safe (it rewrites a dropped manifest on its next save), so deleting
-// under a live engine would not stick and could race its writes; if it can't be confirmed dead, the
-// delete is aborted. A "running" manifest whose engine is GONE — crashed, or finished without
-// finalizing — is exactly the accumulated junk this is for, so it is removed as-is. The id is
-// validated before it becomes any path component.
+// accumulate). A VERIFIABLY-live detached engine is stopped AND confirmed dead before any file is
+// removed (the one-action delete-a-running-run): the engine is recreate-safe (it rewrites a dropped
+// manifest on its next save), so deleting under it would not stick and could race its writes; if it
+// can't be confirmed dead the delete is aborted. A detached pid alive but UNVERIFIABLE, and a live
+// FOREGROUND engine, are instead REFUSED (stop it first) — neither can be verify-reaped. A "running"
+// manifest whose engine is GONE — crashed, or finished without finalizing — is exactly the accumulated
+// junk this is for, so it is removed as-is. The id is validated before it becomes any path component.
 //
 // When no engine pid is recorded but the run is genuinely still writing — a --foreground
 // run, or a detached run in the moment between mint and its child stamping EnginePID — reads as
@@ -538,18 +907,95 @@ func PurgeRun(runID string) error {
 	if err := ids.ValidateJobID(runID); err != nil {
 		return err
 	}
-	if run, rerr := ReadRun(runID); rerr == nil && EngineAlive(run) {
-		if _, serr := StopRun(runID); serr != nil {
-			return serr
+	run, rerr := ReadRun(runID)
+	if errors.Is(rerr, errRunManifestUnreadable) {
+		// The manifest exists but its read failed transiently/IO — we can tell neither a live engine
+		// from a gone one. Fail closed: delete nothing, so a transient Windows sharing violation can
+		// never drop a live run's record/jobs/worktrees. ErrNotExist (genuinely gone) and a parse error
+		// (corrupt junk) both fall through to the removal below — the accumulated junk this clears.
+		return rerr
+	}
+	if rerr == nil {
+		if run.EnginePID > 0 {
+			switch ClassifyDetachedEngine(run) {
+			case DetachedLive:
+				// A VERIFIABLY-live detached engine → stop it + confirm dead before deleting anything (a
+				// verified reap + wait is safe, and this is the board's one-action delete-a-running-run).
+				// The worktreePurgeable re-read below then sees the terminal state.
+				if _, serr := StopRun(runID); serr != nil {
+					return serr
+				}
+				if !WaitEngineStopped(runID, 5*time.Second) {
+					return fmt.Errorf("subagent: run %s engine did not stop in time; delete aborted", runID)
+				}
+			case DetachedUnknown:
+				// A detached pid alive but UNVERIFIABLE (argv+token unreadable, or a blind-stop collapse
+				// left {stopped, retained pid}): we can neither kill-verify nor death-verify it, so we
+				// refuse — mirroring the foreground stance. Self-clearing: once it exits it reads
+				// DetachedDead and the delete proceeds.
+				return fmt.Errorf("subagent: run %s is still running (pid %d); stop it first (workflow stop), then delete", runID, run.EnginePID)
+			}
+			// DetachedDead → the accumulated junk this removes; proceed.
+		} else if run.FgEnginePID > 0 && ClassifyFgEngine(run) != FgDead {
+			// A recorded FOREGROUND engine we can't reap (it runs in the user's terminal, EnginePID 0)
+			// whose pid is alive-and-not-provably-dead: deleting its record/jobs/worktrees under it would
+			// corrupt a running run. Both FgAlive (token matches) and FgUnknown-WITH-a-recorded-pid (token
+			// empty/unreadable — a live pid we cannot disprove, mirroring the detached DetachedUnknown
+			// stance) refuse; a token MISMATCH reads FgDead (recycled) and proceeds. Self-clearing: once
+			// the pid exits it reads FgDead and the delete proceeds. A FgUnknown with NO recorded pid
+			// (FgEnginePID<=0 — a legacy / pre-field record) is not caught here and stays deletable.
+			return fmt.Errorf("subagent: run %s is running in the foreground (pid %d); stop it in its terminal (Ctrl-C) first, then delete", runID, run.FgEnginePID)
 		}
-		if !WaitEngineStopped(runID, 5*time.Second) {
-			return fmt.Errorf("subagent: run %s engine did not stop in time; delete aborted", runID)
+	}
+	// Decide the worktree-temp purge NOW, while the manifest still exists: the RemoveAll near
+	// the end deletes the run's isolation-worktree WORKDIRS, which — unlike the git registration
+	// a later sweep reclaims — are not recreate-safe, so they must never be dropped under a live
+	// engine's leaves. Purge only when the run is PROVABLY dead: a successful stop left a terminal
+	// status, and a crashed detached run reads dead; a running FOREGROUND run (EnginePID 0) is not
+	// provably dead, so its live leaves keep their cwd for their own cleanup or a later sweep. A
+	// re-read failure (record already gone) fails closed → skip.
+	worktreePurgeable := false
+	if run, rerr := ReadRun(runID); rerr == nil {
+		worktreePurgeable = RunEngineProvablyNotLive(run)
+	}
+	// Snapshot the run's OWN isolation-worktree segment AT VERDICT TIME — a colliding owner's
+	// post-snapshot fresh-uuid workdir is then structurally out of reach of the removal below
+	// (createWorktree always mints a NEW uuid dir under the segment, and nothing reuses a workdir path,
+	// so a listed entry can never be a later, live creation). Only a PATH-SAFE (segment == id),
+	// provably-dead (worktreePurgeable) run reclaims its segment; a non-path-safe id leaves it to the
+	// sweep. Refuse (RETRYABLE) when the shared segment is still in use — a live/colliding owner or an
+	// own orphan leaf vetoes — or its verdict can't be read (fail-closed: scan failed OR a MISSING entry
+	// refuses). An unverifiable-foreground run (not worktreePurgeable) skips this and deletes its record.
+	var segSnapshot []os.DirEntry
+	segDir := ""
+	storeDir, storeErr := WorktreeStoreDir()
+	if storeErr == nil && worktreePurgeable && ids.WorktreeSegment(runID) == runID {
+		d := filepath.Join(storeDir, runID)
+		if entries, rerr := segReadDir(d); rerr == nil {
+			verdicts, vok := SegmentReclaimVerdicts()
+			if v, present := verdicts[runID]; !vok || !present || v.Vetoed {
+				return fmt.Errorf("subagent: run %s shares a worktree segment with a still-running engine or leaf; retry the delete after it exits", runID)
+			}
+			segDir, segSnapshot = d, entries
 		}
 	}
 	dir, err := jobsDir()
 	if err != nil {
 		return err
 	}
+	// Collect this run's member jobs in ONE walk and REFUSE — id-shape-independent, BEFORE removing
+	// anything — if ANY member is a live orphan OR still identity-PENDING: deleting its meta would erase
+	// segment ids.WorktreeSegment(runID)'s veto and let a colliding reclaimer delete the shared workdir
+	// under the (possible) orphan. This is the evidence-based gate the path-safe segment check above
+	// misses — a valid NON-path-safe id ("a.b") whose segment ("a-b") a path-safe reclaimer owns bypasses
+	// that branch entirely, so this walk is its ONLY segment guard. Pending-aware (isLiveOrPendingOrphan-
+	// Evidence) to match the automated keep-rules: a crash-window member (ChildIdentityPending, no
+	// ChildPID) is the sole veto for its segment and reaping it here would strip it. Legacy metas stay
+	// deletable: both arms require a field they lack (ChildPID>0 OR ChildIdentityPending), so identity-less
+	// old/non-isolation runs never trigger it. A live-orphan refusal self-clears once the
+	// one-shot orphan exits; a pending refusal is resolved by the explicit DeleteJob recovery escape (an
+	// unidentified orphan never records identity, so it never self-clears). The same walk feeds the removal.
+	var members []string
 	if entries, rerr := os.ReadDir(dir); rerr == nil {
 		for _, e := range entries {
 			name := e.Name()
@@ -557,11 +1003,33 @@ func PurgeRun(runID string) error {
 				continue
 			}
 			jobID := strings.TrimSuffix(name, ".json")
-			if meta, merr := readMeta(dir, jobID); merr == nil && meta.RunID == runID {
-				removeJob(dir, jobID)
-				_ = pinned.Unpin(pinned.Job, jobID) // explicit delete clears any leaf pin marker
+			meta, merr := readMeta(dir, jobID)
+			if merr != nil || meta.RunID != runID {
+				continue
 			}
+			if isLiveOrPendingOrphanEvidence(meta) {
+				if meta.ChildPID > 0 {
+					return fmt.Errorf("subagent: run %s has a member leaf still running; retry the delete after it exits", runID)
+				}
+				return fmt.Errorf("subagent: run %s has a member (%s) whose leaf may have started but was never identified; delete that job to confirm it is gone, then retry", runID, jobID)
+			}
+			members = append(members, jobID)
 		}
+	}
+	for _, jobID := range members {
+		removeJob(dir, jobID)
+		_ = pinned.Unpin(pinned.Job, jobID) // explicit delete clears any leaf pin marker
+	}
+	// Remove exactly the workdirs the verdict-time snapshot listed — BEFORE the manifest — so a
+	// mid-removal crash leaves the workdir gone while the record still proves death (the sweep's
+	// workdir-missing clause then reclaims the git registration; deleting the manifest first would strand
+	// it unknown-present). Then remove the segment dir only if now EMPTY: a plain os.Remove tolerates
+	// ENOTEMPTY as a leak-not-delete residual, so a surviving post-snapshot colliding workdir keeps it.
+	if segDir != "" {
+		for _, e := range segSnapshot {
+			_ = os.RemoveAll(filepath.Join(segDir, e.Name()))
+		}
+		_ = os.Remove(segDir)
 	}
 	removeRun(filepath.Join(dir, runsDirName), runID)
 	_ = pinned.Unpin(pinned.Run, runID) // explicit delete is the sanctioned removal of a pinned run
@@ -571,8 +1039,9 @@ func PurgeRun(runID string) error {
 // PruneRuns deletes every run whose engine is no longer alive — crashed/killed runs still stuck
 // "running", plus terminal ones — while sparing any run with a live engine. Each delete runs under the
 // per-run execution lock so it can't race a concurrent restart/resume, and the sweep is best-effort:
-// one run that won't delete (an unverifiable-live engine PurgeRun refuses) doesn't abort the rest.
-// Returns the number of runs removed.
+// a run PurgeRun refuses (an unverifiable-live engine, or one with a still-live orphan leaf) leaves
+// `removed` unincremented and the loop continues — it never aborts the rest, and the run is retried
+// next pass. Returns the number of runs removed.
 func PruneRuns() (int, error) {
 	runs, err := ListRuns()
 	if err != nil {
@@ -610,24 +1079,55 @@ func PruneRuns() (int, error) {
 	return removed, nil
 }
 
-// isLiveOrUnverifiable reports whether a run might still be writing — a verifiably-live detached
-// engine, OR a still-"running" run with no reapable pid (a --foreground run, or a detached run in the
-// mint→stamp-pid window). PruneRuns spares both: deleting under either could yank files from a live
-// engine. Mirrors the fail-closed liveness guard the resume/restart paths use. A terminal run, or a
-// crashed detached run (recorded pid now dead), is not protected — exactly what prune reaps.
+// isLiveOrUnverifiable reports whether a run might still be writing, so PruneRuns spares it (deleting
+// its record/jobs under a live engine would yank files out from under it). A verifiably-live DETACHED
+// engine is protected; a detached pid that is dead/recycled is not. With no reapable detached pid
+// (EnginePID<=0) the FOREGROUND identity decides: FgAlive (a live foreground engine, including a
+// blind-stopped one) is protected; a recorded fg pid alive but token-unverifiable (FgUnknown WITH
+// FgEnginePID>0) is spared the same way — a live pid we can't disprove (mirrors PurgeRun's refusal);
+// FgDead (exited/crashed) is prunable — consistent with resume now allowing it; a FgUnknown with NO
+// recorded pid (pre-field / mint→stamp) keeps the prior status-based behavior (a still-"running" one
+// spared, a terminal one prunable) so a legacy record isn't stranded. Mirrors the fail-closed liveness
+// guard the resume/restart paths use.
 func isLiveOrUnverifiable(run WorkflowRun) bool {
-	return EngineAlive(run) || (run.Status == "running" && run.EnginePID <= 0)
+	if run.EnginePID > 0 {
+		// A detached engine is live-or-unverifiable unless PROVABLY dead: DetachedDead (pid gone or a
+		// readable identity mismatch) → prunable; DetachedLive, and DetachedUnknown (a retained pid alive
+		// but unverifiable — argv+token unreadable) → SPARED, so PruneRuns never deletes a run whose
+		// engine it can't prove dead. Self-clearing: once that pid exits it reads DetachedDead and normal
+		// pruning applies.
+		return ClassifyDetachedEngine(run) != DetachedDead
+	}
+	switch ClassifyFgEngine(run) {
+	case FgAlive:
+		return true
+	case FgDead:
+		return false
+	default: // FgUnknown
+		if run.FgEnginePID > 0 {
+			return true // a recorded fg pid we can't disprove — spare it (mirrors PurgeRun's refusal)
+		}
+		return run.Status == "running" // no recorded pid (pre-field / mint→stamp) — status-based, don't strand a legacy record
+	}
 }
 
 // WaitEngineStopped polls a run's engine liveness until it is gone or the deadline passes (true once
-// EngineAlive is false / the manifest is unreadable, false on timeout). EngineAlive fails SOFT (an
-// unreadable argv reads as alive), so a stuck poll times out into the caller's fail-closed path rather
-// than touching files under a still-live engine. Shared by PurgeRun (delete) and workflow.Restart.
+// EngineAlive is false / the manifest is genuinely absent, false on timeout). Only os.ErrNotExist —
+// the manifest deleted out from under us — counts as stopped; a transient/other read error (a Windows
+// sharing violation, an I/O fault, a corrupt manifest) does NOT, so a read that can't confirm death
+// times out into the caller's fail-closed path rather than declaring the engine gone. EngineAlive
+// itself also fails SOFT (an alive-but-UNVERIFIABLE pid reads as alive). Shared by StopRun's reap,
+// PurgeRun (delete), and workflow.Restart.
 func WaitEngineStopped(runID string, timeout time.Duration) bool {
 	deadline := time.Now().Add(timeout)
 	for {
 		run, err := ReadRun(runID)
-		if err != nil || !EngineAlive(run) {
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return true // the manifest is genuinely gone → engine stopped
+			}
+			// A read we can't trust (transient/IO/corrupt): keep polling; don't declare death.
+		} else if !EngineAlive(run) {
 			return true
 		}
 		if time.Now().After(deadline) {

@@ -52,13 +52,58 @@ func restartLocked(ctx context.Context, runID, journalKey string) error {
 	return err
 }
 
-// ensureRestartable is the shared pre-restart barrier: the saved script must be
-// readable (with the explicit pre-JS-engine refusal) and a still-"running" run's
-// engine must be verifiably GONE before any journal rewrite (it O_APPENDs to it).
+// resumeBlockedReason reports why a run may not be resumed or restarted (nil when it may). It decides
+// the FOREGROUND cases (no reapable detached pid, EnginePID<=0) from the recorded fg engine identity:
+// a provably-dead fg engine — a Ctrl-C'd run (its shutdown defer wrote the manifest then it exited) or
+// a crashed one — is resumable; a still-LIVE one is refused (resuming would run a second engine on this
+// manifest/journal/worktree segment, whose later-dead pid would falsely condemn the survivor's live
+// worktrees to the sweep); an absent/unverifiable identity (an old pre-field record, or a platform
+// that can't read the token) keeps the conservative refusal. A recorded DETACHED engine (EnginePID>0)
+// is decided by the tri-state ClassifyDetachedEngine: dead/recycled or verifiably-live → nil (the
+// caller's running-refuse / stop-and-confirm path replays or reaps it); an alive-but-UNVERIFIABLE
+// retained pid → refused here (its stop-and-confirm keys on Status=="running", so a blind-stopped one
+// would otherwise resume under a possibly-live engine). Shared by Launch's resume preflight and
+// ensureRestartable so both refuse identically — the latter BEFORE any journal rewrite.
+func resumeBlockedReason(run subagent.WorkflowRun) error {
+	if run.Status != "stopped" && run.Status != "running" {
+		return nil // terminal (done/failed) — a resume/restart is not a live-engine concern here
+	}
+	if run.EnginePID > 0 {
+		// A recorded DETACHED engine: dead/recycled or verifiably-live → nil (the running-refuse /
+		// stop-and-confirm path replays or reaps it). But an alive-but-UNVERIFIABLE retained pid is
+		// refused: a blind-stop collapse can leave {stopped, retained pid} whose stop-and-confirm never
+		// fires (that guard keys on Status=="running"), so resuming could run a SECOND engine on this
+		// manifest / journal / worktree segment — whose later-dead pid would then falsely condemn the
+		// survivor's live worktrees to the sweep. Self-clearing: once the pid exits it reads DetachedDead.
+		if subagent.ClassifyDetachedEngine(run) == subagent.DetachedUnknown {
+			return fmt.Errorf("workflow: run %s has a detached engine (pid %d) whose death cannot be verified; confirm the process has exited, then delete it (workflow rm) or launch fresh", run.RunID, run.EnginePID)
+		}
+		return nil
+	}
+	switch subagent.ClassifyFgEngine(run) {
+	case subagent.FgDead:
+		return nil // the foreground engine exited (Ctrl-C'd or crashed) — safe to resume/restart
+	case subagent.FgAlive:
+		return fmt.Errorf("workflow: run %s is still running in the foreground; stop it in its terminal (Ctrl-C) first", run.RunID)
+	default: // FgUnknown — an old record with no fg identity, or one whose liveness can't be verified
+		return fmt.Errorf("workflow: run %s has a foreground engine whose death cannot be verified; confirm its terminal process has exited, then delete it (workflow rm) or launch fresh", run.RunID)
+	}
+}
+
+// ensureRestartable is the shared pre-restart barrier: the run must be resumable
+// (resumeBlockedReason), the saved script must be readable (with the explicit pre-JS-engine
+// refusal), and a still-"running" run's engine must be verifiably GONE before any journal rewrite
+// (it O_APPENDs to it).
 func ensureRestartable(runID string) (string, error) {
 	run, err := subagent.ReadRun(runID)
 	if err != nil {
 		return "", err
+	}
+	// Refuse an unresumable run BEFORE the caller rewrites the journal (removeJournalKey/Keys), so a
+	// restart never leaves a mutate-then-fail half-state — the journal must not be touched under an
+	// engine whose death can't be verified. Same predicate Launch's preflight uses, so no drift.
+	if reason := resumeBlockedReason(run); reason != nil {
+		return "", reason
 	}
 	scriptPath, err := subagent.RunScriptPath(runID)
 	if err != nil {
@@ -72,23 +117,16 @@ func ensureRestartable(runID string) (string, error) {
 		}
 		return "", fmt.Errorf("workflow: saved script for run %s is unavailable; cannot restart: %w", runID, serr)
 	}
-	if run.Status == "running" {
-		switch {
-		case subagent.EngineAlive(run):
-			// A verifiably-live detached engine → stop it + confirm dead (abort if it won't die in time).
-			if _, serr := subagent.StopRun(runID); serr != nil {
-				return "", serr
-			}
-			if !subagent.WaitEngineStopped(runID, stopBarrierTimeout) {
-				return "", fmt.Errorf("workflow: run %s engine did not stop in time; restart aborted", runID)
-			}
-		case run.EnginePID <= 0:
-			// A foreground run (or a detached run in the mint→stamp-pid window) still claiming to run has
-			// no killable engine to confirm dead — resuming could run two engines on one journal. Fail
-			// closed; stop it first.
-			return "", fmt.Errorf("workflow: run %s is running in the foreground; stop it first", runID)
+	if run.Status == "running" && subagent.EngineAlive(run) {
+		// A verifiably-live DETACHED engine → stop it + confirm dead (abort if it won't die in time). A
+		// foreground run (EnginePID<=0) was already vetted by resumeBlockedReason above (dead→resume,
+		// live→refused); a crashed/killed detached run (recorded pid now dead) falls straight through.
+		if _, serr := subagent.StopRun(runID); serr != nil {
+			return "", serr
 		}
-		// else: a crashed/killed DETACHED run (recorded pid now dead) — safe to resume as-is.
+		if !subagent.WaitEngineStopped(runID, stopBarrierTimeout) {
+			return "", fmt.Errorf("workflow: run %s engine did not stop in time; restart aborted", runID)
+		}
 	}
 	return scriptPath, nil
 }

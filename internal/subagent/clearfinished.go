@@ -2,7 +2,6 @@ package subagent
 
 import (
 	"fmt"
-	"path/filepath"
 
 	"github.com/ethanhq/cc-fleet/internal/ids"
 	"github.com/ethanhq/cc-fleet/internal/pinned"
@@ -58,8 +57,6 @@ func ClearFinished(sessionID string, pins pinned.Set) (int, error) {
 	pinnedMemberRun := pinnedRunMembers(jobs, pins)
 
 	removed := 0
-	removedJob := map[string]bool{}
-	runsPath := filepath.Join(dir, runsDirName)
 	for _, r := range runs {
 		if r.SessionID != sessionID || !terminalStatus(r.Status) {
 			continue
@@ -72,22 +69,23 @@ func ClearFinished(sessionID string, pins pinned.Set) (int, error) {
 		if ids.ValidateJobID(r.RunID) != nil {
 			continue
 		}
-		// Reap the run's (unpinned) member jobs, then its manifest. pinnedMemberRun already
-		// excluded a run with a pinned member, so no member here is pinned.
-		for _, j := range jobs {
-			if j.RunID == r.RunID && ids.ValidateJobID(j.JobID) == nil {
-				removeJob(dir, j.JobID)
-				removedJob[j.JobID] = true
+		// Delete the run through the SINGLE chokepoint — WithRunLock + PurgeRun — so the liveness / leaf /
+		// segment guards AND PurgeRun's workdir-before-record ordering apply: a blind-stopped FgAlive run
+		// (or one with a live orphan leaf, or a colliding-segment owner) is refused → skip-and-continue,
+		// cleared on a later pass once the engine/orphan is gone — never deleted under a live engine or
+		// stranded unknown-present. Mirrors PruneRuns. PurgeRun reaps the run's member jobs too.
+		_ = WithRunLock(r.RunID, func() error {
+			if PurgeRun(r.RunID) == nil {
+				removed++
 			}
-		}
-		removeRun(runsPath, r.RunID)
-		removed++
+			return nil
+		})
 	}
 
-	// Standalone jobs (no run) that are finished, in-session, and unpinned. Run members are
-	// handled above; a member of a KEPT run stays attached to it.
+	// Standalone jobs (no run) that are finished, in-session, and unpinned. Run members are handled
+	// above (PurgeRun reaps them); a member of a KEPT run stays attached to it.
 	for _, j := range jobs {
-		if j.RunID != "" || removedJob[j.JobID] {
+		if j.RunID != "" {
 			continue
 		}
 		if j.LeadSessionID != sessionID || !terminalStatus(j.Status) {
@@ -102,13 +100,14 @@ func ClearFinished(sessionID string, pins pinned.Set) (int, error) {
 	return removed, nil
 }
 
-// DeleteSession removes EVERY record of one session — workflow runs (any status; a live run's engine
-// is stopped first by PurgeRun) and standalone subagent jobs (a still-live one's process tree is
-// reaped first) — EXCEPT pinned ones (a pinned run, a run with a pinned member, or a pinned job is
-// kept; pins are removed only by an explicit per-record delete). Each run delete runs under the
-// per-run lock so it can't race a concurrent restart/resume. A run that won't delete (its engine
-// can't be stopped in time) is skipped and REPORTED: the error names how many were skipped, alongside
-// the count actually removed.
+// DeleteSession removes EVERY record of one session — workflow runs (a verifiably-live detached run's
+// engine is stopped first by PurgeRun; an unverifiable or foreground live run is refused and skipped)
+// and standalone subagent jobs (a still-live one's process tree is reaped first) — EXCEPT pinned ones
+// (a pinned run, a run with a pinned member, or a pinned job is kept; pins are removed only by an
+// explicit per-record delete). Each run delete runs under the per-run lock so it can't race a
+// concurrent restart/resume. A run that won't delete (a live engine that can't be verify-reaped, or a
+// live orphan leaf) is skipped and REPORTED: the error names how many were skipped, alongside the
+// count actually removed.
 func DeleteSession(sessionID string, pins pinned.Set) (int, error) {
 	if sessionID == "" {
 		return 0, fmt.Errorf("subagent: DeleteSession requires a session id")
@@ -141,7 +140,7 @@ func DeleteSession(sessionID string, pins pinned.Set) (int, error) {
 		}
 		id := r.RunID
 		_ = WithRunLock(id, func() error {
-			// PurgeRun stops a live engine first, then reaps the run + members.
+			// PurgeRun refuses a live-or-unverifiable engine (reported as skipped), else reaps run + members.
 			if perr := PurgeRun(id); perr != nil {
 				skipped++
 				if skipErr == nil {
@@ -185,6 +184,16 @@ func DeleteJob(jobID string) error {
 	dir, err := jobsDir()
 	if err != nil {
 		return err
+	}
+	// A member leaf whose recorded CHILD is alive-or-unverifiable is veto evidence for its worktree
+	// segment — refuse (retry once the child exits), mirroring PurgeRun's live-orphan refusal. Keyed on
+	// the NARROW isLiveOrphanVetoEvidence (ChildPID>0), NOT the automated keep-rule: a still-identity-
+	// PENDING member (Start-window crash, no ChildPID — a state that never self-resolves) is therefore
+	// NOT blocked. This is the explicit record-only RECOVERY escape: a user DeleteJob on the pending job
+	// proceeds (declared intent), after which its run is no longer member-blocked and cleans up normally;
+	// no workdir is deleted under an unverifiable orphan (the user resolved it).
+	if meta, merr := readMeta(dir, jobID); merr == nil && isLiveOrphanVetoEvidence(meta) {
+		return fmt.Errorf("subagent: job %s is a run member whose leaf is still running; retry the delete after it exits", jobID)
 	}
 	removeJob(dir, jobID)
 	_ = pinned.Unpin(pinned.Job, jobID)

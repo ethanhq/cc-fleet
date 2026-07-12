@@ -459,9 +459,9 @@ with 'workflow status' or watch the board. --foreground runs inline to completio
 			}
 
 			// A detached --resume serializes against the board's restart and any concurrent
-			// resume/stop via the per-run execution lock; a foreground resume IS the engine
-			// running inline (it self-stamps its pid synchronously) and must not hold the lock
-			// around Execute, so it is not wrapped.
+			// resume/stop via the per-run execution lock, held across launch + child registration.
+			// A foreground resume must not hold that lock around the inline Execute, so the CLI
+			// leaves it unwrapped — Launch itself serializes just the foreground resume preflight.
 			id, err := func() (string, error) {
 				if resume != "" && !foreground {
 					var rid string
