@@ -87,9 +87,10 @@ type engine struct {
 	vm            *goja.Runtime
 	cbs           chan leafCB
 	loopDone      chan struct{}
-	inflight      int  // leaves spawned but not yet completed
-	aborted       bool // drain state-only; no more JS runs
-	stopped       bool // the run ctx was cancelled (finalizes "stopped", not "failed")
+	inflight      int   // leaves spawned but not yet completed
+	aborted       bool  // drain state-only; no more JS runs
+	stopped       bool  // the run ctx was cancelled (finalizes "stopped", not "failed")
+	settleErr     error // first severed promise settlement (goja dropped the reaction jobs); the run error unless stopped wins
 	runCtx        context.Context
 	leafCtx       context.Context // child of runCtx; cancelled on abort → leaf execs die promptly
 	cancelLeaves  context.CancelFunc
@@ -472,8 +473,8 @@ func (e *engine) jsAgent(call goja.FunctionCall) goja.Value {
 	h := &leafCtl{
 		spec: spec,
 		settle: promiseSettle{
-			resolve: func(v goja.Value) { resolve(v) },
-			reject:  func(v goja.Value) { reject(v) },
+			resolve: func(v goja.Value) { e.noteSettleErr(resolve(v)) },
+			reject:  func(v goja.Value) { e.noteSettleErr(reject(v)) },
 		},
 		gen: 1,
 	}

@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -65,5 +66,97 @@ func TestStopRunUniformlyStopped(t *testing.T) {
 				t.Fatalf("iter %d: job %s status = %q, want stopped (uniform — never failed, never stranded)", i, j.JobID, j.Status)
 			}
 		}
+	}
+}
+
+// TestDriveClassifiesStoppedAtQuiescence (W-stop-quiescence): a cancelled run whose
+// script promise is stranded pending reaches drive's quiescence branch — inflight 0,
+// queue empty, promise pending — and must classify "stopped", never a false
+// deadlock. The harness hands drive that exact quiescent state directly, so the
+// misclassification would reproduce on every run, not once per thousand schedules.
+func TestDriveClassifiesStoppedAtQuiescence(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // the run ctx is already dead at quiescence
+	eng := newTestEngine(ctx, "quiesce", 1)
+	if err := eng.setupVM(); err != nil {
+		t.Fatalf("setupVM: %v", err)
+	}
+	prom, _, _ := eng.vm.NewPromise() // pending; nothing will ever settle it
+
+	_, err := eng.drive(prom)
+	if err == nil || !strings.Contains(err.Error(), "run stopped") {
+		t.Fatalf("err = %v, want run stopped (a cancelled ctx decides stopped at every exit)", err)
+	}
+	if !eng.stopped {
+		t.Fatal("drive must set stopped so the finalizer stamps the manifest stopped")
+	}
+}
+
+// TestDriveGenuineDeadlockStillDetected: the inverse pin — on a LIVE ctx a quiescent
+// pending promise is a proven deadlock and keeps failing with errNoProgress.
+func TestDriveGenuineDeadlockStillDetected(t *testing.T) {
+	eng := newTestEngine(context.Background(), "deadlock", 1)
+	if err := eng.setupVM(); err != nil {
+		t.Fatalf("setupVM: %v", err)
+	}
+	prom, _, _ := eng.vm.NewPromise()
+
+	_, err := eng.drive(prom)
+	if !errors.Is(err, errNoProgress) {
+		t.Fatalf("err = %v, want errNoProgress (genuine deadlock detection must survive)", err)
+	}
+}
+
+// TestSeveredSettleAbortsWithCause (W-settle-sever): an uncatchable that fires inside
+// a promise settle severs goja's reaction drain (the queued jobs are dropped and the
+// interrupt is consumed) — the run must abort with that cause as the run error, not
+// strand into the deadlock text. The interrupt is planted while the loop is provably
+// parked in drive (a probe cb consumed on the loop proves the script body's JS is
+// done), so the first JS after the flag is deterministically the settle's reaction
+// job.
+func TestSeveredSettleAbortsWithCause(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	var started atomic.Bool
+	gate := make(chan struct{})
+	old := runLeaf
+	runLeaf = func(ctx context.Context, req subagent.Request) subagent.Result {
+		started.Store(true)
+		<-gate
+		return subagent.Result{OK: true, Result: "done"}
+	}
+	t.Cleanup(func() { runLeaf = old })
+	oldR := resolveProfile
+	resolveProfile = func(requested string) (string, string) { return requested, "" }
+	t.Cleanup(func() { resolveProfile = oldR })
+
+	eng := newTestEngine(context.Background(), "sever", 1) // live ctx: no cancel anywhere
+	src := `return await parallel([() => agent("a", {provider: "v"})]);`
+	done := make(chan error, 1)
+	go func() {
+		_, err := eng.run("s.js", []byte(src), Options{})
+		done <- err
+	}()
+	for !started.Load() {
+		time.Sleep(time.Millisecond)
+	}
+	// started only proves the leaf goroutine ran — the loop may still be finishing
+	// the script body's JS, where the interrupt would exit via the callErr path
+	// instead. A probe cb consumed on the loop proves drive is live.
+	probe := make(chan struct{})
+	eng.post(leafCB{state: func() { close(probe) }})
+	<-probe
+	eng.vm.Interrupt("severed") // sticky flag; trips on the settle's first reaction job
+	close(gate)
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "settlement interrupted") {
+			t.Fatalf("err = %v, want the severed-settlement cause as the run error", err)
+		}
+		if errors.Is(err, errNoProgress) {
+			t.Fatal("a severed settlement must not report as a deadlock")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("run did not return after the severed settle")
 	}
 }
