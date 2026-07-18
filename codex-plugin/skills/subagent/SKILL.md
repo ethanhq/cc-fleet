@@ -9,17 +9,7 @@ description: Fan out a one-shot or flat parallel batch of cc-fleet PROVIDER suba
 
 When this skill cites `cc-fleet-shared/<file>.md`, read `../cc-fleet-shared/<file>.md` relative to this SKILL.md (load-bearing, not optional background).
 
-> **Execution environment — check before running anything.** Confirm your shell
-> tool executes on the host where cc-fleet is installed. In sandboxed or remote
-> agent sessions, a tool named Bash may run on an isolated machine with a
-> different filesystem, PATH, processes, and tmux server — `command not found`,
-> a healthy-looking `doctor` whose leaves can't reach your files, or a wrong
-> working directory usually means you are in a sandbox shell, not that cc-fleet
-> is broken. Route commands through a host-executing bridge tool (for example,
-> desktop-commander) and pass host paths for any files you reference; do not
-> retry the same Bash call expecting different results. If no host-executing
-> tool is available, stop and explain that cc-fleet must run on its
-> installation host.
+> **Execution environment — check before running anything.** Confirm this shell runs on the machine where cc-fleet is installed. In a remote or split-host agent session the shell can run on a separate machine with its own filesystem and PATH, so `cc-fleet: command not found` or a wrong working directory can indicate that the shell is running on the wrong machine, not that cc-fleet is broken — route commands through a host-executing bridge and pass host paths for the files you reference, and stop cleanly if no such bridge exists. (Different-machine case only; for the same-machine codex sandbox — a clean `doctor` but network-blocked leaves — see Approval & sandbox below.)
 
 `cc-fleet subagent` runs a provider model headless and returns the result directly on your shell's stdout — no tmux pane, no team, no locks. A one-shot provider agent whose model can be a provider id. It reuses the same provider selection and fingerprint gate as the rest of cc-fleet. It's the lightweight synchronous branch.
 
