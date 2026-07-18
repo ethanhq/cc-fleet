@@ -9,17 +9,7 @@ description: Orchestrate a MULTI-PHASE, dependent, or resumable run over many cc
 
 When this skill cites `cc-fleet-shared/<file>.md`, read the file at `../cc-fleet-shared/<file>.md` relative to this SKILL.md — the cited content is load-bearing, not optional background.
 
-> **Execution environment — check before running anything.** Confirm your shell
-> tool executes on the host where cc-fleet is installed. In sandboxed or remote
-> agent sessions, a tool named Bash may run on an isolated machine with a
-> different filesystem, PATH, processes, and tmux server — `command not found`,
-> a healthy-looking `doctor` whose leaves can't reach your files, or a wrong
-> working directory usually means you are in a sandbox shell, not that cc-fleet
-> is broken. Route commands through a host-executing bridge tool (for example,
-> desktop-commander) and pass host paths for any files you reference; do not
-> retry the same Bash call expecting different results. If no host-executing
-> tool is available, stop and explain that cc-fleet must run on its
-> installation host.
+> **Execution environment — check before running anything.** Confirm this shell runs on the machine where cc-fleet is installed. In a remote or split-host agent session the shell can run on a separate machine with its own filesystem and PATH, so `cc-fleet: command not found` or a wrong working directory can indicate that the shell is running on the wrong machine, not that cc-fleet is broken — route commands through a host-executing bridge and pass host paths for the files you reference, and stop cleanly if no such bridge exists. (Different-machine case only; for the same-machine codex sandbox — a clean `doctor` but network-blocked leaves — see Approval & sandbox below.)
 
 A **workflow** is a JavaScript script that fans out provider `cc-fleet subagent` leaves and runs in a **cc-fleet process, OFF the main session's context**. You write the script; `cc-fleet workflow run` executes it. The orchestration plan lives in script variables (CPU, ~0 of your tokens) — you are invoked only when *authoring* the script, not on every scheduling decision. The API mirrors the native Claude Code Workflow tool — write the script exactly as you would a native workflow; the only addition is the `provider` option on `agent()`.
 
