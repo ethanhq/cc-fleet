@@ -15,17 +15,24 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/userops"
 )
 
-// onWindows reports whether the binary is running on Windows. The teammate lane
-// (spawn / teardown / hide / show) drives tmux, which cc-fleet does not support
-// on Windows; only the subagent lane (lane-2) is supported there. A package var
-// (not a const) so it reads at runtime.
-var onWindows = runtime.GOOS == "windows"
+// windowsTmuxOptInEnv opts a Windows host into the teammate lane. It is an
+// explicit escape hatch, not a supported configuration: the lane assumes a tmux
+// that behaves like the unix one, and the Windows ports differ in ways cc-fleet
+// cannot detect up front.
+const windowsTmuxOptInEnv = "CC_FLEET_WINDOWS_TMUX_EXPERIMENTAL"
+
+// onWindows reports whether the teammate lane (spawn / teardown / hide / show)
+// must refuse to run. It drives tmux, which cc-fleet does not support on Windows
+// by default; only the subagent lane (lane-2) is. Setting windowsTmuxOptInEnv
+// unlocks the lane against a Windows tmux port at the user's own risk. A package
+// var (not a const) so it reads at runtime.
+var onWindows = runtime.GOOS == "windows" && os.Getenv(windowsTmuxOptInEnv) == ""
 
 // windowsUnsupportedMsg is the clear, command-specific error a teammate-lane
 // command returns on Windows instead of falling through to a generic tmux-exec
 // failure. The subagent lane is the supported path.
 func windowsUnsupportedMsg(cmd string) string {
-	return fmt.Sprintf("%s is not supported on Windows (it drives tmux); use the subagent lane (cc-fleet subagent)", cmd)
+	return fmt.Sprintf("%s is not supported on Windows (it drives tmux); use the subagent lane (cc-fleet subagent), or set %s=1 to try the lane against a Windows tmux port", cmd, windowsTmuxOptInEnv)
 }
 
 // promptPassword reads a line from the controlling terminal without echoing it.

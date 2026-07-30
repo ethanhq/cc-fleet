@@ -113,7 +113,7 @@ dev version.
 - **No cgo.** Platform behavior splits via `internal/procintrospect` and per-package
   `_unix.go`/`_windows.go`/`_darwin.go` seams; anything touching `/proc` or process tables
   goes through `procintrospect`. Targets: linux, darwin, windows × amd64, arm64 — on Windows
-  the tmux teammate lane refuses (`spawn`/`hide`/`show` emit `UNSUPPORTED_ON_WINDOWS`;
+  the tmux teammate lane refuses unless `CC_FLEET_WINDOWS_TMUX_EXPERIMENTAL` is set (`spawn`/`hide`/`show` emit `UNSUPPORTED_ON_WINDOWS`;
   `teardown` the same message under `INTERNAL`); subagent/workflow/run/TUI are native, and
   process identity is (pid, start-token).
 

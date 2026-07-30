@@ -77,7 +77,7 @@ No cgo anywhere; `CGO_ENABLED=0` across all six release targets (linux/darwin/wi
 
 - **Linux** — full; `/proc` is the reference introspection path.
 - **macOS** — full and CI-tested; introspection falls back to `ps`, and the settle gate is pane-based so teammate liveness behaves identically.
-- **Windows** — everything except the tmux teammate lane: `subagent`, `workflow`, `run`, and the TUI are native; `spawn`/`hide`/`show` refuse with `UNSUPPORTED_ON_WINDOWS` (`teardown` returns the same human message but `error_code` `INTERNAL`). Process identity is (pid, start-token): a token mismatch is decisive, and a token match never overrides a readable argv mismatch.
+- **Windows** — everything except the tmux teammate lane: `subagent`, `workflow`, `run`, and the TUI are native; `spawn`/`hide`/`show` refuse with `UNSUPPORTED_ON_WINDOWS` (`teardown` returns the same human message but `error_code` `INTERNAL`). Setting `CC_FLEET_WINDOWS_TMUX_EXPERIMENTAL=1` unlocks the lane against a Windows tmux port (e.g. psmux) at the user's own risk. The pane command is then re-expressed for the Windows shell by `internal/tmux`'s `wrapPaneCommand` seam, and `teardown` defers the team-dir removal until the team lock is closed, since Windows cannot unlink an open file. Process identity is (pid, start-token): a token mismatch is decisive, and a token match never overrides a readable argv mismatch.
 
 Platform splits live in `procintrospect` and per-package `_unix.go` / `_windows.go` seams — anything touching process tables goes through them.
 
