@@ -2990,26 +2990,41 @@ func shortJobID(id string) string {
 // with its seeds under one header (indented), one cursor over the flat selectable
 // rows, and a seed preview for the highlighted row.
 func (m Model) viewPickTemplate() string {
+	hint := "type to filter · ↑/↓ move · enter/→ choose · esc cancel"
+	if m.tmplFilter != "" {
+		hint = "↑/↓ move · enter/→ choose · esc clear filter"
+	}
 	return m.providerFlowView("Add provider", "", "+", "pick a provider",
-		"↑/↓ move · enter/→ choose · esc cancel", func(rightW int) []string {
+		hint, func(rightW int) []string {
 			return m.addPickerLines(m.tmplCursor)
 		})
 }
 
-// addPickerLines renders the grouped provider list. cursor >= 0 highlights that
-// flat item index and appends its seed preview; cursor < 0 is a read-only preview
-// (used as the home list's "+ Add provider…" hover detail). When the highlighted
-// list is taller than the pane it windows on the cursored row — keeping the
-// highlighted row visible — the way viewModelPick does.
+// addPickerLines renders the grouped provider list. cursor >= 0 is the live picker:
+// it narrows to tmplFilter under a filter line, highlights that flat item index among
+// the survivors, and appends its seed preview. cursor < 0 is the home list's
+// "+ Add provider…" hover detail — read-only and always the whole catalog, since the
+// filter belongs to the picker the user is standing in. When the highlighted list is
+// taller than the pane it windows on the cursored row — keeping the highlighted row
+// visible — the way viewModelPick does.
 func (m Model) addPickerLines(cursor int) []string {
+	groups, head := addGroups(), []string(nil)
+	if cursor >= 0 {
+		var matched int
+		groups, matched = filteredAddGroups(m.tmplFilter)
+		head = m.addFilterLines(matched)
+	}
 	var lines []string
 	cursorLine := 0
 	idx := 0
-	for gi, g := range addGroups() {
+	var cursored addItem
+	for gi, g := range groups {
 		if gi > 0 {
 			lines = append(lines, "")
 		}
-		lines = append(lines, faintStyle.Render(g.header))
+		if g.header != "" { // the zero-match fallback carries none
+			lines = append(lines, faintStyle.Render(g.header))
+		}
 		for _, it := range g.items {
 			marker := "  "
 			label := contentStyle.Render(it.label)
@@ -3017,25 +3032,24 @@ func (m Model) addPickerLines(cursor int) []string {
 				marker = cursorStyle.Render("❯ ")
 				label = selectedStyle.Render(it.label)
 				cursorLine = len(lines)
+				cursored = it
 			}
 			lines = append(lines, "  "+marker+label)
 			idx++
 		}
 	}
 	detailStart := len(lines)
-	if cursor >= 0 {
+	if cursor >= 0 && cursor < idx {
 		lines = append(lines, "")
-		lines = append(lines, m.addItemDetail()...)
+		lines = append(lines, m.addItemDetail(cursored)...)
 	}
-	bodyH := m.boardBodyHeight()
+	bodyH := m.boardBodyHeight() - len(head)
 	if cursor < 0 || len(lines) <= bodyH {
-		return lines
+		return append(head, lines...)
 	}
 	// The list overflows the pane: window the rows on the cursored line so the
 	// highlight stays visible, keep its detail pinned below, and flag the hidden
-	// rows with ↑/↓ markers (two rows are reserved for them). On a tiny pane the
-	// detail alone can outrun the budget, so the result is clamped to bodyH — the
-	// cursored row sits near the top of the window and survives the clamp.
+	// rows with ↑/↓ markers (two rows are reserved for them).
 	detail := lines[detailStart:]
 	avail := bodyH - len(detail) - 2
 	if avail < 1 {
@@ -3054,16 +3068,31 @@ func (m Model) addPickerLines(cursor int) []string {
 	if len(out) > bodyH {
 		out = out[:bodyH]
 	}
-	return out
+	return append(head, out...)
+}
+
+// addFilterLines is the picker's filter block: the affordance while nothing is typed,
+// then the query and how much of the catalog survives it. It sits outside the row
+// window, so the line explaining a zero-match fallback is always on screen — however
+// short the pane, and however far the rows below it are windowed.
+func (m Model) addFilterLines(matched int) []string {
+	total := len(addItems(""))
+	if m.tmplFilter == "" {
+		return []string{contentStyle.Render(fmt.Sprintf("Filter: type to narrow %d providers", total)), ""}
+	}
+	head := []string{contentStyle.Render("Filter: "+m.tmplFilter) +
+		faintStyle.Render(fmt.Sprintf("  (%d/%d)", matched, total)), ""}
+	if matched == 0 {
+		// No trailing spacer: the line reads as the heading for the two rows right
+		// below it, and on the shortest panes that row is the whole row budget.
+		head = append(head, faintStyle.Render("no preset matches — pick a Custom entry to fill it in by hand"))
+	}
+	return head
 }
 
 // addItemDetail is the seed/source preview for the highlighted picker row.
-func (m Model) addItemDetail() []string {
-	items := addItems()
-	if m.tmplCursor < 0 || m.tmplCursor >= len(items) {
-		return nil
-	}
-	switch it := items[m.tmplCursor]; it.class {
+func (m Model) addItemDetail(it addItem) []string {
+	switch it.class {
 	case addCatCLI:
 		if st := codexproxy.StatusReport(codexproxy.SecretRef); st.Active != "none" {
 			return []string{faintStyle.Render("  reuses the codex login (" + st.Active + ", account " + st.Account + ") — no key needed")}
@@ -3239,8 +3268,12 @@ func (m Model) viewModelPick() string {
 	if m.formMode == modeEdit {
 		active = m.editName
 	}
+	hint := "type to filter · ↑/↓ move · enter pick · esc manual entry"
+	if m.modelFilter != "" {
+		hint = "↑/↓ move · enter pick · esc clear filter"
+	}
 	return m.providerFlowView("Select default model", "", active, "models",
-		"type to filter · ↑/↓ move · enter pick · esc manual entry", func(rightW int) []string {
+		hint, func(rightW int) []string {
 			switch {
 			case m.loading:
 				return []string{faintStyle.Render("fetching models…")}
@@ -3261,7 +3294,7 @@ func (m Model) viewModelPick() string {
 					faintStyle.Render(fmt.Sprintf("  (%d/%d)", len(filtered), total)), "")
 			}
 			if len(filtered) == 0 {
-				return append(lines, faintStyle.Render("no model matches — backspace to widen, esc to type manually"))
+				return append(lines, faintStyle.Render("no model matches — backspace or esc to widen"))
 			}
 			// The window fills the pane: the filter line + spacer and the two
 			// ↑/↓ markers cost 4 rows; an owner sub-line doubles a model's cost.
