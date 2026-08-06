@@ -887,8 +887,9 @@ func TestAddPickerTightPaneKeepsHighlightVisible(t *testing.T) {
 }
 
 // The window math has two invariants the picker cannot break at any size: Enter acts on
-// the highlighted row, so that row is always rendered; and a row left off screen is
-// always announced by a ↑/↓ marker. Swept over every pane height and cursor position
+// the highlighted row, so that row is always rendered; and each ↑/↓ marker tells the
+// exact truth — its count equals the providers hidden in that direction, and a direction
+// hiding none renders no marker. Swept over every pane height and cursor position
 // because the head, the detail block and the markers all draw on one budget.
 func TestAddPickerWindowInvariantsHoldAtEverySize(t *testing.T) {
 	for _, q := range []string{"", "kimi", "mistral", "openai", "glm", "custom", "z"} {
@@ -904,17 +905,40 @@ func TestAddPickerWindowInvariantsHoldAtEverySize(t *testing.T) {
 				if !strings.Contains(joined, "❯ "+items[cur].label) {
 					t.Fatalf("h=%d q=%q cur=%d: the highlighted %q is off screen:\n%s", h, q, cur, items[cur].label, joined)
 				}
-				shown := 0
-				for _, it := range items {
+				// The visible items are a contiguous idx window; everything before it
+				// is hidden above, everything after it hidden below. Item rows are
+				// matched exactly ("    <label>" / "  ❯ <label>") so a detail or note
+				// line echoing a label cannot count as visible.
+				first, last := -1, -1
+				for i, it := range items {
 					for _, l := range out {
-						if strings.HasSuffix(l, it.label) {
-							shown++
+						if l == "    "+it.label || l == "  ❯ "+it.label {
+							if first < 0 {
+								first = i
+							}
+							last = i
 							break
 						}
 					}
 				}
-				if shown < len(items) && !strings.Contains(joined, "↑ ") && !strings.Contains(joined, "↓ ") {
-					t.Fatalf("h=%d q=%q cur=%d: %d of %d rows shown with no marker:\n%s", h, q, cur, shown, len(items), joined)
+				wantUp, wantDown := first, len(items)-1-last
+				if wantUp > 0 && !strings.Contains(joined, fmt.Sprintf("↑ %d more", wantUp)) {
+					t.Fatalf("h=%d q=%q cur=%d: %d items hidden above, marker disagrees:\n%s", h, q, cur, wantUp, joined)
+				}
+				if wantUp == 0 && strings.Contains(joined, "↑ ") {
+					t.Fatalf("h=%d q=%q cur=%d: nothing hidden above yet ↑ shows:\n%s", h, q, cur, joined)
+				}
+				if wantDown > 0 && !strings.Contains(joined, fmt.Sprintf("↓ %d more", wantDown)) {
+					t.Fatalf("h=%d q=%q cur=%d: %d items hidden below, marker disagrees:\n%s", h, q, cur, wantDown, joined)
+				}
+				if wantDown == 0 && strings.Contains(joined, "↓ ") {
+					t.Fatalf("h=%d q=%q cur=%d: nothing hidden below yet ↓ shows:\n%s", h, q, cur, joined)
+				}
+				// With providers still hidden there is always another row to show,
+				// so the pane must be full — a suppressed marker's reserved row is
+				// given back to the window, never left blank.
+				if wantUp+wantDown > 0 && len(out) != m.boardBodyHeight() {
+					t.Fatalf("h=%d q=%q cur=%d: rows hidden yet the pane is not filled (%d/%d):\n%s", h, q, cur, len(out), m.boardBodyHeight(), joined)
 				}
 			}
 		}
@@ -955,5 +979,26 @@ func TestAddPickerFilterAcceptsSpaceAndSanitizesPaste(t *testing.T) {
 		if strings.Contains(l, "\n") {
 			t.Fatalf("a rendered line spans rows, which breaks the box: %q", l)
 		}
+	}
+}
+
+// A suppressed marker's reserved row joins the window: with nothing hidden above,
+// the pane shows one more provider instead of a blank slot, and the ↓ count shrinks
+// to match.
+func TestAddPickerUnusedMarkerRowJoinsWindow(t *testing.T) {
+	m := NewModel()
+	m, _ = press(t, m, "enter")
+	m.width, m.height = 100, 19
+	for _, r := range "openai" {
+		m, _ = press(t, m, string(r))
+	}
+	m, _ = press(t, m, "down")
+	rows := m.addPickerLines(m.tmplCursor)
+	joined := strings.Join(rows, "\n")
+	if len(rows) != m.boardBodyHeight() {
+		t.Fatalf("pane not filled: %d rows, want %d:\n%s", len(rows), m.boardBodyHeight(), joined)
+	}
+	if strings.Contains(joined, "\u2191 ") || !strings.Contains(joined, "\u2193 1 more") {
+		t.Fatalf("want no \u2191 and a truthful \u2193 1 more:\n%s", joined)
 	}
 }

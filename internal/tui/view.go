@@ -3015,6 +3015,7 @@ func (m Model) addPickerLines(cursor int) []string {
 		head = m.addFilterLines(matched)
 	}
 	var lines []string
+	var itemLines []int // each selectable row's line number, in flat cursor order
 	cursorLine := 0
 	idx := 0
 	var cursored addItem
@@ -3034,6 +3035,7 @@ func (m Model) addPickerLines(cursor int) []string {
 				cursorLine = len(lines)
 				cursored = it
 			}
+			itemLines = append(itemLines, len(lines))
 			lines = append(lines, "  "+marker+label)
 			idx++
 		}
@@ -3048,21 +3050,57 @@ func (m Model) addPickerLines(cursor int) []string {
 		return append(head, lines...)
 	}
 	// The list overflows the pane: window the rows on the cursored line so the
-	// highlight stays visible, keep its detail pinned below, and flag the hidden
-	// rows with ↑/↓ markers (two rows are reserved for them).
+	// highlight stays visible, and keep its detail pinned below. The ↑/↓ markers
+	// count the PROVIDERS out of view, not the trimmed lines — a hidden group
+	// heading or spacer is not a "1 more" — and a direction hiding nothing
+	// selectable gets no marker. Rows are reserved only for the markers actually
+	// drawn: start from two, then hand a suppressed marker's row back to the
+	// window. Widening only ever reveals rows, so the marker count shrinks
+	// monotonically and the loop settles within two passes.
 	detail := lines[detailStart:]
+	countHidden := func(start, end int) (above, below int) {
+		for _, ln := range itemLines {
+			switch {
+			case ln < start:
+				above++
+			case ln >= end:
+				below++
+			}
+		}
+		return
+	}
 	avail := bodyH - len(detail) - 2
 	if avail < 1 {
 		avail = 1
 	}
 	start, end := windowBounds(cursorLine, detailStart, avail)
+	hiddenAbove, hiddenBelow := countHidden(start, end)
+	for i := 0; i < 2; i++ {
+		markers := 0
+		if hiddenAbove > 0 {
+			markers++
+		}
+		if hiddenBelow > 0 {
+			markers++
+		}
+		next := bodyH - len(detail) - markers
+		if next < 1 {
+			next = 1
+		}
+		if next == avail {
+			break
+		}
+		avail = next
+		start, end = windowBounds(cursorLine, detailStart, avail)
+		hiddenAbove, hiddenBelow = countHidden(start, end)
+	}
 	var out []string
-	if start > 0 {
-		out = append(out, faintStyle.Render(fmt.Sprintf("  ↑ %d more", start)))
+	if hiddenAbove > 0 {
+		out = append(out, faintStyle.Render(fmt.Sprintf("  ↑ %d more", hiddenAbove)))
 	}
 	out = append(out, lines[start:end]...)
-	if end < detailStart {
-		out = append(out, faintStyle.Render(fmt.Sprintf("  ↓ %d more", detailStart-end)))
+	if hiddenBelow > 0 {
+		out = append(out, faintStyle.Render(fmt.Sprintf("  ↓ %d more", hiddenBelow)))
 	}
 	out = append(out, detail...)
 	if len(out) > bodyH {
