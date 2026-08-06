@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+	"unicode"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -118,9 +119,11 @@ type Model struct {
 	// configured/auto/disabled wording and whether `s` sets fresh vs switches.
 	defaultProvider string
 
-	// Add-wizard: the single grouped picker (cursor over the flat selectable rows)
-	// and the protocol the chosen row implies (carried into submitAdd).
+	// Add-wizard: the single grouped picker (cursor over the flat selectable rows
+	// that survive tmplFilter, the live type-to-narrow query) and the protocol the
+	// chosen row implies (carried into submitAdd).
 	tmplCursor  int
+	tmplFilter  string
 	addProtocol string
 
 	// screenCodexAuth: an optional source choice (reuse a detected subscription, or
@@ -2075,7 +2078,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter", "right":
 		if m.providerCursor == addRow {
 			m.screen = screenPickTemplate
-			m.tmplCursor = 0
+			m.tmplCursor, m.tmplFilter = 0, ""
 			return m, nil
 		}
 		v := m.providers[m.providerCursor]
@@ -3494,6 +3497,12 @@ type addGroup struct {
 	items  []addItem
 }
 
+// The two manual-entry rows, shared by the grouping and the no-match fallback.
+var (
+	customAnthropicItem = addItem{"Custom (fill everything manually)", addCatAnthropic, -1, -1}
+	customOpenAIItem    = addItem{"Custom OpenAI-compatible (fill everything manually)", addCatOpenAI, -1, -1}
+)
+
 // addGroups builds the grouped add picker: every provider class with its seeds
 // under one header, so a provider is chosen in a single screen.
 func addGroups() []addGroup {
@@ -3501,13 +3510,13 @@ func addGroups() []addGroup {
 	for i := range Templates {
 		a.items = append(a.items, addItem{Templates[i].Label, addCatAnthropic, i, -1})
 	}
-	a.items = append(a.items, addItem{"Custom (fill everything manually)", addCatAnthropic, -1, -1})
+	a.items = append(a.items, customAnthropicItem)
 
 	o := addGroup{header: "OpenAI-protocol API  (OpenAI / Groq / Together / vLLM …)"}
 	for i := range OAITemplates {
 		o.items = append(o.items, addItem{OAITemplates[i].Label, addCatOpenAI, -1, i})
 	}
-	o.items = append(o.items, addItem{"Custom OpenAI-compatible (fill everything manually)", addCatOpenAI, -1, -1})
+	o.items = append(o.items, customOpenAIItem)
 
 	c := addGroup{header: "CLI auth  (reuse a ChatGPT subscription via codex)"}
 	c.items = append(c.items, addItem{"Codex", addCatCLI, -1, -1})
@@ -3515,27 +3524,98 @@ func addGroups() []addGroup {
 	return []addGroup{a, o, c}
 }
 
-// addItems flattens the groups to the selectable rows the cursor walks.
-func addItems() []addItem {
+// groupKey is the matchable part of a group header — its class name, without the
+// parenthetical examples. Those name real providers ("… (DeepSeek / GLM / Kimi …)"),
+// so matching them would make one provider's name pull in its whole class.
+func groupKey(header string) string {
+	if i := strings.Index(header, "  ("); i >= 0 {
+		return header[:i]
+	}
+	return header
+}
+
+// addItemHaystack is the text a filter query is matched against for one row: its
+// label, the provider id and endpoint of the seed it carries, and its class — so
+// "zai", "moonshot" and "openai" all find what the user means.
+func addItemHaystack(it addItem, header string) string {
+	class := " " + groupKey(header)
+	switch {
+	case it.tIdx >= 0:
+		t := Templates[it.tIdx]
+		return it.label + " " + t.Name + " " + t.BaseURL + class
+	case it.oIdx >= 0:
+		t := OAITemplates[it.oIdx]
+		return it.label + " " + t.Name + " " + t.UpstreamURL + class
+	}
+	return it.label + class
+}
+
+// filteredAddGroups narrows the grouping to the rows matching q (case-insensitive
+// substring), dropping groups left with nothing, and reports how many rows matched.
+// Zero matches means the catalog has no such preset, so the result is the two manual
+// rows — an unlisted provider is exactly what they are for. They come headerless
+// because the picker explains the fallback on its filter line, which no amount of
+// windowing can scroll away.
+func filteredAddGroups(q string) ([]addGroup, int) {
+	all := addGroups()
+	if q == "" {
+		n := 0
+		for _, g := range all {
+			n += len(g.items)
+		}
+		return all, n
+	}
+	needle := strings.ToLower(q)
+	var out []addGroup
+	matched := 0
+	for _, g := range all {
+		kept := addGroup{header: g.header}
+		for _, it := range g.items {
+			if strings.Contains(strings.ToLower(addItemHaystack(it, g.header)), needle) {
+				kept.items = append(kept.items, it)
+			}
+		}
+		if len(kept.items) > 0 {
+			out = append(out, kept)
+			matched += len(kept.items)
+		}
+	}
+	if matched == 0 {
+		return []addGroup{{items: []addItem{customAnthropicItem, customOpenAIItem}}}, 0
+	}
+	return out, matched
+}
+
+// addItems flattens the filtered grouping to the selectable rows the cursor walks.
+func addItems(q string) []addItem {
+	groups, _ := filteredAddGroups(q)
 	var xs []addItem
-	for _, g := range addGroups() {
+	for _, g := range groups {
 		xs = append(xs, g.items...)
 	}
 	return xs
 }
 
-// updatePickTemplate drives the single grouped add picker: one cursor over every
-// provider across all three classes; enter/→ opens the chosen class's add form.
+// updatePickTemplate drives the single grouped add picker: one cursor over the rows
+// surviving the filter across all three classes; enter/→ opens the chosen class's add
+// form. Printable input narrows the list (type-to-filter), so vim j/k no longer
+// navigate — letters are filter input and the arrow keys move the cursor. Esc clears
+// a live filter first and only leaves once it is empty; picking a row keeps the query,
+// which the next entry into the picker resets.
 func (m Model) updatePickTemplate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	items := addItems()
+	items := addItems(m.tmplFilter)
 	switch msg.String() {
-	case "esc", "q", "left":
+	case "esc", "left":
+		if m.tmplFilter != "" {
+			m.tmplCursor, m.tmplFilter = 0, ""
+			return m, nil
+		}
 		return m.toList()
-	case "up", "k":
+	case "up":
 		if m.tmplCursor > 0 {
 			m.tmplCursor--
 		}
-	case "down", "j":
+	case "down":
 		if m.tmplCursor < len(items)-1 {
 			m.tmplCursor++
 		}
@@ -3543,8 +3623,32 @@ func (m Model) updatePickTemplate(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.tmplCursor >= 0 && m.tmplCursor < len(items) {
 			return m.chooseAddItem(items[m.tmplCursor])
 		}
+	case "backspace", "ctrl+h": // some terminals report Backspace as Ctrl-H
+		if m.tmplFilter != "" {
+			r := []rune(m.tmplFilter)
+			m.tmplCursor, m.tmplFilter = 0, string(r[:len(r)-1])
+		}
+	case " ": // arrives as KeySpace, and labels like "Kimi Code" carry one
+		m.tmplCursor, m.tmplFilter = 0, m.tmplFilter+" "
+	default:
+		if s := printableRunes(msg.Runes); msg.Type == tea.KeyRunes && s != "" {
+			m.tmplCursor, m.tmplFilter = 0, m.tmplFilter+s
+		}
 	}
 	return m, nil
+}
+
+// printableRunes drops everything that cannot sit on one line of the box: a bracketed
+// paste arrives as one key message and may carry newlines and control bytes, which
+// would render straight through the pane border.
+func printableRunes(rs []rune) string {
+	var b strings.Builder
+	for _, r := range rs {
+		if unicode.IsPrint(r) {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // uniqueName returns base, or the first free "<base>-N" when base is already a
@@ -3885,11 +3989,16 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // returns to the form so the user can type the id manually — the required
 // fallback when the provider list is unavailable. Printable input narrows the
 // list (type-to-filter), so vim j/k no longer navigate — letters are filter
-// input and the arrow keys move the cursor.
+// input and the arrow keys move the cursor. Esc clears a live filter first, and
+// only the second press leaves, matching the add picker.
 func (m Model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	filtered := m.filteredModels()
 	switch msg.String() {
 	case "esc", "left":
+		if m.modelFilter != "" {
+			m.modelCursor, m.modelFilter = 0, ""
+			return m, nil
+		}
 		m.screen = screenForm
 		return m, textinput.Blink
 	case "enter":
@@ -3925,9 +4034,14 @@ func (m Model) updateModelPick(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.modelFilter = string(r[:len(r)-1])
 			m.modelCursor = 0
 		}
+	case " ": // arrives as KeySpace; same input handling as the add picker
+		if len(m.modelList) > 0 {
+			m.modelFilter += " "
+			m.modelCursor = 0
+		}
 	default:
-		if msg.Type == tea.KeyRunes && len(m.modelList) > 0 {
-			m.modelFilter += string(msg.Runes)
+		if s := printableRunes(msg.Runes); msg.Type == tea.KeyRunes && s != "" && len(m.modelList) > 0 {
+			m.modelFilter += s
 			m.modelCursor = 0
 		}
 	}

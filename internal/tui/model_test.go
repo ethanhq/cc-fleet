@@ -979,8 +979,20 @@ func TestModelPickerFilterResetsOnReopen(t *testing.T) {
 	if m.modelFilter == "" {
 		t.Fatal("filter should be set after typing")
 	}
-	m, _ = press(t, m, "esc")   // back to the form (focus stays on default_model)
-	m, _ = press(t, m, "enter") // reopen the picker
+	m, _ = press(t, m, "esc") // first esc only clears the filter — still on the picker
+	if m.modelFilter != "" || m.screen != screenModelPick {
+		t.Fatalf("first esc: modelFilter = %q, screen = %d, want cleared and screenModelPick", m.modelFilter, m.screen)
+	}
+	m, _ = press(t, m, "esc") // empty filter, so this one leaves (focus stays on default_model)
+	if m.screen != screenForm {
+		t.Fatalf("second esc: screen = %d, want screenForm", m.screen)
+	}
+	// Picking is the one exit that leaves a filter behind, so it is what a reopen must reset.
+	m, _ = press(t, m, "enter") // reopen
+	m, _ = step(t, m, modelsMsg{models: []models.Model{{ID: "deepseek-chat"}}})
+	m, _ = press(t, m, "c")
+	m, _ = press(t, m, "enter") // pick the match, back to the form
+	m, _ = press(t, m, "enter") // reopen
 	if m.modelFilter != "" {
 		t.Fatalf("reopened picker: modelFilter = %q, want reset", m.modelFilter)
 	}
@@ -3192,5 +3204,18 @@ func TestBoardEndedTeamKeySafe(t *testing.T) {
 		if strings.ContainsRune(out, '\x1b') {
 			t.Errorf("%s leaked a raw ESC byte from a record-sourced string:\n%q", name, out)
 		}
+	}
+}
+
+// A bracketed paste reaches the model filter as one key message; its newlines and
+// control bytes are dropped so no rendered line can span rows and break the box.
+func TestModelPickerFilterSanitizesPaste(t *testing.T) {
+	m := pickerWith(t, "glm-4.5", "glm-4.5-air")
+	m, _ = step(t, m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("glm\n-4.5\x1b\x07")})
+	if m.modelFilter != "glm-4.5" {
+		t.Fatalf("modelFilter = %q, want the printable remainder", m.modelFilter)
+	}
+	if out := m.View(); !strings.Contains(out, "glm-4.5") {
+		t.Fatalf("sanitized filter should still narrow:\n%s", out)
 	}
 }

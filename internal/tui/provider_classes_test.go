@@ -3,9 +3,11 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
@@ -665,5 +667,293 @@ func TestAddPicker_WindowsTallListOnCursor(t *testing.T) {
 	}
 	if !strings.Contains(joined, "Codex") || !strings.Contains(joined, "↑") {
 		t.Fatalf("bottom window should show Codex and a ↑ marker:\n%s", joined)
+	}
+}
+
+// Typing narrows the grouped picker to the matching rows, drops the groups that lose
+// everything, and keeps the seed preview aligned with the highlighted survivor.
+func TestAddPickerFilterNarrowsAndKeepsDetailAligned(t *testing.T) {
+	m := NewModel()
+	m, _ = press(t, m, "enter") // + Add -> grouped picker
+	m.width, m.height = 100, 40
+	for _, r := range "moonshot" {
+		m, _ = press(t, m, string(r))
+	}
+	if got := addItems(m.tmplFilter); len(got) != 1 || got[0].label != "Moonshot Kimi" {
+		t.Fatalf("filter %q → %+v, want just Moonshot Kimi", m.tmplFilter, got)
+	}
+	if m.tmplCursor != 0 {
+		t.Fatalf("tmplCursor = %d, want 0 (reset on filter)", m.tmplCursor)
+	}
+	out := m.View()
+	if !strings.Contains(out, "Moonshot Kimi") || strings.Contains(out, "StepFun") {
+		t.Fatalf("filtered view should show only the match:\n%s", out)
+	}
+	if strings.Contains(out, "OpenAI-protocol API") {
+		t.Fatalf("a group with no surviving row should drop out:\n%s", out)
+	}
+	if !strings.Contains(out, "https://api.moonshot.cn/anthropic") {
+		t.Fatalf("the seed preview must track the highlighted row:\n%s", out)
+	}
+	if want := fmt.Sprintf("(1/%d)", len(addItems(""))); !strings.Contains(out, want) {
+		t.Fatalf("filter line should report %s:\n%s", want, out)
+	}
+	m, _ = press(t, m, "enter")
+	if m.screen != screenForm || m.form.value("name") != "kimi" {
+		t.Fatalf("enter should open the kimi add form; screen = %d, name = %q", m.screen, m.form.value("name"))
+	}
+}
+
+// A query matches more than the visible label: the provider id the row seeds, its
+// endpoint, and the protocol group it sits under.
+func TestAddPickerFilterMatchesIdEndpointAndGroup(t *testing.T) {
+	if got := addItems("zai"); len(got) != 1 || got[0].tIdx < 0 || Templates[got[0].tIdx].Name != "zai" {
+		t.Fatalf("id query zai → %+v, want the zai preset", got)
+	}
+	if got := addItems("bigmodel"); len(got) != 1 || got[0].label != "Zhipu GLM" {
+		t.Fatalf("endpoint query bigmodel → %+v, want Zhipu GLM", got)
+	}
+	got := addItems("openai") // group heading: the whole OpenAI-protocol class
+	if len(got) != len(OAITemplates)+1 {
+		t.Fatalf("group query openai → %d rows, want the whole OpenAI class", len(got))
+	}
+	for _, it := range got {
+		if it.class != addCatOpenAI {
+			t.Fatalf("group query openai returned a %v row: %+v", it.class, it)
+		}
+	}
+}
+
+// Nothing in the catalog matching is exactly what the manual rows are for, so they
+// stand in rather than an empty list — and they are live, not decoration.
+func TestAddPickerFilterNoMatchOffersCustom(t *testing.T) {
+	m := NewModel()
+	m, _ = press(t, m, "enter")
+	m.width, m.height = 100, 40
+	for _, r := range "mistral" {
+		m, _ = press(t, m, string(r))
+	}
+	items := addItems(m.tmplFilter)
+	if len(items) != 2 || items[0] != customAnthropicItem || items[1] != customOpenAIItem {
+		t.Fatalf("no-match filter → %+v, want the two Custom rows", items)
+	}
+	out := m.View()
+	if !strings.Contains(out, "no preset matches") {
+		t.Fatalf("no-match view should say so:\n%s", out)
+	}
+	if want := fmt.Sprintf("(0/%d)", len(addItems(""))); !strings.Contains(out, want) {
+		t.Fatalf("no-match count should be %s:\n%s", want, out)
+	}
+	m, _ = press(t, m, "enter")
+	if m.screen != screenForm || m.form.value("name") != "" || m.form.value("base_url") != "" {
+		t.Fatalf("enter on the fallback should open the blank custom form; screen = %d", m.screen)
+	}
+}
+
+// Backspace widens the filter and stops at the start.
+func TestAddPickerFilterBackspaceWidens(t *testing.T) {
+	m := NewModel()
+	m, _ = press(t, m, "enter")
+	for _, r := range "kimi" {
+		m, _ = press(t, m, string(r))
+	}
+	if got := len(addItems(m.tmplFilter)); got != 2 { // Moonshot Kimi + Kimi Code
+		t.Fatalf("filter kimi → %d rows, want 2", got)
+	}
+	m, _ = step(t, m, tea.KeyMsg{Type: tea.KeyCtrlH}) // terminals that report Backspace as Ctrl-H
+	for i := 0; i < 4; i++ {
+		m, _ = step(t, m, tea.KeyMsg{Type: tea.KeyBackspace})
+	}
+	if m.tmplFilter != "" {
+		t.Fatalf("tmplFilter = %q, want empty after backspacing past the start", m.tmplFilter)
+	}
+	if got, want := len(addItems(m.tmplFilter)), len(addItems("")); got != want {
+		t.Fatalf("empty filter → %d rows, want the full %d", got, want)
+	}
+}
+
+// Esc clears a live filter before it cancels, so the picker is never left narrowed.
+func TestAddPickerEscClearsFilterThenCancels(t *testing.T) {
+	m := NewModel()
+	m, _ = press(t, m, "enter")
+	for _, r := range "glm" {
+		m, _ = press(t, m, string(r))
+	}
+	m, _ = press(t, m, "esc")
+	if m.tmplFilter != "" || m.screen != screenPickTemplate {
+		t.Fatalf("first esc: filter = %q, screen = %d, want cleared and still on the picker", m.tmplFilter, m.screen)
+	}
+	m, _ = press(t, m, "esc")
+	if m.screen != screenList {
+		t.Fatalf("second esc: screen = %d, want screenList", m.screen)
+	}
+}
+
+// Printable j/k/q extend the filter rather than navigating, which is what makes the
+// presets starting with those letters reachable by typing.
+func TestAddPickerVimKeysTypeIntoFilter(t *testing.T) {
+	m := NewModel()
+	m, _ = press(t, m, "enter")
+	m, _ = press(t, m, "k")
+	if m.tmplFilter != "k" || m.tmplCursor != 0 {
+		t.Fatalf("k should type, not move: filter = %q, cursor = %d", m.tmplFilter, m.tmplCursor)
+	}
+	m, _ = press(t, m, "esc") // clear and start over
+	for _, r := range "qwen" {
+		m, _ = press(t, m, string(r))
+	}
+	if m.screen != screenPickTemplate {
+		t.Fatalf("q must not quit the picker; screen = %d", m.screen)
+	}
+	if got := addItems(m.tmplFilter); len(got) != 1 || got[0].label != "Qwen (Alibaba DashScope)" {
+		t.Fatalf("typing qwen → %+v, want the Qwen preset", got)
+	}
+}
+
+// The hub's read-only "+ Add provider…" preview always shows the whole catalog — the
+// filter belongs to the picker the user is standing in, and picking a row leaves one
+// behind.
+func TestAddPickerHubPreviewIgnoresFilter(t *testing.T) {
+	m := withProviders(t) // no providers: the cursor starts on the "+ Add" row
+	m, _ = press(t, m, "enter")
+	m.width, m.height = 100, 60
+	for _, r := range "moonshot" {
+		m, _ = press(t, m, string(r))
+	}
+	m, _ = press(t, m, "enter") // pick it: the add form keeps the filter behind
+	m, _ = press(t, m, "esc")   // back to the hub, which reloads
+	m, _ = step(t, m, providersMsg{})
+	if m.screen != screenList {
+		t.Fatalf("screen = %d, want screenList", m.screen)
+	}
+	if m.tmplFilter == "" {
+		t.Fatal("this guards a live filter — it should still be set after picking")
+	}
+	out := m.View()
+	if !strings.Contains(out, "StepFun") || !strings.Contains(out, "Codex") {
+		t.Fatalf("the hub preview must show the whole catalog:\n%s", out)
+	}
+}
+
+// The fallback's explanation rides on the filter block, which sits outside the row
+// window — so a pane too short to hold the rows still says why they are the only ones
+// left. Heights 12-16 are the band where the rows do get windowed.
+func TestAddPickerFilterNoMatchExplainsOnShortPanes(t *testing.T) {
+	for _, h := range []int{12, 14, 16, 24} {
+		m := NewModel()
+		m, _ = press(t, m, "enter")
+		m.width, m.height = 100, h
+		for _, r := range "mistral" {
+			m, _ = press(t, m, string(r))
+		}
+		out := m.View()
+		if !strings.Contains(out, "no preset matches") {
+			t.Fatalf("height %d dropped the fallback explanation:\n%s", h, out)
+		}
+		if !strings.Contains(out, "Custom (fill everything manually)") {
+			t.Fatalf("height %d dropped the fallback rows:\n%s", h, out)
+		}
+	}
+}
+
+// Enter acts on the highlighted row, so it must be on screen even when the pane is too
+// tight for the markers and the seed preview — including the fallback's second row,
+// where the window opens with an ↑ marker that would otherwise take the last line.
+func TestAddPickerTightPaneKeepsHighlightVisible(t *testing.T) {
+	m := NewModel()
+	m, _ = press(t, m, "enter")
+	m.width, m.height = 100, 12 // boardBodyHeight floors at 5; the 3-line no-match head leaves 2
+	for _, r := range "mistral" {
+		m, _ = press(t, m, string(r))
+	}
+	// Assert on the picker's own rows: the footer hint spells out "↑/↓", so a whole-view
+	// substring check would pass on that alone.
+	rows := strings.Join(m.addPickerLines(m.tmplCursor), "\n")
+	if !strings.Contains(rows, "Custom (fill everything manually)") || !strings.Contains(rows, "↓ 1 more") {
+		t.Fatalf("first row: want the highlight and a ↓ for the row it hides:\n%s", rows)
+	}
+	m, _ = press(t, m, "down") // to the OpenAI-compatible Custom row
+	items := addItems(m.tmplFilter)
+	if m.tmplCursor != 1 || items[1] != customOpenAIItem {
+		t.Fatalf("cursor = %d over %+v, want the second fallback row", m.tmplCursor, items)
+	}
+	rows = strings.Join(m.addPickerLines(m.tmplCursor), "\n")
+	if !strings.Contains(rows, "Custom OpenAI-compatible") {
+		t.Fatalf("the highlighted row must stay visible on a tight pane:\n%s", rows)
+	}
+	if !strings.Contains(rows, "↑ 1 more") {
+		t.Fatalf("second row: want a ↑ for the row it hides:\n%s", rows)
+	}
+}
+
+// The window math has two invariants the picker cannot break at any size: Enter acts on
+// the highlighted row, so that row is always rendered; and a row left off screen is
+// always announced by a ↑/↓ marker. Swept over every pane height and cursor position
+// because the head, the detail block and the markers all draw on one budget.
+func TestAddPickerWindowInvariantsHoldAtEverySize(t *testing.T) {
+	for _, q := range []string{"", "kimi", "mistral", "openai", "glm", "custom", "z"} {
+		items := addItems(q)
+		for h := 5; h <= 60; h++ {
+			for cur := range items {
+				m := NewModel()
+				m.screen, m.loading = screenPickTemplate, false
+				m.width, m.height = 100, h
+				m.tmplFilter, m.tmplCursor = q, cur
+				out := m.addPickerLines(cur)
+				joined := strings.Join(out, "\n")
+				if !strings.Contains(joined, "❯ "+items[cur].label) {
+					t.Fatalf("h=%d q=%q cur=%d: the highlighted %q is off screen:\n%s", h, q, cur, items[cur].label, joined)
+				}
+				shown := 0
+				for _, it := range items {
+					for _, l := range out {
+						if strings.HasSuffix(l, it.label) {
+							shown++
+							break
+						}
+					}
+				}
+				if shown < len(items) && !strings.Contains(joined, "↑ ") && !strings.Contains(joined, "↓ ") {
+					t.Fatalf("h=%d q=%q cur=%d: %d of %d rows shown with no marker:\n%s", h, q, cur, shown, len(items), joined)
+				}
+			}
+		}
+	}
+}
+
+// A label is typed the way it is displayed, spaces included; and a bracketed paste
+// arrives as one key message, so its newlines and control bytes are dropped rather
+// than rendered through the pane border.
+func TestAddPickerFilterAcceptsSpaceAndSanitizesPaste(t *testing.T) {
+	m := NewModel()
+	m, _ = press(t, m, "enter")
+	for _, r := range "Kimi" {
+		m, _ = press(t, m, string(r))
+	}
+	m, _ = step(t, m, tea.KeyMsg{Type: tea.KeySpace})
+	for _, r := range "Code" {
+		m, _ = press(t, m, string(r))
+	}
+	if m.tmplFilter != "Kimi Code" {
+		t.Fatalf("tmplFilter = %q, want the label as typed", m.tmplFilter)
+	}
+	if got := addItems(m.tmplFilter); len(got) != 1 || got[0].label != "Kimi Code" {
+		t.Fatalf("typing the displayed label → %+v, want Kimi Code", got)
+	}
+
+	m2 := NewModel()
+	m2, _ = press(t, m2, "enter")
+	m2.width, m2.height = 100, 40
+	m2, _ = step(t, m2, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("ki\nmi\x1b[31m\x07")})
+	if m2.tmplFilter != "kimi[31m" { // the ESC and BEL go, the letters it introduced stay
+		t.Fatalf("tmplFilter = %q, want the printable remainder on one line", m2.tmplFilter)
+	}
+	if strings.ContainsAny(m2.tmplFilter, "\n\r\x1b") {
+		t.Fatalf("tmplFilter kept a control byte: %q", m2.tmplFilter)
+	}
+	for _, l := range m2.addPickerLines(m2.tmplCursor) {
+		if strings.Contains(l, "\n") {
+			t.Fatalf("a rendered line spans rows, which breaks the box: %q", l)
+		}
 	}
 }
