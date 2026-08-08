@@ -141,7 +141,7 @@ cc-fleet show worker@squad                                # bring it back
 cc-fleet teardown squad --json                            # reap panes + team state
 ```
 
-In tmux, panes split alongside your lead. Outside tmux, teammates run in a detached `cc-fleet-swarm-<team>` server (attach with `tmux -L cc-fleet-swarm-<team> attach`). `hide` / `show` are in-tmux only. The teammate lane is unix-only — on Windows these commands refuse (`spawn`/`hide`/`show` with `error_code: UNSUPPORTED_ON_WINDOWS`).
+In tmux, panes split alongside your lead. Outside tmux, teammates run in a detached `cc-fleet-swarm-<team>` server (attach with `tmux -L cc-fleet-swarm-<team> attach`). `hide` / `show` are in-tmux only. The teammate lane is unix-only — on Windows these commands refuse (`spawn`/`hide`/`show` with `error_code: UNSUPPORTED_ON_WINDOWS`). Setting `CC_FLEET_WINDOWS_TMUX_EXPERIMENTAL=1` unlocks the lane against a Windows tmux port (e.g. psmux) at the user's own risk.
 
 Spawn extras: `--verify`/`--no-verify` (the post-spawn settle check — paid only when the live Claude Code is newer than the spawn recipe), `--probe`/`--no-probe` (the pre-spawn key probe, default on), `--permission-mode` (otherwise the teammate inherits the lead's).
 

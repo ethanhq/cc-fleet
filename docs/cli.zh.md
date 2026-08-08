@@ -141,7 +141,7 @@ cc-fleet show worker@squad                                # 恢复
 cc-fleet teardown squad --json                            # 回收 pane + team 状态
 ```
 
-tmux 里,pane 在你的 lead 旁分屏;不在 tmux 时,teammate 跑在 detached 的 `cc-fleet-swarm-<team>` server 里(`tmux -L cc-fleet-swarm-<team> attach` 进入)。`hide` / `show` 仅限 tmux 内。teammate lane 仅 unix — Windows 上这些命令一律拒绝(`spawn`/`hide`/`show` 返回 `error_code: UNSUPPORTED_ON_WINDOWS`)。
+tmux 里,pane 在你的 lead 旁分屏;不在 tmux 时,teammate 跑在 detached 的 `cc-fleet-swarm-<team>` server 里(`tmux -L cc-fleet-swarm-<team> attach` 进入)。`hide` / `show` 仅限 tmux 内。teammate lane 仅 unix — Windows 上这些命令一律拒绝(`spawn`/`hide`/`show` 返回 `error_code: UNSUPPORTED_ON_WINDOWS`)。设置 `CC_FLEET_WINDOWS_TMUX_EXPERIMENTAL=1` 可在 Windows 的 tmux 移植版(如 psmux)上解锁该 lane,风险自负。
 
 spawn 进阶 flag:`--verify`/`--no-verify`(spawn 后的 settle 校验 — 仅当本机 Claude Code 比 spawn 配方新时才执行)、`--probe`/`--no-probe`(spawn 前 key 探测,默认开)、`--permission-mode`(不传则继承 lead 的权限档)。
 
