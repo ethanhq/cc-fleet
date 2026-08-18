@@ -184,7 +184,7 @@ func Run(parent context.Context, req Request) Result {
 		case "default", "strong", "fast":
 			return fail(ErrCodeBadArgs,
 				fmt.Sprintf("model keyword %q needs a provider roster — the native leaf takes a literal model id, or none for the login's default", req.Model),
-				req.Provider, "pass a literal id (opus / sonnet / haiku / full id) or omit --model")
+				req.Provider, "pass a literal id ("+strings.Join(nativeModelAliases, " / ")+" / full id) or omit --model")
 		}
 		// A pre-reservation providers.toml row named `claude` must not be
 		// silently bypassed (the caller configured a backend, a key, a model —
