@@ -313,36 +313,66 @@ func parseInner(stdout []byte) (innerEnvelope, bool) {
 	return e, true
 }
 
-// modelKey returns the model claude actually billed, as routing evidence.
-// modelUsage can carry more than one key — claude bills its internal helper
-// calls (e.g. haiku title generation) alongside the main model — so the key
-// with the most total tokens wins, never map order. The cache columns count:
-// on a cache-warm run the main model's raw input/output can be smaller than a
-// helper's. Ties break lexicographically for determinism; a map with no usable
-// key (e.g. {} on error) falls back to fallback — the caller's resolved
-// request model.
+// modelKey returns the model claude billed for the run, as routing evidence.
+// modelUsage bills the WHOLE tree — internal helper calls (haiku title
+// generation) and Agent-tool subagents land in the same map as the main
+// model — so more than one key is normal and volume alone can crown a
+// delegate. The requested id is the primary signal: a key equal to fallback
+// (the caller's resolved request model, case-insensitive, a trailing [1m]
+// ignored) wins outright, and the native alias words (nativeModelAliases)
+// match their id family. The aggregate cannot distinguish the root call from a
+// delegate billing the same id, so a match is the strongest evidence
+// available, not proof. Volume — the total over all four token columns, cache
+// included, since a cache-warm main model's raw input/output can be smaller
+// than a helper's — only breaks ambiguity: among several family matches, or
+// over all keys when nothing matches (a substituted model stays visible).
+// Ties break lexicographically for determinism; a map with no usable key
+// (e.g. {} on error) falls back to fallback.
+// nativeModelAliases are the family words claude's --model accepts (per its
+// own --help) plus haiku, which older builds accepted; one list so the family
+// matching in modelKey and the native-lane guidance text cannot drift.
+var nativeModelAliases = []string{"fable", "opus", "sonnet", "haiku"}
+
 func modelKey(modelUsage map[string]json.RawMessage, fallback string) string {
-	best, bestTotal := "", int64(-1)
-	for k, raw := range modelUsage {
-		if k == "" {
+	want := strings.ToLower(strings.TrimSuffix(fallback, "[1m]"))
+	dominant := func(keep func(string) bool) string {
+		best, bestTotal := "", int64(-1)
+		for k, raw := range modelUsage {
+			if k == "" || !keep(strings.ToLower(k)) {
+				continue
+			}
+			var u struct {
+				InputTokens              int64 `json:"inputTokens"`
+				OutputTokens             int64 `json:"outputTokens"`
+				CacheReadInputTokens     int64 `json:"cacheReadInputTokens"`
+				CacheCreationInputTokens int64 `json:"cacheCreationInputTokens"`
+			}
+			_ = json.Unmarshal(raw, &u) // unparseable usage counts as zero
+			total := u.InputTokens + u.OutputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
+			if total > bestTotal || (total == bestTotal && k < best) {
+				best, bestTotal = k, total
+			}
+		}
+		return best
+	}
+	if want != "" {
+		if k := dominant(func(k string) bool { return k == want }); k != "" {
+			return k
+		}
+	}
+	for _, alias := range nativeModelAliases {
+		if want != alias {
 			continue
 		}
-		var u struct {
-			InputTokens              int64 `json:"inputTokens"`
-			OutputTokens             int64 `json:"outputTokens"`
-			CacheReadInputTokens     int64 `json:"cacheReadInputTokens"`
-			CacheCreationInputTokens int64 `json:"cacheCreationInputTokens"`
+		if k := dominant(func(k string) bool { return strings.Contains(k, want) }); k != "" {
+			return k
 		}
-		_ = json.Unmarshal(raw, &u) // unparseable usage counts as zero
-		total := u.InputTokens + u.OutputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
-		if total > bestTotal || (total == bestTotal && k < best) {
-			best, bestTotal = k, total
-		}
+		break
 	}
-	if best == "" {
-		return fallback
+	if k := dominant(func(string) bool { return true }); k != "" {
+		return k
 	}
-	return best
+	return fallback
 }
 
 // failWithPreview builds the SUBAGENT_FAILED Result for a run that produced no
