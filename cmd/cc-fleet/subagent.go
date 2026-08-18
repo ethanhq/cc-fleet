@@ -63,7 +63,7 @@ The reserved id "claude" runs the official claude CLI on your OWN Claude Code
 login (subscription OAuth) instead of a configured provider — no providers.toml
 row, no profile, no key material. Explicit-only: it can never be the default
 (default claude errors) and the name is reserved (add rejects it). --model takes
-a literal id only (opus / sonnet / a full id); the slot keywords default/strong/
+a literal id only (fable / opus / sonnet / a full id); the slot keywords default/strong/
 fast are rejected (no roster), and an omitted model uses claude's login default,
 typically the costliest tier — so naming a model is usually wise. The leaf spends
 the lead session's own subscription window, so reserve it for one or two synthesis

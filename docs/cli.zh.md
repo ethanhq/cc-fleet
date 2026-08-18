@@ -113,7 +113,7 @@ cc-fleet subagent deepseek --prompt "总结这段日志" --json
 
 无需 tmux、无需 agent-teams — prompt 进,envelope 出。
 
-**保留 leaf `claude`。**`cc-fleet subagent claude`(以及 workflow leaf 的 `provider: "claude"`)用你自己的 Claude Code 登录运行官方 `claude` CLI — 没有 provider 行、没有 profile、没有任何 key 材料;子进程环境照常清掉凭证,所以它需要一个真实的本地登录。仅限显式点名:不会自动解析、不出现在 `list` 里,`cc-fleet add claude` 会被拒绝(`PROVIDER_NAME_INVALID`)。`--model` 只接字面模型 id(`opus` / `sonnet` / 完整 id — 档位关键词会被拒绝);省略则用你登录的默认档,通常是最贵的那档。它花的是你自己的订阅窗口 — 留给一两个综合节点,不要拿去做大规模扇出。
+**保留 leaf `claude`。**`cc-fleet subagent claude`(以及 workflow leaf 的 `provider: "claude"`)用你自己的 Claude Code 登录运行官方 `claude` CLI — 没有 provider 行、没有 profile、没有任何 key 材料;子进程环境照常清掉凭证,所以它需要一个真实的本地登录。仅限显式点名:不会自动解析、不出现在 `list` 里,`cc-fleet add claude` 会被拒绝(`PROVIDER_NAME_INVALID`)。`--model` 只接字面模型 id(`fable` / `opus` / `sonnet` / 完整 id — 档位关键词会被拒绝);省略则用你登录的默认档,通常是最贵的那档。它花的是你自己的订阅窗口 — 留给一两个综合节点,不要拿去做大规模扇出。
 
 ## Interactive — 你自己驱动的 provider 会话
 
