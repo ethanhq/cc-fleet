@@ -113,7 +113,7 @@ cc-fleet subagent deepseek --prompt "Summarize this log" --json
 
 No tmux, no agent-teams — prompt in, result envelope out.
 
-**The reserved `claude` leaf.** `cc-fleet subagent claude` (and a workflow leaf with `provider: "claude"`) runs the official `claude` CLI on your own Claude Code login — no provider row, no profile, no key material; child env credentials are scrubbed as always, so it needs a real stored login. Explicit-only: it never auto-resolves, never shows in `list`, and `cc-fleet add claude` is rejected (`PROVIDER_NAME_INVALID`). `--model` takes a literal id (`opus` / `sonnet` / a full id — roster keywords are rejected); omitted means your login's default tier, typically the costliest. It spends your own subscription window — use it for a synthesis node or two, never a wide fan-out.
+**The reserved `claude` leaf.** `cc-fleet subagent claude` (and a workflow leaf with `provider: "claude"`) runs the official `claude` CLI on your own Claude Code login — no provider row, no profile, no key material; child env credentials are scrubbed as always, so it needs a real stored login. Explicit-only: it never auto-resolves, never shows in `list`, and `cc-fleet add claude` is rejected (`PROVIDER_NAME_INVALID`). `--model` takes a literal id (`fable` / `opus` / `sonnet` / a full id — roster keywords are rejected); omitted means your login's default tier, typically the costliest. It spends your own subscription window — use it for a synthesis node or two, never a wide fan-out.
 
 ## Interactive — a provider-backed session you drive
 
