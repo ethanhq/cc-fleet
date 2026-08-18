@@ -313,16 +313,36 @@ func parseInner(stdout []byte) (innerEnvelope, bool) {
 	return e, true
 }
 
-// modelKey returns the model claude actually billed (the single key of inner
-// modelUsage) as routing evidence; falls back to fallback (req.Model) when
-// modelUsage is empty (e.g. {} on error).
+// modelKey returns the model claude actually billed, as routing evidence.
+// modelUsage can carry more than one key — claude bills its internal helper
+// calls (e.g. haiku title generation) alongside the main model — so the key
+// with the most total tokens wins, never map order. The cache columns count:
+// on a cache-warm run the main model's raw input/output can be smaller than a
+// helper's. Ties break lexicographically for determinism; a map with no usable
+// key (e.g. {} on error) falls back to fallback — the caller's resolved
+// request model.
 func modelKey(modelUsage map[string]json.RawMessage, fallback string) string {
-	for k := range modelUsage {
-		if k != "" {
-			return k
+	best, bestTotal := "", int64(-1)
+	for k, raw := range modelUsage {
+		if k == "" {
+			continue
+		}
+		var u struct {
+			InputTokens              int64 `json:"inputTokens"`
+			OutputTokens             int64 `json:"outputTokens"`
+			CacheReadInputTokens     int64 `json:"cacheReadInputTokens"`
+			CacheCreationInputTokens int64 `json:"cacheCreationInputTokens"`
+		}
+		_ = json.Unmarshal(raw, &u) // unparseable usage counts as zero
+		total := u.InputTokens + u.OutputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
+		if total > bestTotal || (total == bestTotal && k < best) {
+			best, bestTotal = k, total
 		}
 	}
-	return fallback
+	if best == "" {
+		return fallback
+	}
+	return best
 }
 
 // failWithPreview builds the SUBAGENT_FAILED Result for a run that produced no
