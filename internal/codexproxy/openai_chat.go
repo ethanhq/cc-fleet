@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/ethanhq/cc-fleet/internal/redact"
+	"github.com/google/uuid"
 )
 
 // openaiChatUpstream speaks the OpenAI Chat Completions API
@@ -18,12 +19,17 @@ import (
 // upstream for the openai-chat protocol and the only one with a hand-written
 // translator + converter (the Responses path reuses codex's).
 type openaiChatUpstream struct {
-	http    *http.Client
-	baseURL string
+	http         *http.Client
+	baseURL      string
+	isOpenCodeGo bool // baseURL's host is opencode.ai or a subdomain — see isOpenCodeGoHost
 }
 
 func newOpenAIChatUpstream(baseURL string) *openaiChatUpstream {
-	return &openaiChatUpstream{http: &http.Client{Timeout: 0}, baseURL: baseURL}
+	return &openaiChatUpstream{
+		http:         &http.Client{Timeout: 0},
+		baseURL:      baseURL,
+		isOpenCodeGo: isOpenCodeGoHost(baseURL),
+	}
 }
 
 // models is empty: an openai-* provider's model list comes from the real upstream
@@ -52,6 +58,9 @@ func (u *openaiChatUpstream) call(ctx context.Context, areq *anthropicRequest, c
 	req.Header.Set("Authorization", "Bearer "+cc.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
+	if u.isOpenCodeGo {
+		req.Header.Set("x-opencode-session", opencodeSessionID(areq))
+	}
 	resp, err := u.http.Do(req)
 	if err != nil {
 		return nil, &upstreamError{upTransient, http.StatusBadGateway, "openai upstream: " + redactKey(err.Error(), cc.apiKey)}
@@ -60,6 +69,38 @@ func (u *openaiChatUpstream) call(ctx context.Context, areq *anthropicRequest, c
 		return resp.Body, nil
 	}
 	return nil, classifyOpenAI(resp, cc.apiKey)
+}
+
+// isOpenCodeGoHost reports whether baseURL's host is opencode.ai or a subdomain
+// of it (case-insensitively, tolerating a trailing FQDN dot). Since 2026-09-06
+// OpenCode Go's "Console Go" gateway rejects any request missing an
+// x-opencode-session header with 400 MissingSessionID, a requirement specific to
+// that gateway — every other openai-chat upstream (a direct provider API, a
+// different aggregator) has no such header and must not get one injected, so
+// the session header is scoped to this host rather than sent unconditionally.
+func isOpenCodeGoHost(baseURL string) bool {
+	u, err := url.Parse(baseURL)
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	return host == "opencode.ai" || strings.HasSuffix(host, ".opencode.ai")
+}
+
+// opencodeSessionID returns the value to send in x-opencode-session: the stable
+// per-conversation id OpenCode Go's gateway wants for routing + prompt-cache
+// affinity across a conversation's turns. claude already sends a stable
+// per-session id in metadata.user_id — translateRequest reuses the same value as
+// the Responses upstream's prompt_cache_key — so this reuses it too. Falls back
+// to a fresh uuid (necessarily a different one on every call with no metadata,
+// since nothing per-conversation is available to derive it from) when that
+// field is empty or itself an invalid header value, so a request is never sent
+// header-less, and a client-supplied value can never reach the wire malformed.
+func opencodeSessionID(a *anthropicRequest) string {
+	if v := a.Metadata.UserID; v != "" && !strings.ContainsAny(v, "\r\n\x00") {
+		return v
+	}
+	return uuid.NewString()
 }
 
 // classifyOpenAI maps a non-2xx Chat/Responses status to an upstreamError. Unlike

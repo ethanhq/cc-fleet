@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -237,6 +238,163 @@ func TestOpenAIChatUpstream_CallConvertAndRedact(t *testing.T) {
 	if strings.Contains(ue.message, key) {
 		t.Fatalf("upstreamError leaked the key: %q", ue.message)
 	}
+}
+
+// call must attach x-opencode-session on an opencode.ai upstream (OpenCode Go's
+// gateway has rejected headerless requests with 400 MissingSessionID since
+// 2026-09-06) and reuse claude's own metadata.user_id as the value, since
+// translateRequest already reuses that same field as the Responses upstream's
+// prompt_cache_key for the same "stable id per conversation" purpose.
+func TestOpenAIChatUpstream_OpenCodeGoSessionHeader(t *testing.T) {
+	var gotSession string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSession = r.Header.Get("x-opencode-session")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	// httptest's server is 127.0.0.1, not opencode.ai, so point baseURL's Host at
+	// opencode.ai while dialing the real test listener via a custom transport —
+	// simplest is to swap in a request-URL rewrite via http.Client.Transport.
+	u := newOpenAIChatUpstream("https://opencode.ai/zen/go/v1")
+	u.http.Transport = rewriteHostTransport{targetURL: srv.URL}
+
+	a := parseReq(t, `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}],"metadata":{"user_id":"user_abc_session_123"}}`)
+	body, err := u.call(context.Background(), a, newConvCtx(a, "key"))
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	body.Close()
+	if gotSession != "user_abc_session_123" {
+		t.Fatalf("x-opencode-session = %q, want claude's metadata.user_id", gotSession)
+	}
+}
+
+// Without metadata.user_id, call must still send a non-empty x-opencode-session
+// (a header present but empty is exactly the condition OpenCode Go rejects) —
+// covering claude requests that, however unobserved in practice, omit it.
+func TestOpenAIChatUpstream_OpenCodeGoSessionHeaderFallback(t *testing.T) {
+	var gotSession string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSession = r.Header.Get("x-opencode-session")
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	u := newOpenAIChatUpstream("https://opencode.ai/zen/go/v1")
+	u.http.Transport = rewriteHostTransport{targetURL: srv.URL}
+
+	a := parseReq(t, `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`)
+	body, err := u.call(context.Background(), a, newConvCtx(a, "key"))
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	body.Close()
+	if gotSession == "" {
+		t.Fatal("x-opencode-session must never be empty on an opencode.ai call")
+	}
+}
+
+// A non-OpenCode-Go openai-chat upstream (a direct provider API, some other
+// aggregator) must NOT get x-opencode-session — it's an OpenCode Go-specific
+// requirement, not a general Chat Completions convention.
+func TestOpenAIChatUpstream_NoSessionHeaderForOtherHosts(t *testing.T) {
+	var sawHeader bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		sawHeader = r.Header.Get("x-opencode-session") != ""
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	u := newOpenAIChatUpstream(srv.URL + "/v1")
+	a := parseReq(t, `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}],"metadata":{"user_id":"user_abc"}}`)
+	body, err := u.call(context.Background(), a, newConvCtx(a, "key"))
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	body.Close()
+	if sawHeader {
+		t.Fatal("x-opencode-session must not be sent to a non-opencode.ai upstream")
+	}
+}
+
+func TestIsOpenCodeGoHost(t *testing.T) {
+	cases := []struct {
+		baseURL string
+		want    bool
+	}{
+		{"https://opencode.ai/zen/go/v1", true},
+		{"https://foo.opencode.ai/v1", true},
+		{"https://OpenCode.AI/zen/go/v1", true},      // hostnames are case-insensitive
+		{"https://opencode.ai./zen/go/v1", true},     // trailing FQDN dot
+		{"https://opencode.ai:8443/zen/go/v1", true}, // non-standard port
+		{"opencode.ai/zen/go/v1", false},             // no scheme: url.Parse treats this as a path, no Host
+		{"https://api.openai.com/v1", false},
+		{"https://notopencode.ai.evil.example.com/v1", false},
+		{"https://evil.com@opencode.ai/v1", true},  // userinfo before @ is not the host
+		{"https://opencode.ai@evil.com/v1", false}, // userinfo trick the other way must NOT match
+		{"https://127.0.0.1:17223/", false},
+		{":::not a url", false},
+	}
+	for _, c := range cases {
+		if got := isOpenCodeGoHost(c.baseURL); got != c.want {
+			t.Errorf("isOpenCodeGoHost(%q) = %v, want %v", c.baseURL, got, c.want)
+		}
+	}
+}
+
+// A metadata.user_id containing CR/LF must never reach the wire as (or corrupt)
+// the x-opencode-session header — opencodeSessionID falls back to a fresh uuid
+// instead, so a malformed client-supplied value degrades to "no cache affinity"
+// rather than an injection attempt or a client-visible transport error.
+func TestOpenAIChatUpstream_HostileUserIDFallsBackInsteadOfInjecting(t *testing.T) {
+	var gotSession string
+	var otherHeaders int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSession = r.Header.Get("x-opencode-session")
+		otherHeaders = len(r.Header)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer srv.Close()
+
+	u := newOpenAIChatUpstream("https://opencode.ai/zen/go/v1")
+	u.http.Transport = rewriteHostTransport{targetURL: srv.URL}
+
+	raw := `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}],"metadata":{"user_id":"line1\r\nX-Injected: evil"}}`
+	a := parseReq(t, raw)
+	body, err := u.call(context.Background(), a, newConvCtx(a, "key"))
+	if err != nil {
+		t.Fatalf("call must not error out on a hostile metadata.user_id: %v", err)
+	}
+	body.Close()
+	if gotSession == "" || strings.Contains(gotSession, "\r") || strings.Contains(gotSession, "\n") {
+		t.Fatalf("x-opencode-session = %q, want a clean fallback uuid", gotSession)
+	}
+	if otherHeaders == 0 {
+		t.Fatal("request must still reach the upstream with its normal headers")
+	}
+}
+
+// rewriteHostTransport redials every request at targetURL — the *struct's*
+// baseURL field (what isOpenCodeGoHost/isOpenCodeGo actually key off) stays
+// "https://opencode.ai/...", only the outgoing TCP destination and Host header
+// change — so a test can assert host-based behavior against a real
+// opencode.ai-shaped baseURL while actually talking to a local httptest server.
+type rewriteHostTransport struct{ targetURL string }
+
+func (t rewriteHostTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	target, err := url.Parse(t.targetURL)
+	if err != nil {
+		return nil, err
+	}
+	req = req.Clone(req.Context())
+	req.URL.Scheme = target.Scheme
+	req.URL.Host = target.Host
+	return http.DefaultTransport.RoundTrip(req)
 }
 
 // A mid-stream error chunk ends on a redacted Anthropic error event (open blocks
