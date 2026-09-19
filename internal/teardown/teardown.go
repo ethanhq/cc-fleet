@@ -124,6 +124,9 @@ func TeardownTeam(team string, dg *diag.Logger) Result {
 	// the lock — we don't want to hold the team lock during the SIGTERM grace
 	// sleep.
 	var reapIDs []string
+	// Set when the team dir could not be deleted under the lock (Windows holds
+	// the lock file open); the removal is retried after WithTeamLock returns.
+	removeAfterUnlock := false
 	lockErr := config.WithTeamLock(team, func() error {
 		dg.Logf("teardown: team lock acquired %s", team)
 		// Load member list — failure here is non-fatal because we can still
@@ -206,8 +209,15 @@ func TeardownTeam(team string, dg *diag.Logger) Result {
 		// next spawn / ps. TeamRemoved reflects only a real team that existed
 		// before this call — a recovery sweep of an already-absent dir removes
 		// nothing the user can see.
-		if err := os.RemoveAll(dir); err != nil {
+		deferredRemove, err := removeTeamDir(dir)
+		if err != nil {
 			return fmt.Errorf("remove team dir: %w", err)
+		}
+		if deferredRemove {
+			// Windows can't unlink the team lock file while it is still held;
+			// finish the removal once WithTeamLock has closed it.
+			removeAfterUnlock = true
+			return nil
 		}
 		dg.Logf("teardown: team dir removed (existed=%v)", dirExisted)
 		if dirExisted {
@@ -215,6 +225,17 @@ func TeardownTeam(team string, dg *diag.Logger) Result {
 		}
 		return nil
 	})
+
+	if lockErr == nil && removeAfterUnlock {
+		if err := os.RemoveAll(dir); err != nil {
+			lockErr = fmt.Errorf("remove team dir: %w", err)
+		} else {
+			dg.Logf("teardown: team dir removed after unlock (existed=%v)", dirExisted)
+			if dirExisted {
+				res.TeamRemoved = true
+			}
+		}
+	}
 
 	// Reap any teammate processes that survived their pane being killed.
 	// Outside the lock and best-effort: warnings only, never flips OK.

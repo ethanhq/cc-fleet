@@ -284,7 +284,7 @@ func splitPane(target, direction string, sizePercent int, cmd string) (string, e
 	if sizePercent > 0 {
 		args = append(args, "-l", strconv.Itoa(sizePercent)+"%")
 	}
-	args = append(args, "-d", "-P", "-F", "#{pane_id}", cmd)
+	args = append(args, "-d", "-P", "-F", "#{pane_id}", wrapPaneCommand(cmd))
 
 	out, err := (Server{}).command(args...).Output()
 	if err != nil {
@@ -614,7 +614,7 @@ func (s Server) SpawnSwarm(cmd, color, name string) (pane string, createdServer 
 		// First teammate: create the detached session + named window, running cmd
 		// in the initial pane. -P -F prints the new pane id.
 		out, oerr := s.command("new-session", "-d", "-s", SwarmSessionName,
-			"-n", SwarmViewWindow, "-P", "-F", "#{pane_id}", cmd).Output()
+			"-n", SwarmViewWindow, "-P", "-F", "#{pane_id}", wrapPaneCommand(cmd)).Output()
 		if oerr != nil {
 			return "", false, fmt.Errorf("tmux new-session swarm: %w", oerr)
 		}
@@ -623,7 +623,7 @@ func (s Server) SpawnSwarm(cmd, color, name string) (pane string, createdServer 
 		// Additional teammate: split a new pane into the swarm-view window, then
 		// tile so every teammate gets an equal share (no leader). -d keeps the
 		// detached session from stealing focus.
-		out, oerr := s.command("split-window", "-t", target, "-d", "-P", "-F", "#{pane_id}", cmd).Output()
+		out, oerr := s.command("split-window", "-t", target, "-d", "-P", "-F", "#{pane_id}", wrapPaneCommand(cmd)).Output()
 		if oerr != nil {
 			return "", false, fmt.Errorf("tmux split-window swarm: %w", oerr)
 		}
