@@ -46,6 +46,7 @@ func newSubagentCmd() *cobra.Command {
 		label          string
 		promptProfile  string
 		tools          string
+		disallowed     string
 		skills         bool
 		mcp            bool
 		noPersistIO    bool
@@ -141,6 +142,11 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 				return reportSubagent(subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
 					ErrorMsg: fmt.Sprintf("invalid --tools: %v", err), Provider: provider}, asJSON)
 			}
+			disallowedList, err := splitDisallowedCSV(disallowed)
+			if err != nil {
+				return reportSubagent(subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
+					ErrorMsg: fmt.Sprintf("invalid --disallowed-tools: %v", err), Provider: provider}, asJSON)
+			}
 			noSkills := !skills
 			if isFull && (len(toolList) > 0 || noSkills || cmd.Flags().Changed("mcp")) {
 				return reportSubagent(subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
@@ -170,28 +176,29 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 			}
 
 			req := subagent.Request{
-				Provider:       provider,
-				Model:          model,
-				Prompt:         prompt,
-				OutputFormat:   outputFormat,
-				JSON:           asJSON,
-				Timeout:        timeout,
-				Probe:          probe,
-				PermissionMode: permissionMode,
-				Resume:         resume,
-				Background:     background,
-				MaxTurns:       maxTurns,
-				MaxBudgetUSD:   maxBudget,
-				LeadSessionID:  leadSessionID,
-				RunID:          runID,
-				Phase:          phase,
-				Label:          label,
-				PromptProfile:  promptProfile,
-				Tools:          toolList,
-				NoSkills:       noSkills,
-				MCP:            mcp,
-				PersistIO:      !noPersistIO,
-				Diag:           diagLogger(cmd),
+				Provider:        provider,
+				Model:           model,
+				Prompt:          prompt,
+				OutputFormat:    outputFormat,
+				JSON:            asJSON,
+				Timeout:         timeout,
+				Probe:           probe,
+				PermissionMode:  permissionMode,
+				Resume:          resume,
+				Background:      background,
+				MaxTurns:        maxTurns,
+				MaxBudgetUSD:    maxBudget,
+				LeadSessionID:   leadSessionID,
+				RunID:           runID,
+				Phase:           phase,
+				Label:           label,
+				PromptProfile:   promptProfile,
+				Tools:           toolList,
+				NoSkills:        noSkills,
+				MCP:             mcp,
+				DisallowedTools: disallowedList,
+				PersistIO:       !noPersistIO,
+				Diag:            diagLogger(cmd),
 			}
 			if req.PersistIO {
 				// The .prompt sidecar needs the text in hand; a --prompt-file /
@@ -265,6 +272,8 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 		"Prompt profile: slim (default; native generic-subagent mirror) | slim-ro (read-only Explore mirror) | full (the full claude -p session; for behavior comparison)")
 	cmd.Flags().StringVar(&tools, "tools", "",
 		"Comma/space-separated tool set (slim only; replaces the profile default)")
+	cmd.Flags().StringVar(&disallowed, "disallowed-tools", "",
+		"Comma-separated tools or permission rules to deny (passed to claude --disallowedTools; any profile; also matches MCP tools, e.g. mcp__broker__place_order)")
 	cmd.Flags().BoolVar(&skills, "skills", true,
 		"Include the Skill tool + host skill listing (slim only; default true, native parity)")
 	cmd.Flags().BoolVar(&mcp, "mcp", false,
@@ -290,6 +299,24 @@ func splitToolsCSV(s string) ([]string, error) {
 			return nil, fmt.Errorf("empty tool entry in %q", s)
 		}
 		out = append(out, names...)
+	}
+	return out, nil
+}
+
+// splitDisallowedCSV parses --disallowed-tools. Only commas delimit, so a
+// permission rule with a space ("Bash(git push:*)") stays one entry. A blank
+// value yields nil; an empty entry inside a non-blank value is an error.
+func splitDisallowedCSV(s string) ([]string, error) {
+	if strings.TrimSpace(s) == "" {
+		return nil, nil
+	}
+	var out []string
+	for _, seg := range strings.Split(s, ",") {
+		entry := strings.TrimSpace(seg)
+		if entry == "" {
+			return nil, fmt.Errorf("empty entry in %q", s)
+		}
+		out = append(out, entry)
 	}
 	return out, nil
 }

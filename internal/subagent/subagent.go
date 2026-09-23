@@ -521,6 +521,10 @@ func buildArgv(binaryPath, profilePath, model string, req Request, slim slimArgv
 		argv = append(argv, "--json-schema", req.JSONSchema)
 	}
 
+	if len(req.DisallowedTools) > 0 {
+		argv = append(argv, "--disallowedTools", strings.Join(req.DisallowedTools, ","))
+	}
+
 	// Slim profiles: replace the main prompt with the rendered native-mirror
 	// sidecar, restrict the tool pool, disable thinking (native subagent
 	// behavior), and isolate MCP unless the caller asked to inherit the host

@@ -109,6 +109,7 @@ cc-fleet subagent deepseek --prompt "总结这段日志" --json
 - `--timeout`(默认 300s)/ `--max-turns` / `--max-budget-usd` — 限制时长与费用。
 - `--profile` — `slim`(默认)镜像原生 subagent 上下文,首请求远小于完整会话 prompt (工具:Bash、Edit、Glob、Grep、Read、Skill、Write);`slim-ro` 是只读镜像(Bash、Glob、Grep、Read、Skill);`full` 恢复完整会话 prompt — 仅用于对照行为或排查疑似 slim 回归。
 - `--tools` / `--skills` / `--mcp` — 细化 slim 运行(与 `--profile full` 同用被拒)。`--tools` 是整组替换而非追加:`--tools WebSearch` 会让 subagent 只剩 WebSearch。`--skills` 是布尔值(默认 true;`--skills=false` 摘掉 Skill 工具)。MCP 默认按 profile 区分 — `slim` 继承宿主 MCP 配置,`slim-ro` 走 `--strict-mcp-config`;显式 `--mcp` 一律覆盖。
+- `--disallowed-tools` — 逗号分隔的待禁用工具或权限规则,原样传给 `claude --disallowedTools`,任何 profile 均可用。与 `--tools` 不同,它也作用于 MCP 工具:继承宿主 MCP 配置会暴露所有服务器的工具,`--disallowed-tools mcp__broker__place_order`(或整个服务器 `mcp__broker`)可在本次运行中移除它们。默认的 `--dangerously-skip-permissions` 下 deny 规则依然生效。
 - `subagent-gc` 清理已结束任务(默认 `--older-than 24h`;`--session <id>` 清一个会话的已结束任务,pin 过的除外)。
 
 无需 tmux、无需 agent-teams — prompt 进,envelope 出。
