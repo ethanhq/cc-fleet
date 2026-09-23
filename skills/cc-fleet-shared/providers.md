@@ -63,6 +63,7 @@ Rule of thumb: the leaf writes files → `slim`; read-only research → `slim-ro
 - **`--tools` / `tools` REPLACES the whole set, never appends.** `--tools "WebSearch"` gives the subagent ONLY WebSearch. Any tool beyond the default whitelist (e.g. WebSearch / WebFetch) must be passed explicitly.
 - **`--skills=false` / `skills: false`** drops the Skill tool + the host skill listing (default keeps both).
 - **`--mcp` / `mcp`** defaults per profile: `slim` inherits the host MCP config (native parity); `slim-ro` runs `--strict-mcp-config`. An explicit value (either way) overrides.
+- **`--tools` does not restrict MCP tools.** An inherited MCP config exposes every host server's tools regardless of the whitelist. To keep a subagent off specific MCP tools (e.g. a broker's order tools), pass `--disallowed-tools mcp__<server>__<tool>` (or `mcp__<server>`); it is CLI-only for now, not a workflow `agent()` option.
 
 The profiles need **claude ≥ 2.1.88**. On an older claude the profile **fails open to `full`** — the subagent envelope carries `slim_downgrade`; a workflow leaf logs a notice.
 

@@ -109,6 +109,7 @@ cc-fleet subagent deepseek --prompt "Summarize this log" --json
 - `--timeout` (default 300s) / `--max-turns` / `--max-budget-usd` — bound runtime and cost.
 - `--profile` — `slim` (default) mirrors the native subagent context, a far smaller first request than the full session prompt (tools: Bash, Edit, Glob, Grep, Read, Skill, Write); `slim-ro` is the read-only mirror (Bash, Glob, Grep, Read, Skill); `full` restores the full session prompt — only to compare behavior or diagnose a suspected slim regression.
 - `--tools` / `--skills` / `--mcp` — refine a slim run (rejected with `--profile full`). `--tools` replaces the whole set, never appends: `--tools WebSearch` leaves ONLY WebSearch. `--skills` is a boolean (default true; `--skills=false` drops the Skill tool). MCP defaults per profile — `slim` inherits the host MCP config, `slim-ro` runs `--strict-mcp-config`; an explicit `--mcp` overrides.
+- `--disallowed-tools` — comma-separated tools or permission rules to deny, passed to `claude --disallowedTools` on any profile. Unlike `--tools`, it also reaches MCP tools: an inherited host MCP config exposes every server's tools, and `--disallowed-tools mcp__broker__place_order` (or `mcp__broker` for the whole server) removes them from this run. Deny rules hold under the default `--dangerously-skip-permissions`.
 - `subagent-gc` prunes finished jobs (`--older-than 24h` default; `--session <id>` clears one session's finished jobs, pinned records excluded).
 
 No tmux, no agent-teams — prompt in, result envelope out.

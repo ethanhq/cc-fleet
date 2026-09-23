@@ -22,7 +22,7 @@ func TestBuildArgv_FullByteIdentical(t *testing.T) {
 		t.Fatalf("full argv drifted:\n got %v\nwant %v", got, want)
 	}
 	// A zero slimArgv adds no slim flags; a schema-less request adds no --json-schema.
-	for _, f := range []string{"--system-prompt-file", "--tools", "--thinking", "--strict-mcp-config", "--json-schema"} {
+	for _, f := range []string{"--system-prompt-file", "--tools", "--thinking", "--strict-mcp-config", "--json-schema", "--disallowedTools"} {
 		assertAbsent(t, got, f)
 	}
 }
@@ -52,6 +52,22 @@ func TestBuildArgv_Slim(t *testing.T) {
 		// the other slim flags remain
 		assertPairAfter(t, argv, "--thinking", "disabled")
 	})
+}
+
+// DisallowedTools emits one comma-joined --disallowedTools value on any
+// profile, so rules containing spaces survive as single entries.
+func TestBuildArgv_DisallowedTools(t *testing.T) {
+	const bin, prof, model = "/v/claude", "/p/glm.json", "glm-4.6"
+	deny := []string{"mcp__broker__place_order", "Bash(git push:*)"}
+
+	full := buildArgv(bin, prof, model, Request{Prompt: "x", DisallowedTools: deny}, slimArgv{})
+	assertPairAfter(t, full, "--disallowedTools", "mcp__broker__place_order,Bash(git push:*)")
+	assertSeq(t, full, bin, "--dangerously-skip-permissions", "--settings", prof, "--model", model, "-p", "x")
+
+	slim := slimArgv{promptFile: "/abs/job.slimprompt", tools: []string{"Read"}}
+	got := buildArgv(bin, prof, model, Request{Prompt: "x", PromptProfile: ProfileSlim, MCP: true, DisallowedTools: deny}, slim)
+	assertPairAfter(t, got, "--disallowedTools", "mcp__broker__place_order,Bash(git push:*)")
+	assertPairAfter(t, got, "--tools", "Read")
 }
 
 // JSONSchema emits the --json-schema pair profile-independently: for a full
