@@ -47,6 +47,33 @@ func TestResolveMCPDefault(t *testing.T) {
 	}
 }
 
+func TestSplitDisallowedCSV(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{"", nil},
+		{"  ", nil},
+		{"mcp__broker__place_order", []string{"mcp__broker__place_order"}},
+		{"mcp__broker, Bash(git push:*)", []string{"mcp__broker", "Bash(git push:*)"}},
+	}
+	for _, c := range cases {
+		got, err := splitDisallowedCSV(c.in)
+		if err != nil {
+			t.Errorf("splitDisallowedCSV(%q) unexpected error: %v", c.in, err)
+			continue
+		}
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("splitDisallowedCSV(%q) = %v, want %v", c.in, got, c.want)
+		}
+	}
+	for _, bad := range []string{"a,,b", "a,", " ,a"} {
+		if _, err := splitDisallowedCSV(bad); err == nil {
+			t.Errorf("splitDisallowedCSV(%q) = nil error, want an empty-entry error", bad)
+		}
+	}
+}
+
 func TestSplitToolsCSV(t *testing.T) {
 	cases := []struct {
 		in   string

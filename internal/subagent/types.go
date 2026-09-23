@@ -113,6 +113,11 @@ type Request struct {
 	// an older claude fails the leaf with the ordinary classified usage error.
 	// Workflow-engine-only: the bare CLI exposes no schema flag.
 	JSONSchema string
+	// DisallowedTools is passed to claude --disallowedTools: deny rules that
+	// hold under --dangerously-skip-permissions and, unlike Tools, also match
+	// MCP tools (mcp__<server>__<tool>, or mcp__<server> for a whole server).
+	// Profile-independent; empty emits no flag.
+	DisallowedTools []string
 
 	// Diag is the --verbose step-trace sink. nil (the default) is a no-op;
 	// a logger changes nothing but the diagnostic writes.
