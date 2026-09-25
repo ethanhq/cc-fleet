@@ -106,3 +106,34 @@ func TestProcessAlive_GuardComposition(t *testing.T) {
 		t.Error("an unreadable token must fall back to the (matching) argv guard")
 	}
 }
+
+// TestProcessAlive_WrapperRewroteSettings covers a wrapper between cc-fleet
+// and claude that replaces --settings <profile> with its own merged file, as
+// cmux's claude shim does. With a matching token the job must still read
+// alive; without one the full argv guard still applies.
+func TestProcessAlive_WrapperRewroteSettings(t *testing.T) {
+	origHas, origStart, origArgv := hasArgvIntrospection, procStartFn, reuseGuardArgv
+	t.Cleanup(func() { hasArgvIntrospection, procStartFn, reuseGuardArgv = origHas, origStart, origArgv })
+	hasArgvIntrospection = true
+	self := os.Getpid()
+	reuseGuardArgv = func(int) ([]string, bool) {
+		return []string{"/Users/u/.local/bin/claude", "--session-id", "0b1c", "--settings", "/var/folders/xx/T/cmux-claude-settings.pK5X1t", "-p"}, true
+	}
+
+	procStartFn = func(int) (string, bool) { return "tok-1", true }
+	if !processAlive(self, "/p/codex.json", "tok-1") {
+		t.Error("token match + claude argv with a rewritten --settings must read alive")
+	}
+	if processAlive(self, "/p/codex.json", "tok-0") {
+		t.Error("a mismatched token must still read dead")
+	}
+	procStartFn = func(int) (string, bool) { return "", false }
+	if processAlive(self, "/p/codex.json", "tok-1") {
+		t.Error("without a token match, a missing --settings marker must still read dead")
+	}
+	reuseGuardArgv = func(int) ([]string, bool) { return []string{"some", "other", "proc"}, true }
+	procStartFn = func(int) (string, bool) { return "tok-1", true }
+	if processAlive(self, "/p/codex.json", "tok-1") {
+		t.Error("token match + a non-claude argv must read dead")
+	}
+}
