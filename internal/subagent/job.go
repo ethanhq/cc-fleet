@@ -1046,13 +1046,27 @@ func processAlive(pid int, settingsPath, procStart string) bool {
 	// job of the same provider — which the token mismatch catches. Token-less
 	// metas (legacy / capture failure) keep the argv-only behavior; with no
 	// readable marker either, trust kill(0) as before.
+	//
+	// After a token MATCH the argv only has to show a claude binary, not this
+	// job's --settings value: a wrapper between cc-fleet and claude can rewrite
+	// that flag (cmux's claude shim merges it into a temp settings file), and
+	// requiring the profile path then reads a running job as gone at its first
+	// poll. What this gives up is a pid recycled by another claude process within
+	// the same second as the job's start; a non-claude recycle still reads dead.
+	tokenMatched := false
 	if procStart != "" {
-		if live, ok := procStartFn(pid); ok && live != procStart {
-			return false
+		if live, ok := procStartFn(pid); ok {
+			if live != procStart {
+				return false
+			}
+			tokenMatched = true
 		}
 	}
 	if !hasArgvIntrospection || settingsPath == "" {
 		return true
+	}
+	if tokenMatched {
+		return cmdlineIsClaude(pid)
 	}
 	return cmdlineIsClaudeJob(pid, settingsPath)
 }
@@ -1129,7 +1143,7 @@ func argvIsClaudeJob(argv []string, settingsPath string) bool {
 		if arg == "" {
 			continue
 		}
-		if !hasClaude && (strings.Contains(arg, "/claude/") || strings.Contains(filepath.Base(arg), "claude")) {
+		if !hasClaude && isClaudeArg(arg) {
 			hasClaude = true
 		}
 		if arg == settingsPath {
@@ -1142,6 +1156,28 @@ func argvIsClaudeJob(argv []string, settingsPath string) bool {
 		hasSettings = true
 	}
 	return hasClaude && hasSettings
+}
+
+// isClaudeArg reports whether one argv entry names a claude binary: a path
+// with a "/claude/" segment or a basename containing "claude".
+func isClaudeArg(arg string) bool {
+	return strings.Contains(arg, "/claude/") || strings.Contains(filepath.Base(arg), "claude")
+}
+
+// cmdlineIsClaude reads pid's argv and reports whether it is a claude binary,
+// without checking this job's --settings (see processAlive). An unreadable
+// cmdline trusts the kill(0) liveness, as in cmdlineIsClaudeJob.
+func cmdlineIsClaude(pid int) bool {
+	argv, ok := reuseGuardArgv(pid)
+	if !ok {
+		return true
+	}
+	for _, arg := range argv {
+		if arg != "" && isClaudeArg(arg) {
+			return true
+		}
+	}
+	return false
 }
 
 func metaPath(dir, jobID string) string { return filepath.Join(dir, jobID+".json") }
