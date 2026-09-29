@@ -66,7 +66,7 @@ Every completed leaf is journaled, keyed by its determinant (provider + model + 
 cc-fleet workflow run audit.js --resume "$RUN"
 ```
 
-Unchanged leaves return cached (no provider call); a leaf you edited — and everything downstream of its output — re-runs. A killed run resumes by replaying what finished — and any re-run reusing the same run id resumes against the journal, `--resume` being the explicit form. Failed leaves are never journaled, so a resume always retries them.
+Unchanged leaves return cached (no provider call); a leaf you edited — and everything downstream of its output — re-runs. A killed run resumes by replaying what finished — and any re-run reusing the same run id resumes against the journal, `--resume` being the explicit form. Failed leaves are never journaled, so a resume always retries them. A script that does not parse or compile, or whose `meta` is invalid, is refused before anything is written: the run and its saved script — the one `restart` runs — stay as they were.
 
 A resumed or restarted run works in the directory it was first started from (recorded with the run), whatever directory you run `--resume` / `restart` from, so its leaves and worktrees land in the same project. If that directory no longer exists, the run fails with `run directory <dir> no longer exists` — restore it, or start a new run from the project directory.
 

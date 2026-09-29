@@ -208,6 +208,7 @@ cc-fleet workflow rm "$RUN" / prune          # 删除一个 run / 清掉所有�
 - `run` 的 flag:`--max-concurrency`(默认 `min(16, cores-2)`)、`--budget-usd` / `--budget-tokens`(到顶后引擎不再铸新 leaf)、`--args-json`(脚本的 `args`)、`--no-persist-io`(关闭 prompt/answer 下钻)、`--saved`(跑保存过的脚本)。
 - journal 按内容哈希记每个 leaf(provider + 模型 + prompt + schema + profile 形状), `--resume` 只重跑变过或没跑完的;失败的 leaf 不会进 journal。
 - `--resume` 和 `restart` 在 run 启动时的目录(记在 manifest 里)运行剩下的 leaf,而不是调用者的当前目录;该目录已不存在时 run 以明确的错误失败。
+- `--resume` 先解析、编译新脚本并校验 `meta`;不通过时直接报错,什么都不写,run 和它保存的脚本(`restart` 运行的就是它)保持原样。
 - `isolation: "worktree"` 的 leaf 留下改动时,会在删除 worktree 之前把改动存成分支 `cc-fleet/wf-<job>-a<attempt>`(见[编写 workflow 脚本](workflows.md#isolated-worktrees))。run 被 stop 或 kill 之后,下一次 `restart` / `--resume` 的清理或 `workflow rm` / `prune` 会把没保存的改动抢救到 `cc-fleet/wf-salvage-*` 分支;存不下来的目录保留并带 `.cc-fleet-keep` 标记,`rm` / `prune` / `restart` 会在 stderr 上为每个保留的目录打一行。cc-fleet 从不删除这些分支。
 - `workflow saved` 列出看板里保存过的脚本(`run --saved` 接受的名字); `workflow new <name> --phase <title>…` 铸一个带有序 phase 计划的空 run,用于把 `subagent --run-id/--phase` 任务手动归到同一棵看板树下。
 

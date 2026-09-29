@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -181,5 +182,71 @@ func TestDetachedResumeSurfacesPreStartCause(t *testing.T) {
 	}
 	if got.EnginePID != deadPID || got.EngineProcStart != "tok" {
 		t.Errorf("the prior death proof must survive, got EnginePID=%d token=%q", got.EnginePID, got.EngineProcStart)
+	}
+}
+
+// TestResumeRefusesBrokenScript: a --resume with a script the engine could not start (a parse error,
+// a bad meta, or an error only the compiler reports) fails at once and leaves the run as it was — the
+// saved script restart runs, the manifest, and no engine launched — so a later restart still works.
+func TestResumeRefusesBrokenScript(t *testing.T) {
+	broken := map[string]string{
+		"parse":   "const meta = {name: \"n\", description: \"d\"};\nconst x = ;\n",
+		"meta":    "const meta = {name: \"n\"};\nphase(\"plan\");\n",
+		"compile": "const meta = {name: \"n\", description: \"d\"};\nlet a = 1;\nlet a = 2;\n",
+	}
+	for _, fg := range []bool{false, true} {
+		for kind, src := range broken {
+			t.Run(map[bool]string{false: "detached", true: "foreground"}[fg]+"/"+kind, func(t *testing.T) {
+				t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+				t.Setenv("HOME", t.TempDir())
+				id, err := Launch(context.Background(), writeFgTrivialScript(t), Options{}, true)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// A provably dead engine, so a resume that got past the check would sweep its worktrees.
+				run, err := subagent.ReadRun(id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				run.EnginePID, run.EngineProcStart = 0x7ffffffe, "tok"
+				if err := subagent.SaveRun(run); err != nil {
+					t.Fatal(err)
+				}
+				sp, _ := subagent.RunScriptPath(id)
+				mp := filepath.Join(filepath.Dir(sp), id+".json")
+				manifest, _ := os.ReadFile(mp)
+				saved, _ := os.ReadFile(sp)
+
+				origLaunch, origExec, origSweep := launchDetachedFn, executeFn, sweepOwnSegmentFn
+				launched, swept := false, false
+				launchDetachedFn = func(string, string, Options) (int, *detachedReaper, error) {
+					launched = true
+					return 0, nil, fmt.Errorf("no engine may be launched")
+				}
+				executeFn = func(context.Context, string, string, Options) error { launched = true; return nil }
+				sweepOwnSegmentFn = func(string, string) { swept = true }
+				t.Cleanup(func() { launchDetachedFn, executeFn, sweepOwnSegmentFn = origLaunch, origExec, origSweep })
+
+				bad := filepath.Join(t.TempDir(), "bad.js")
+				if err := os.WriteFile(bad, []byte(src), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := Launch(context.Background(), bad, Options{Resume: id}, fg); err == nil {
+					t.Fatal("a resume with a broken script must fail")
+				}
+				if launched {
+					t.Error("no engine may be launched for a broken script")
+				}
+				if swept {
+					t.Error("a broken script must be refused before the run's worktrees are swept")
+				}
+				if got, _ := os.ReadFile(sp); !bytes.Equal(got, saved) {
+					t.Error("the run's saved script must not be replaced by a broken one")
+				}
+				if got, _ := os.ReadFile(mp); !bytes.Equal(got, manifest) {
+					t.Errorf("the manifest must be untouched:\nwas %s\nnow %s", manifest, got)
+				}
+			})
+		}
 	}
 }
