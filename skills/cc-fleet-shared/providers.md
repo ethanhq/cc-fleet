@@ -13,7 +13,7 @@ Shared provider reference for the cc-fleet skills.
 
 1. **List configured providers.** `cc-fleet list --json`. Skip any provider with `"enabled": false`.
 2. **Filter by need** against the cheat sheet below (capability + cost + language).
-3. **Check the provider's model roster.** `cc-fleet models <provider> --json` → the configured `default` / `strong` / `fast` slots. It returns ONLY these 3 configured slots, never the provider's full catalog. If it shows `"stale": true` or lacks what you expect, `cc-fleet refresh <provider> --json`, then re-check.
+3. **Check the provider's model roster.** `cc-fleet models <provider> --json` → the configured `default` / `strong` / `fast` slots (a blank slot follows `default`). It returns ONLY these 3 configured slots, never the provider's full catalog. If a slot isn't what you expect, the user changes it with `cc-fleet edit <provider> --default-model/--strong-model/--fast-model <id>` or the TUI. `cc-fleet refresh` only updates the local models cache behind `list --json`'s `models_count` / `models_stale`; it never changes the slots.
 4. **Pick the model.** Omit `--model` to use the provider's `default`, or pass the keyword `default` | `strong` | `fast` to select a slot. A literal model id also works for subagents and workflow leaves, but prefer the slots — they are what the user configured. A teammate takes a slot only (`teammate check --slot`).
 
 ---
@@ -38,11 +38,11 @@ Template seeds for the built-in presets (what the TUI add picker prefills). Sugg
 | `doubao` (Doubao Seed) | `doubao-seed-2-0-code-preview-latest` | Endpoint-id scheme. |
 | `qianfan` (Baidu) | `qianfan-code-latest` | Coding-plan endpoint. |
 | `bailing` (Ant Ling) | `Ling-2.5-1T` | — |
-| `codex` (ChatGPT subscription) | `gpt-5.5`, `gpt-5.3-codex` | Setup: `cc-fleet codex add` + `cc-fleet codex login` (user-run). Quota = the subscription; a 429 carries its reset time. |
+| `codex` (ChatGPT subscription) | `gpt-5.5`, `gpt-5.3-codex` | Setup: `cc-fleet codex add` (another subscription: `cc-fleet codex add --name <name>`), then the `cc-fleet codex login …` line it prints as `next:` (user-run; the provider on the default credential, `secret_ref` `codex-oauth`, can instead ride a signed-in codex CLI — see `cc-fleet codex status`). Quota = the subscription; a 429 carries its reset time. |
 
 OpenAI-protocol presets also exist — `openai` (Responses API), `openai-chat` (Chat Completions), and any OpenAI-compatible endpoint (Groq / Together / Fireworks / vLLM). They are registered via the TUI add form (not `cc-fleet add`), carry no seeded default model (pick from the probed list), and behave like any other provider once configured.
 
-A provider with no built-in seed works the same way — the user adds it first: `cc-fleet add <provider> --base-url <url> --models-endpoint <url> --default-model <id> --api-key-stdin <<<"$KEY"` (use `--api-key-stdin` or `--api-key-file`; **never** the raw key in argv).
+A provider with no built-in seed works the same way — the user adds it first: `cc-fleet add <provider> --base-url <url> --models-endpoint <url> --default-model <id> --secret-ref <provider>.key --api-key-stdin <<<"$KEY"` (use `--api-key-stdin` or `--api-key-file`; **never** the raw key in argv).
 
 **The reserved id `claude` is not a table row** — it is not a configured provider. Two different things share the name:
 
