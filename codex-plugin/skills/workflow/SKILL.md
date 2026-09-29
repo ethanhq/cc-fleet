@@ -133,7 +133,7 @@ cc-fleet workflow run audit.js --resume "$RUN"   # journaled leaves return cache
 ```
 A leaf is keyed by its determinant (provider + model + prompt + schema + slim shape), so an unchanged re-run is ~100% cache hits, a leaf whose prompt you edited (and anything downstream of its output) re-runs, and a run that was killed resumes by replaying what finished before the kill. The determinism lockdown makes this exact: with no clock/PRNG, the same script+args produce the same keys. A **failed** leaf is never journaled, so resume re-runs it.
 
-`--resume` and `restart` run the remaining leaves in the directory the run was first launched from (recorded with the run), whatever your cwd; only the script path you pass to `--resume` is resolved from your cwd. If that directory is gone, they fail with `run directory <dir> no longer exists` — tell the user to restore it or start a fresh run from the project directory.
+`--resume` and `restart` run the remaining leaves in the directory the run was first launched from (recorded with the run), whatever your cwd; only the script path you pass to `--resume` is resolved from your cwd. If that directory is gone, they fail with `run directory <dir> no longer exists` — tell the user to restore it or start a fresh run from the project directory. `--resume` checks the script before touching the run (parse, compile, `meta`): a broken one is refused (exit 1, the error on stderr) and the run and its saved script — the one `restart` runs — stay as they were; fix the script and re-issue the same command.
 
 ## Non-goals (state plainly, don't oversell)
 - **No pause.** A running `claude -p` can't be cleanly suspended; use `workflow stop` (reaps the run) + `run --resume` (cheap restart via the journal) instead.

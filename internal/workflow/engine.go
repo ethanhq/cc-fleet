@@ -83,23 +83,36 @@ type Options struct {
 // Prepare parses a script, extracts + validates its `const meta` literal, and mints a
 // run manifest with the name/description/declared phases — BEFORE any execution, so a
 // bad script never mints a half-run and the board shows the named, phase-skeletoned
-// run immediately. The normalize step full-parses the wrapped body, so any syntax
+// run immediately. checkScript parses and compiles the wrapped body, so any syntax
 // error fails here with NO manifest left behind. Returns the new manifest (its RunID
 // is handed to a detached child or printed to the caller).
 func Prepare(scriptPath string) (subagent.WorkflowRun, error) {
+	meta, err := checkScript(scriptPath)
+	if err != nil {
+		return subagent.WorkflowRun{}, err
+	}
+	return subagent.NewRunWithMeta(meta.Name, meta.Description, meta.WhenToUse, metaPhases(meta))
+}
+
+// checkScript reads, parses and compiles a script and validates its meta without
+// running it: every check the engine makes on the script before its first statement.
+func checkScript(scriptPath string) (scriptMeta, error) {
 	src, err := os.ReadFile(scriptPath)
 	if err != nil {
-		return subagent.WorkflowRun{}, fmt.Errorf("workflow: read script: %w", err)
+		return scriptMeta{}, fmt.Errorf("workflow: read script: %w", err)
 	}
-	_, prog, nerr := normalizeScript(scriptPath, src)
+	normalized, prog, nerr := normalizeScript(scriptPath, src)
 	if nerr != nil {
-		return subagent.WorkflowRun{}, nerr
+		return scriptMeta{}, nerr
 	}
 	meta, merr := extractMeta(prog)
 	if merr != nil {
-		return subagent.WorkflowRun{}, merr
+		return scriptMeta{}, merr
 	}
-	return subagent.NewRunWithMeta(meta.Name, meta.Description, meta.WhenToUse, metaPhases(meta))
+	if _, cerr := goja.Compile(scriptPath, wrapScript(normalized), false); cerr != nil {
+		return scriptMeta{}, cerr
+	}
+	return meta, nil
 }
 
 // metaPhases converts a parsed script meta's phase plan into the manifest's RunPhase
@@ -517,6 +530,11 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 				}
 			} else {
 				runDir, _ = os.Getwd()
+			}
+			// Refuse a script the engine could not start before anything is written: it would
+			// replace the run's saved script, which restart runs.
+			if _, cerr := checkScript(abs); cerr != nil {
+				return cerr
 			}
 			if subagent.RunEngineProvablyNotLive(existing) && runDir != "" {
 				if root, gerr := gitTopLevel(runDir); gerr == nil {
