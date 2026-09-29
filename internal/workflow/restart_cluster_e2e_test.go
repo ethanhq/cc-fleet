@@ -16,7 +16,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
 
-// blockingFakeClaude answers --version with the fingerprint's version (so the slim
+// blockingFakeClaude answers --version with the e2e fake's version (so the slim
 // version gate passes without consuming the gate), then blocks until the test removes
 // $GATE_FILE — so a workflow leaf stays in-flight and its engine stays live, long enough
 // to fire a restart storm against it.

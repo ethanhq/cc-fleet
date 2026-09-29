@@ -1,7 +1,7 @@
 // Package ids validates cc-fleet identifiers (team names, member names) that
 // flow into filesystem paths, tmux labels, inbox file names, and agent IDs.
 // It is the centralized path-safety boundary: every CLI entry point and every
-// helper that builds a team/member path or lock file calls a validator here,
+// helper that builds a team/member path calls a validator here,
 // rejecting separators / ".." / absolute paths before they reach the filesystem.
 package ids
 
@@ -42,8 +42,9 @@ var ErrInvalidJobID = errors.New("invalid job id")
 const maxIDLen = 128
 
 // ValidateTeamName reports an error iff s is unsafe to use as a team identifier
-// (path component, lock file segment, etc.). The rule set is the same as
-// ValidateMemberName — the only difference is the wrapped sentinel error.
+// — today a Claude Code session team name (session-<hex8>) — as a path
+// component. The rule set is the same as ValidateMemberName — the only
+// difference is the wrapped sentinel error.
 //
 // Accepted iff:
 //   - non-empty;
@@ -65,7 +66,7 @@ func ValidateTeamName(s string) error {
 }
 
 // ValidateMemberName is the same rule set as ValidateTeamName, used for
-// teammate names (which flow into `--agent-id <name>@<team>`, inbox file
+// teammate names (which flow into `<name>@<team>` agent ids, inbox file
 // basenames, and panevis/teardown lookups). Returns ErrInvalidMemberName on
 // failure.
 func ValidateMemberName(s string) error {

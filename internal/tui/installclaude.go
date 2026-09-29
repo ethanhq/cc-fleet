@@ -10,6 +10,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/ccver"
 	"github.com/ethanhq/cc-fleet/internal/childenv"
 	"github.com/ethanhq/cc-fleet/internal/onboarding"
+	"github.com/ethanhq/cc-fleet/internal/teammate"
 )
 
 // installOptionCount is the number of choices on the install-Claude nudge.
@@ -53,12 +54,12 @@ func (m Model) updateInstallClaude(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// afterClaudeInstall leaves the nudge for the next first-run gate — agent-teams
-// if it still needs setup, else the hub — preserving the live model (width /
-// height / diag) and clearing the nudge's own cursor and message.
+// afterClaudeInstall leaves the nudge for the next first-run gate — provider
+// teammates if the lane still needs setup, else the hub — preserving the live
+// model (width / height / diag) and clearing the nudge's own cursor and message.
 func (m Model) afterClaudeInstall() (tea.Model, tea.Cmd) {
 	m.installCursor, m.installMsg = 0, ""
-	if onboarding.NeedsAgentTeamsSetup() {
+	if teammate.NeedsSetupNudge() {
 		m.screen = screenSetup
 		return m, nil
 	}

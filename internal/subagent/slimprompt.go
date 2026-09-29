@@ -17,8 +17,8 @@ import (
 
 	"github.com/ethanhq/cc-fleet/internal/ccver"
 	"github.com/ethanhq/cc-fleet/internal/childenv"
+	"github.com/ethanhq/cc-fleet/internal/claudebin"
 	"github.com/ethanhq/cc-fleet/internal/fileutil"
-	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 )
 
 // SlimVersionFloor is the lowest claude version whose source carries every flag
@@ -48,8 +48,10 @@ func ValidateProfile(p string) error {
 }
 
 // resolveBinaryPathVersion resolves (path, version) for the exact binary that
-// will run. A var so tests can supply a fake version without a real claude.
-var resolveBinaryPathVersion = fingerprint.ResolveBinaryPathVersion
+// will run — Run's binary gate and the version gate both use it. A var so tests
+// can supply a fake binary and version without a real claude. Production =
+// claudebin.Resolve (version process-cached per resolved path).
+var resolveBinaryPathVersion = claudebin.Resolve
 
 // ResolveEffectiveProfile maps a REQUESTED profile to the one that will actually
 // run, applying the version gate. full/"" pass through unchanged. A slim profile
@@ -58,16 +60,23 @@ var resolveBinaryPathVersion = fingerprint.ResolveBinaryPathVersion
 // OPEN to "full" with a human downgrade reason (never silent, never failing the
 // leaf for an optimization).
 //
-// fp is the fingerprint already loaded by the caller (Run loads it once; the
-// workflow engine loads it the same way) — the version is resolved against THAT
-// recipe's binary, never a re-loaded one, so the gate can't read a different
-// executable than the one Run resolved. Version resolution is process-cached per
-// resolved path in the fingerprint resolver.
-func ResolveEffectiveProfile(requested string, fp *fingerprint.Fingerprint) (effective string, downgrade string) {
+// The version is that of the binary resolveBinaryPathVersion returns — the same
+// resolver Run's binary gate uses, so the gate reads the executable Run execs.
+func ResolveEffectiveProfile(requested string) (effective string, downgrade string) {
 	if requested == "" || requested == ProfileFull {
 		return requested, ""
 	}
-	_, version, err := resolveBinaryPathVersion(fp)
+	_, version, err := resolveBinaryPathVersion()
+	return gateProfile(requested, version, err)
+}
+
+// gateProfile applies the version gate to an already-resolved (version, err).
+// Run calls it with the version its binary gate resolved, so one Run never
+// resolves the binary twice.
+func gateProfile(requested, version string, err error) (effective string, downgrade string) {
+	if requested == "" || requested == ProfileFull {
+		return requested, ""
+	}
 	if err != nil {
 		return ProfileFull, fmt.Sprintf("slim disabled: resolve claude binary: %v", err)
 	}

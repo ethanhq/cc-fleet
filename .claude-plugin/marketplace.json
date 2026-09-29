@@ -9,7 +9,7 @@
     {
       "name": "cc-fleet",
       "source": "./",
-      "description": "Spawn any third-party LLM provider with an Anthropic-compatible API as real Claude Code agent-team teammates or one-shot subagents via the cc-fleet CLI — driven just like native teammates; your main session's own auth (OAuth or API key) is untouched, provider workers bill the provider key."
+      "description": "Run any third-party LLM provider with an Anthropic-compatible API as real Claude Code agent-team teammates (terminal claude inside tmux or iTerm2) or one-shot subagents via the cc-fleet CLI — driven just like native teammates; your main session's own auth (OAuth or API key) is untouched, provider workers bill the provider key."
     }
   ]
 }

@@ -8,7 +8,6 @@ package tui
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -35,6 +34,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/sessiontitle"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 	"github.com/ethanhq/cc-fleet/internal/teamhist"
+	"github.com/ethanhq/cc-fleet/internal/teammate"
 	"github.com/ethanhq/cc-fleet/internal/teardown"
 	"github.com/ethanhq/cc-fleet/internal/userops"
 	"github.com/ethanhq/cc-fleet/internal/workflow"
@@ -51,8 +51,8 @@ const (
 	screenForm
 	screenModelPick
 	screenKeys          // EDIT form → "Manage API keys →": per-provider multi-key manager
-	screenSetup         // first-run agent-teams setup nudge; shown before the hub
-	screenInstallClaude // first-run install-Claude nudge; precedes the agent-teams nudge
+	screenSetup         // first-run provider-teammates setup nudge; shown before the hub
+	screenInstallClaude // first-run install-Claude nudge; precedes the provider-teammates nudge
 	screenCodexAuth     // CLI-auth → codex: committing → consent → device-code login, modal-rendered
 )
 
@@ -158,7 +158,7 @@ type Model struct {
 	spawnErr    error
 	jobs        []subagent.Result
 	sessionMeta map[string]sessiontitle.Meta
-	// tmuxMissing is set when discovery failed solely because tmux is absent from
+	// tmuxMissing is set when tmux is absent from
 	// PATH: the board keeps its filesystem-backed content and shows a degrade
 	// notice instead of the hard-error frame. Refreshed on every boardMsg so it
 	// clears the moment tmux reappears.
@@ -316,10 +316,10 @@ type Model struct {
 	keyRotation string
 	keyErr      string
 
-	// First-run setup nudge. setupCursor selects an option on the agent-teams
-	// screen. setupMsg, once non-empty, replaces the options with a one-line
-	// outcome (e.g. the "restart claude" note after enabling) that any key
-	// dismisses.
+	// First-run setup nudge. setupCursor selects an option on the
+	// provider-teammates screen. setupMsg, once non-empty, replaces the options
+	// with the outcome (e.g. the "restart claude" note after enabling) that any
+	// key dismisses.
 	setupCursor int
 	setupMsg    string
 
@@ -340,9 +340,9 @@ type Model struct {
 // NewModel returns the initial model. It normally parks on the Model Providers list
 // (the hub) with loading=true so Init can kick off the provider load. On a first
 // run it instead opens on a setup screen: the install-Claude nudge when no claude
-// binary is found (and the offer isn't dismissed), else the agent-teams nudge when
-// that looks unconfigured (and undismissed). The hub loads when the user leaves the
-// last nudge via toList.
+// binary is found (and the offer isn't dismissed), else the provider-teammates
+// nudge when the lane is off (and undismissed). The hub loads when the user
+// leaves the last nudge via toList.
 //
 // NewModel is only ever called from tui.Run, which cmd/cc-fleet gates to the
 // bare-interactive both-TTY path — so the onboarding probes here never run for
@@ -351,7 +351,7 @@ func NewModel() Model {
 	if onboarding.NeedsClaudeInstall() {
 		return Model{screen: screenInstallClaude}
 	}
-	if onboarding.NeedsAgentTeamsSetup() {
+	if teammate.NeedsSetupNudge() {
 		return Model{screen: screenSetup}
 	}
 	return Model{screen: screenList, loading: true}
@@ -391,7 +391,7 @@ func (providersMsg) owningScreen() screen { return screenList }
 type boardMsg struct {
 	teammates []teardown.Teammate
 	teamErr   error
-	// tmuxMissing is set when discovery failed solely because tmux is not on PATH.
+	// tmuxMissing is set when tmux is not on PATH.
 	// The board then renders its filesystem-backed content (jobs / runs / ended
 	// teams) with a degrade notice instead of taking the hard-error path.
 	tmuxMissing bool
@@ -450,9 +450,12 @@ func loadProviders() tea.Msg {
 // live snapshot). Higher seq == read disk later == fresher.
 var boardRefreshSeq atomic.Int64
 
+// lookPathFn is the tmux presence probe behind the board's degrade notice.
+var lookPathFn = exec.LookPath
+
 // loadBoard returns a tea.Cmd that assembles a board refresh tagged with the
-// caller's epoch: discover teammates, annotate them with pane-scan health + the
-// hidden flag from team config, and list subagent jobs. A discovery error
+// caller's epoch: discover teammates (discovery fills hidden and the lead
+// session), annotate them with pane-scan health, and list subagent jobs. A discovery error
 // skips annotation (we can't enrich an empty list) and is fatal to the board; a
 // jobs error degrades to no jobs and surfaces on its own line — the board never
 // crashes on a data-source failure. The epoch carries through to boardMsg so
@@ -464,18 +467,13 @@ func loadBoard(epoch int) tea.Cmd {
 		// not by the later ListJobs stamp (the job rows carry the latter).
 		fullSeq := boardRefreshSeq.Add(1)
 		items, err := teardown.DiscoverTeammates()
-		// tmux absent from PATH isn't a board failure: the live-teammate lane is
-		// simply unavailable (it's the only tmux-dependent source), so drop the
-		// error to an empty live set + a degrade flag and keep the rest. Any other
-		// discovery error stays fatal to the board.
-		tmuxMissing := errors.Is(err, exec.ErrNotFound)
-		if tmuxMissing {
-			items, err = nil, nil
-		}
+		// tmux absent from PATH isn't a board failure: discovery returns what it
+		// finds without panes, and the board adds a degrade flag. A discovery
+		// error stays fatal to the board.
+		_, lookErr := lookPathFn("tmux")
+		tmuxMissing := lookErr != nil
 		if err == nil {
 			items = teardown.AnnotateHealth(items)
-			items = teardown.AnnotateHidden(items)
-			items = teardown.AnnotateLeadSession(items)
 		}
 		jobs, jobsErr := subagent.ListJobs()
 		// Stamp the freshness seq the instant job STATUS is read — before loadWfData's activity/run reads
@@ -1062,7 +1060,7 @@ func phaseCtlCmd(verb, runID, phase string, epoch int) tea.Cmd {
 func restartPhaseCmd(runID, phase string, epoch int) tea.Cmd {
 	return func() tea.Msg {
 		_, err := workflow.RestartPhase(context.Background(), runID, phase)
-		return workflowCtlMsg{verb: "restart-phase", runID: runID, err: err, epoch: epoch}
+		return workflowCtlMsg{verb: "restart-phase", runID: runID, err: err, epoch: epoch, kept: keptNotices(runID, err)}
 	}
 }
 
@@ -1075,7 +1073,7 @@ func restartPhaseCmd(runID, phase string, epoch int) tea.Cmd {
 func restartCmd(runID, journalKey string, epoch int) tea.Cmd {
 	return func() tea.Msg {
 		err := workflow.Restart(context.Background(), runID, journalKey)
-		return workflowCtlMsg{verb: "restart", runID: runID, err: err, epoch: epoch}
+		return workflowCtlMsg{verb: "restart", runID: runID, err: err, epoch: epoch, kept: keptNotices(runID, err)}
 	}
 }
 
@@ -1084,8 +1082,28 @@ func restartCmd(runID, journalKey string, epoch int) tea.Cmd {
 func deleteRunCmd(runID string, epoch int) tea.Cmd {
 	return func() tea.Msg {
 		err := subagent.WithRunLock(runID, func() error { return subagent.PurgeRun(runID) })
-		return workflowCtlMsg{verb: "delete", runID: runID, err: err, epoch: epoch}
+		return workflowCtlMsg{verb: "delete", runID: runID, err: err, epoch: epoch, kept: keptNotices(runID, err)}
 	}
+}
+
+// keptNotices reads, after a successful delete / restart, which of runID's isolation worktrees were
+// left in place because they hold unsaved work. Called off the Update goroutine.
+func keptNotices(runID string, err error) []string {
+	if err != nil {
+		return nil
+	}
+	return workflow.KeptWorktreeNotices(runID)
+}
+
+// keptWorktreeNote is the suffix a cleanup's status message carries when worktrees were kept: their
+// count and the first one's path. Empty when nothing was kept.
+func keptWorktreeNote(notices []string) string {
+	if len(notices) == 0 {
+		return ""
+	}
+	// Each notice reads "keeping <wt>: <reason> (...)".
+	first, _, _ := strings.Cut(strings.TrimPrefix(notices[0], "keeping "), ": ")
+	return fmt.Sprintf(" · kept %d worktree(s) with unsaved work: %s", len(notices), first)
 }
 
 // workflowCtlMsg carries the outcome of a run control (stop/restart from the drill, delete/save from
@@ -1096,6 +1114,7 @@ type workflowCtlMsg struct {
 	runID string
 	err   error
 	epoch int
+	kept  []string // KeptWorktreeNotices after a successful delete / restart
 }
 
 func (workflowCtlMsg) owningScreen() screen { return screenSpawn }
@@ -1216,12 +1235,12 @@ func (paneVisMsg) owningScreen() screen { return screenSpawn }
 // Socket + PaneID to HideRef, so socket-aware tmux ops route to the right
 // server and a duplicate-name / stale-config row can't mis-target another pane.
 func hideTeammateCmd(t teardown.Teammate) tea.Cmd {
-	return func() tea.Msg { return paneVisMsg{res: panevis.HideRef(t.Team, t.Name, t.Socket, t.PaneID)} }
+	return func() tea.Msg { return paneVisMsg{res: panevis.HideTeammate(t)} }
 }
 
 // showTeammateCmd is the show-side analog of hideTeammateCmd.
 func showTeammateCmd(t teardown.Teammate) tea.Cmd {
-	return func() tea.Msg { return paneVisMsg{res: panevis.ShowRef(t.Team, t.Name, t.Socket, t.PaneID)} }
+	return func() tea.Msg { return paneVisMsg{res: panevis.ShowTeammate(t)} }
 }
 
 // asDetailMsg carries the focused standalone job's io + activity read for the entity detail
@@ -1752,6 +1771,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The run id + error are opaque/operator-supplied text, so scrub them before display.
 		runID := shortRunID(sessiontitle.CleanTitle(msg.runID))
 		line, isErr := ctlOutcome(msg.verb, runID, msg.err)
+		line += keptWorktreeNote(msg.kept)
 		// A stop/restart confirmed via the modal waits in modalRunning for exactly this id AND verb —
 		// resolve it in place. Otherwise (a delete/save dispatched on close, or a same-id result for a
 		// different verb) pop a fresh info modal; withInfo no-ops if a modal is up so it can't clobber.
@@ -4065,13 +4085,14 @@ func (m Model) filteredModels() []models.Model {
 	return out
 }
 
-// setupOptionCount is the number of choices on the agent-teams setup screen
-// (enable / already-set-up / not-now).
+// setupOptionCount is the number of choices on the provider-teammates setup
+// screen (enable / already-set-up / not-now).
 const setupOptionCount = 3
 
-// updateSetup drives the first-run agent-teams setup nudge. Whatever the user
-// picks, the choice is recorded (ackAgentTeams) so the screen never shows
-// again. "enable it for me" writes ~/.claude/settings.json and leaves a restart
+// updateSetup drives the first-run provider-teammates setup nudge. Whatever the
+// user picks, the choice is recorded (ackAgentTeams) so the screen never shows
+// again. "enable it for me" runs teammate setup with teammateMode tmux —
+// picking it is the consent the screen asks for — and leaves its outcome as a
 // note; the other two just dismiss. Once a note is showing, any key continues
 // to the hub.
 func (m Model) updateSetup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -4090,15 +4111,7 @@ func (m Model) updateSetup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		ackAgentTeams()
 		if m.setupCursor == 0 { // "enable it for me"
-			already, err := onboarding.EnableAgentTeams()
-			switch {
-			case err != nil:
-				m.setupMsg = "couldn't write settings.json: " + err.Error()
-			case already:
-				m.setupMsg = "already set in settings.json — restart claude to take effect"
-			default:
-				m.setupMsg = "enabled in ~/.claude/settings.json — restart claude to take effect"
-			}
+			m.setupMsg = setupOutcome(teammate.Setup(teammate.SetupOptions{TeammateMode: "tmux"}))
 			return m, nil
 		}
 		return m.toList() // "I've set it up myself" / "not now"
@@ -4109,11 +4122,27 @@ func (m Model) updateSetup(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// setupOutcome is the note the setup screen shows after "enable it for me":
+// what happened, then the next step.
+func setupOutcome(res teammate.SetupResult) string {
+	if !res.OK {
+		return "couldn't enable provider teammates: " + res.ErrorMsg + "\n" + res.Suggestion
+	}
+	changed := "settings already up to date"
+	if len(res.Changed) > 0 {
+		changed = strings.Join(res.Changed, ", ")
+	}
+	return "provider teammates enabled (" + changed + ")\nrestart claude inside tmux to use them"
+}
+
 // ackAgentTeams records that the user dealt with the setup nudge so it never
-// shows again. Best-effort: a save failure just means it may reappear next run.
+// shows again. TeammateLaneAck gates the nudge; AgentTeamsAck is kept for
+// older state readers. Best-effort: a save failure just means it may reappear
+// next run.
 func ackAgentTeams() {
 	st, _ := onboarding.LoadState()
 	st.AgentTeamsAck = true
+	st.TeammateLaneAck = true
 	_ = st.Save()
 }
 

@@ -15,3 +15,9 @@ func Children(pid int) []int            { return nil }
 func ProcessTable() ([]Process, error)  { return nil, ErrUnsupported }
 func Ppid(pid int) (int, bool)          { return 0, false }
 func ProcStart(pid int) (string, bool)  { return "", false }
+
+// StartFollowsClockSteps is false: StartUnixMilli is unsupported.
+const StartFollowsClockSteps = false
+
+// StartUnixMilli is unsupported here, like ProcStart.
+func StartUnixMilli(token string) (int64, bool) { return 0, false }

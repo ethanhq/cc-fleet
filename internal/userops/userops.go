@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ethanhq/cc-fleet/internal/claudepaths"
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/fileutil"
@@ -23,6 +24,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/selfupdate"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 	"github.com/ethanhq/cc-fleet/internal/teamhist"
+	"github.com/ethanhq/cc-fleet/internal/teammate"
 )
 
 // Error codes returned by Add/Edit/Remove. Stable so cmd/ JSON envelopes can
@@ -223,10 +225,11 @@ type AddRequest struct {
 
 // AddResult is the structured success result of Add.
 type AddResult struct {
-	Provider    string    `json:"provider"`
-	ProfilePath string    `json:"profile_path"`
-	AddedAt     time.Time `json:"added_at"`
-	ModelCount  int       `json:"model_count"`
+	Provider          string    `json:"provider"`
+	ProfilePath       string    `json:"profile_path"`
+	AddedAt           time.Time `json:"added_at"`
+	ModelCount        int       `json:"model_count"`
+	TeammateSyncError string    `json:"teammate_sync_error,omitempty"`
 }
 
 // Add stages a new provider end-to-end:
@@ -402,11 +405,46 @@ func addLocked(req AddRequest) (*AddResult, error) {
 	}
 
 	return &AddResult{
-		Provider:    req.Name,
-		ProfilePath: path,
-		AddedAt:     v.AddedAt,
-		ModelCount:  len(fetched),
+		Provider:          req.Name,
+		ProfilePath:       path,
+		AddedAt:           v.AddedAt,
+		ModelCount:        len(fetched),
+		TeammateSyncError: syncTeammateDefs(cfg),
 	}, nil
+}
+
+// syncTeammateDefs brings the provider teammates' agent definitions in line
+// with cfg after a providers.toml change, when the teammate lane is enabled.
+// A failure, or an unmanaged file in the way, is returned as text for the
+// result, never failing the operation: the providers.toml change already
+// landed and `cc-fleet repair` resyncs.
+func syncTeammateDefs(cfg *config.Config) string {
+	if st, _ := onboarding.LoadState(); !st.TeammateLane.Enabled {
+		return ""
+	}
+	res, err := teammate.SyncAgentDefs(cfg)
+	if err != nil {
+		return err.Error()
+	}
+	return AgentDefConflictWarning(res.Conflicts)
+}
+
+// AgentDefConflictWarning describes the SyncResult.Conflicts files (names in
+// the Claude Code agents directory) SyncAgentDefs left alone, or "" for none.
+func AgentDefConflictWarning(conflicts []string) string {
+	if len(conflicts) == 0 {
+		return ""
+	}
+	paths := make([]string, len(conflicts))
+	for i, f := range conflicts {
+		paths[i] = filepath.Join(claudepaths.Agents(), f)
+	}
+	noun := "definition"
+	if len(paths) > 1 {
+		noun = "definitions"
+	}
+	return fmt.Sprintf("agent %s %s exists but is not managed by cc-fleet; rename or remove it",
+		noun, strings.Join(paths, ", "))
 }
 
 // classifyAddErr maps a models.Fetch failure during Add onto an error code.
@@ -520,7 +558,8 @@ type EditRequest struct {
 // EditResult mirrors the post-edit provider row (skill consumers parse this to
 // surface the new values to the user without re-running list).
 type EditResult struct {
-	Provider *config.Provider `json:"provider"`
+	Provider          *config.Provider `json:"provider"`
+	TeammateSyncError string           `json:"teammate_sync_error,omitempty"`
 }
 
 // Edit mutates the named provider in place. Only fields set in req are applied;
@@ -649,7 +688,7 @@ func editLocked(req EditRequest) (*EditResult, error) {
 		}
 	}
 
-	return &EditResult{Provider: v}, nil
+	return &EditResult{Provider: v, TeammateSyncError: syncTeammateDefs(cfg)}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -664,10 +703,11 @@ type RemoveRequest struct {
 
 // RemoveResult is the structured result of Remove.
 type RemoveResult struct {
-	Provider       string `json:"removed"`
-	SecretRemoved  bool   `json:"secret_removed"`
-	ProfileRemoved bool   `json:"profile_removed"`
-	DefaultCleared bool   `json:"default_cleared,omitempty"` // the removed provider was the default_provider
+	Provider          string `json:"removed"`
+	SecretRemoved     bool   `json:"secret_removed"`
+	ProfileRemoved    bool   `json:"profile_removed"`
+	DefaultCleared    bool   `json:"default_cleared,omitempty"` // the removed provider was the default_provider
+	TeammateSyncError string `json:"teammate_sync_error,omitempty"`
 }
 
 // Remove deletes the provider row from providers.toml, the per-provider profile JSON,
@@ -763,6 +803,7 @@ func removeLocked(req RemoveRequest) (*RemoveResult, string, error) {
 		}
 	}
 
+	res.TeammateSyncError = syncTeammateDefs(cfg)
 	return res, codexRef, nil
 }
 
@@ -980,12 +1021,18 @@ func UnsetDefaultProvider() (*DefaultProviderView, error) {
 
 // RepairResult is the structured result of Repair.
 type RepairResult struct {
-	Repaired []string `json:"repaired"`
+	Repaired     []string             `json:"repaired"`
+	Shim         string               `json:"shim,omitempty"`
+	ShimRepinned bool                 `json:"shim_repinned"`
+	AgentDefs    *teammate.SyncResult `json:"agent_defs,omitempty"`
 }
 
 // Repair re-writes every provider's profile JSON from the current providers.toml.
 // Secrets are NOT touched (Repair fixes profiles users may have accidentally
-// deleted; secret backends own their own state).
+// deleted; secret backends own their own state). For the teammate lane it
+// re-pins the launcher shim to this binary (when the lane is enabled or the
+// shim exists) and, with the lane enabled, resyncs the agent definitions; the
+// Claude Code settings are never touched.
 func Repair() (*RepairResult, error) {
 	cfg, err := config.Load()
 	if err != nil {
@@ -1005,6 +1052,23 @@ func Repair() (*RepairResult, error) {
 				fmt.Errorf("rewrite profile for %q: %w", name, err))
 		}
 		res.Repaired = append(res.Repaired, name)
+	}
+
+	st, _ := onboarding.LoadState()
+	shim, err := teammate.ShimPath()
+	if err == nil && (st.TeammateLane.Enabled || fileExists(shim)) {
+		path, changed, err := teammate.WriteShim("")
+		if err != nil {
+			return nil, opErr(CodeRepairFailed, fmt.Errorf("re-pin teammate shim: %w", err))
+		}
+		res.Shim, res.ShimRepinned = path, changed
+	}
+	if st.TeammateLane.Enabled {
+		defs, err := teammate.SyncAgentDefs(cfg)
+		if err != nil {
+			return nil, opErr(CodeRepairFailed, fmt.Errorf("sync teammate agent definitions: %w", err))
+		}
+		res.AgentDefs = &defs
 	}
 	return res, nil
 }
@@ -1028,7 +1092,10 @@ type UninstallResult struct {
 	Manual  []string `json:"manual,omitempty"`
 }
 
-// Uninstall removes every cc-fleet-owned state file: per-provider profile
+// Uninstall first undoes the teammate lane exactly like `teammate setup
+// --remove` (the launcher setting and the managed agent definitions; the shim
+// is kept, since running claude sessions still point at it), then removes
+// every cc-fleet-owned state file: per-provider profile
 // JSONs, providers.toml, fingerprint.json, models-cache.json, onboarding.json,
 // the update-check cache, the team-history records under teams-history/, and
 // finished background jobs under subagent-jobs/ (see subagent.PurgeJobs —
@@ -1059,6 +1126,23 @@ func Uninstall(req UninstallRequest) (*UninstallResult, error) {
 		// the user can see what was skipped.
 		res.Kept = append(res.Kept, fmt.Sprintf("providers.toml (load failed: %v)", err))
 		cfg = &config.Config{Version: config.SchemaVersion, Providers: map[string]*config.Provider{}}
+	}
+
+	// 0. The teammate lane (before onboarding.json goes, which Setup updates).
+	lane := teammate.Setup(teammate.SetupOptions{Remove: true})
+	switch {
+	case lane.OK:
+		for _, k := range lane.Changed {
+			res.Removed = append(res.Removed, lane.SettingsPath+": "+k)
+		}
+		for _, f := range lane.AgentDefs.Removed {
+			res.Removed = append(res.Removed, filepath.Join(claudepaths.Agents(), f))
+		}
+		if fileExists(lane.Shim) {
+			res.Kept = append(res.Kept, lane.Shim+" (can be deleted after every claude session has restarted)")
+		}
+	case lane.ErrorCode != teammate.CodeUnsupportedOnWindows: // no lane on Windows: nothing to undo
+		res.Kept = append(res.Kept, fmt.Sprintf("teammate lane (remove failed: %s: %s)", lane.ErrorCode, lane.ErrorMsg))
 	}
 
 	// 1. Per-provider profiles.

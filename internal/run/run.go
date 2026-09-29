@@ -12,9 +12,9 @@ import (
 	"strings"
 
 	"github.com/ethanhq/cc-fleet/internal/childenv"
+	"github.com/ethanhq/cc-fleet/internal/claudebin"
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/config"
-	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 	"github.com/ethanhq/cc-fleet/internal/ids"
 	"github.com/ethanhq/cc-fleet/internal/permmode"
 	"github.com/ethanhq/cc-fleet/internal/profile"
@@ -48,23 +48,12 @@ var (
 	ensureDaemon       = codexproxy.EnsureForProvider
 )
 
-// resolveBinary returns the live claude binary path via the same gate spawn and
-// subagent use (bundled-or-cached recipe → resolve → validate). It is a seam so
+// resolveBinary returns the live claude binary path via the same resolver
+// subagent uses (claudebin; fingerprint.json is never read). It is a seam so
 // tests need no real claude on the box.
 var resolveBinary = func() (string, error) {
-	fp, err := fingerprint.LoadOrBundled()
-	if err != nil {
-		return "", fmt.Errorf("load fingerprint: %w", err)
-	}
-	bin, err := fingerprint.ResolveBinaryPath(fp)
-	if err != nil {
-		return "", err
-	}
-	fp.BinaryPath = bin
-	if err := fingerprint.ValidateForRuntime(fp); err != nil {
-		return "", err
-	}
-	return bin, nil
+	bin, _, err := claudebin.Resolve()
+	return bin, err
 }
 
 // Run validates the request, ensures the provider profile, resolves the claude

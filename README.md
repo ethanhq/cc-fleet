@@ -122,7 +122,7 @@ Once installed, run `ccf` to register a provider and start delegating.
 
 </div>
 
-1. **`/team` to kick it off, or just tell Claude**: "spawn a glm and a deepseek teammate, then compare their strengths"
+1. **`/team` to kick it off, or just tell Claude**: "start a glm and a deepseek teammate, then compare their strengths"
 2. **Each teammate is a real `claude` process working live in a side tmux pane** — mix providers in one team, hand follow-ups across turns
 3. **The TUI board shows each teammate's full inbox and status**; `h` hides / `s` shows a pane — split in the foreground or run in the background
 
@@ -235,22 +235,24 @@ ccf workflow run audit.js --resume "$RUN"   # replay the journal, finished leave
 </tr>
 </table>
 
-**Prerequisites**: Agent Team is the only lane that needs setup up front, and because it relies on tmux it **doesn't support Windows yet**. Two conditions before you use it:
+**Prerequisites**: Agent Team is the only lane that needs setup up front, and it **doesn't support Windows yet**. Before you use it:
 
-1. **Be inside a tmux session** (`tmux new-session -s work`) so teammate panes can show up alongside you;
-2. **Enable Claude Code's agent-teams**: the first time you run `ccf` it detects this isn't on and offers to write it in for you — or add it once yourself to `~/.claude/settings.json`:
+1. **Claude Code ≥ 2.1.278, the terminal `claude`, inside tmux or iTerm2** (`tmux new-session -s work`) so teammate panes can show up alongside you. The Claude desktop app, `claude -p` and SDK sessions have no agent team — there, Claude uses subagents and workflows instead;
+2. **Run the one-time setup**: the first time you run `ccf` it offers to do this for you — or run it yourself, then restart `claude`:
 
-```json
-{ "env": { "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1" } }
+```bash
+cc-fleet teammate setup --yes --teammate-mode tmux
 ```
 
-**How they collaborate**: each teammate is a real `claude` process; Claude builds the team with native `TeamCreate` and assigns work with native `SendMessage`, and teammates stay alive across turns so you can keep adding tasks. One team can use several providers at once, then have one teammate gather and compare the results.
+It installs a small launcher (`~/.config/cc-fleet/bin/claude-teammate`), one `ccf-<provider>` agent type per provider (`~/.claude/agents/ccf-*.md`), and in `~/.claude/settings.json` turns on agent teams and points `CLAUDE_CODE_TEAMMATE_COMMAND` at the launcher; `--teammate-mode tmux` makes teammates open as split panes (an existing `auto` / `tmux` / `iterm2` is left alone). Without `--yes` it only lists what it would change. `cc-fleet teammate setup --remove --yes` undoes it.
 
-**Permission inheritance**: each teammate inherits your main session's permission posture (plan / acceptEdits / default). If that can't be detected, it falls back to the safest default and won't open up risky permissions on its own.
+**How they collaborate**: each teammate is a native Claude Code teammate — Claude starts it with the `Agent` tool using a `ccf-<provider>` agent type (`ccf-glm.strong` for the strong slot), assigns work with native `SendMessage`, and the launcher runs that teammate's `claude` on the provider. Teammates stay alive across turns so you can keep adding tasks. One team can use several providers at once, then have one teammate gather and compare the results. Before each teammate, Claude runs `cc-fleet teammate check`, and a plugin hook blocks a provider teammate that would silently run on Claude instead.
 
-**Park and restore**: `ccf hide` tucks a teammate's pane out of the way while the process keeps running — messages and context are never lost — and `ccf show` brings it back. At cleanup, `ccf teardown` thoroughly clears every related process, including ones still running in the background and consuming the key after their pane was closed, so no ghost quietly bills you.
+**Permission inheritance**: Claude Code hands each teammate your main session's permission posture (plan / acceptEdits / default), exactly as for its own teammates.
 
-**Outside tmux**: the teammate runs in a background `cc-fleet-swarm-<team>` session, exactly the same flow with the pane just not on screen. To look in, attach with `tmux -L cc-fleet-swarm-<team> attach`.
+**Park and restore**: `ccf hide <name>@<team>` tucks a teammate's pane out of the way while the process keeps running — messages and context are never lost — and `ccf show` brings it back. Claude Code closes its teammates when you exit `claude`; to end one early, Claude asks it to shut down or stops it. `ccf teardown` is for leftovers — say, after the lead crashed: it kills only provider teammates it can verify (pane, exact command line, process start time), and never touches your lead, native teammates, or Claude Code's team files. `ccf ps` lists them with a state (`running`, `orphaned`, `failed`, `bypassed`).
+
+**Outside tmux**: with `teammateMode` set to `tmux`, Claude Code runs the teammates on its own background tmux server (`claude-swarm-<pid>`), exactly the same flow with the pane just not on screen; `ccf ps --json` shows the `tmux_socket_path` to attach with `tmux -S <path> attach`.
 
 ---
 
@@ -296,7 +298,7 @@ cc-fleet plugs into **OpenAI Codex** too: a Codex plugin lets a Codex session fa
 
 **Multi-key rotation**: one provider can hold several API keys, rotated by `off` / `round_robin` / `random` to spread quota and avoid rate limits.
 
-**API key protection**: a key is fetched only at request time, emitted once, and never written into environment variables, command-line arguments, or shell history; a worker process starts with the main session's credentials cleared, so the two never leak into each other. On disk it's saved `0600`, readable only by you, or handed to `pass`, 1Password, Vault, or your OS keyring; every UI and log shows the key masked (`sk-…238`).
+**API key protection**: a key is fetched only at request time, emitted once, and never written into environment variables, command-line arguments, or shell history. A worker keeps the main session's credentials out two ways: its environment is cleared of Anthropic credentials and cloud-backend switches, and its provider profile blanks the same keys in case your Claude Code settings set them (organization-managed settings are the one layer a profile can't override), so the two never leak into each other. On disk it's saved `0600`, readable only by you, or handed to `pass`, 1Password, Vault, or your OS keyring; every UI and log shows the key masked (`sk-…238`).
 
 **Codex (ChatGPT subscription)**: one device-code login and your ChatGPT subscription becomes a regular provider — usable across Workflow / Team / Subagent / run.
 
@@ -337,7 +339,7 @@ ccf run deepseek        # an interactive claude, on DeepSeek, billing the provid
 
 - **[CLI reference & advanced usage](docs/cli.md)** — every command, flag, and envelope.
 - **[Writing workflows](docs/workflows.md)** — the JS scripting API for the workflow lane.
-- **[Architecture](docs/architecture.md)** — how spawning, key safety, the conversion daemon, and the workflow engine actually work.
+- **[Architecture](docs/architecture.md)** — how the teammate launcher, key safety, the conversion daemon, and the workflow engine actually work.
 - `ccf <cmd> --help` — always authoritative.
 
 ## Contributing

@@ -6,7 +6,8 @@
 // one implementation per OS:
 //
 //   - linux   (procintrospect_linux.go)   — reads /proc.
-//   - darwin  (procintrospect_darwin.go)  — shells out to ps(1)/pgrep(1). No cgo.
+//   - darwin  (procintrospect_darwin.go)  — sysctl kern.procargs2/kern.proc.all
+//     for argv and the table; ps(1)/pgrep(1) for ppid, start time, children. No cgo.
 //   - windows (procintrospect_windows.go) — GetProcessTimes start tokens +
 //     Toolhelp32 parent lookup; argv/table stay unsupported (no PEB read).
 //   - other   (procintrospect_other.go)   — degrades to empty/unsupported.
@@ -17,10 +18,8 @@
 //
 // All readers are best-effort: a vanished pid, a permission error, or a race
 // against process exit yields a nil/empty result rather than a hard failure.
-// The marker cc-fleet matches on (--agent-id <name>@<team>, --settings
-// <provider>.json) never contains whitespace, so the darwin space-split argv is
-// sufficient for every cc-fleet use even though it cannot perfectly recover an
-// argument that itself contains a space (see Cmdline's darwin doc).
+// Where argv is supported (linux, darwin) it is the exact argument vector, not
+// a re-split command string.
 package procintrospect
 
 // Process is one row of the process table: a pid and its argv.

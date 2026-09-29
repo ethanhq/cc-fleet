@@ -17,6 +17,7 @@ import (
 // never a clean message_stop.
 type chatStreamConverter struct {
 	out     sseSink
+	cc      *convCtx // receives upErrType when an upstream error chunk is surfaced
 	model   string
 	toolMap *toolNameMap // restores a sanitized tool name onto the response tool_use block
 	// redact masks a streaming error message before it reaches the client (set by
@@ -41,7 +42,7 @@ type chatStreamConverter struct {
 
 func newChatStreamConverter(out sseSink, cc *convCtx) *chatStreamConverter {
 	c := &chatStreamConverter{
-		out: out, model: cc.model, toolMap: cc.toolMap, textIndex: -1,
+		out: out, cc: cc, model: cc.model, toolMap: cc.toolMap, textIndex: -1,
 		tools: map[int]int{}, toolOpen: map[int]bool{}, stopReason: "end_turn",
 	}
 	if cc.apiKey != "" {
@@ -87,8 +88,22 @@ type chatUsage struct {
 }
 
 type chatError struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
+	Message string          `json:"message"`
+	Type    string          `json:"type"`
+	Code    json.RawMessage `json:"code"` // a number (openrouter: 429) or a string ("429")
+}
+
+// anthropicType maps the chunk's code to the Anthropic error type that picks the
+// non-streaming response status: 429 is a rate limit, 401/403 an auth failure.
+func (e *chatError) anthropicType() string {
+	switch strings.Trim(strings.TrimSpace(string(e.Code)), `"`) {
+	case "429":
+		return "rate_limit_error"
+	case "401", "403":
+		return "authentication_error"
+	default:
+		return "api_error"
+	}
 }
 
 // Convert reads the Chat Completions SSE body to completion, emitting Anthropic
@@ -115,6 +130,7 @@ func (c *chatStreamConverter) Convert(body io.Reader) error {
 			continue
 		}
 		if ev.Error != nil {
+			c.cc.upErrType = ev.Error.anthropicType()
 			return c.emitError("openai upstream: " + ev.Error.Message)
 		}
 		if err := c.handle(&ev); err != nil {
@@ -248,7 +264,7 @@ func (c *chatStreamConverter) ensureStarted() error {
 	return c.out.event("message_start", map[string]any{
 		"type": "message_start",
 		"message": map[string]any{
-			"id": "msg_codexproxy", "type": "message", "role": "assistant", "model": c.model,
+			"id": newMessageID(), "type": "message", "role": "assistant", "model": c.model,
 			"content": []any{}, "stop_reason": nil, "stop_sequence": nil,
 			"usage": map[string]any{"input_tokens": 0, "output_tokens": 0},
 		},

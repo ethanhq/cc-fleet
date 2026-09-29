@@ -138,3 +138,19 @@ func TestChildren_GonePID(t *testing.T) {
 		t.Fatalf("Children(%d) = %v, want empty for a non-existent pid", impossible, kids)
 	}
 }
+
+// TestStartUnixMilli_Self: this test process's start token converts to a Unix
+// time no later than now and within the hour before it.
+func TestStartUnixMilli_Self(t *testing.T) {
+	tok, ok := ProcStart(os.Getpid())
+	if !ok {
+		t.Skip("ProcStart unavailable")
+	}
+	now := time.Now().UnixMilli()
+	if ms, ok := StartUnixMilli(tok); !ok || ms > now || now-ms > time.Hour.Milliseconds() {
+		t.Fatalf("StartUnixMilli(%q) = %d, %v; want within the hour before %d", tok, ms, ok, now)
+	}
+	if ms, ok := StartUnixMilli("not-a-number"); ok {
+		t.Fatalf("StartUnixMilli(garbage) = %d, want !ok", ms)
+	}
+}

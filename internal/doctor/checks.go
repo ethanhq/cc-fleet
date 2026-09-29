@@ -13,11 +13,13 @@ import (
 	"time"
 
 	"github.com/ethanhq/cc-fleet/internal/ccver"
+	"github.com/ethanhq/cc-fleet/internal/claudebin"
+	"github.com/ethanhq/cc-fleet/internal/claudepaths"
 	"github.com/ethanhq/cc-fleet/internal/config"
-	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 	"github.com/ethanhq/cc-fleet/internal/homedir"
 	"github.com/ethanhq/cc-fleet/internal/models"
 	"github.com/ethanhq/cc-fleet/internal/onboarding"
+	"github.com/ethanhq/cc-fleet/internal/teammate"
 	"github.com/ethanhq/cc-fleet/internal/tmux"
 	"github.com/ethanhq/cc-fleet/internal/version"
 )
@@ -195,34 +197,37 @@ func CheckTmuxInstalled() CheckResult {
 	return r
 }
 
-// CheckClaudeBinary is check 4: a `claude` binary is locatable and (best
-// effort) its version is known. We don't fail if version detection comes back
-// empty — that's only a Warn.
+// CheckClaudeBinary is check 4: a `claude` binary is resolvable the way every
+// lane resolves it (claudebin) and, best effort, its version is known. An
+// unknown version is only a Warn. A version below teammate.MinTeammateCC only
+// adds a note: the other lanes still work.
 func CheckClaudeBinary() CheckResult {
 	r := CheckResult{ID: 4, Title: "claude binary present; version known"}
-	path, version, err := ccver.Detect()
+	path, version, err := claudebin.Resolve()
 	if err != nil {
 		r.Status = StatusFail
 		r.Detail = err.Error()
 		r.FixHint = "install Claude Code (see https://docs.anthropic.com/claude-code)"
 		return r
 	}
+	r.Detail = ccver.String(path, version)
 	if version == "" {
 		// Path resolved but `--version` didn't produce a parseable token.
 		// Treat as Warn so doctor still reports OK=true overall.
 		r.Status = StatusWarn
-		r.Detail = ccver.String(path, version)
 		return r
 	}
 	r.Status = StatusOK
-	r.Detail = ccver.String(path, version)
+	if !ccver.AtLeast(version, teammate.MinTeammateCC) {
+		r.Detail += "; provider teammates need ≥ " + teammate.MinTeammateCC
+	}
 	return r
 }
 
-// CheckAttachedTmux is check 5: at least one attached tmux session exists (the
-// default in-tmux spawn target). This is only a Warn, not a Fail: the
-// out-of-tmux swarm path builds its own persistent-socket session, so an
-// in-session spawn target is not mandatory. A Warn leaves DoctorResult.OK true.
+// CheckAttachedTmux is check 5: at least one attached tmux session exists (where
+// a lead started inside tmux splits its teammate panes). This is only a Warn,
+// not a Fail: outside tmux Claude Code runs its own external swarm session, so
+// an attached session is not mandatory. A Warn leaves DoctorResult.OK true.
 func CheckAttachedTmux() CheckResult {
 	r := CheckResult{ID: 5, Title: "at least one attached tmux session"}
 	panes, err := tmux.ListPanes()
@@ -232,7 +237,7 @@ func CheckAttachedTmux() CheckResult {
 		// in detail) since both have the same user-facing fix.
 		r.Status = StatusWarn
 		r.Detail = fmt.Sprintf("tmux list-panes: %s", err.Error())
-		r.FixHint = "start/attach a tmux session for in-session spawn (tmux new-session -A -s main); not needed for out-of-tmux swarm"
+		r.FixHint = "start claude inside tmux (tmux new-session -A -s main) for split-pane teammates; outside tmux Claude Code manages its own swarm session"
 		return r
 	}
 	attachedSessions := map[string]struct{}{}
@@ -244,7 +249,7 @@ func CheckAttachedTmux() CheckResult {
 	if len(attachedSessions) == 0 {
 		r.Status = StatusWarn
 		r.Detail = "no attached tmux session"
-		r.FixHint = "attach a tmux session for in-session spawn (tmux attach -t main); not needed for out-of-tmux swarm"
+		r.FixHint = "attach a tmux session (tmux attach -t main) and start claude there for split-pane teammates; outside tmux Claude Code manages its own swarm session"
 		return r
 	}
 	names := make([]string, 0, len(attachedSessions))
@@ -554,92 +559,131 @@ func pluginVersion(cdir string) (string, bool) {
 	return best, true
 }
 
-// CheckFingerprint is check 8: a fingerprint cache exists and its cached
-// cc_version matches the binary currently installed. A stale cache is a
-// Fixable Fail (the user runs `cc-fleet refresh-fingerprint --probe-team
-// ...` — doctor can't auto-fix because the probe needs a live native Agent
-// teammate).
-func CheckFingerprint() CheckResult {
-	r := CheckResult{ID: 8, Title: "fingerprint cached and matches current cc version"}
-	fp, err := fingerprint.Load()
-	if err != nil {
-		if errors.Is(err, fingerprint.ErrNotFound) {
-			// A missing USER cache is NOT unhealthy. spawn/subagent fall back to
-			// the embedded bundled recipe (LoadOrBundled) and resolve the binary
-			// live (ResolveBinaryPath), so doctor validates that SAME runtime
-			// contract here instead of failing fresh installs. Healthy when the
-			// bundled recipe + a resolvable claude binary pass ValidateForRuntime;
-			// it only Fails when that contract genuinely can't be met (no claude
-			// binary anywhere → an unspawnable install).
-			return checkBundledFingerprintRuntime(r)
-		}
-		r.Status = StatusFail
-		r.Detail = err.Error()
-		return r
+// CheckTeammateLane is check 8 (Optional): the provider-teammate lane that
+// `cc-fleet teammate setup` installs. Not set up is healthy — the lane is
+// optional. Once enabled, a launcher setting that names a missing or
+// non-executable shim Fails (Claude Code runs it for every split-pane teammate,
+// native ones too), as does a shim whose pinned cc-fleet is gone; drift that
+// only affects provider teammates Warns.
+func CheckTeammateLane() CheckResult {
+	r := CheckResult{ID: 8, Title: "teammate lane (optional)"}
+	st, _ := onboarding.LoadState()
+	if !st.TeammateLane.Enabled {
+		r.Status = StatusOK
+		r.Detail = "not set up (optional) — run: cc-fleet teammate setup"
+		return withLegacyFingerprint(r)
 	}
 
-	// Compare cached cc_version against what's on disk now.
-	_, currentVer, ccErr := ccver.Detect()
-	if ccErr != nil {
-		// We can't tell whether the fingerprint is stale without knowing
-		// the current version — report the fingerprint we found but warn
-		// that comparison failed. Don't fail the whole check on cc detect
-		// failure; check 4 already covers that.
-		r.Status = StatusWarn
-		r.Detail = fmt.Sprintf("cached cc %s; current cc version unknown (%s)",
-			fp.CCVersion, ccErr.Error())
-		return r
+	var fails, warns []string
+	settings := claudepaths.Settings()
+	launcher, _, err := onboarding.SettingsString(settings, "env", teammate.EnvTeammateCommand)
+	switch {
+	case err != nil:
+		fails = append(fails, fmt.Sprintf("cannot read %s: %v", settings, err))
+	case launcher == "":
+		warns = append(warns, fmt.Sprintf("%s is not set in %s", teammate.EnvTeammateCommand, settings))
+	default:
+		sh := teammate.InspectShim(launcher)
+		switch {
+		case !sh.Exists || !sh.Executable:
+			fails = append(fails, fmt.Sprintf("launcher %s is missing or not executable — every split-pane teammate fails to start", launcher))
+		case !teammate.IsOurShim(launcher):
+			warns = append(warns, fmt.Sprintf("%s points at %s, not cc-fleet's launcher", teammate.EnvTeammateCommand, launcher))
+		case sh.Pinned == "" || !sh.PinnedExists:
+			fails = append(fails, fmt.Sprintf("launcher %s pins a cc-fleet binary that no longer exists (%s)", launcher, sh.Pinned))
+		case !sh.PinnedIsSelf:
+			warns = append(warns, fmt.Sprintf("launcher pins %s, not this cc-fleet binary", sh.Pinned))
+		}
 	}
-	if currentVer == "" {
-		r.Status = StatusWarn
-		r.Detail = fmt.Sprintf("cached cc %s; current cc version unknown", fp.CCVersion)
-		return r
+
+	if cfg, err := config.Load(); err == nil {
+		stale, foreign := teammate.AgentDefsDrift(cfg)
+		if len(stale) > 0 {
+			warns = append(warns, "agent definitions out of sync: "+strings.Join(stale, ", "))
+		}
+		if len(foreign) > 0 {
+			warns = append(warns, "agent definitions not managed by cc-fleet: "+strings.Join(foreign, ", "))
+		}
 	}
-	if fingerprint.IsStale(fp, currentVer) {
+	if mode, _, _ := onboarding.SettingsString(settings, teammate.KeyTeammateMode); mode == "" || mode == "in-process" {
+		warns = append(warns, "user teammateMode is unset or in-process, so provider teammates are refused — run: cc-fleet teammate setup --teammate-mode tmux (or start claude --teammate-mode tmux)")
+	}
+	if v, _, _ := onboarding.SettingsString(settings, "env", teammate.EnvAgentTeams); !envTruthy(v) && !envTruthy(os.Getenv(teammate.EnvAgentTeams)) {
+		warns = append(warns, teammate.EnvAgentTeams+" is not turned on")
+	}
+	if zincHarborOn() {
+		warns = append(warns, "Claude Code has turned named teammates off for this account (tengu_zinc_harbor)")
+	}
+	if os.Getenv(teammate.EnvProcessWrapper) != "" {
+		warns = append(warns, teammate.EnvProcessWrapper+" is set; the teammate launcher does not go through it")
+	}
+
+	switch {
+	case len(fails) > 0:
 		r.Status = StatusFail
-		r.Detail = fmt.Sprintf("cached cc %s != current cc %s", fp.CCVersion, currentVer)
+		r.Detail = strings.Join(append(fails, warns...), "; ")
 		r.Fixable = true
-		r.FixHint = "ask Claude to spawn a probe teammate, then: cc-fleet refresh-fingerprint --probe-team <team>"
+		r.FixHint = "run: cc-fleet repair (or cc-fleet teammate setup)"
+	case len(warns) > 0:
+		r.Status = StatusWarn
+		r.Detail = strings.Join(warns, "; ")
+		r.FixHint = "run: cc-fleet repair (or cc-fleet teammate setup)"
+	default:
+		r.Status = StatusOK
+		r.Detail = "enabled; launcher " + launcher
+	}
+	return withLegacyFingerprint(r)
+}
+
+// withLegacyFingerprint raises r to at least Warn while the 0.3.x
+// <ConfigDir>/fingerprint.json is still on disk; nothing reads it any more.
+func withLegacyFingerprint(r CheckResult) CheckResult {
+	dir, err := config.ConfigDir()
+	if err != nil {
 		return r
 	}
-	r.Status = StatusOK
-	r.Detail = fmt.Sprintf("cc %s (captured %s)",
-		fp.CCVersion, fp.CapturedAt.UTC().Format(time.RFC3339))
+	p := filepath.Join(dir, "fingerprint.json")
+	if _, err := os.Stat(p); err != nil {
+		return r
+	}
+	if r.Status == StatusOK {
+		r.Status = StatusWarn
+		r.FixHint = "rm " + p
+	}
+	r.Detail += "; legacy fingerprint.json can be deleted"
 	return r
 }
 
-// checkBundledFingerprintRuntime validates the no-user-cache path against the
-// SAME runtime contract spawn/subagent use: LoadOrBundled → ResolveBinaryPath →
-// ValidateForRuntime. It returns OK when the bundled recipe plus a resolvable
-// claude binary are runtime-usable (a healthy fresh install), and
-// only Fails when no claude binary can be resolved anywhere — the one genuine
-// "can't spawn" state, fixable by installing/repairing Claude Code.
-func checkBundledFingerprintRuntime(r CheckResult) CheckResult {
-	fp, err := fingerprint.LoadOrBundled()
+// envTruthy mirrors Claude Code's truthy env check (1, true, yes, on).
+func envTruthy(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
+// zincHarborOn reports whether Claude Code's cached feature flag
+// tengu_zinc_harbor (named teammates off) is exactly true. A missing or
+// unparseable global config reads as off.
+func zincHarborOn() bool {
+	p := claudepaths.GlobalConfig()
+	if p == "" {
+		return false
+	}
+	data, err := os.ReadFile(p)
 	if err != nil {
-		r.Status = StatusFail
-		r.Detail = fmt.Sprintf("no user fingerprint cache and bundled recipe unreadable: %v", err)
-		return r
+		return false
 	}
-	binPath, err := fingerprint.ResolveBinaryPath(fp)
-	if err != nil {
-		// No claude binary resolvable → spawn/subagent would FINGERPRINT_STALE.
-		r.Status = StatusFail
-		r.Detail = fmt.Sprintf("no user fingerprint cache; bundled recipe present but %v", err)
-		r.Fixable = true
-		r.FixHint = "install/repair Claude Code (or fix PATH) so a claude binary is resolvable"
-		return r
+	var gc struct {
+		Features struct {
+			ZincHarbor json.RawMessage `json:"tengu_zinc_harbor"`
+		} `json:"cachedGrowthBookFeatures"`
 	}
-	fp.BinaryPath = binPath
-	if err := fingerprint.ValidateForRuntime(fp); err != nil {
-		r.Status = StatusFail
-		r.Detail = fmt.Sprintf("bundled fingerprint not runtime-usable: %v", err)
-		return r
+	if json.Unmarshal(data, &gc) != nil {
+		return false
 	}
-	r.Status = StatusOK
-	r.Detail = fmt.Sprintf("no user cache; bundled recipe (cc %s) is runtime-usable with %s",
-		fp.CCVersion, binPath)
-	return r
+	return string(gc.Features.ZincHarbor) == "true"
 }
 
 // CheckOAuthCredentials is check 9: does the main session have an OAuth /

@@ -55,11 +55,12 @@ func readKeyFromFile(path string) (string, error) {
 
 // addJSONEnvelope is the success-side JSON shape `cc-fleet add --json` emits.
 type addJSONEnvelope struct {
-	OK          bool      `json:"ok"`
-	Provider    string    `json:"provider"`
-	ProfilePath string    `json:"profile_path"`
-	AddedAt     time.Time `json:"added_at"`
-	ModelCount  int       `json:"model_count"`
+	OK                bool      `json:"ok"`
+	Provider          string    `json:"provider"`
+	ProfilePath       string    `json:"profile_path"`
+	AddedAt           time.Time `json:"added_at"`
+	ModelCount        int       `json:"model_count"`
+	TeammateSyncError string    `json:"teammate_sync_error,omitempty"`
 }
 
 func newAddCmd() *cobra.Command {
@@ -174,11 +175,12 @@ when stdin is a tty; otherwise the command exits 1 with a usage error.`,
 			}
 			if asJSON {
 				emitJSON(addJSONEnvelope{
-					OK:          true,
-					Provider:    res.Provider,
-					ProfilePath: res.ProfilePath,
-					AddedAt:     res.AddedAt,
-					ModelCount:  res.ModelCount,
+					OK:                true,
+					Provider:          res.Provider,
+					ProfilePath:       res.ProfilePath,
+					AddedAt:           res.AddedAt,
+					ModelCount:        res.ModelCount,
+					TeammateSyncError: res.TeammateSyncError,
 				})
 				return nil
 			}

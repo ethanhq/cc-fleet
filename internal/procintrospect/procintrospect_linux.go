@@ -126,3 +126,33 @@ func ProcStart(pid int) (string, bool) {
 	}
 	return fields[19], true
 }
+
+// StartFollowsClockSteps reports whether StartUnixMilli moves with wall-clock
+// steps made after the process started.
+const StartFollowsClockSteps = true
+
+// StartUnixMilli converts a ProcStart token (jiffies since boot) to Unix
+// milliseconds with the boot time from /proc/stat. btime is whole seconds, so
+// the result can be up to a second early, and it follows every wall-clock step
+// since boot, so after a forward step the result is late by the step.
+func StartUnixMilli(token string) (int64, bool) {
+	jiffies, err := strconv.ParseInt(token, 10, 64)
+	if err != nil || jiffies < 0 {
+		return 0, false
+	}
+	data, err := os.ReadFile(filepath.Join(procRoot, "stat"))
+	if err != nil {
+		return 0, false
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if v, ok := strings.CutPrefix(line, "btime "); ok {
+			btime, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+			if err != nil {
+				return 0, false
+			}
+			// USER_HZ is 100 on every Linux ABI cc-fleet targets.
+			return btime*1000 + jiffies*10, true
+		}
+	}
+	return 0, false
+}

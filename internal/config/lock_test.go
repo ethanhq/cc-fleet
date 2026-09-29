@@ -10,12 +10,11 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
 
-// isolateHome points $HOME at a fresh temp dir so teamLockPath is sandboxed.
+// isolateHome points $HOME at a fresh temp dir so the lock paths are sandboxed.
 func isolateHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
@@ -24,149 +23,9 @@ func isolateHome(t *testing.T) string {
 	return home
 }
 
-func TestWithTeamLock_RunsFn(t *testing.T) {
-	isolateHome(t)
-	called := false
-	err := WithTeamLock("teamA", func() error {
-		called = true
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("WithTeamLock: %v", err)
-	}
-	if !called {
-		t.Fatal("fn was not called")
-	}
-}
-
-func TestWithTeamLock_CreatesLockFile(t *testing.T) {
-	home := isolateHome(t)
-	if err := WithTeamLock("teamA", func() error { return nil }); err != nil {
-		t.Fatalf("WithTeamLock: %v", err)
-	}
-	path := filepath.Join(home, ".claude", "teams", "teamA", ".cc-fleet-lock")
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat lock file: %v", err)
-	}
-	// NTFS reports 0666; the 0600 contract is unix-only.
-	if got := info.Mode().Perm(); runtime.GOOS != "windows" && got != 0o600 {
-		t.Fatalf("lock file mode = %o, want 0600", got)
-	}
-}
-
-func TestWithTeamLock_PropagatesFnError(t *testing.T) {
-	isolateHome(t)
-	sentinel := errors.New("boom")
-	err := WithTeamLock("teamA", func() error { return sentinel })
-	if !errors.Is(err, sentinel) {
-		t.Fatalf("err = %v, want wraps sentinel", err)
-	}
-}
-
-func TestWithTeamLock_RejectsEmptyTeam(t *testing.T) {
-	isolateHome(t)
-	if err := WithTeamLock("", func() error { return nil }); err == nil {
-		t.Fatal("WithTeamLock(\"\"): want error, got nil")
-	}
-}
-
-func TestWithTeamLock_RejectsNilFn(t *testing.T) {
-	isolateHome(t)
-	if err := WithTeamLock("teamA", nil); err == nil {
-		t.Fatal("WithTeamLock(_, nil): want error, got nil")
-	}
-}
-
-func TestWithTeamLock_RequiresHome(t *testing.T) {
-	t.Setenv("HOME", "")
-	t.Setenv("USERPROFILE", "") // windows home var, so the no-home path holds on windows runners
-	if err := WithTeamLock("teamA", func() error { return nil }); err == nil {
-		t.Fatal("WithTeamLock with empty HOME: want error, got nil")
-	}
-}
-
-// TestWithTeamLock_SerializesGoroutines is the load-bearing serialization test.
-// Two goroutines each hold the lock for 100ms; we require total wall time
-// >= 200ms, proving the kernel actually serializes the second behind the first.
-//
-// We use 180ms as the threshold (10% slack) to absorb scheduler jitter but
-// still catch a lock that does nothing.
-func TestWithTeamLock_SerializesGoroutines(t *testing.T) {
-	isolateHome(t)
-	const team = "race"
-	const hold = 100 * time.Millisecond
-
-	start := time.Now()
-	var wg sync.WaitGroup
-	errs := make(chan error, 2)
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err := WithTeamLock(team, func() error {
-				time.Sleep(hold)
-				return nil
-			}); err != nil {
-				errs <- err
-			}
-		}()
-	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		t.Fatalf("WithTeamLock: %v", err)
-	}
-
-	elapsed := time.Since(start)
-	min := 2*hold - 20*time.Millisecond // 10% jitter slack
-	if elapsed < min {
-		t.Fatalf("two 100ms holders finished in %v, want >= %v (lock did not serialize)",
-			elapsed, min)
-	}
-}
-
-// TestWithTeamLock_DifferentTeamsConcurrent verifies the lock is per-team, not
-// global — two distinct teams can hold their locks at the same time. It asserts
-// OVERLAP (the peak count of simultaneous holders reaches 2), not wall-clock
-// time, so it is independent of scheduler jitter (a slow CI runner can't flake
-// it): a global lock would block the second holder on acquire, pinning the peak
-// at 1.
-func TestWithTeamLock_DifferentTeamsConcurrent(t *testing.T) {
-	isolateHome(t)
-	var inside, peak atomic.Int32
-	var wg sync.WaitGroup
-	for _, team := range []string{"teamA", "teamB"} {
-		team := team
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_ = WithTeamLock(team, func() error {
-				n := inside.Add(1)
-				for { // raise the high-water mark to this holder's count
-					p := peak.Load()
-					if n <= p || peak.CompareAndSwap(p, n) {
-						break
-					}
-				}
-				time.Sleep(100 * time.Millisecond) // hold long enough for the sibling to enter its own lock
-				inside.Add(-1)
-				return nil
-			})
-		}()
-	}
-	wg.Wait()
-	if peak.Load() < 2 {
-		t.Fatalf("two different-team holders never overlapped (peak concurrency %d) — the per-team lock serialized them like a global lock",
-			peak.Load())
-	}
-}
-
 // TestWithServerLock_SerializesGlobally verifies the global server lock
-// serializes ALL callers regardless of team — the guarantee per-team locks lack
-// for cross-team spawns into the same tmux window (the split race). Two
-// concurrent holders must run back-to-back, not in parallel. Contrast with
-// TestWithTeamLock_DifferentTeamsConcurrent, which runs in parallel.
+// serializes ALL callers. Two concurrent holders must run back-to-back, not in
+// parallel.
 func TestWithServerLock_SerializesGlobally(t *testing.T) {
 	isolateHome(t)
 	const hold = 100 * time.Millisecond
@@ -364,29 +223,9 @@ func readLockCounter(t *testing.T, path string) int {
 	return n
 }
 
-// TestWithTeamLock_SerializesAcrossProcesses proves WithTeamLock is a real
-// cross-PROCESS lock: N separate processes each increment a shared counter
-// inside the lock; the count must be exactly N (no lost update). An in-process
-// mutex would let the children race and the counter would land below N.
-func TestWithTeamLock_SerializesAcrossProcesses(t *testing.T) {
-	if os.Getenv(lockChildEnv) == "1" {
-		lockChildBump(func(fn func() error) error { return WithTeamLock("crossproc", fn) })
-		return // unreachable: lockChildBump exits
-	}
-
-	isolateHome(t)
-	counter := filepath.Join(t.TempDir(), "counter")
-	const N = 20
-	spawnLockChildren(t, "TestWithTeamLock_SerializesAcrossProcesses", counter, N)
-
-	if got := readLockCounter(t, counter); got != N {
-		t.Fatalf("counter = %d after %d cross-process WithTeamLock holders, want %d (lost update => no cross-process exclusion)", got, N, N)
-	}
-}
-
 // TestWithServerLock_SerializesAcrossProcesses is the WithServerLock variant:
-// the global tmux-server lock must also serialize across real processes (the
-// split/layout race is multi-process by nature). Same counter contract.
+// the global tmux-server lock must serialize across real processes (the
+// layout race is multi-process by nature). Same counter contract.
 func TestWithServerLock_SerializesAcrossProcesses(t *testing.T) {
 	if os.Getenv(lockChildEnv) == "1" {
 		lockChildBump(WithServerLock)

@@ -3256,16 +3256,16 @@ func (m Model) renderCodexAuthBox() string {
 		Render(strings.Join(lines, "\n"))
 }
 
-// setupOptions are the three choices on the agent-teams setup nudge, in cursor
-// order (index 0 = "enable it for me", handled specially by updateSetup).
+// setupOptions are the three choices on the provider-teammates setup nudge, in
+// cursor order (index 0 = "enable it for me", handled specially by updateSetup).
 var setupOptions = []string{
-	"enable it for me  (writes ~/.claude/settings.json)",
+	"enable it for me  (writes ~/.claude/settings.json, sets tmux split panes)",
 	"I've set it up myself",
 	"skip — I'll only use subagent / workflow / run",
 }
 
 // renderSetupOptions renders a cursor-highlighted option list for a first-run
-// setup nudge (the agent-teams and install-Claude screens share it).
+// setup nudge (the provider-teammates and install-Claude screens share it).
 func renderSetupOptions(opts []string, cursor int) string {
 	var b strings.Builder
 	for i, opt := range opts {
@@ -3280,11 +3280,10 @@ func renderSetupOptions(opts []string, cursor int) string {
 	return b.String()
 }
 
-// viewSetup renders the first-run agent-teams setup nudge. The wording is a
-// SUGGESTION, never an assertion that agent-teams is off — we only know it isn't
-// explicitly configured in env / rc / settings.json, and Claude may well have it
-// on by default. Once setupMsg is set (after "enable it for me"), it replaces
-// the options with a one-line outcome.
+// viewSetup renders the first-run provider-teammates setup nudge. It spells out
+// that "enable it for me" also sets teammateMode to tmux, since picking it is
+// the user's consent to that settings write. Once setupMsg is set (after
+// "enable it for me"), it replaces the options with the outcome.
 func (m Model) viewSetup() string {
 	var b strings.Builder
 	b.WriteString(titleStyle.Render("cc-fleet · setup") + "\n\n")
@@ -3293,8 +3292,10 @@ func (m Model) viewSetup() string {
 		b.WriteString("\n" + footer("enter to continue"))
 		return b.String()
 	}
-	b.WriteString("agent-teams isn't set in your env / shell rc / settings.json.\n")
-	b.WriteString("It powers provider " + selectedStyle.Render("teammates") + ".\n")
+	b.WriteString("Provider " + selectedStyle.Render("teammates") + " aren't set up yet.\n")
+	b.WriteString("\"enable it for me\" turns on provider teammates and sets teammateMode to tmux,\n")
+	b.WriteString("so teammates open in tmux split panes (left unchanged if you already chose\n")
+	b.WriteString("auto, tmux or iterm2). Restart claude inside tmux afterwards.\n")
 	b.WriteString(faintStyle.Render("(subagent / workflow / run all work without it.)") + "\n\n")
 	b.WriteString(renderSetupOptions(setupOptions, m.setupCursor))
 	b.WriteString("\n" + footer("↑/↓ move · enter select · esc skip"))

@@ -8,6 +8,11 @@ import "os"
 // layout: bare `claude` on unix.
 const claudeBinName = "claude"
 
+// flatVersionFiles reports whether versions/<semver> may itself be the claude
+// binary (the flat per-version layout). Unix only: on windows the executable
+// needs its .exe extension, which a bare <semver> name lacks.
+const flatVersionFiles = true
+
 // homeForLayout returns the home directory rooting the per-version layout.
 // $HOME on unix — read directly so tests that t.Setenv("HOME", ...) stay
 // hermetic.
@@ -15,16 +20,12 @@ func homeForLayout() string {
 	return os.Getenv("HOME")
 }
 
-// isExecutableFile reports whether path is a regular file with at least one
-// execute bit set. Used by locate() so a versioned install dir only counts when
-// it holds a runnable claude; on unix executability is a file-mode bit.
-func isExecutableFile(path string) bool {
-	info, err := os.Stat(path)
-	if err != nil || info.IsDir() {
+// isExecutableFile reports whether fi (from os.Stat, so a symlink is already
+// followed) describes a non-empty regular file with at least one execute bit
+// set. A 0-byte file is rejected: the updater leaves one behind mid-download.
+func isExecutableFile(fi os.FileInfo) bool {
+	if fi == nil || !fi.Mode().IsRegular() || fi.Size() == 0 {
 		return false
 	}
-	if !info.Mode().IsRegular() {
-		return false
-	}
-	return info.Mode().Perm()&0o111 != 0
+	return fi.Mode().Perm()&0o111 != 0
 }

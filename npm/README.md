@@ -48,6 +48,11 @@ the cc-fleet plugin. Either way:
 cc-fleet             # open the TUI and register a provider (config created on first save)
 ```
 
+Provider teammates (agent teams) need Claude Code ≥ 2.1.278 running as the terminal `claude`
+inside tmux or iTerm2 — not the Claude desktop app, `claude -p`, or an SDK session — plus a
+one-time `cc-fleet teammate setup --yes` and a `claude` restart. Subagents, workflows and
+`ccf run` need none of that. Teammates are not available on Windows.
+
 ## Common commands
 
 `cc-fleet` and `ccf` are the same binary — use whichever you prefer.

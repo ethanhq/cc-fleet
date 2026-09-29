@@ -1025,9 +1025,19 @@ func PurgeRun(runID string) error {
 	// workdir-missing clause then reclaims the git registration; deleting the manifest first would strand
 	// it unknown-present). Then remove the segment dir only if now EMPTY: a plain os.Remove tolerates
 	// ENOTEMPTY as a leak-not-delete residual, so a surviving post-snapshot colliding workdir keeps it.
+	// A workdir holding the workflow keep marker (a failed snapshot's unsaved work) is skipped silently;
+	// the caller reports it via workflow.KeptWorktreeNotices. Any other workdir is salvaged first (its
+	// engine may have died before saving it) and skipped when the salvage kept it.
 	if segDir != "" {
 		for _, e := range segSnapshot {
-			_ = os.RemoveAll(filepath.Join(segDir, e.Name()))
+			wt := filepath.Join(segDir, e.Name())
+			if _, err := os.Lstat(filepath.Join(wt, worktreeKeepMarker)); err == nil {
+				continue
+			}
+			if _, remove := SalvageWorktree(wt); !remove {
+				continue
+			}
+			_ = os.RemoveAll(wt)
 		}
 		_ = os.Remove(segDir)
 	}

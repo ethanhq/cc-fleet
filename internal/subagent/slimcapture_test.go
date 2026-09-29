@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/ethanhq/cc-fleet/internal/fingerprint"
+	"github.com/ethanhq/cc-fleet/internal/claudebin"
 )
 
 // First-request capture test (acceptance a/b). It execs the REAL claude binary
@@ -36,12 +36,10 @@ import (
 // and under -short.
 
 // resolveClaudeForCapture returns the real claude path the way production does
-// (the fingerprint resolver), falling back to PATH; "" when none is found.
+// (claudebin), falling back to PATH; "" when none is found.
 func resolveClaudeForCapture() string {
-	if fp, err := fingerprint.LoadOrBundled(); err == nil {
-		if p, err := fingerprint.ResolveBinaryPath(fp); err == nil {
-			return p
-		}
+	if p, _, err := claudebin.Resolve(); err == nil {
+		return p
 	}
 	if p, err := exec.LookPath("claude"); err == nil {
 		return p

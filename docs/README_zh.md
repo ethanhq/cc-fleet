@@ -235,22 +235,24 @@ ccf workflow run audit.js --resume "$RUN"   # 重放 journal,跑完的 leaf 命�
 </tr>
 </table>
 
-**前置要求**:Agent Team 是唯一需要提前配置的 lane,而且因为依赖 tmux,**暂不支持 Windows**。用前满足两个条件 - 
+**前置要求**:Agent Team 是唯一需要提前配置的 lane,**暂不支持 Windows**。用前满足两个条件 - 
 
-1. **进入一个 tmux 会话**(`tmux new-session -s work`),Teammate 的 pane 才能在你旁边分屏显示;
-2. **启用 Claude Code 的 agent-teams**:首次运行 `ccf` 时会检测到未启用并提示你,可以让它自动写入,也可以自己在 `~/.claude/settings.json` 里加一次:
+1. **Claude Code ≥ 2.1.278,在 tmux 或 iTerm2 里运行终端版 `claude`**(`tmux new-session -s work`),Teammate 的 pane 才能在你旁边分屏显示。Claude 桌面 App、`claude -p` 和 SDK 会话没有 agent team — 在那里 Claude 会改用 Subagent 和 Workflow;
+2. **做一次配置**:首次运行 `ccf` 时会提示并可以替你完成,也可以自己运行下面这条,然后重启 `claude`:
 
-```json
-{ "env": { "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1" } }
+```bash
+cc-fleet teammate setup --yes --teammate-mode tmux
 ```
 
-**怎么协作**:每个 Teammate 都是真实的 `claude` 进程,Claude 用原生 `TeamCreate` 建队、`SendMessage` 给它派活,Teammate 跨轮次持续存活,可以不断追加任务。一个 team 里能同时用多家 Provider,再让某个 Teammate 把结果汇总比较。
+它会装一个小启动器(`~/.config/cc-fleet/bin/claude-teammate`),为每个 Provider 生成一个 `ccf-<provider>` agent 类型(`~/.claude/agents/ccf-*.md`),并在 `~/.claude/settings.json` 里开启 agent teams、把 `CLAUDE_CODE_TEAMMATE_COMMAND` 指向启动器;`--teammate-mode tmux` 让 Teammate 以分屏 pane 打开(已经设成 `auto` / `tmux` / `iterm2` 的不会改动)。不带 `--yes` 时只列出将要做的改动。撤销用 `cc-fleet teammate setup --remove --yes`。
 
-**权限继承**:每个 Teammate 自动沿用你主会话的权限档位(plan / acceptEdits / default)。如果探测不到主会话的设置,会退回到最安全的默认权限,不会自动放开高危权限。
+**怎么协作**:每个 Teammate 都是 Claude Code 的原生 Teammate — Claude 用 `Agent` 工具按 `ccf-<provider>` 类型把它拉起(strong 槽位用 `ccf-glm.strong`),用原生 `SendMessage` 给它派活,启动器让这个 Teammate 的 `claude` 跑在 Provider 上。Teammate 跨轮次持续存活,可以不断追加任务。一个 team 里能同时用多家 Provider,再让某个 Teammate 把结果汇总比较。每次拉起前 Claude 会先运行 `cc-fleet teammate check`,插件的 hook 也会拦下会悄悄跑在 Claude 上的 Provider Teammate。
 
-**收起与恢复**:`ccf hide` 把 Teammate 的 pane 收起来不占屏幕,但进程照常运行、消息收发和上下文都不丢,`ccf show` 再展开回来。收尾时 `ccf teardown` 会彻底清理掉所有相关进程,包括 pane 被关掉后仍在后台运行、继续消耗 key 的残留进程,不留偷偷计费的“幽灵”。
+**权限继承**:Claude Code 把你主会话的权限档位(plan / acceptEdits / default)交给每个 Teammate,和它自己的 Teammate 完全一样。
 
-**不在 tmux 时**:Teammate 会跑在一个后台的 `cc-fleet-swarm-<team>` 会话里,流程完全一样,只是 pane 不显示在屏幕上。想查看,用 `tmux -L cc-fleet-swarm-<team> attach` 进去即可。
+**收起与恢复**:`ccf hide <name>@<team>` 把 Teammate 的 pane 收起来不占屏幕,但进程照常运行、消息收发和上下文都不丢,`ccf show` 再展开回来。退出 `claude` 时 Claude Code 会自己关掉它的 Teammate;想提前结束某一个,Claude 会让它自行关闭或直接停掉它。`ccf teardown` 用于残留 — 比如 lead 崩溃之后:它只杀能核实身份(pane、完整命令行、进程启动时间)的 Provider Teammate,从不碰你的 lead、原生 Teammate 和 Claude Code 的 team 文件。`ccf ps` 会列出它们及状态(`running`、`orphaned`、`failed`、`bypassed`)。
+
+**不在 tmux 时**:`teammateMode` 设为 `tmux` 时,Claude Code 会把 Teammate 跑在它自己的后台 tmux server(`claude-swarm-<pid>`)里,流程完全一样,只是 pane 不显示在屏幕上;`ccf ps --json` 给出 `tmux_socket_path`,用 `tmux -S <path> attach` 进去即可。
 
 ---
 
@@ -296,7 +298,7 @@ cc-fleet 也能插进 **OpenAI Codex**:一个 Codex 插件让 Codex 会话扇出
 
 **多 API Key 轮换**:一个 Provider 可挂多把 API Key,按 `off` / `round_robin` / `random` 三种策略轮换,分摊额度、避开限流。
 
-**API Key 保护**:Key 在每次请求时才被取用,只输出一次,不会写进环境变量、命令行参数或 shell 历史;worker 进程启动时会清掉主会话的凭证,两边互不串漏。本地保存时用 `0600` 权限只对你可读,也可以交给 `pass`、1Password、Vault、系统 keyring 托管;所有界面和日志里 Key 一律打码显示(`sk-…238`)。
+**API Key 保护**:Key 在每次请求时才被取用,只输出一次,不会写进环境变量、命令行参数或 shell 历史。worker 用两层隔开主会话的凭证:启动时从环境里清掉 Anthropic 凭证和云后端开关;它的 Provider profile 还会把 Claude Code settings 里可能设置的同一批键置空(只有组织托管的 managed settings 这一层 profile 覆盖不了),两边互不串漏。本地保存时用 `0600` 权限只对你可读,也可以交给 `pass`、1Password、Vault、系统 keyring 托管;所有界面和日志里 Key 一律打码显示(`sk-…238`)。
 
 **Codex(ChatGPT 订阅)**:一次设备码登录,ChatGPT 订阅就成了普通 Provider,Workflow / Team / Subagent / run 全部可用。
 
@@ -337,7 +339,7 @@ ccf run deepseek        # 一个跑在 DeepSeek 上、用 Provider key 计费的
 
 - **[CLI 参考与高级用法](cli.zh.md)** — 每个命令、flag 与 envelope。
 - **[编写 workflow 脚本](workflows.md)** — workflow lane 的 JS 编排 API(英文)。
-- **[架构](architecture.md)** — spawn、key 安全、转换 daemon、workflow 引擎的真实工作方式(英文)。
+- **[架构](architecture.md)** — teammate 启动器、key 安全、转换 daemon、workflow 引擎的真实工作方式(英文)。
 - `ccf <cmd> --help` — 以它为准。
 
 ## 参与贡献

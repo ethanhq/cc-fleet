@@ -11,19 +11,20 @@ Three lanes: a long-lived provider teammate (/cc-fleet:team), a one-shot provide
 Once you've decided to offload and neither the user nor the task picks a lane, let the environment pick — check `printenv TMUX` via Bash:
 
 - **In tmux (`$TMUX` set) → default to a long-lived teammate** (/cc-fleet:team). The pane is visible to the user; you can watch and coordinate it live.
-- **Not in tmux → default to a one-shot subagent** (/cc-fleet:subagent). A teammate would have to build a detached swarm session the user can't see; the subagent is the smoother default.
+- **Not in tmux → default to a one-shot subagent** (/cc-fleet:subagent). Outside tmux a teammate starts only with `teammateMode` `tmux`, on a detached tmux server the user can't see unless they attach — or in iTerm2 with `auto`: iTerm2's own panes, or a detached tmux server when `it2` is missing. The subagent is the smoother default.
 
 Overrides, in priority order:
-1. **Explicit user request wins** — "use a deepseek subagent" → subagent even in tmux; "spawn a kimi teammate" → teammate even outside tmux (it builds a swarm session).
+1. **Explicit user request wins** — "use a deepseek subagent" → subagent even in tmux; "start a kimi teammate" → teammate even outside tmux, when `teammate check` passes (it then runs on a detached tmux server, or in iTerm2's own panes).
 2. **A task that clearly forces a lane** — an explicit one-shot job is a subagent; a sustained multi-file parallel build is a teammate.
-3. **The agent-teams precondition** (below) still gates teammate mode.
+3. **The teammate precondition** (below) still gates teammate mode.
 
-## Agent-teams precondition — gates /cc-fleet:team
+## Teammate precondition — gates /cc-fleet:team
 
-Teammate mode is driven by Claude's native `TeamCreate` / `SendMessage` tools, which exist only when this session has agent-teams enabled. `cc-fleet spawn` is a plain binary: it launches a provider pane even when those tools are absent — with no way to `SendMessage` it, that's an **orphan pane billing the provider with no work**. Before any teammate spawn:
+A provider teammate is a member of Claude Code's native agent team: you start it with the native `Agent` tool (`subagent_type: "ccf-<provider>"`), and cc-fleet's launcher routes it to the provider. Before the first one, run `cc-fleet teammate check [<provider>] --json` via Bash:
 
-- **Check your own tool list for a `SendMessage` (or `TeamCreate`) tool.** Present → proceed. Absent → **do NOT spawn**; tell the user agent-teams appears off — enable via `"CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"` in `~/.claude/settings.json` (`env` block) + restart Claude Code — **or** drop to /cc-fleet:subagent (needs no team tools). Offer both; default to the subagent if they don't want to reconfigure.
-- This is the **only reliable signal, and only you can see it.** Don't ask `cc-fleet` whether agent-teams is on — it's an external process and can't observe Claude's runtime state; `cc-fleet doctor` deliberately doesn't report it.
+- **`ok:true` and `protocol` 1 → proceed** with /cc-fleet:team.
+- **`ok:false` → dispatch on `error_code`** (troubleshooting.md). The lane is **not available** — go straight to /cc-fleet:subagent or /cc-fleet:workflow, which need no team — when teammates would run **in-process** (`TEAMMATE_MODE_IN_PROCESS`: a `ccf-*` teammate would silently run on Claude, not the provider), when the session is **not an interactive terminal `claude`** — the **desktop app**, `claude -p` and SDK sessions have no agent team (`TEAMMATE_LANE_UNAVAILABLE`) — and on **Windows** (`UNSUPPORTED_ON_WINDOWS`). Setup and restart codes (`TEAMMATE_SETUP_REQUIRED`, `LEAD_RESTART_REQUIRED`) → tell the user the one-time fix and use the subagent lane meanwhile unless they want to fix it now. The same `TEAMMATE_LANE_UNAVAILABLE` / `no_session_team` in a terminal session (`$TMUX` set, or iTerm2) with `printenv CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` empty or not `1`/`true`/`yes`/`on` means agent teams are off because `cc-fleet teammate setup` never ran — degrade now and offer that one-time setup (/cc-fleet:team); with agent teams on, the user starts a new `claude` inside tmux or iTerm2.
+- **`teammate check` is the signal — not your tool list.** `SendMessage` and `ListAgents` exist even in sessions with no team (the desktop app has both), so their presence proves nothing.
 
 ## Lane 3 — handle in the main session, do NOT offload
 
@@ -37,4 +38,4 @@ Teammate mode is driven by Claude's native `TeamCreate` / `SendMessage` tools, w
 
 If `cc-fleet list --json` returns an empty provider list, no offload lane is possible — tell the user to `cc-fleet add <provider>` first (provider notes are in providers.md, commands in cli-reference.md — both beside this file).
 
-Exception: even with no provider configured, the subagent and workflow lanes can still use the reserved id `claude` (`cc-fleet subagent claude …`, `agent(..., {provider: "claude"})`), which runs the user's OWN Claude Code login — no providers.toml row needed (providers.md). It does NOT enable the teammate lane (`spawn` still needs a configured provider).
+Exception: even with no provider configured, the subagent and workflow lanes can still use the reserved id `claude` (`cc-fleet subagent claude …`, `agent(..., {provider: "claude"})`), which runs the user's OWN Claude Code login — no providers.toml row needed (providers.md). It does NOT enable the teammate lane: a provider teammate still needs a configured provider, and a native Claude teammate is just the native `Agent` tool with a native agent type — there is no `ccf-claude`.

@@ -74,8 +74,8 @@ type engine struct {
 	budgetTokensTotal    int64
 	budgetTokensSpent    int64
 	budgetTokensReserved int64
-	// Slim version-gate result, resolved ONCE per engine by effProfileFor: fingerprint
-	// load + binary detection are too expensive to pay per leaf (with slim the default,
+	// Slim version-gate result, resolved ONCE per engine by effProfileFor: claude binary
+	// resolution + version detection are too expensive to pay per leaf (with slim the default,
 	// every bare leaf resolves), and a single resolution keeps one run's journal keys on
 	// ONE effective shape even if the host claude changes mid-run.
 	gateOnce   sync.Once
@@ -534,15 +534,23 @@ func (e *engine) execLeaf(ctx context.Context, jobID string, h *leafCtl, spec le
 		return stopped, fmt.Errorf("agent: run cancelled before launch")
 	}
 	defer e.sched.releaseSlot()
-	// Worktree isolation: run the attempt with cwd = a fresh git worktree, torn down on
-	// return (success, failure, or panic).
+	// Worktree isolation: run the attempt with cwd = a fresh git worktree, finished on
+	// return (success, failure, or panic): leaf changes are saved as a branch (or the
+	// worktree kept) before it is removed, and that outcome is logged into the run's events.
 	workDir := ""
 	if spec.isolation == "worktree" {
-		dir, cleanup, werr := createWorktreeFn(e.runID)
+		dir, finish, werr := createWorktreeFn(e.runID)
 		if werr != nil {
 			return subagent.Result{}, fmt.Errorf("agent: %v", werr)
 		}
-		defer cleanup()
+		attempt := h.gen
+		defer func() {
+			if kept := finish(jobID, attempt); kept != "" {
+				e.post(leafCB{state: func() {
+					e.logf("isolation worktree kept: job %s attempt %d → %s", jobID, attempt, kept)
+				}})
+			}
+		}()
 		workDir = dir
 	}
 	e.post(leafCB{state: func() {

@@ -28,18 +28,18 @@ Core (every run mode — subagent / workflow / run / teammate):
   [4] claude binary present; version known
   [6] all configured providers' keys reachable (probe /v1/models, 3s/provider)
   [7] skill installed at ~/.claude/skills/cc-fleet/ (or via plugin)
-  [8] fingerprint cached and matches current cc version
   [9] OAuth credentials.json exists (informational only)
   [10] binary and plugin versions match
 
-Optional — live teammates only (tmux):
+Optional — live teammates only:
   [3] tmux installed (warn — subagent / workflow / run work without it)
-  [5] at least one attached tmux session (warn — out-of-tmux swarm works without)
+  [5] at least one attached tmux session (warn — outside tmux Claude Code runs its own swarm)
+  [8] teammate lane: launcher shim, agent definitions, teammateMode (ok when not set up)
 
 Status semantics: ok = passed; fail = needs action; warn = informational.
 
 Exit code: 0 when every Core check is ok/warn; 1 only when a Core check fails.
-An Optional (tmux) warning never fails doctor.
+An Optional (live-teammate) warning or failure never fails doctor.
 
 Doctor never repairs anything — failures print fix hints for the user (or the
 skill) to act on.`,

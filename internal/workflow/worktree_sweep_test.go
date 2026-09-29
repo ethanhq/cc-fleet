@@ -442,7 +442,7 @@ func TestSweepEngineWiring(t *testing.T) {
 		var gotRoot string
 		var calls int
 		old := sweepRunWorktreesFn
-		sweepRunWorktreesFn = func(root string) { calls++; gotRoot = root }
+		sweepRunWorktreesFn = func(root string) []string { calls++; gotRoot = root; return nil }
 		t.Cleanup(func() { sweepRunWorktreesFn = old })
 
 		script, run := writeTrivialScript(t)
@@ -462,7 +462,7 @@ func TestSweepEngineWiring(t *testing.T) {
 		t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 		var calls int
 		old := sweepRunWorktreesFn
-		sweepRunWorktreesFn = func(string) { calls++ }
+		sweepRunWorktreesFn = func(string) []string { calls++; return nil }
 		t.Cleanup(func() { sweepRunWorktreesFn = old })
 
 		script, run := writeTrivialScript(t)
@@ -502,7 +502,7 @@ func TestResumeLauncherOwnSegmentSweep(t *testing.T) {
 			oldOwn := sweepOwnSegmentFn
 			oldAll := sweepRunWorktreesFn
 			sweepOwnSegmentFn = func(root, runID string) { ownCalls++; gotRoot, gotRun = root, runID }
-			sweepRunWorktreesFn = func(string) {}
+			sweepRunWorktreesFn = func(string) []string { return nil }
 			t.Cleanup(func() { sweepOwnSegmentFn = oldOwn; sweepRunWorktreesFn = oldAll })
 
 			script, _ := writeTrivialScript(t) // stubs runLeaf; we resume a manifest we seed below
@@ -546,7 +546,7 @@ func TestResumeStoppedZeroPidRefused(t *testing.T) {
 		oldOwn := sweepOwnSegmentFn
 		oldAll := sweepRunWorktreesFn
 		sweepOwnSegmentFn = func(string, string) { atomic.AddInt32(&n, 1) }
-		sweepRunWorktreesFn = func(string) {}
+		sweepRunWorktreesFn = func(string) []string { return nil }
 		t.Cleanup(func() { sweepOwnSegmentFn = oldOwn; sweepRunWorktreesFn = oldAll })
 		t.Chdir(repo)
 		return id, &n
@@ -615,7 +615,7 @@ func TestRestartStoppedZeroPidRefusedNoJournalMutation(t *testing.T) {
 	runLeaf = func(context.Context, subagent.Request) subagent.Result {
 		return subagent.Result{OK: true, Result: "ok"}
 	}
-	sweepRunWorktreesFn = func(string) {} // silence the Execute-time sweep during the seed run
+	sweepRunWorktreesFn = func(string) []string { return nil } // silence the Execute-time sweep during the seed run
 	t.Cleanup(func() { runLeaf = old; sweepRunWorktreesFn = oldAll })
 
 	script := filepath.Join(t.TempDir(), "s.js")
@@ -740,7 +740,7 @@ func TestResumeLegitStatesAllowed(t *testing.T) {
 			oldOwn := sweepOwnSegmentFn
 			oldAll := sweepRunWorktreesFn
 			sweepOwnSegmentFn = func(string, string) {}
-			sweepRunWorktreesFn = func(string) {}
+			sweepRunWorktreesFn = func(string) []string { return nil }
 			t.Cleanup(func() { sweepOwnSegmentFn = oldOwn; sweepRunWorktreesFn = oldAll })
 
 			script, _ := writeTrivialScript(t)
@@ -785,7 +785,7 @@ func TestResumeConcurrentForegroundResumesSweepOnce(t *testing.T) {
 		atomic.AddInt32(&sweeps, 1)
 		atomic.AddInt32(&inSweep, -1)
 	}
-	sweepRunWorktreesFn = func(string) {} // silence the Execute-time sweep during the concurrent runs
+	sweepRunWorktreesFn = func(string) []string { return nil } // silence the Execute-time sweep during the concurrent runs
 	t.Cleanup(func() { sweepOwnSegmentFn = oldOwn; sweepRunWorktreesFn = oldAll })
 
 	t.Chdir(repo)
@@ -824,7 +824,7 @@ func TestResumeForegroundSerializesAgainstHeldLock(t *testing.T) {
 	oldOwn := sweepOwnSegmentFn
 	oldAll := sweepRunWorktreesFn
 	sweepOwnSegmentFn = func(string, string) { atomic.AddInt32(&sweeps, 1) }
-	sweepRunWorktreesFn = func(string) {}
+	sweepRunWorktreesFn = func(string) []string { return nil }
 	t.Cleanup(func() { sweepOwnSegmentFn = oldOwn; sweepRunWorktreesFn = oldAll })
 
 	t.Chdir(repo)

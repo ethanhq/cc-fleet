@@ -7,8 +7,9 @@ import (
 	"syscall"
 )
 
-// detach makes the spawned daemon its own process-group leader so it outlives the
-// cc-fleet process that started it (mirrors subagent's Setpgid detach).
+// detach starts the daemon in its own session (and so its own process group) so
+// it outlives the cc-fleet process that started it and the terminal or tmux pane
+// that process ran in: closing the pane hangs up that pane's session, not this one.
 func detach(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 }

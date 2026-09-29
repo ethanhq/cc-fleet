@@ -34,8 +34,9 @@ type editProviderView struct {
 // emits. The full post-edit provider row is included so skill consumers can
 // observe the new state without re-running list.
 type editJSONEnvelope struct {
-	OK       bool             `json:"ok"`
-	Provider editProviderView `json:"provider"`
+	OK                bool             `json:"ok"`
+	Provider          editProviderView `json:"provider"`
+	TeammateSyncError string           `json:"teammate_sync_error,omitempty"`
 }
 
 func newEditCmd() *cobra.Command {
@@ -187,6 +188,7 @@ changing a URL or key to revalidate.`,
 						Enabled:        res.Provider.Enabled,
 						KeyRotation:    res.Provider.KeyRotation,
 					},
+					TeammateSyncError: res.TeammateSyncError,
 				})
 				return nil
 			}

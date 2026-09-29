@@ -8,11 +8,10 @@ import (
 // RunAll runs every check and assembles the DoctorResult.
 //
 // Doctor never repairs anything — Fixable failures (check 7 skill not
-// installed, check 8 fingerprint stale) carry fix hints for the user or the
+// installed, check 8 teammate lane broken) carry fix hints for the user or the
 // skill to act on:
 //   - Skill install belongs to the install machinery.
-//   - Fingerprint refresh requires a live native Agent probe; only Claude
-//     (via the skill) can spawn that. Doctor surfaces the hint and exits.
+//   - The teammate lane is repaired by `cc-fleet repair` / `teammate setup`.
 //   - settings.json (check 1) is the user's — creating it would commit policy
 //     decisions doctor shouldn't make on their behalf.
 //
@@ -28,7 +27,7 @@ func RunAll() DoctorResult {
 		CheckAttachedTmux,
 		CheckProviderKeys,
 		CheckSkillInstalled,
-		CheckFingerprint,
+		CheckTeammateLane,
 		CheckOAuthCredentials,
 		CheckPluginVersionMatch,
 	}
@@ -55,11 +54,11 @@ func RunAll() DoctorResult {
 	return DoctorResult{OK: ok, Results: results}
 }
 
-// groupForID classifies a check. Only tmux-related checks (3 installed, 5
-// attached) are Optional — everything else is Core.
+// groupForID classifies a check. Only the live-teammate checks (3 tmux
+// installed, 5 attached, 8 teammate lane) are Optional — everything else is Core.
 func groupForID(id int) Group {
 	switch id {
-	case 3, 5:
+	case 3, 5, 8:
 		return GroupOptional
 	default:
 		return GroupCore

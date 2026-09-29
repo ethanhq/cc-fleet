@@ -20,34 +20,41 @@ type psEnvelope struct {
 	Error     string              `json:"error,omitempty"`
 }
 
-// newPsCmd builds `cc-fleet ps [--json]` — list live cc-fleet teammates.
-//
-// "Live" = a claude process with --agent-id running inside some tmux
-// pane. Manually launched claudes outside tmux are intentionally
-// excluded; cc-fleet only owns processes it spawned.
+// newPsCmd builds `cc-fleet ps [--json]` — list the provider teammates
+// cc-fleet can attribute on positive evidence (teardown.DiscoverTeammates).
 func newPsCmd() *cobra.Command {
 	var asJSON bool
 	var check bool
 
 	cmd := &cobra.Command{
 		Use:   "ps",
-		Short: "List live cc-fleet teammates",
-		Long: `List every cc-fleet-spawned teammate currently running.
+		Short: "List cc-fleet provider teammates",
+		Long: `List the cc-fleet provider teammates Claude Code started.
 
-Identification: each row is a claude process with --agent-id that lives
-inside a tmux pane (cc-fleet only spawns into panes). Teammates started
-manually outside tmux are not listed.
+Identification: a claude process with --agent-id whose team config member has
+a ccf-<provider> agent type and whose --settings is that provider's profile
+(or a cc-fleet 0.3.x teammate), found on any tmux server of this user; a dead
+pane showing a launcher failure line; or a ccf-* member that bypassed the
+launcher. Native teammates are never listed, even under a provider lead.
+
+Each row has a state: running, orphaned (its lead session is gone), failed
+(the launcher refused to start it; see error_code) or bypassed (it started
+without the cc-fleet launcher, so it is not routed to its provider).
+tmux_socket_path is the server socket for tmux -S (it replaces 0.3.x's
+tmux_socket, a -L name).
 
 Output: pretty table by default; --json emits {"ok":true,"teammates":[...]}
-with one entry per live teammate. An empty fleet returns ok=true with an
-empty array.
+with one entry per teammate. An empty fleet returns ok=true with an empty
+array.
 
 --check scans each teammate's tmux pane for provider API-error signatures
 (429 / 401 / out-of-balance / rate limit) and adds a "status" field
 (ok | error | unknown) plus "error_class" / "detail". Use it to detect a
 provider teammate wedged in a retry loop — it never goes idle, so waiting on
 an idle notification would block forever. The scan reports only the error
-CLASS, never raw pane text (which can contain key fragments).`,
+CLASS, never raw pane text (which can contain key fragments). Failed rows
+report error_class launch_failed and bypassed rows launcher_bypassed without
+a scan.`,
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,
@@ -110,17 +117,17 @@ func runPs(asJSON, check bool) error {
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
 	if check {
-		fmt.Fprintln(w, "NAME\tTEAM\tPANE\tPROVIDER\tMODEL\tPID\tSTATUS\tDETAIL")
+		fmt.Fprintln(w, "NAME\tTEAM\tPANE\tPROVIDER\tMODEL\tPID\tSTATE\tSTATUS\tDETAIL")
 		for _, t := range teammates {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\n",
-				t.Name, t.Team, t.PaneID, t.Provider, t.Model, t.PID, t.Status, t.Detail)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\t%s\t%s\n",
+				t.Name, t.Team, t.PaneID, t.Provider, t.Model, t.PID, t.State, t.Status, t.Detail)
 		}
 		return w.Flush()
 	}
-	fmt.Fprintln(w, "NAME\tTEAM\tPANE\tPROVIDER\tMODEL\tPID")
+	fmt.Fprintln(w, "NAME\tTEAM\tPANE\tPROVIDER\tMODEL\tPID\tSTATE")
 	for _, t := range teammates {
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\n",
-			t.Name, t.Team, t.PaneID, t.Provider, t.Model, t.PID)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s\n",
+			t.Name, t.Team, t.PaneID, t.Provider, t.Model, t.PID, t.State)
 	}
 	return w.Flush()
 }

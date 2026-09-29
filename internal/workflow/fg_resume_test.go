@@ -21,7 +21,7 @@ func writeFgTrivialScript(t *testing.T) string {
 	runLeaf = func(context.Context, subagent.Request) subagent.Result {
 		return subagent.Result{OK: true, Result: "ok"}
 	}
-	sweepRunWorktreesFn = func(string) {}
+	sweepRunWorktreesFn = func(string) []string { return nil }
 	sweepOwnSegmentFn = func(string, string) {}
 	t.Cleanup(func() { runLeaf = old; sweepRunWorktreesFn = oldAll; sweepOwnSegmentFn = oldOwn })
 	script := filepath.Join(t.TempDir(), "s.js")
@@ -190,7 +190,7 @@ func TestForegroundPreflightStampsSelfIdentity(t *testing.T) {
 	oldAll := sweepRunWorktreesFn
 	oldOwn := sweepOwnSegmentFn
 	executeFn = func(context.Context, string, string, Options) error { return nil } // skip the engine
-	sweepRunWorktreesFn = func(string) {}
+	sweepRunWorktreesFn = func(string) []string { return nil }
 	sweepOwnSegmentFn = func(string, string) {}
 	t.Cleanup(func() { executeFn = oldExec; sweepRunWorktreesFn = oldAll; sweepOwnSegmentFn = oldOwn })
 

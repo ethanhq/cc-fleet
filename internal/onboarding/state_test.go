@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -73,5 +74,48 @@ func TestLoadState_CorruptTreatedAsZero(t *testing.T) {
 	}
 	if st.AgentTeamsAck {
 		t.Fatal("corrupt file must yield zero State (no ack) so we re-guide")
+	}
+}
+
+func TestStateRoundTripTeammateLane(t *testing.T) {
+	setupHome(t)
+	in := State{
+		AgentTeamsAck:   true,
+		TeammateLaneAck: true,
+		TeammateLane:    TeammateLane{Enabled: true, ModeWrittenAt: 1790000000123},
+	}
+	if err := in.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	out, err := LoadState()
+	if err != nil {
+		t.Fatalf("LoadState: %v", err)
+	}
+	in.Version = stateVersion
+	if out != in {
+		t.Fatalf("round-trip mismatch: got %+v, want %+v", out, in)
+	}
+
+	path, _ := StatePath()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"teammate_lane_ack":true`, `"teammate_lane":{"enabled":true,"mode_written_at":1790000000123}`} {
+		if !strings.Contains(string(raw), want) {
+			t.Fatalf("onboarding.json lacks %s: %s", want, raw)
+		}
+	}
+
+	// A file written before the lane fields existed reads them as zero values.
+	if err := os.WriteFile(path, []byte(`{"version":1,"agent_teams_ack":true,"claude_install_ack":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old, err := LoadState()
+	if err != nil {
+		t.Fatalf("LoadState legacy: %v", err)
+	}
+	if !old.AgentTeamsAck || !old.ClaudeInstallAck || old.TeammateLaneAck || old.TeammateLane != (TeammateLane{}) {
+		t.Fatalf("legacy file = %+v", old)
 	}
 }

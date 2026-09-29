@@ -154,8 +154,13 @@ tar -xzf "${tmp}/${TARBALL}" -C "${tmp}"
 extract="${tmp}/cc-fleet-${os}-${arch}"   # archives wrap in this dir
 
 mkdir -p "${PREFIX}"
-cp "${extract}/cc-fleet" "${PREFIX}/cc-fleet"
-chmod 0755 "${PREFIX}/cc-fleet"
+# Copy to a temp file in the same dir, then rename over the target: the rename
+# gives a new inode, so a running cc-fleet keeps its old file and macOS never
+# pairs the new bytes with a stale code signature (overwriting in place makes
+# every later launch die with SIGKILL).
+tmpbin="${PREFIX}/.cc-fleet.tmp.$$"
+cp "${extract}/cc-fleet" "$tmpbin" && chmod 0755 "$tmpbin" && mv -f "$tmpbin" "${PREFIX}/cc-fleet" \
+  || { rm -f "$tmpbin"; echo "install.sh: could not install ${PREFIX}/cc-fleet" >&2; exit 1; }
 # Relative symlink (os.Executable() resolves it, so a teammate's apiKeyHelper
 # still points at the real cc-fleet path).
 ln -sf cc-fleet "${PREFIX}/ccf"
@@ -262,4 +267,5 @@ cat <<EOF
    cc-fleet update      # later: update cc-fleet + the plugin to the latest release
 
    tmux is needed only for live teammates; subagent / workflow / run work without it.
+   Provider teammates: run 'cc-fleet teammate setup' once (terminal claude inside tmux or iTerm2, Claude Code ≥ 2.1.278).
 EOF

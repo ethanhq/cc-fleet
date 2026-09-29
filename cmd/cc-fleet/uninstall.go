@@ -36,7 +36,10 @@ func newUninstallCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "uninstall",
 		Short: "Remove cc-fleet state — or everything, with --all",
-		Long: `Remove every state file cc-fleet manages on disk:
+		Long: `Undo the provider-teammate lane like ` + "`cc-fleet teammate setup --remove`" + `
+(the CLAUDE_CODE_TEAMMATE_COMMAND setting and cc-fleet's ccf-* agent
+definitions; the launcher shim is kept until every claude session has
+restarted), then remove every state file cc-fleet manages on disk:
 
   ~/.claude/profiles/<provider>.json   (one per provider)
   ~/.config/cc-fleet/providers.toml

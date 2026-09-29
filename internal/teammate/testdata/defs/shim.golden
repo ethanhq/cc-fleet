@@ -1,0 +1,28 @@
+#!/bin/sh
+# cc-fleet teammate launcher shim — managed-by: cc-fleet (shim protocol 1).
+# Claude Code runs this for EVERY split-pane teammate (CLAUDE_CODE_TEAMMATE_COMMAND).
+# Regenerate: cc-fleet repair.  Remove: cc-fleet teammate setup --remove.
+ccf='/opt/cc fleet/it'\''s/cc-fleet'
+if [ -x "$ccf" ] && "$ccf" __teammate-launch --shim-protocol 1 >/dev/null 2>&1; then
+  exec "$ccf" __teammate-launch "$@"
+fi
+# cc-fleet missing / downgraded / broken: native teammates still start; provider teammates are refused.
+id= ty= want=
+for a in "$@"; do
+  case "$want" in
+    id) id=$a; want=; continue ;;
+    ty) ty=$a; want=; continue ;;
+  esac
+  case "$a" in
+    --agent-id) want=id ;;
+    --agent-id=*) id=${a#--agent-id=} ;;
+    --agent-type) want=ty ;;
+    --agent-type=*) ty=${a#--agent-type=} ;;
+  esac
+done
+case "$ty" in
+  ccf-*) echo "cc-fleet teammate: TEAMMATE_SETUP_REQUIRED: $id: launcher_target_missing ($ccf) — run: cc-fleet repair" >&2
+         exit 1 ;;
+esac
+if command -v claude >/dev/null 2>&1; then exec claude "$@"; fi
+exec "$HOME/.local/bin/claude" "$@"

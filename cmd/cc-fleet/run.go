@@ -1,12 +1,15 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
+	"github.com/ethanhq/cc-fleet/internal/permmode"
 	"github.com/ethanhq/cc-fleet/internal/run"
 )
 
@@ -96,4 +99,25 @@ func splitRunArgs(args []string, dashIdx int) (provider string, extra []string, 
 	default:
 		return "", nil, fmt.Errorf("usage: cc-fleet run [<provider>] [-- <claude args>]")
 	}
+}
+
+// resolvePermissionOverride maps the two manual permission flags to a single
+// permission-mode value (or "" = none). --dangerously-skip-permissions is sugar
+// for --permission-mode bypassPermissions; passing both is rejected (mutually
+// exclusive); an out-of-set --permission-mode is rejected before any side effect.
+// "" means run adds no permission flag.
+func resolvePermissionOverride(mode string, danger bool) (string, error) {
+	if danger && mode != "" {
+		return "", errors.New("--dangerously-skip-permissions and --permission-mode are mutually exclusive")
+	}
+	if danger {
+		return permmode.BypassPermissions, nil
+	}
+	if mode == "" {
+		return "", nil
+	}
+	if !permmode.IsValid(mode) {
+		return "", fmt.Errorf("invalid --permission-mode %q (want one of: %s)", mode, strings.Join(permmode.Modes, ", "))
+	}
+	return mode, nil
 }

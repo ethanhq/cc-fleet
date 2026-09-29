@@ -7,3 +7,8 @@ package childenv
 func inDropList(name string) bool {
 	return dropList[name]
 }
+
+// inTeammateScrub reports whether CleanForTeammate drops name (exact case).
+func inTeammateScrub(name string) bool {
+	return teammateScrub[name] || hasTeammateScrubPrefix(name)
+}

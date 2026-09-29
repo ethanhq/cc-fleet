@@ -151,3 +151,36 @@ func TestCapturePane_TmuxFails(t *testing.T) {
 		t.Fatal("capturePane: want error on tmux exit 1, got nil")
 	}
 }
+
+// TestAnnotateHealthLaunchStates: failed and bypassed rows are classified from
+// their discovery state without a pane capture; running and orphaned rows are
+// still captured on their own socket path.
+func TestAnnotateHealthLaunchStates(t *testing.T) {
+	orig := captureFn
+	t.Cleanup(func() { captureFn = orig })
+	var captured []string
+	captureFn = func(socket, pane string) (string, error) {
+		captured = append(captured, socket+" "+pane)
+		return "● ok\n", nil
+	}
+
+	got := AnnotateHealth([]Teammate{
+		{Name: "f", PaneID: "%1", Socket: "/tmp/tmux-501/default", State: StateFailed, ErrorCode: "BAD_ARGS"},
+		{Name: "b", Backend: BackendInProcess, State: StateBypassed},
+		{Name: "r", PaneID: "%3", Socket: "/tmp/tmux-501/default", State: StateRunning},
+		{Name: "o", PaneID: "%4", Socket: "/tmp/tmux-501/other", State: StateOrphaned},
+	})
+	if got[0].Status != statusError || got[0].ErrorClass != ClassLaunchFailed || got[0].Detail == "" {
+		t.Fatalf("failed row = %+v, want error/launch_failed", got[0])
+	}
+	if got[1].Status != statusError || got[1].ErrorClass != ClassLauncherBypassed || got[1].Detail == "" {
+		t.Fatalf("bypassed row = %+v, want error/launcher_bypassed", got[1])
+	}
+	if got[2].Status != statusOK || got[3].Status != statusOK {
+		t.Fatalf("running/orphaned rows = %+v / %+v, want ok", got[2], got[3])
+	}
+	want := []string{"/tmp/tmux-501/default %3", "/tmp/tmux-501/other %4"}
+	if strings.Join(captured, ",") != strings.Join(want, ",") {
+		t.Fatalf("captured %v, want %v", captured, want)
+	}
+}

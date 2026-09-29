@@ -1,6 +1,7 @@
 package profile
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -80,11 +81,22 @@ func GenerateForProvider(v *config.Provider, helperBinary string) ([]byte, error
 	// The [1m] context marker is stripped from the alias slots: only the main model
 	// (via --model) carries it, where Claude Code's strip-before-request is the
 	// documented behavior.
+	//
+	// The blank credential and cloud-backend keys override any value the lead's
+	// settings layers or process env carry: otherwise CC sends the lead's token or
+	// custom headers to the provider, or routes the request to Bedrock/Vertex/etc.
+	// instead of the profile's base_url. CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS is
+	// deliberately left alone — native teammates need it.
 	env := map[string]string{
 		"ANTHROPIC_BASE_URL":             v.BaseURL,
 		"ANTHROPIC_DEFAULT_OPUS_MODEL":   config.Strip1M(v.StrongModelOrDefault()),
 		"ANTHROPIC_DEFAULT_SONNET_MODEL": config.Strip1M(v.DefaultModel),
 		"ANTHROPIC_DEFAULT_HAIKU_MODEL":  config.Strip1M(v.FastModelOrDefault()),
+
+		"ANTHROPIC_AUTH_TOKEN": "", "ANTHROPIC_API_KEY": "", "ANTHROPIC_CUSTOM_HEADERS": "",
+		"CLAUDE_CODE_USE_BEDROCK": "", "CLAUDE_CODE_USE_VERTEX": "", "CLAUDE_CODE_USE_FOUNDRY": "",
+		"CLAUDE_CODE_USE_ANTHROPIC_AWS": "", "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD": "",
+		"CLAUDE_CODE_USE_MANTLE": "", "CLAUDE_CODE_USE_GATEWAY": "",
 	}
 	pf := profileFile{
 		APIKeyHelper: quoteArg(helperBinary) + " keyget " + quoteArg(v.Name),
@@ -181,6 +193,8 @@ func isShellSafe(s string) bool {
 // If helperBinary is empty, os.Executable() is used so the apiKeyHelper field
 // always carries an absolute path to the running binary.
 //
+// A file whose bytes already match is left untouched (no rewrite, mtime kept).
+//
 // Returns the resolved profile path on success.
 func WriteForProvider(v *config.Provider, helperBinary string) (string, error) {
 	if v == nil {
@@ -202,6 +216,9 @@ func WriteForProvider(v *config.Provider, helperBinary string) (string, error) {
 	path, err := ProfilePath(v.Name)
 	if err != nil {
 		return "", err
+	}
+	if cur, err := os.ReadFile(path); err == nil && bytes.Equal(cur, data) {
+		return path, nil
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

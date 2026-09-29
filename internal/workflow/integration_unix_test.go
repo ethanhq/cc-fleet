@@ -15,7 +15,7 @@ import (
 
 // TestRealLeafIntegration drives the FULL chain end to end through the REAL leaf
 // (runLeaf = subagent.Run, NOT the test seam): a cc-fleet config + a fake `claude`
-// binary wired via the fingerprint cache, then a workflow whose agent() calls exec
+// binary first on PATH, then a workflow whose agent() calls exec
 // that fake claude, classify its JSON envelope, and flow the result back into the
 // script. It asserts the fan-out + pipeline results, the board jobs tagged with the
 // run, and that the prompts actually reached the leaf over stdin. Unix-only (the fake
@@ -33,22 +33,26 @@ func TestRealLeafIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Fake `claude`: append the prompt it receives on stdin to a log, then emit a
+	// Fake `claude`: answer --version on its own (no log, no stdin read); otherwise
+	// append the prompt it receives on stdin to a log, then emit a
 	// `claude --output-format json` result envelope — standing in for a provider leaf.
 	promptLog := filepath.Join(home, "prompts.log")
-	fakeClaude := filepath.Join(home, "claude")
-	fakeScript := "#!/bin/sh\ncat >> " + promptLog + "\n" +
+	fakeDir := filepath.Join(home, "bin")
+	if err := os.MkdirAll(fakeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeClaude := filepath.Join(fakeDir, "claude")
+	fakeScript := "#!/bin/sh\n" +
+		`if [ "$1" = "--version" ]; then printf '2.1.150 (Claude Code)\n'; exit 0; fi` + "\n" +
+		"cat >> " + promptLog + "\n" +
 		`printf '%s' '{"type":"result","subtype":"success","is_error":false,"result":"LEAF_OK","num_turns":1,"total_cost_usd":0.002}'` + "\n"
 	if err := os.WriteFile(fakeClaude, []byte(fakeScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	// Point the fingerprint cache at the fake binary (ResolveBinaryPath keeps a valid
-	// cached path), and declare one enabled provider.
-	fpJSON := `{"cc_version":"2.1.150","binary_path":"` + fakeClaude + `","env":{},"flags_template":[]}`
-	if err := os.WriteFile(filepath.Join(cfgDir, "fingerprint.json"), []byte(fpJSON), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	// Put the fake first on PATH (claudebin resolves the live binary from PATH), and
+	// declare one enabled provider.
+	t.Setenv("PATH", fakeDir+":/usr/bin:/bin")
 	providers := "version = 1\n\n[fake]\n" +
 		"base_url = \"https://example.invalid/anthropic\"\n" +
 		"default_model = \"fake-model\"\n" +

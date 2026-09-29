@@ -13,6 +13,7 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/sessiontitle"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 	"github.com/ethanhq/cc-fleet/internal/teamhist"
+	"github.com/ethanhq/cc-fleet/internal/workflow"
 )
 
 // modalPhase is the centered board modal's stage: ask for confirmation, wait on a dispatched async
@@ -144,6 +145,7 @@ func (m Model) runConfirmed() (tea.Model, tea.Cmd) {
 			return m, loadBoard(m.boardEpoch)
 		}
 		c.result = fmt.Sprintf("cleared %d finished · %d ended team(s)", removed, deleted)
+		c.result += keptWorktreeNote(workflow.KeptWorktreeNotices(""))
 		m.confirm = &c
 		return m, loadBoard(m.boardEpoch) // refresh the board behind the result
 	case confirmSession:

@@ -30,10 +30,9 @@ const (
 // captureFn is the seam tests substitute so they never need a live tmux server
 // (and never touch a real pane). Production wiring is capturePane.
 //
-// The seam takes (socket, paneID) so the production call can scope capture-pane
-// to the right tmux server — swarm panes live on a private socket the default
-// server can't see, and a default-server capture silently fails for every swarm
-// pane, marking them statusUnknown forever.
+// The seam takes (socketPath, paneID) so the production call can scope
+// capture-pane to the pane's own tmux server (-S): a capture on any other
+// server silently fails, marking the row statusUnknown forever.
 var captureFn = capturePane
 
 // AnnotateHealth fills Status / ErrorClass / Detail on each teammate by
@@ -50,14 +49,26 @@ var captureFn = capturePane
 // hard-coded strings; we NEVER copy any substring of the captured text into
 // the result, and never log it.
 //
-// Best-effort: a pane that can't be captured (already gone, tmux down) is
-// marked statusUnknown rather than failing the whole listing. Mutates and
-// returns the same slice for call-site convenience.
+// failed and bypassed rows are classified from their discovery state without
+// a capture: launch_failed and launcher_bypassed.
+//
+// Best-effort: a pane that can't be captured (already gone, tmux down, no pane
+// at all) is marked statusUnknown rather than failing the whole listing.
+// Mutates and returns the same slice for call-site convenience.
 func AnnotateHealth(teammates []Teammate) []Teammate {
 	for i := range teammates {
-		// Scope capture to the pane's owning server. Without socket-scoping the
-		// swarm pane's default-server capture silently fails for every
-		// out-of-tmux teammate.
+		switch teammates[i].State {
+		case StateFailed:
+			teammates[i].Status = statusError
+			teammates[i].ErrorClass = ClassLaunchFailed
+			teammates[i].Detail = "the cc-fleet launcher refused to start this teammate — see error_code, fix it, then start the teammate again"
+			continue
+		case StateBypassed:
+			teammates[i].Status = statusError
+			teammates[i].ErrorClass = ClassLauncherBypassed
+			teammates[i].Detail = "this teammate started without the cc-fleet launcher, so it is not routed to its provider — stop it, then run cc-fleet teammate check"
+			continue
+		}
 		out, err := captureFn(teammates[i].Socket, teammates[i].PaneID)
 		if err != nil {
 			teammates[i].Status = statusUnknown
@@ -77,12 +88,9 @@ func AnnotateHealth(teammates []Teammate) []Teammate {
 // Server.command outlet. No -e is passed, so escape sequences are stripped and
 // the caller gets clean text to grep.
 //
-// socket is the tmux server socket name (empty = default server). For an
-// out-of-tmux swarm pane, socket = "cc-fleet-swarm-<team>"; for an in-tmux pane,
-// socket = "". The server inserts "-L <socket>" only when non-empty so the
-// in-tmux path stays byte-identical.
-func capturePane(socket, paneID string) (string, error) {
-	return tmux.NewServer(socket).CapturePane(paneID)
+// socketPath is the pane's server socket (Teammate.Socket), passed as -S.
+func capturePane(socketPath, paneID string) (string, error) {
+	return tmux.NewServerPath(socketPath).CapturePane(paneID)
 }
 
 // classifyPaneOutput inspects recent pane text for provider API-error signatures

@@ -5,21 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-
-	"github.com/ethanhq/cc-fleet/internal/ids"
 )
 
-// teamLockBasename is the per-team lock file inside ~/.claude/teams/<team>/.
-//
-// Dotfile name is intentional: tmux / users browsing the team dir don't see
-// it by default, and CC's own tasks/.lock lives elsewhere — we never want
-// to share a lock with the upstream binary's state files.
-const teamLockBasename = ".cc-fleet-lock"
-
 // serverLockBasename is a single process-wide lock at $HOME/.claude/ that
-// serializes tmux operations racing at the SERVER level (split-window +
-// select-layout main-vertical), which per-team locks cannot serialize across
-// different teams spawning into the same tmux window. See WithServerLock.
+// serializes tmux operations racing at the SERVER level (break-pane / join-pane
+// + select-layout main-vertical). See WithServerLock.
 const serverLockBasename = ".cc-fleet-tmux.lock"
 
 // providersLockBasename is a single process-wide lock co-located with the global
@@ -31,48 +21,17 @@ const serverLockBasename = ".cc-fleet-tmux.lock"
 // boundary (ConfigDir, not ~/.claude/).
 const providersLockBasename = ".cc-fleet-providers.lock"
 
-// WithTeamLock acquires an exclusive flock on
-// $HOME/.claude/teams/<team>/.cc-fleet-lock, runs fn, then releases the lock.
-//
-// The lock is held for the full duration of fn (blocking flock, LOCK_EX). The
-// parent directory is created at 0700 and the lock file at 0600 if missing.
-//
-// cc-fleet is an external process, so it cannot rely on in-process
-// serialization. Every cc-fleet code path that mutates per-team state
-// (config.json members list, inbox files, profile install) must run under this
-// lock. The kernel guarantees mutual exclusion across processes via flock on
-// the same file descriptor inode.
-//
-// team must be non-empty; an empty team name is a programmer error.
-func WithTeamLock(team string, fn func() error) error {
-	if team == "" {
-		return errors.New("config: WithTeamLock: empty team name")
-	}
-	if fn == nil {
-		return errors.New("config: WithTeamLock: nil fn")
-	}
-
-	path, err := teamLockPath(team)
-	if err != nil {
-		return err
-	}
-	return withFlock(path, fn)
-}
-
 // WithServerLock acquires a single process-wide exclusive flock at
 // $HOME/.claude/.cc-fleet-tmux.lock, runs fn, then releases it.
 //
 // It serializes operations that race at the tmux-SERVER (window-layout) level —
-// chiefly split-window + select-layout main-vertical + resize-pane — which
-// mutate state NOT scoped to any one team. WithTeamLock does not serialize
-// spawns from DIFFERENT teams into the same tmux window (their per-team locks
-// sit on different inodes), so the tmux split sequence must additionally hold
-// this global lock. cc-fleet only ever uses the default tmux server, so one
-// global lock is effectively per-server.
+// chiefly hide/show's break-pane / join-pane + select-layout main-vertical +
+// resize-pane — which mutate state NOT scoped to any one team. One global lock
+// covers every tmux server.
 //
-// Lock ordering: callers already holding a team lock acquire this one INSIDE it
-// (team outer, server inner). The server lock is a single global resource, so
-// there is no lock-ordering cycle and no deadlock.
+// Lock ordering: a caller that also holds the providers-config lock acquires
+// this one INSIDE it (providers outer, server inner). The server lock is a
+// single global resource, so there is no lock-ordering cycle and no deadlock.
 func WithServerLock(fn func() error) error {
 	if fn == nil {
 		return errors.New("config: WithServerLock: nil fn")
@@ -91,12 +50,11 @@ func WithServerLock(fn func() error) error {
 // config.Load → mutate → config.Save cycle must run under it so concurrent CLI
 // mutations serialize instead of clobbering each other.
 //
-// Lock ordering: this is a THIRD, independent scope alongside WithTeamLock
-// (per-team config.json) and WithServerLock (tmux window race). The three guard
-// disjoint resources (global providers.toml vs a per-team dir vs the tmux server),
-// so no acquisition cycle exists today. If a future flow ever needs more than
-// one at once, acquire this providers-config lock OUTERMOST — it covers a global
-// file touched before any team/tmux work — then team, then server inner.
+// Lock ordering: this is an independent scope alongside WithServerLock (tmux
+// window race). The two guard disjoint resources (global providers.toml vs the
+// tmux server), so no acquisition cycle exists today. If a future flow ever
+// needs both, acquire this providers-config lock OUTERMOST — it covers a global
+// file touched before any tmux work — then server inner.
 func WithProvidersConfigLock(fn func() error) error {
 	if fn == nil {
 		return errors.New("config: WithProvidersConfigLock: nil fn")
@@ -136,37 +94,12 @@ func withFlock(path string, fn func() error) error {
 }
 
 // WithFlock is the exported generic blocking-exclusive flock primitive (the same
-// withFlock the three config scopes use), for any cross-process critical section
+// withFlock the two config scopes use), for any cross-process critical section
 // keyed by a file path. The CALLER owns path validation and choosing a safe lock
 // path (it is created lazily and the kernel locks its inode). See
 // subagent.WithRunLock for the workflow runtime's per-run execution lock.
 func WithFlock(path string, fn func() error) error {
 	return withFlock(path, fn)
-}
-
-// teamLockPath returns $HOME/.claude/teams/<team>/.cc-fleet-lock.
-//
-// $HOME is required — XDG does not apply here because Claude Code reads
-// ~/.claude/ unconditionally.
-//
-// Defense-in-depth: team is path-validated before joining; the
-// constructed lock path is under-root checked against $HOME/.claude/teams so
-// a hostile name can never plant a lock file outside cc-fleet's ownership
-// boundary. CLI entry points already validate; this is belt-and-braces.
-func teamLockPath(team string) (string, error) {
-	if err := ids.ValidateTeamName(team); err != nil {
-		return "", fmt.Errorf("config: %w", err)
-	}
-	home := os.Getenv("HOME")
-	if home == "" {
-		return "", errors.New("config: HOME is not set")
-	}
-	root := filepath.Join(home, ".claude", "teams")
-	out := filepath.Join(root, team, teamLockBasename)
-	if err := ids.EnsureUnderRoot(root, out); err != nil {
-		return "", fmt.Errorf("config: %w", err)
-	}
-	return out, nil
 }
 
 // serverLockPath returns $HOME/.claude/.cc-fleet-tmux.lock — the single global

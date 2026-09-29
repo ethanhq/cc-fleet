@@ -31,7 +31,7 @@ LOCAL_SKILLS := .claude/skills
 # The self-contained Codex plugin. Its two SKILL.md are hand-maintained (purpose-written
 # for codex). Its cc-fleet-shared dir carries ONLY providers.md — a GENERATED copy of the
 # canonical one (a plugin install copies the whole tree, so a linked doc must live inside
-# it). The other shared docs are Claude-lane-specific (team / native-Agent / the TeamCreate
+# it). The other shared docs are Claude-lane-specific (team / native-Agent / the teammate-lane
 # self-heal), so the codex skills handle those inline or via `cc-fleet <cmd> --help` rather
 # than linking them. `codex-plugin-sync` regenerates providers.md; the drift-check fails if
 # it diverges.

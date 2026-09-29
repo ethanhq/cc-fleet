@@ -17,8 +17,15 @@ import (
 )
 
 // createWorktreeFn is a seam so tests inject a fake worktree (no real git) — production is
-// createWorktree. It returns the worktree path, a cleanup func, and an error.
+// createWorktree. It returns the worktree path, a finish func, and an error.
 var createWorktreeFn = createWorktree
+
+// keepMarkerName marks an isolation worktree whose snapshot failed: both sweeps and subagent.PurgeRun
+// skip a worktree holding it, so unsaved leaf work is never deleted. Its content is the one-line reason.
+const keepMarkerName = ".cc-fleet-keep"
+
+// unprotectedWarning ends the kept line when even the keep marker could not be written.
+const unprotectedWarning = "UNPROTECTED: copy this directory by hand before any workflow restart, rm or prune, or a new run in this repo"
 
 // sweepRunWorktreesFn / sweepOwnSegmentFn are seams so tests assert the Execute-time and resume-
 // launcher sweeps fire without real git — production is sweepRunWorktrees / sweepOwnSegment.
@@ -33,16 +40,17 @@ var (
 var reclaimVerdicts = subagent.SegmentReclaimVerdicts
 
 // createWorktree makes a fresh detached `git worktree` from the run's repo (cwd's repo)
-// at HEAD, under a run-scoped temp root, and returns its path + a cleanup. A leaf run with
+// at HEAD, under a run-scoped temp root, and returns its path + a finish. A leaf run with
 // cwd = this worktree edits an isolated copy, so parallel file-editing leaves don't
-// collide. The worktree is removed on cleanup (deferred by the caller on done/fail/panic).
+// collide. finish (deferred by the caller on done/fail/panic) saves any leaf changes as a
+// branch, then removes the worktree (finishWorktree).
 // The git registration lands in the user's repo .git; a graceful path removes it at once,
 // while an engine SIGKILL/crash skips the deferred cleanup and leaves a stale registration —
 // reclaimed later under a death proof: the next engine's startup sweepRunWorktrees (a
 // provably-dead detached run, or any vanished workdir), or a resume's own-segment sweep.
 // Cross-platform via the git CLI (no cgo). A non-git cwd is a clear error. The git child env
 // is scrubbed of creds (childenv.Clean) — git needs none.
-func createWorktree(runID string) (string, func(), error) {
+func createWorktree(runID string) (string, func(jobID string, attempt int) (kept string), error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", nil, err
@@ -64,8 +72,135 @@ func createWorktree(runID string) (string, func(), error) {
 		removeWorktree(root, wt) // a partial add may have left a registration and/or a dir
 		return "", nil, fmt.Errorf("git worktree add: %v: %s", gerr, strings.TrimSpace(out))
 	}
-	cleanup := func() { removeWorktree(root, wt) }
-	return wt, cleanup, nil
+	baseSHA, gerr := runGit(wt, "rev-parse", "HEAD")
+	if gerr != nil {
+		removeWorktree(root, wt)
+		return "", nil, fmt.Errorf("git rev-parse HEAD: %v: %s", gerr, strings.TrimSpace(baseSHA))
+	}
+	baseSHA = strings.TrimSpace(baseSHA)
+	finish := func(jobID string, attempt int) string {
+		return finishWorktree(root, wt, baseSHA, runID, jobID, attempt)
+	}
+	return wt, finish, nil
+}
+
+// finishWorktree ends an isolation worktree. A clean one (no porcelain changes, HEAD still at base) is
+// removed and "" returned. Otherwise the leaf's work is snapshotted first — uncommitted changes
+// committed, the resulting HEAD saved as branch cc-fleet/wf-<jobID>-a<attempt> in the user's repo — and
+// the returned line names the branch. If any step fails, or the tree is still dirty after the snapshot
+// commit (e.g. changes inside a nested repository), the worktree is kept (keepWorktree).
+func finishWorktree(root, wt, base, runID, jobID string, attempt int) string {
+	// Explicit flags: status.showUntrackedFiles or a submodule ignore setting must not hide leaf work.
+	status, err := runGit(wt, "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none")
+	if err != nil {
+		return keepWorktree(wt, gitErrSummary("status", err, status))
+	}
+	head, err := runGit(wt, "rev-parse", "HEAD")
+	if err != nil {
+		return keepWorktree(wt, gitErrSummary("rev-parse HEAD", err, head))
+	}
+	dirty := strings.TrimSpace(status) != ""
+	if !dirty && strings.TrimSpace(head) == base {
+		removeWorktree(root, wt)
+		return ""
+	}
+	if dirty {
+		if out, err := runGit(wt, "add", "-A"); err != nil {
+			return keepWorktree(wt, gitErrSummary("add", err, out))
+		}
+		msg := fmt.Sprintf("cc-fleet workflow snapshot: run %s job %s attempt %d", runID, jobID, attempt)
+		if out, err := runGit(wt, "-c", "user.name=cc-fleet", "-c", "user.email=cc-fleet@localhost", "-c", "commit.gpgsign=false",
+			"commit", "--no-verify", "-q", "-m", msg); err != nil {
+			return keepWorktree(wt, gitErrSummary("commit", err, out))
+		}
+		if status, err = runGit(wt, "status", "--porcelain", "--untracked-files=all", "--ignore-submodules=none"); err != nil {
+			return keepWorktree(wt, gitErrSummary("status", err, status))
+		}
+		if strings.TrimSpace(status) != "" {
+			return keepWorktree(wt, "changes remain after the snapshot commit (e.g. inside a nested repository or submodule)")
+		}
+		if head, err = runGit(wt, "rev-parse", "HEAD"); err != nil {
+			return keepWorktree(wt, gitErrSummary("rev-parse HEAD", err, head))
+		}
+	}
+	head = strings.TrimSpace(head)
+	branch := fmt.Sprintf("cc-fleet/wf-%s-a%d", jobID, attempt)
+	if _, err := runGit(root, "branch", branch, head); err != nil {
+		branch += "-" + uuid.NewString()[:8] // the name is most likely taken: retry once with a random suffix
+		if out, err := runGit(root, "branch", branch, head); err != nil {
+			return keepWorktree(wt, gitErrSummary("branch", err, out))
+		}
+	}
+	removeWorktree(root, wt)
+	return fmt.Sprintf("branch %s (%s)", branch, head[:min(12, len(head))])
+}
+
+// keepWorktree leaves wt in place after a failed snapshot and writes its keep marker (the reason).
+// When even the marker can't be written the directory is still kept, but nothing shields it from a
+// later sweep or purge — the returned line then says so.
+func keepWorktree(wt, reason string) string {
+	if err := os.WriteFile(filepath.Join(wt, keepMarkerName), []byte(reason+"\n"), 0o600); err != nil {
+		return fmt.Sprintf("kept at %s: %s (keep marker not written: %v) — %s", wt, reason, err, unprotectedWarning)
+	}
+	return fmt.Sprintf("kept at %s: %s", wt, reason)
+}
+
+// gitErrSummary is a one-line summary of a failed git step: the error plus git's first output line.
+func gitErrSummary(step string, err error, out string) string {
+	first, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
+	if first = strings.TrimSpace(first); first == "" {
+		return fmt.Sprintf("git %s: %v", step, err)
+	}
+	return fmt.Sprintf("git %s: %v: %s", step, err, first)
+}
+
+// keepMarkerReason reports whether wt holds a keep marker, and the reason recorded in it.
+func keepMarkerReason(wt string) (string, bool) {
+	p := filepath.Join(wt, keepMarkerName)
+	if _, err := os.Lstat(p); err != nil {
+		return "", false
+	}
+	b, _ := os.ReadFile(p)
+	first, _, _ := strings.Cut(strings.TrimSpace(string(b)), "\n")
+	return strings.TrimSpace(first), true
+}
+
+// keepNotice is the log line for a worktree left alone because of its keep marker.
+func keepNotice(wt, reason string) string {
+	return fmt.Sprintf("keeping %s: %s (remove the directory yourself once the work is saved)", wt, reason)
+}
+
+// KeptWorktreeNotices lists runID's isolation worktrees (every run's in this store when runID is empty)
+// that hold a keep marker, one log line each. Read-only: the caller decides where the lines go.
+func KeptWorktreeNotices(runID string) []string {
+	storeDir, err := subagent.WorktreeStoreDir()
+	if err != nil {
+		return nil
+	}
+	var segs []string
+	if runID != "" {
+		segs = []string{ids.WorktreeSegment(runID)}
+	} else if entries, rerr := os.ReadDir(storeDir); rerr == nil {
+		for _, e := range entries {
+			if e.IsDir() {
+				segs = append(segs, e.Name())
+			}
+		}
+	}
+	var notices []string
+	for _, seg := range segs {
+		entries, rerr := os.ReadDir(filepath.Join(storeDir, seg))
+		if rerr != nil {
+			continue
+		}
+		for _, e := range entries {
+			wt := filepath.Join(storeDir, seg, e.Name())
+			if reason, ok := keepMarkerReason(wt); ok {
+				notices = append(notices, keepNotice(wt, reason))
+			}
+		}
+	}
+	return notices
 }
 
 // removeWorktree unregisters wt from root's .git and deletes its workdir, best-effort. The
@@ -111,14 +246,20 @@ func removeWorktree(root, wt string) {
 // (subagent.SegmentReclaimVerdicts): a non-path-safe twin never RECLAIMS (identity reclaim is
 // path-safe-only) yet, while alive, always VETOES its segment — so a live "a.b" can't lose its workdirs
 // to a dead "a-b", and a dead twin can't provoke reclaiming a live one.
-func sweepRunWorktrees(root string) {
+//
+// A present workdir the verdict reclaims is first salvaged (subagent.SalvageWorktree) — its engine died
+// without running finish — and kept with a keep marker when that fails. A worktree under the cc-fleet
+// temp root that holds a keep marker (a failed snapshot's unsaved work) is never removed, whatever its
+// verdict. The returned lines name each kept one (this run's own segment included) and each salvage
+// branch, for the caller to log — the sweep itself writes nothing to stderr.
+func sweepRunWorktrees(root string) (kept []string) {
 	storeID, err := subagent.WorktreeStoreID()
 	if err != nil {
-		return
+		return nil
 	}
 	out, err := runGit(root, "worktree", "list", "--porcelain")
 	if err != nil {
-		return
+		return nil
 	}
 	globalPrefix := filepath.Join(canonPath(os.TempDir()), subagent.WorktreeTempName, storeID) + string(os.PathSeparator)
 	// flatRoot is the SHARED cc-fleet-worktrees root every store (and any pre-namespacing legacy leftover)
@@ -140,12 +281,28 @@ func sweepRunWorktrees(root string) {
 		if !ok {
 			continue
 		}
+		if pathUnder(flatRoot, wt) {
+			if reason, marked := keepMarkerReason(wt); marked {
+				kept = append(kept, keepNotice(wt, reason))
+				continue
+			}
+		}
 		if pathUnder(globalPrefix, wt) {
 			seg := runSegment(globalPrefix, wt)
 			v := verdicts[seg]
 			_, statErr := os.Stat(wt)
 			presentReclaimable := verdictsOK && v.Reclaimer && !v.Vetoed
 			if presentReclaimable || os.IsNotExist(statErr) {
+				if !os.IsNotExist(statErr) {
+					note, remove := subagent.SalvageWorktree(wt)
+					if !remove {
+						kept = append(kept, keepNotice(wt, note))
+						continue
+					}
+					if note != "" {
+						kept = append(kept, fmt.Sprintf("isolation worktree salvaged: %s → %s", wt, note))
+					}
+				}
 				removeWorktree(root, wt)
 			}
 			continue // unknown/live/leaf-bearing present, or a segment a live owner vetoes → kept
@@ -159,6 +316,7 @@ func sweepRunWorktrees(root string) {
 		}
 		// else: not under the cc-fleet temp root at all (the user's own worktree) → left untouched.
 	}
+	return kept
 }
 
 // sweepOwnSegment reclaims ONLY runID's own isolation-worktree segment in root's .git — every
@@ -168,7 +326,9 @@ func sweepRunWorktrees(root string) {
 // manifest rewrite then erases. A non-path-safe id is a no-op — its segment collides with other ids,
 // so reclaiming it could delete a twin's live worktrees. Since the launcher already established the
 // prior run's death, it adds only the SEGMENT-level veto check: it reclaims unless an owner of the
-// segment — the run's own orphan leaf, or a colliding twin — is alive/leaf-bearing. Best-effort.
+// segment — the run's own orphan leaf, or a colliding twin — is alive/leaf-bearing. Best-effort. A
+// worktree holding a keep marker is skipped silently; any other is salvaged before removal (unlogged:
+// the launcher has no event stream yet) and skipped when the salvage kept it.
 func sweepOwnSegment(root, runID string) {
 	if ids.WorktreeSegment(runID) != runID {
 		return // non-path-safe: the segment is shared with colliding ids — never reclaim it
@@ -196,11 +356,17 @@ func sweepOwnSegment(root, runID string) {
 	segPrefix := segDir + string(os.PathSeparator)
 	for _, line := range strings.Split(out, "\n") {
 		if wt, ok := strings.CutPrefix(strings.TrimSpace(line), "worktree "); ok && pathUnder(segPrefix, wt) {
+			if _, marked := keepMarkerReason(wt); marked {
+				continue // a failed snapshot's unsaved work; the Execute-time sweep logs it
+			}
+			if _, remove := subagent.SalvageWorktree(wt); !remove {
+				continue // now marked; the Execute-time sweep logs it
+			}
 			removeWorktree(root, wt) // only the pre-verdict snapshot's registrations
 		}
 	}
 	// Remove the segment dir only if now EMPTY — a post-snapshot colliding fresh-uuid workdir (unlisted,
-	// so not removed above) keeps it, so os.Remove (not RemoveAll) leaks-not-deletes it.
+	// so not removed above) or a kept worktree keeps it, so os.Remove (not RemoveAll) leaks-not-deletes it.
 	_ = os.Remove(segDir)
 }
 

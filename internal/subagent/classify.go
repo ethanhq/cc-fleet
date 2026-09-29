@@ -261,8 +261,8 @@ func suggestionFor(code string) string {
 		return "Run cc-fleet edit <provider> --enable"
 	case ErrCodeProviderReserved:
 		return "Rename or remove the configured `claude` provider (cc-fleet remove claude) — the name is reserved for the native leaf"
-	case ErrCodeFingerprintMissing, ErrCodeFingerprintStale:
-		return "Run the FINGERPRINT self-heal flow (native probe → cc-fleet refresh-fingerprint), then retry"
+	case ErrCodeFingerprintStale:
+		return "Install Claude Code or put claude on PATH (cc-fleet doctor shows what it found), then retry"
 	case ErrCodeProxyUnavailable:
 		return "Conversion daemon failed to start — for codex run cc-fleet codex login (add --credential <name> for an extra one); otherwise free the base_url port, then retry"
 	case ErrCodeKeyInvalid:

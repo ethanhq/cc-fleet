@@ -27,7 +27,8 @@ The `cc-fleet` binary is the engine under the skills. Most of the time you let C
 
 | Command | What it does |
 |---------|--------------|
-| `spawn [provider]` | Spawn a provider teammate as a tmux pane (unix only; provider optional → default). |
+| `teammate setup` | One-time: enable provider teammates on Claude Code's native agent teams (launcher shim, `ccf-*` agent definitions, two settings keys). |
+| `teammate check [provider]` | Check that a provider teammate can start from this Claude Code session and print its `agent_type` (provider optional → default). |
 | `subagent [provider]` | Run a one-shot headless provider subagent (provider optional → default). |
 | `subagent-status <job>` | Check a background job; `--wait` blocks until it settles. |
 | `subagent-gc` | Prune finished subagent jobs (`--older-than`, `--session`). |
@@ -38,15 +39,22 @@ The `cc-fleet` binary is the engine under the skills. Most of the time you let C
 
 | Command | What it does |
 |---------|--------------|
-| `ps` | List live cc-fleet teammates (`--json`, `--check` for pane health). |
+| `ps` | List the provider teammates Claude Code started, with a `state` per row (`--json`, `--check` for pane health). |
 | `watch` | Stream the whole fleet — teammates, jobs, runs — as text until interrupted. |
-| `hide` / `show` | Park / restore a teammate's tmux pane without killing it. |
-| `teardown <team\|%pane>` | Kill teammate panes and clean up team state. |
+| `hide` / `show <%N\|name@team>` | Park / restore a provider teammate's tmux pane without killing it. |
+| `teardown <%N\|name@team\|team>` | Kill provider teammates after re-verifying each one's identity; never edits Claude Code's team files. |
 | `doctor` | Run the health checks — Core vs Optional; only a Core failure fails the run. |
-| `repair` | Rewrite every provider's profile JSON from `providers.toml`. |
-| `refresh-fingerprint` | Re-capture the Claude Code spawn template from a live probe agent. |
+| `repair` | Rewrite every provider's profile JSON from `providers.toml`; re-pin the teammate launcher shim. |
 | `update` | Self-update the binary via its install channel + refresh the plugin (`update rollback` undoes it). |
 | `uninstall` | Reset cc-fleet state (re-installable); `--all` also removes the skills, plugin, and binary — method-aware. |
+
+**Removed commands.** `spawn` and `refresh-fingerprint` are gone: Claude Code now starts teammates itself and builds their command line, so there is no spawn recipe to capture. Both remain as hidden stubs that print `{"ok":false,"error_code":"COMMAND_REMOVED",…}` and exit 1, whatever the arguments.
+
+| Removed | Use instead |
+|---------|-------------|
+| `cc-fleet spawn <p> --as <name> --team <t>` | `cc-fleet teammate check <p> --json`, then in the lead `Agent({name, subagent_type: <agent_type>, prompt})` (see [Teammates](#teammates--native-agent-teams-provider-backed)). The spawn flags (`--as`, `--team`, `--model`, `--color`, `--probe`, `--verify`, `--permission-mode`, …) have no replacement: Claude Code names, colors and places the teammate and passes the lead's permission mode; pick a model with the slot (`--slot strong` → `ccf-<p>.strong`). |
+| `cc-fleet refresh-fingerprint [--probe-team <t>]` | Nothing to refresh. If something fails, run `cc-fleet doctor`. |
+| native `TeamCreate` / `TeamDelete` | Nothing: every terminal `claude` session already has its own team, and Claude Code removes it when the session exits. |
 
 ## Registering a provider from the CLI
 
@@ -62,11 +70,13 @@ printf '%s' "$DEEPSEEK_API_KEY" | cc-fleet add deepseek \
 
 `add` probes the models endpoint synchronously (3s) and only persists on success. Optional model-roster flags: `--strong-model` / `--fast-model` (tier slots), `--effort low|medium|high|xhigh|max` (reasoning effort), `--default-permission` (the default permission mode for `cc-fleet run` sessions). `edit` patches any of these later, plus `--key-rotation` and `--enable`/`--disable`.
 
+Once provider teammates are set up, `add` / `edit` / `remove` also resync the `ccf-*` agent definitions. If that sync fails, or a `ccf-*.md` without the cc-fleet marker is in the way (it is never overwritten), the command itself still succeeds and `--json` carries a `teammate_sync_error` string; `cc-fleet repair` retries the sync and prints a warning for such a file (its `--json` lists it in `agent_defs.conflicts`).
+
 **OpenAI-protocol and codex providers register through the TUI** (the add form's OpenAI and CLI-auth groups) — `cc-fleet add` has no protocol flag. See [Codex](#codex--reuse-a-chatgpt-subscription-as-a-provider) for the codex CLI path.
 
 ## Default provider & model tiers
 
-`cc-fleet default <provider>` sets the fleet-wide default; every provider-less `spawn` / `subagent` / `run` / workflow leaf resolves to it (`default` alone shows it, `--unset` clears it). The id `claude` is reserved for the native leaf and can never be the default — `cc-fleet default claude` refuses with `PROVIDER_NAME_INVALID`. A provider's roster gives Claude stable handles instead of hardcoded IDs:
+`cc-fleet default <provider>` sets the fleet-wide default; every provider-less `teammate check` / `subagent` / `run` / workflow leaf resolves to it (`default` alone shows it, `--unset` clears it). The id `claude` is reserved for the native leaf and can never be the default — `cc-fleet default claude` refuses with `PROVIDER_NAME_INVALID`. A provider's roster gives Claude stable handles instead of hardcoded IDs:
 
 - `--model strong` / `--model fast` / `--model default` resolve through the roster.
 - Each slot can carry a 1M-context marker (`[1m]`) and the provider an effort level — both set in the TUI form or via `add`/`edit` flags.
@@ -123,7 +133,7 @@ cc-fleet run deepseek --model strong
 cc-fleet run deepseek --dangerously-skip-permissions
 ```
 
-`cc-fleet run [provider]` replaces the current process with an interactive `claude` REPL whose backend is the provider — **omit the provider to use the fleet-wide default** (the profile pins the `apiKeyHelper` + base URL; the model is the provider's `default_model` unless `--model` overrides). Unlike spawn/subagent, this is **you** using a provider, not Claude delegating.
+`cc-fleet run [provider]` replaces the current process with an interactive `claude` REPL whose backend is the provider — **omit the provider to use the fleet-wide default** (the profile pins the `apiKeyHelper` + base URL; the model is the provider's `default_model` unless `--model` overrides). Unlike teammates and subagents, this is **you** using a provider, not Claude delegating.
 
 - `--permission-mode <mode>` / `--dangerously-skip-permissions` — the session's permission posture (mutually exclusive). `run` execs the binary directly, so a `claude` shell alias that adds such a flag does not carry over — pass it here.
 - `--no-probe` — skip the pre-launch endpoint protocol check (before launching, `run` checks how an Anthropic-protocol provider's endpoint answers `POST /v1/messages`; a bare 404 — typically an OpenAI-only endpoint added as Anthropic-protocol — is rejected with a fix hint instead of claude's generic "model may not exist").
@@ -131,21 +141,48 @@ cc-fleet run deepseek --dangerously-skip-permissions
 
 Requires an interactive terminal. Works on Linux, macOS, and Windows.
 
-## Teammates — spawn, inspect, hide, tear down
+## Teammates — native agent teams, provider-backed
+
+A provider teammate is a teammate Claude Code starts itself, with the `Agent` tool, from an agent type cc-fleet installs (`ccf-<provider>`, plus `ccf-<provider>.strong` / `.fast` when those slots hold a different model). Claude Code owns the team, the pane, the inbox, `SendMessage`, permission inheritance and cleanup; cc-fleet only routes the pane's `claude` to the provider.
+
+**Where it works:** a terminal `claude` (Claude Code ≥ 2.1.278) running inside tmux or iTerm2, with `teammateMode` resolving to a pane (tmux, or auto inside tmux/iTerm2). The Claude desktop app, `claude -p` and SDK sessions have no agent team, and in-process teammates cannot be routed — there, use `subagent` / `workflow`. Not available on Windows (`UNSUPPORTED_ON_WINDOWS` from `teammate`, `hide`, `show` and `teardown`).
+
+**One-time setup:**
 
 ```bash
-cc-fleet spawn deepseek --as worker --team squad --json   # usually Claude does this
-cc-fleet ps --json --check                                # list teammates + pane health
-cc-fleet hide worker@squad                                # park the pane out of view
-cc-fleet show worker@squad                                # bring it back
-cc-fleet teardown squad --json                            # reap panes + team state
+cc-fleet teammate setup                          # lists what it would change, changes nothing (BAD_ARGS)
+cc-fleet teammate setup --yes                    # apply
+cc-fleet teammate setup --yes --teammate-mode tmux   # also set teammateMode=tmux when it is unset or in-process
+cc-fleet teammate setup --remove --yes           # undo (the shim file is kept)
 ```
 
-In tmux, panes split alongside your lead. Outside tmux, teammates run in a detached `cc-fleet-swarm-<team>` server (attach with `tmux -L cc-fleet-swarm-<team> attach`). `hide` / `show` are in-tmux only. The teammate lane is unix-only — on Windows these commands refuse (`spawn`/`hide`/`show` with `error_code: UNSUPPORTED_ON_WINDOWS`).
+`setup --yes` writes, in this order: the launcher shim `~/.config/cc-fleet/bin/claude-teammate` (0755), one `~/.claude/agents/ccf-*.md` per enabled provider, and in `~/.claude/settings.json` `env.CLAUDE_CODE_TEAMMATE_COMMAND` (the shim) plus `env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS="1"` (only if not already on). `--teammate-mode` defaults to `keep`; `tmux` leaves an existing `auto` / `tmux` / `iterm2` alone. It refuses with `SETUP_CONFLICT` when `CLAUDE_CODE_TEAMMATE_COMMAND` already points at something else (`--force` replaces it) or when a `ccf-*.md` without cc-fleet's marker exists (never overwritten, even with `--force`). Restart `claude` afterwards (`restart_required` in the JSON). `--remove` deletes the launcher setting and cc-fleet's definitions and marks the lane disabled; it keeps the shim (running sessions still point at it) and leaves `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` and `teammateMode` as they are. `settings.json` is edited in place: key order, symlinks and file mode are preserved.
 
-Spawn extras: `--verify`/`--no-verify` (the post-spawn settle check — paid only when the live Claude Code is newer than the spawn recipe), `--probe`/`--no-probe` (the pre-spawn key probe, default on), `--permission-mode` (otherwise the teammate inherits the lead's).
+**Per teammate (the skill does this):**
 
-**Cleanup order for a provider team:** `cc-fleet teardown <team>` **first** (it reaps the tmux panes/processes), then native `TeamDelete` (which only removes `~/.claude/teams/<team>/`). Running `TeamDelete` alone leaves orphan provider panes billing the key.
+```bash
+cc-fleet teammate check deepseek --slot strong --json   # from the lead's Bash tool
+# → {"ok":true,"protocol":1,"agent_type":"ccf-deepseek.strong","team":"session-7c8f769b","backend_hint":"tmux",…}
+```
+
+then, in the lead, `Agent({name: "worker-1", subagent_type: "ccf-deepseek.strong", prompt: "…"})`. Always pass `name`; never pass `model`, `isolation` or `cwd` for a `ccf-*` type — the plugin's `PreToolUse(Agent)` hook blocks such calls (and any `ccf-*` call that `check` would refuse). `check` exits 0 when `ok`, 1 otherwise, with a stable `error_code` + `detail`: `TEAMMATE_LANE_UNAVAILABLE` (no lead session, Claude Code too old, no session team — desktop app / `-p` / SDK), `TEAMMATE_SETUP_REQUIRED` (launcher or definition missing or foreign), `LEAD_RESTART_REQUIRED` (setup ran after this `claude` started), `TEAMMATE_MODE_IN_PROCESS`, `CLAUDE_NOT_FOUND`, plus the provider errors shared with `subagent`. `--no-probe` skips the provider reachability probe.
+
+**Inspect, park, stop:**
+
+```bash
+cc-fleet ps --json --check                       # rows with state + pane health
+cc-fleet hide worker-1@session-7c8f769b          # park the pane in the claude-hidden session
+cc-fleet show %42 --socket /private/tmp/tmux-501/default
+cc-fleet teardown worker-1@session-7c8f769b --json
+cc-fleet teardown session-7c8f769b --json        # every provider teammate of that team
+```
+
+- **`ps`** lists only teammates cc-fleet can attribute: a `ccf-*` member of the session team whose `--settings` is that provider's profile, a dead pane showing a launcher failure line, a `ccf-*` teammate that bypassed the launcher, or a 0.3.x teammate (`legacy:true`). Native teammates are never listed, even under a provider lead. Row fields: `agent_id, name, team, pane_id, provider, model, pid, tmux_socket_path, backend (tmux|in-process|unknown), lead_pid, lead_session_id, state, error_code, hidden, legacy`, plus `status / error_class / detail` with `--check`. `state` is `running`, `orphaned` (its lead session is gone), `failed` (the launcher refused it; see `error_code`) or `bypassed` (it runs without the launcher, so on Claude, not the provider — stop it with `TaskStop`). The table has a `STATE` column.
+- **Breaking rename:** the row field `tmux_socket` (a `-L` socket name, empty inside tmux) is now `tmux_socket_path`, the absolute socket path, always set. Replace `tmux -L <tmux_socket> …` with `tmux -S <tmux_socket_path> …`, e.g. `tmux -S "$path" capture-pane -p -t %42`.
+- **Targets** for `hide`, `show` and `teardown`: a pane id `%N` (add `--socket <tmux_socket_path>` when several tmux servers have that pane — otherwise `AMBIGUOUS_TARGET`) or an agent id `name@team`; `teardown` also takes a whole `team`. The 0.3.x forms `team` and `team/member` return `BAD_ARGS` from `hide` / `show`.
+- **`teardown`** re-verifies each teammate (pane, exact argv, process start time) right before killing it, then kills the pane and reaps the process. Output: `{ok, target, killed:[{agent_id, pane_id, tmux_socket_path, pid}], skipped:[{agent_id, pane_id, reason}], error_code, error_msg, suggestion}`; `reason` is `IDENTITY_MISMATCH` (left alone) or `IN_PROCESS` (use `TaskStop` in the lead). A target with nothing left returns `ok:true` with an empty `killed`. It never touches the lead, native teammates, or `~/.claude/teams`. The 0.3.x keys `panes`, `members`, `killed_pids`, `team_removed` and `warnings` are gone.
+- **`hide` / `show`** always print one object `{ok, action, agent_id, team, name, pane_id, tmux_socket_path, hidden, error_code, error_msg, suggestion}`. The origin window is stored on the pane (tmux option `@ccf_origin`), not in a file. tmux panes only: a teammate on a detached swarm server returns `SWARM_UNSUPPORTED`, one outside tmux `BACKEND_UNSUPPORTED`.
+- **Ending a teammate:** ask it to shut down (native `shutdown_request`), or `TaskStop` it from the lead. `teardown` is for orphans (the lead crashed), 0.3.x leftovers, and cases where `TaskStop` is not available. When the lead exits normally Claude Code removes its panes and team directory itself — there is no `TeamDelete` step any more.
 
 ## Workflows
 
@@ -170,6 +207,8 @@ cc-fleet workflow rm "$RUN" / prune          # delete a run / every engine-less 
 - A **held** leaf (`stop --leaf`, or the board's `x`) is parked indefinitely — not an error, not retried; `restart --leaf` re-runs it in place (same job id, attempt +1).
 - `run` flags: `--max-concurrency` (default `min(16, cores-2)`), `--budget-usd` / `--budget-tokens` (the engine stops minting leaves at the cap), `--args-json` (the script's `args`), `--no-persist-io` (disable prompt/answer drill-in), `--saved` (run a saved script).
 - The journal keys each leaf by content hash (provider + model + prompt + schema + profile shape), so `--resume` re-runs only what changed or never finished; failed leaves are never journaled.
+- `--resume` and `restart` run the remaining leaves in the directory the run was started from (recorded in the manifest), not the caller's cwd; if that directory is gone the run fails with a clear error.
+- A leaf with `isolation: "worktree"` that leaves changes behind is saved as branch `cc-fleet/wf-<job>-a<attempt>` before its worktree is removed (see [Writing workflows](workflows.md#isolated-worktrees)). After a run is stopped or killed, the next `restart` / `--resume` clean-up or `workflow rm` / `prune` rescues unsaved work to a `cc-fleet/wf-salvage-*` branch; a directory it cannot save is kept with a `.cc-fleet-keep` marker, and `rm` / `prune` / `restart` print one line per kept directory on stderr. cc-fleet never deletes these branches.
 - `workflow saved` lists board-saved scripts (the names `run --saved` accepts); `workflow new <name> --phase <title>…` mints an empty run with an ordered phase plan, for manually grouping `subagent --run-id/--phase` jobs under one board tree.
 
 ## Codex — reuse a ChatGPT subscription as a provider
@@ -192,7 +231,7 @@ Multiple subscriptions coexist: `codex add --name codex-work` registers another 
 A file-backend provider can hold several API keys (`<provider>.keys.json`, mode `0600`) with per-key enable/disable, managed from the TUI key-manager. `keyget` is the rotation point — strategy is per provider:
 
 - `off` — always the first enabled key.
-- `round_robin` — advance a counter on each worker spawn.
+- `round_robin` — advance a counter on each worker start.
 - `random` — pick a random enabled key.
 
 Disabled keys are filtered out before selection. Keys render masked everywhere (`sk-…238`); plaintext only ever reaches `keyget` stdout and the password-echo input.
@@ -203,12 +242,11 @@ Disabled keys are filtered out before selection. Keys render masked everywhere (
 
 ## Health, repair, update
 
-- `cc-fleet doctor` — the health checks, grouped **Core** (config, binary, claude, profiles, skills…) vs **Optional** (the tmux checks); only a Core *failure* flips the overall result (the skills check warns, never fails). Doctor never repairs anything — failures print fix hints.
-- `cc-fleet repair` — rebuild provider profile JSON from `providers.toml`.
-- `cc-fleet refresh-fingerprint --probe-team <team>` — re-capture Claude Code's spawn template after a CC upgrade changes it (the skill triggers this self-heal automatically).
+- `cc-fleet doctor` — the health checks, grouped **Core** (config, binary, claude, profiles, skills…) vs **Optional** (tmux, attached session, and check 8 "teammate lane (optional)": shim, pinned cc-fleet path, agent definitions, `teammateMode`, agent teams on; OK with "not set up" when the lane is off); only a Core *failure* flips the overall result (the skills check warns, never fails). Check 4 finds `claude` on PATH or under `~/.local/share/claude/versions` and notes when it is older than the 2.1.278 provider teammates need. Doctor never repairs anything — failures print fix hints.
+- `cc-fleet repair` — rebuild provider profile JSON from `providers.toml`; when the teammate lane is enabled or the shim exists, re-pin the shim to this binary and restore its mode, and resync the `ccf-*` definitions (lane enabled). `--json` adds `shim`, `shim_repinned` and `agent_defs` (`written` / `removed` / `unchanged`). It never edits `settings.json`.
 - `cc-fleet update` — method-aware self-update: a tarball install swaps the binary in place (checksum-verified, `.previous` kept for `update rollback`), npm/go installs delegate to their package manager; the plugin is refreshed in the same pass. `--check` only reports; `--binary-only` skips the plugin refresh. Not available on Windows — update via npm or a fresh zip.
 - `cc-fleet watch` — a read-only text stream of the whole fleet (teammates + jobs + runs); `--interval`, `--timeout`, `--check`.
-- `cc-fleet uninstall` — reset all config and state (file secrets kept unless `--wipe-secrets`); a bare uninstall never touches the skills, plugin, or binary, so you can `init` again. `uninstall --all` is the complete uninstall — skills, plugin, then the binary + `ccf` alias, routed by install method (npm → `npm uninstall -g`; whatever can't be removed from inside the process — and everything on Windows — is printed as manual commands). `--all` wipes secrets unless `--keep-secrets` is passed, asks for confirmation, and requires `--yes` when non-interactive or `--json`.
+- `cc-fleet uninstall` — first undoes the teammate lane like `teammate setup --remove` (the shim path is listed under `kept`: delete it once every `claude` session has restarted), then resets all config and state (file secrets kept unless `--wipe-secrets`); a bare uninstall never touches the skills, plugin, or binary, so you can `init` again. `uninstall --all` is the complete uninstall — skills, plugin, then the binary + `ccf` alias, routed by install method (npm → `npm uninstall -g`; whatever can't be removed from inside the process — and everything on Windows — is printed as manual commands). `--all` wipes secrets unless `--keep-secrets` is passed, asks for confirmation, and requires `--yes` when non-interactive or `--json`.
 
 ## Files & locations
 
@@ -218,7 +256,10 @@ Disabled keys are filtered out before selection. Keys render masked everywhere (
 | `~/.config/cc-fleet/secrets/` | File-backend keys (dir `0700`, keys `0600`). |
 | `~/.config/cc-fleet/subagent-jobs/` | Background job metadata + result cache. |
 | `~/.config/cc-fleet/subagent-jobs/runs/` | Workflow run manifests, journals, events. |
-| `~/.claude/profiles/` | Generated per-provider spawn profiles. |
-| `~/.claude/teams/<team>/` | Native team state (managed by Claude, not cc-fleet). |
+| `~/.config/cc-fleet/bin/claude-teammate` | Teammate launcher shim (`teammate setup`, `repair`). |
+| `~/.claude/profiles/` | Generated per-provider profiles (`--settings` for teammates, subagents, `run`). |
+| `~/.claude/agents/ccf-*.md` | Provider teammate agent definitions (managed by cc-fleet; carry a `managed-by: cc-fleet` marker). |
+| `~/.claude/settings.json` | cc-fleet sets `env.CLAUDE_CODE_TEAMMATE_COMMAND`, `env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` and, only when asked, `teammateMode` (`teammate setup`). |
+| `~/.claude/teams/<team>/` | Native team state — owned by Claude Code; cc-fleet only reads it. |
 
-The `~/.config/cc-fleet` base honors `$XDG_CONFIG_HOME` when set.
+The `~/.config/cc-fleet` base honors `$XDG_CONFIG_HOME` when set; the `~/.claude` paths honor `$CLAUDE_CONFIG_DIR` (profiles stay under `~/.claude/profiles`).

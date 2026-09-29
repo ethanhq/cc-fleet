@@ -12,6 +12,7 @@ import (
 func TestReadTeammateInbox(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude")) // windows resolves home from USERPROFILE, not HOME
 	dir := filepath.Join(home, ".claude", "teams", "t1", "inboxes")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatal(err)

@@ -45,7 +45,7 @@ function onPath() {
 
 if (!onPath()) {
   console.log(
-    "cc-fleet binary not found on PATH — the cc-fleet skills need it to spawn provider teammates/subagents. Install: go install github.com/ethanhq/cc-fleet/cmd/cc-fleet@latest  (or grab a release / see https://github.com/ethanhq/cc-fleet#install)."
+    "cc-fleet binary not found on PATH — the cc-fleet skills need it for provider subagents/workflows and provider teammates (teammates: terminal claude inside tmux or iTerm2 only). Install: go install github.com/ethanhq/cc-fleet/cmd/cc-fleet@latest  (or grab a release / see https://github.com/ethanhq/cc-fleet#install)."
   );
 }
 process.exit(0);

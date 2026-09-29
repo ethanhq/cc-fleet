@@ -29,7 +29,7 @@ body:
     attributes:
       label: Lane / surface
       options:
-        - teammate (spawn / tmux)
+        - teammate (native agent teams / tmux)
         - subagent
         - workflow
         - cc-fleet run

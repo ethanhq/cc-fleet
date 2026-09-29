@@ -88,6 +88,7 @@ func newWorkflowRmCmd() *cobra.Command {
 			if err := subagent.WithRunLock(id, func() error { return subagent.PurgeRun(id) }); err != nil {
 				return reportWorkflowErr(err, asJSON)
 			}
+			printKeptWorktreeNotices(id)
 			if asJSON {
 				return emitWorkflow(workflowEnvelope{OK: true, RunID: id, Removed: 1})
 			}
@@ -97,6 +98,14 @@ func newWorkflowRmCmd() *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Emit a machine-readable JSON envelope")
 	return cmd
+}
+
+// printKeptWorktreeNotices tells the user on stderr (stdout stays the envelope) which of runID's isolation
+// worktrees ("" = every run's) survived a cleanup because they hold unsaved work.
+func printKeptWorktreeNotices(runID string) {
+	for _, line := range workflow.KeptWorktreeNotices(runID) {
+		fmt.Fprintln(os.Stderr, "cc-fleet: "+line)
+	}
 }
 
 // newWorkflowPruneCmd builds `cc-fleet workflow prune` — delete every run whose engine is no longer
@@ -116,6 +125,7 @@ func newWorkflowPruneCmd() *cobra.Command {
 			if err != nil {
 				return reportWorkflowErr(err, asJSON)
 			}
+			printKeptWorktreeNotices("")
 			if asJSON {
 				return emitWorkflow(workflowEnvelope{OK: true, Removed: removed})
 			}
@@ -187,6 +197,7 @@ func newWorkflowRestartCmd() *cobra.Command {
 				if err != nil {
 					return reportWorkflowErr(err, asJSON)
 				}
+				printKeptWorktreeNotices(runID)
 				if asJSON {
 					return emitWorkflow(workflowEnvelope{OK: true, RunID: runID, Status: "running"})
 				}
@@ -210,6 +221,7 @@ func newWorkflowRestartCmd() *cobra.Command {
 			if err := workflow.Restart(cmd.Context(), runID, key); err != nil {
 				return reportWorkflowErr(err, asJSON)
 			}
+			printKeptWorktreeNotices(runID)
 			if asJSON {
 				return emitWorkflow(workflowEnvelope{OK: true, RunID: runID, Status: "running"})
 			}

@@ -111,7 +111,7 @@ func runModels(provider string, asJSON bool) error {
 // reportModelsErr writes the failure envelope (JSON or pretty) and exits
 // non-zero so the skill never sees a half-line. Returns nil only because
 // the os.Exit call won't return — keeps the signature consistent with
-// reportSpawn / reportTeardown.
+// reportTeardown.
 func reportModelsErr(asJSON bool, provider, code string, err error, suggestion string) error {
 	if asJSON {
 		env := modelsEnvelope{

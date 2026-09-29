@@ -1,340 +1,395 @@
+//go:build !windows
+
 package panevis
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/ethanhq/cc-fleet/internal/spawn"
+	"github.com/ethanhq/cc-fleet/internal/teardown"
 )
 
-// fakeTmux installs a per-subcommand fake `tmux` on PATH (same scheme as
-// internal/tmux tests). display-message prints MOCK_DISPLAY_OUT; list-panes
-// prints MOCK_LISTPANES_OUT; break-pane/join-pane/display-message honor
-// MOCK_*_EXIT so a test can fail exactly one op. Records argv to MOCK_ARGS_FILE.
-func fakeTmux(t *testing.T) string {
+const (
+	killSock  = "/tmp/tmux-501/default"
+	killAgent = "worker@session-7c8f769b"
+)
+
+// killEnv is a hide/show test environment: discovery rows, the identity
+// re-verification answer, and the fake tmux's call log and origin state file.
+type killEnv struct {
+	t        *testing.T
+	rows     []teardown.Teammate
+	verify   bool
+	verified int
+	argsLog  string
+	state    string
+}
+
+// killSetup points HOME and the config dirs at a temp dir, installs a fake tmux
+// that keeps the @ccf_origin pane option in a state file, and stubs discovery
+// and identity re-verification.
+func killSetup(t *testing.T, rows ...teardown.Teammate) *killEnv {
 	t.Helper()
-	dir := t.TempDir()
-	argsPath := filepath.Join(dir, "args.log")
-	binPath := filepath.Join(dir, "tmux")
+	root := t.TempDir()
+	t.Setenv("HOME", filepath.Join(root, "home"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(root, "xdg"))
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(root, "claude"))
+
+	e := &killEnv{t: t, rows: rows, verify: true,
+		argsLog: filepath.Join(root, "args.log"), state: filepath.Join(root, "origin")}
 	script := `#!/bin/sh
-for a in "$@"; do printf '%s\n' "$a" >> "$MOCK_ARGS_FILE"; done
-printf '__END__\n' >> "$MOCK_ARGS_FILE"
-# Socket-scoped (swarm) calls are "-L <socket> <subcommand> ...". Skip a leading
-# -L so dispatch keys on the subcommand; the full argv (incl. -L) is already
-# recorded above so a test can assert the socket flag was passed.
-if [ "$1" = "-L" ]; then shift 2; fi
+echo "$*" >> "$KILL_ARGS"
+while [ "$1" = -S ] || [ "$1" = -L ]; do shift 2; done
+if [ -f "$KILL_SESS" ]; then win=@9; sess=claude-hidden; else win=@7; sess=main; fi
 case "$1" in
-  new-session)     exit "${MOCK_NEWSESSION_EXIT:-0}" ;;
-  break-pane)      exit "${MOCK_BREAKPANE_EXIT:-0}" ;;
-  join-pane)       exit "${MOCK_JOINPANE_EXIT:-0}" ;;
-  select-layout)   exit 0 ;;
-  list-panes)      printf '%s' "$MOCK_LISTPANES_OUT"; exit 0 ;;
-  resize-pane)     exit 0 ;;
-  display-message) printf '%s' "$MOCK_DISPLAY_OUT"; exit "${MOCK_DISPLAY_EXIT:-0}" ;;
+  display-message)
+    eval "fmt=\${$#}"
+    case "$fmt" in
+      *session_name*) echo "$win:$sess" ;;
+      *) echo "$win" ;;
+    esac ;;
+  set-option)
+    case " $* " in
+      *" -u "*) rm -f "$KILL_STATE" ;;
+      *) eval "val=\${$#}"; printf '%s' "$val" > "$KILL_STATE" ;;
+    esac ;;
+  show-options)
+    if [ -f "$KILL_STATE" ]; then cat "$KILL_STATE"; echo; else echo "invalid option: @ccf_origin" >&2; exit 1; fi ;;
+  break-pane) [ -z "$KILL_FAIL_BREAK" ] || exit 1; : > "$KILL_SESS" ;;
+  join-pane) [ -z "$KILL_FAIL_JOIN" ] || exit 1; rm -f "$KILL_SESS" ;;
+  list-panes) echo "%1" ;;
 esac
 exit 0
 `
-	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake tmux: %v", err)
+	bin := filepath.Join(root, "bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("MOCK_ARGS_FILE", argsPath)
-	return argsPath
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("KILL_ARGS", e.argsLog)
+	t.Setenv("KILL_STATE", e.state)
+	// The pane sits in claude-hidden while this file exists.
+	sess := filepath.Join(root, "hidden")
+	t.Setenv("KILL_SESS", sess)
+	if len(rows) > 0 && rows[0].Hidden {
+		if err := os.WriteFile(sess, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("KILL_FAIL_BREAK", "")
+	t.Setenv("KILL_FAIL_JOIN", "")
+
+	origDiscover, origVerify := discoverFn, verifyFn
+	t.Cleanup(func() { discoverFn, verifyFn = origDiscover, origVerify })
+	discoverFn = func() ([]teardown.Teammate, error) { return e.rows, nil }
+	verifyFn = func(teardown.Teammate) bool { e.verified++; return e.verify }
+	return e
 }
 
-// setup points HOME at a temp dir (for team config + flock) and installs the
-// fake tmux. Returns the recorded-args path.
-func setup(t *testing.T) string {
-	t.Helper()
-	t.Setenv("HOME", t.TempDir())
-	return fakeTmux(t)
-}
-
-// mkMember builds a member with the fields hide/show care about.
-func mkMember(name, pane string, hidden bool, origin string) spawn.Member {
-	return spawn.Member{
-		AgentID: name + "@team", Name: name, AgentType: "general-purpose",
-		Model: "glm-4.6", JoinedAt: 1, TmuxPaneID: pane, Cwd: "/x",
-		Subscriptions: []string{}, BackendType: "tmux", IsActive: true,
-		Hidden: hidden, OriginWindow: origin,
-	}
-}
-
-func seedTeam(t *testing.T, team string, members []spawn.Member) {
-	t.Helper()
-	if err := spawn.EnsureTeamDir(team); err != nil {
-		t.Fatalf("EnsureTeamDir: %v", err)
-	}
-	tc := &spawn.TeamConfig{LeadSessionID: "lead", Members: members, Raw: map[string]any{}}
-	if err := spawn.WriteTeamConfig(team, tc); err != nil {
-		t.Fatalf("WriteTeamConfig: %v", err)
+func killRow(pane string, hidden bool) teardown.Teammate {
+	return teardown.Teammate{
+		AgentID: killAgent, Name: "worker", Team: "session-7c8f769b", PaneID: pane, PID: 601,
+		Socket: killSock, Backend: teardown.BackendTmux, State: teardown.StateRunning, Hidden: hidden,
 	}
 }
 
-func recordedCalls(t *testing.T, path string) [][]string {
-	t.Helper()
-	data, err := os.ReadFile(path)
+func (e *killEnv) calls() []string {
+	data, err := os.ReadFile(e.argsLog)
+	if os.IsNotExist(err) {
+		return nil
+	}
 	if err != nil {
-		return nil // no tmux invocations recorded
+		e.t.Fatal(err)
 	}
-	var calls [][]string
-	var cur []string
-	for _, line := range strings.Split(string(data), "\n") {
-		if line == "__END__" {
-			calls = append(calls, cur)
-			cur = nil
-			continue
-		}
-		if line == "" {
-			continue
-		}
-		cur = append(cur, line)
-	}
-	return calls
+	return strings.Split(strings.TrimSpace(string(data)), "\n")
 }
 
-func hasSub(calls [][]string, sub string) bool {
-	for _, c := range calls {
-		if len(c) > 0 && c[0] == sub {
-			return true
+func (e *killEnv) origin() string {
+	data, err := os.ReadFile(e.state)
+	if os.IsNotExist(err) {
+		return ""
+	}
+	if err != nil {
+		e.t.Fatal(err)
+	}
+	return string(data)
+}
+
+func (e *killEnv) mutated() bool {
+	for _, c := range e.calls() {
+		for _, verb := range []string{"set-option", "break-pane", "join-pane"} {
+			if strings.Contains(c, " "+verb+" ") {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-func TestResolve_AllForms(t *testing.T) {
-	setup(t)
-	seedTeam(t, "alpha", []spawn.Member{
-		mkMember("alice", "%84", false, ""),
-		mkMember("bob", "%85", false, ""),
-		mkMember("lead", "", false, ""), // no pane → excluded from bare-team expansion
-	})
-
-	// Resolve carries the effective socket (empty here — default server, no
-	// swarm socket seeded) + the config pane id for each target.
-	if got, err := Resolve("%85"); err != nil || len(got) != 1 || got[0] != (Target{Team: "alpha", Name: "bob", PaneID: "%85"}) {
-		t.Fatalf("%%pane: got=%v err=%v", got, err)
+// TestHideStoresOrigin: hide records the pane's window id in @ccf_origin
+// before breaking it into the hidden session, all on the pane's -S server.
+func TestHideStoresOrigin(t *testing.T) {
+	e := killSetup(t, killRow("%5", false))
+	res := Hide("%5", "")
+	if !res.OK || !res.Hidden || res.AgentID != killAgent || res.Socket != killSock || res.PaneID != "%5" {
+		t.Fatalf("result = %+v", res)
 	}
-	if got, err := Resolve("alpha/alice"); err != nil || len(got) != 1 || got[0] != (Target{Team: "alpha", Name: "alice", PaneID: "%84"}) {
-		t.Fatalf("team/member: got=%v err=%v", got, err)
+	if e.origin() != "@7" {
+		t.Fatalf("@ccf_origin = %q, want @7", e.origin())
 	}
-	if got, err := Resolve("alice@alpha"); err != nil || len(got) != 1 || got[0] != (Target{Team: "alpha", Name: "alice", PaneID: "%84"}) {
-		t.Fatalf("name@team: got=%v err=%v", got, err)
+	want := []string{
+		"-S " + killSock + " display-message -p -t %5 #{window_id}:#{session_name}",
+		"-S " + killSock + " show-options -p -v -t %5 @ccf_origin",
+		"-S " + killSock + " set-option -p -t %5 @ccf_origin @7",
+		"-S " + killSock + " new-session -d -s claude-hidden",
+		"-S " + killSock + " break-pane -d -s %5 -t claude-hidden:",
 	}
-
-	got, err := Resolve("alpha") // bare team → only members with a pane
-	if err != nil || len(got) != 2 {
-		t.Fatalf("bare team: got=%v err=%v, want 2", got, err)
-	}
-	names := map[string]bool{}
-	for _, g := range got {
-		names[g.Name] = true
-	}
-	if !names["alice"] || !names["bob"] || names["lead"] {
-		t.Fatalf("bare team expansion = %v, want alice+bob (no lead)", got)
-	}
-
-	if _, err := Resolve(""); err == nil {
-		t.Error("empty target should error")
-	}
-	if _, err := Resolve("%999"); err == nil {
-		t.Error("unknown pane should error")
-	}
-	if _, err := Resolve("no-such-team"); err == nil {
-		t.Error("missing team should error")
+	if got := e.calls(); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("tmux calls:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 
-// TestResolve_ErrorCodes pins the ResolveError codes so a skill switching on
-// error_code sees TEAM_NOT_FOUND / PANE_NOT_FOUND, not a blanket BAD_ARGS
-// (reviewer S1). The command layer (cmd/cc-fleet/hide.go) extracts re.Code.
-func TestResolve_ErrorCodes(t *testing.T) {
-	setup(t)
-	seedTeam(t, "alpha", []spawn.Member{mkMember("alice", "%84", false, "")})
-
-	cases := []struct {
-		target string
-		want   string
-	}{
-		{"", ErrBadArgs},                  // empty
-		{"alpha/", ErrBadArgs},            // malformed team/member
-		{"@alpha", ErrBadArgs},            // malformed name@team
-		{"%999", ErrPaneNotFound},         // unknown pane
-		{"no-such-team", ErrTeamNotFound}, // missing bare team
+// TestHideBreakFailureUnsetsOrigin: a failed break-pane leaves no origin
+// record behind and reports TMUX_FAILED.
+func TestHideBreakFailureUnsetsOrigin(t *testing.T) {
+	e := killSetup(t, killRow("%5", false))
+	t.Setenv("KILL_FAIL_BREAK", "1")
+	res := Hide(killAgent, "")
+	if res.OK || res.ErrorCode != ErrTmuxFailed || res.Hidden {
+		t.Fatalf("result = %+v", res)
 	}
-	for _, c := range cases {
-		_, err := Resolve(c.target)
-		if err == nil {
-			t.Errorf("Resolve(%q): want error %s, got nil", c.target, c.want)
-			continue
-		}
-		var re *ResolveError
-		if !errors.As(err, &re) {
-			t.Errorf("Resolve(%q): error is not *ResolveError: %v", c.target, err)
-			continue
-		}
-		if re.Code != c.want {
-			t.Errorf("Resolve(%q): code = %s, want %s", c.target, re.Code, c.want)
+	if e.origin() != "" {
+		t.Fatalf("@ccf_origin left behind: %q", e.origin())
+	}
+}
+
+// TestShowRestoresAndClears: show joins the pane back into the recorded
+// window and clears the record.
+func TestShowRestoresAndClears(t *testing.T) {
+	e := killSetup(t, killRow("%5", true))
+	if err := os.WriteFile(e.state, []byte("@7"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := Show("%5", killSock)
+	if !res.OK || res.Hidden {
+		t.Fatalf("result = %+v", res)
+	}
+	if e.origin() != "" {
+		t.Fatalf("@ccf_origin not cleared: %q", e.origin())
+	}
+	calls := strings.Join(e.calls(), "\n")
+	for _, want := range []string{
+		"-S " + killSock + " join-pane -h -s %5 -t @7",
+		"-S " + killSock + " set-option -p -u -t %5 @ccf_origin",
+	} {
+		if !strings.Contains(calls, want) {
+			t.Fatalf("missing %q in:\n%s", want, calls)
 		}
 	}
 }
 
-func TestHide_HappyPath(t *testing.T) {
-	argsPath := setup(t)
-	t.Setenv("MOCK_DISPLAY_OUT", "main:0")
-	seedTeam(t, "alpha", []spawn.Member{mkMember("alice", "%84", false, "")})
-
-	res := Hide("alpha", "alice")
-	if !res.OK || !res.Hidden || res.PaneID != "%84" || res.Action != "hide" {
-		t.Fatalf("Hide: %+v", res)
+// TestShowJoinFailure: a gone origin window reports TMUX_FAILED with the
+// manual join-pane command, and keeps the record.
+func TestShowJoinFailure(t *testing.T) {
+	e := killSetup(t, killRow("%5", true))
+	if err := os.WriteFile(e.state, []byte("@7"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	tc, err := spawn.LoadTeamConfig("alpha")
-	if err != nil {
-		t.Fatalf("reload: %v", err)
+	t.Setenv("KILL_FAIL_JOIN", "1")
+	res := Show("%5", "")
+	if res.OK || res.ErrorCode != ErrTmuxFailed || !strings.Contains(res.Suggestion, "tmux -S "+killSock+" join-pane -s %5") {
+		t.Fatalf("result = %+v", res)
 	}
-	if !tc.Members[0].Hidden || tc.Members[0].OriginWindow != "main:0" {
-		t.Fatalf("config not updated on hide: %+v", tc.Members[0])
-	}
-	if !hasSub(recordedCalls(t, argsPath), "break-pane") {
-		t.Fatal("expected a break-pane call")
+	if e.origin() != "@7" {
+		t.Fatalf("@ccf_origin = %q, want kept", e.origin())
 	}
 }
 
-func TestHide_Idempotent(t *testing.T) {
-	argsPath := setup(t)
-	t.Setenv("MOCK_DISPLAY_OUT", "main:0")
-	seedTeam(t, "alpha", []spawn.Member{mkMember("alice", "%84", true, "main:0")})
-
-	res := Hide("alpha", "alice")
-	if !res.OK || !res.Hidden {
-		t.Fatalf("idempotent hide should be OK+hidden: %+v", res)
+// TestHideIdempotent: hiding a pane already in claude-hidden is ok and
+// touches nothing.
+func TestHideIdempotent(t *testing.T) {
+	e := killSetup(t, killRow("%5", true))
+	res := Hide("%5", "")
+	if !res.OK || !res.Hidden || res.ErrorCode != "" {
+		t.Fatalf("result = %+v", res)
 	}
-	if hasSub(recordedCalls(t, argsPath), "break-pane") {
-		t.Fatal("idempotent hide must not re-break an already-hidden pane")
-	}
-}
-
-func TestHide_PaneNotFound(t *testing.T) {
-	setup(t)
-	seedTeam(t, "alpha", []spawn.Member{mkMember("alice", "", false, "")}) // no pane id
-	res := Hide("alpha", "alice")
-	if res.OK || res.ErrorCode != ErrPaneNotFound {
-		t.Fatalf("Hide no-pane: %+v, want PANE_NOT_FOUND", res)
+	if e.mutated() {
+		t.Fatalf("tmux mutated: %v", e.calls())
 	}
 }
 
-func TestHide_PaneGone(t *testing.T) {
-	setup(t)
-	t.Setenv("MOCK_DISPLAY_EXIT", "1") // display-message fails → pane gone
-	seedTeam(t, "alpha", []spawn.Member{mkMember("alice", "%84", false, "")})
-	res := Hide("alpha", "alice")
-	if res.OK || res.ErrorCode != ErrPaneNotFound {
-		t.Fatalf("Hide pane-gone: %+v, want PANE_NOT_FOUND", res)
-	}
-}
-
-func TestHide_MemberNotFound(t *testing.T) {
-	setup(t)
-	seedTeam(t, "alpha", []spawn.Member{mkMember("alice", "%84", false, "")})
-	res := Hide("alpha", "ghost")
-	if res.OK || res.ErrorCode != ErrMemberNotFound {
-		t.Fatalf("Hide ghost: %+v, want MEMBER_NOT_FOUND", res)
-	}
-}
-
-func TestHide_TeamNotFound(t *testing.T) {
-	setup(t)
-	res := Hide("nope", "x")
-	if res.OK || res.ErrorCode != ErrTeamNotFound {
-		t.Fatalf("Hide missing team: %+v, want TEAM_NOT_FOUND", res)
-	}
-}
-
-func TestHide_TmuxFailedDoesNotWriteConfig(t *testing.T) {
-	setup(t)
-	t.Setenv("MOCK_DISPLAY_OUT", "main:0")
-	t.Setenv("MOCK_BREAKPANE_EXIT", "1") // break-pane fails
-	seedTeam(t, "alpha", []spawn.Member{mkMember("alice", "%84", false, "")})
-
-	res := Hide("alpha", "alice")
-	if res.OK || res.ErrorCode != ErrTmuxFailed {
-		t.Fatalf("Hide tmux-fail: %+v, want TMUX_FAILED", res)
-	}
-	tc, _ := spawn.LoadTeamConfig("alpha")
-	if tc.Members[0].Hidden {
-		t.Fatal("config must NOT record hidden when break-pane failed")
-	}
-}
-
-func TestShow_HappyPath(t *testing.T) {
-	argsPath := setup(t)
-	t.Setenv("MOCK_LISTPANES_OUT", "%7\n%84\n")
-	seedTeam(t, "alpha", []spawn.Member{mkMember("alice", "%84", true, "main:0")})
-
-	res := Show("alpha", "alice")
-	if !res.OK || res.Hidden || res.Action != "show" {
-		t.Fatalf("Show: %+v", res)
-	}
-	// Reloading proves the Raw-shadow defeat: if the keys weren't deleted from
-	// Raw, the stale hidden:true would shadow through and reload as Hidden=true.
-	tc, err := spawn.LoadTeamConfig("alpha")
-	if err != nil {
-		t.Fatalf("reload: %v", err)
-	}
-	if tc.Members[0].Hidden || tc.Members[0].OriginWindow != "" {
-		t.Fatalf("config not cleared on show: %+v", tc.Members[0])
-	}
-	if !hasSub(recordedCalls(t, argsPath), "join-pane") {
-		t.Fatal("expected a join-pane call")
-	}
-}
-
-func TestShow_NotHidden(t *testing.T) {
-	setup(t)
-	seedTeam(t, "alpha", []spawn.Member{mkMember("alice", "%84", false, "")})
-	res := Show("alpha", "alice")
+// TestShowNotHidden: showing a visible pane is NOT_HIDDEN.
+func TestShowNotHidden(t *testing.T) {
+	e := killSetup(t, killRow("%5", false))
+	res := Show(killAgent, "")
 	if res.OK || res.ErrorCode != ErrNotHidden {
-		t.Fatalf("Show not-hidden: %+v, want NOT_HIDDEN", res)
+		t.Fatalf("result = %+v", res)
+	}
+	if e.mutated() {
+		t.Fatalf("tmux mutated: %v", e.calls())
 	}
 }
 
-func TestShow_NoOrigin(t *testing.T) {
-	setup(t)
-	seedTeam(t, "alpha", []spawn.Member{mkMember("alice", "%84", true, "")}) // hidden but no origin
-	res := Show("alpha", "alice")
-	if res.OK || res.ErrorCode != ErrNoOrigin {
-		t.Fatalf("Show no-origin: %+v, want NO_ORIGIN", res)
+// TestShowNoOrigin: a hidden pane without @ccf_origin is NO_ORIGIN.
+func TestShowNoOrigin(t *testing.T) {
+	e := killSetup(t, killRow("%5", true))
+	res := Show("%5", "")
+	if res.OK || res.ErrorCode != ErrNoOrigin || res.Suggestion == "" {
+		t.Fatalf("result = %+v", res)
+	}
+	if e.mutated() {
+		t.Fatalf("tmux mutated: %v", e.calls())
 	}
 }
 
-func TestBadArgs(t *testing.T) {
-	setup(t)
-	if res := Hide("", "x"); res.OK || res.ErrorCode != ErrBadArgs {
-		t.Fatalf("Hide empty team: %+v", res)
-	}
-	if res := Show("alpha", ""); res.OK || res.ErrorCode != ErrBadArgs {
-		t.Fatalf("Show empty name: %+v", res)
+// TestRefuseSwarm: teammates on claude-swarm-* / cc-fleet-swarm-* servers are
+// SWARM_UNSUPPORTED for both hide and show, with no tmux call.
+func TestRefuseSwarm(t *testing.T) {
+	for _, sock := range []string{"/tmp/tmux-501/claude-swarm-123", "/tmp/tmux-501/cc-fleet-swarm-alpha"} {
+		row := killRow("%5", false)
+		row.Socket = sock
+		e := killSetup(t, row)
+		for _, res := range []Result{Hide("%5", ""), HideTeammate(row), ShowTeammate(row)} {
+			if res.OK || res.ErrorCode != ErrSwarmUnsupported || !strings.Contains(res.Suggestion, sock) {
+				t.Fatalf("%s: result = %+v", sock, res)
+			}
+		}
+		if len(e.calls()) != 0 || e.verified != 0 {
+			t.Fatalf("%s: acted: calls %v verified %d", sock, e.calls(), e.verified)
+		}
 	}
 }
 
-// (Swarm-socket refusal is covered comprehensively by TestHideShowRef_SwarmRefused
-// in panevis_ref_test.go, which uses the realistic seedSwarmTeam fixture.)
-
-// TestHideRef_NotGatedForEmptySocket: an empty socket is an in-tmux teammate, so
-// the swarm gate must NOT fire — hide proceeds to the normal happy path. This
-// pins the gate's keying strictly to a non-empty (swarm) socket.
-func TestHideRef_NotGatedForEmptySocket(t *testing.T) {
-	setup(t)
-	t.Setenv("MOCK_DISPLAY_OUT", "main:0")
-	seedTeam(t, "inteam", []spawn.Member{mkMember("w1", "%0", false, "")})
-	r := HideRef("inteam", "w1", "", "%0")
-	if r.ErrorCode == ErrSwarmUnsupported {
-		t.Fatalf("empty-socket hide was gated as swarm; want normal in-tmux flow")
+// TestRefuseNonTmuxBackend: unknown (iTerm2) and in-process teammates are
+// BACKEND_UNSUPPORTED.
+func TestRefuseNonTmuxBackend(t *testing.T) {
+	for _, backend := range []string{teardown.BackendUnknown, teardown.BackendInProcess} {
+		row := teardown.Teammate{AgentID: killAgent, Name: "worker", Team: "session-7c8f769b", PID: 601, Backend: backend}
+		e := killSetup(t, row)
+		for _, res := range []Result{Hide(killAgent, ""), Show(killAgent, "")} {
+			if res.OK || res.ErrorCode != ErrBackendUnsupported || !strings.Contains(res.ErrorMsg, backend) {
+				t.Fatalf("%s: result = %+v", backend, res)
+			}
+		}
+		if len(e.calls()) != 0 {
+			t.Fatalf("%s: tmux called: %v", backend, e.calls())
+		}
 	}
-	if !r.OK || !r.Hidden {
-		t.Fatalf("in-tmux hide should succeed: %+v", r)
+}
+
+// TestLegacyTargetBadArgs: the 0.3.x bare team and team/member forms, and
+// malformed ids, are BAD_ARGS with the new syntax as suggestion.
+func TestLegacyTargetBadArgs(t *testing.T) {
+	e := killSetup(t, killRow("%5", false))
+	for _, target := range []string{"session-7c8f769b", "alpha", "alpha/worker", "", "%x", "w 1@alpha"} {
+		for _, res := range []Result{Hide(target, ""), Show(target, "")} {
+			if res.OK || res.ErrorCode != ErrBadArgs || !strings.Contains(res.Suggestion, "name@team") {
+				t.Fatalf("%q: result = %+v", target, res)
+			}
+		}
+	}
+	if len(e.calls()) != 0 {
+		t.Fatalf("tmux called: %v", e.calls())
+	}
+}
+
+// TestHideShowIdentityMismatch: a row that fails re-verification is never
+// mutated.
+func TestHideShowIdentityMismatch(t *testing.T) {
+	e := killSetup(t, killRow("%5", false))
+	e.verify = false
+	if res := Hide("%5", ""); res.OK || res.ErrorCode != ErrIdentityMismatch {
+		t.Fatalf("hide: %+v", res)
+	}
+	e.rows = []teardown.Teammate{killRow("%5", true)}
+	if res := Show("%5", ""); res.OK || res.ErrorCode != ErrIdentityMismatch {
+		t.Fatalf("show: %+v", res)
+	}
+	if e.mutated() {
+		t.Fatalf("tmux mutated: %v", e.calls())
+	}
+}
+
+// TestHideShowTargetSelection: unknown targets are PANE_NOT_FOUND; the same
+// pane id on two servers is AMBIGUOUS_TARGET until --socket picks one.
+func TestHideShowTargetSelection(t *testing.T) {
+	other := killRow("%5", false)
+	other.AgentID, other.Name, other.Socket = "w2@session-7c8f769b", "w2", "/tmp/tmux-501/work"
+	e := killSetup(t, killRow("%5", false), other)
+
+	if res := Hide("%9", ""); res.OK || res.ErrorCode != ErrPaneNotFound {
+		t.Fatalf("unknown pane: %+v", res)
+	}
+	if res := Hide("nobody@session-7c8f769b", ""); res.OK || res.ErrorCode != ErrPaneNotFound {
+		t.Fatalf("unknown agent: %+v", res)
+	}
+	if res := Hide("%5", ""); res.OK || res.ErrorCode != ErrAmbiguousTarget {
+		t.Fatalf("ambiguous: %+v", res)
+	}
+	if e.mutated() {
+		t.Fatalf("tmux mutated: %v", e.calls())
+	}
+	if res := Hide("%5", "/tmp/tmux-501/work"); !res.OK || res.AgentID != "w2@session-7c8f769b" {
+		t.Fatalf("with --socket: %+v", res)
+	}
+}
+
+// TestFx2pvStaleHideKeepsOrigin: a second hide holding a stale visible
+// snapshot (a double `h` in the TUI) re-reads the pane's session under the
+// lock, keeps the origin window, and show still returns the pane there.
+func TestFx2pvStaleHideKeepsOrigin(t *testing.T) {
+	e := killSetup(t, killRow("%5", false))
+	if res := Hide("%5", ""); !res.OK || !res.Hidden {
+		t.Fatalf("first hide: %+v", res)
+	}
+	if res := HideTeammate(killRow("%5", false)); !res.OK || !res.Hidden || res.ErrorCode != "" {
+		t.Fatalf("stale hide: %+v", res)
+	}
+	if e.origin() != "@7" {
+		t.Fatalf("@ccf_origin = %q, want @7", e.origin())
+	}
+	e.rows = []teardown.Teammate{killRow("%5", true)}
+	if res := Show("%5", ""); !res.OK || res.Hidden {
+		t.Fatalf("show: %+v", res)
+	}
+	if calls := strings.Join(e.calls(), "\n"); !strings.Contains(calls, "-S "+killSock+" join-pane -h -s %5 -t @7") {
+		t.Fatalf("show did not rejoin @7:\n%s", calls)
+	}
+}
+
+// TestFx2pvStaleShowNotHidden: show holding a stale hidden snapshot of a pane
+// that is visible again is NOT_HIDDEN and does not act on a leftover origin.
+func TestFx2pvStaleShowNotHidden(t *testing.T) {
+	e := killSetup(t, killRow("%5", false))
+	if err := os.WriteFile(e.state, []byte("@3"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := ShowTeammate(killRow("%5", true))
+	if res.OK || res.ErrorCode != ErrNotHidden || res.Hidden {
+		t.Fatalf("result = %+v", res)
+	}
+	if e.mutated() {
+		t.Fatalf("tmux mutated: %v", e.calls())
+	}
+}
+
+// TestFx2pvHideRollbackKeepsPriorOrigin: a failed break-pane rolls back only
+// the origin this hide wrote; a record that was already there is restored.
+func TestFx2pvHideRollbackKeepsPriorOrigin(t *testing.T) {
+	e := killSetup(t, killRow("%5", false))
+	if err := os.WriteFile(e.state, []byte("@3"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("KILL_FAIL_BREAK", "1")
+	if res := Hide("%5", ""); res.OK || res.ErrorCode != ErrTmuxFailed || res.Hidden {
+		t.Fatalf("result = %+v", res)
+	}
+	if e.origin() != "@3" {
+		t.Fatalf("@ccf_origin = %q, want @3 kept", e.origin())
 	}
 }

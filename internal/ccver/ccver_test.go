@@ -54,6 +54,26 @@ func TestVersionFromPath(t *testing.T) {
 	}
 }
 
+// TestVersionFromPathBasename: the basename is read first (flat layout, versioned
+// name); the parent directory only when the basename is the bare binary name.
+func TestVersionFromPathBasename(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"/h/.local/share/claude/versions/2.1.283", "2.1.283"},        // flat layout
+		{"/h/.local/share/claude/versions/2.1.150/claude", "2.1.150"}, // dir layout
+		{"/h/versions/2.1.150/claude.exe", "2.1.150"},                 // windows dir layout
+		{"/opt/2.1.150/claude-2.1.99", "2.1.99"},                      // basename wins over parent
+		{"/opt/2.1.150/wrapper", ""},                                  // parent only for a bare claude basename
+		{"/usr/local/bin/claude", ""},
+	}
+	for _, tc := range cases {
+		if got := versionFromPath(filepath.FromSlash(tc.in)); got != tc.want {
+			t.Errorf("versionFromPath(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 func TestAtLeast(t *testing.T) {
 	cases := []struct {
 		version, floor string

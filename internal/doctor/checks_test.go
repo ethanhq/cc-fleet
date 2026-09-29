@@ -13,7 +13,8 @@ import (
 	"time"
 
 	"github.com/ethanhq/cc-fleet/internal/config"
-	"github.com/ethanhq/cc-fleet/internal/fingerprint"
+	"github.com/ethanhq/cc-fleet/internal/onboarding"
+	"github.com/ethanhq/cc-fleet/internal/teammate"
 	"github.com/ethanhq/cc-fleet/internal/version"
 )
 
@@ -299,6 +300,48 @@ func TestCheckClaudeBinary_NotFound(t *testing.T) {
 	r := CheckClaudeBinary()
 	if r.Status != StatusFail {
 		t.Fatalf("Status = %s, want fail", r.Status)
+	}
+}
+
+// TestCheckClaudeBinaryUsesClaudebin: check 4 resolves the binary the way the
+// lanes do (claudebin): the flat versions/<semver> layout is accepted, a
+// 0-byte claude on PATH is not, and a pre-2.1.278 version only adds a note.
+func TestCheckClaudeBinaryUsesClaudebin(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the flat versions layout and x bits are unix-only")
+	}
+	home := setupHome(t)
+	pathDir := t.TempDir()
+	t.Setenv("PATH", pathDir)
+	versions := filepath.Join(home, ".local", "share", "claude", "versions")
+	if err := os.MkdirAll(versions, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	flat := filepath.Join(versions, "2.1.281")
+	if err := os.WriteFile(flat, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := CheckClaudeBinary()
+	if r.Status != StatusOK || !strings.Contains(r.Detail, "2.1.281") || strings.Contains(r.Detail, "provider teammates need") {
+		t.Fatalf("flat 2.1.281: %+v", r)
+	}
+
+	if err := os.WriteFile(filepath.Join(pathDir, "claude"), nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if r := CheckClaudeBinary(); r.Status != StatusFail {
+		t.Fatalf("0-byte claude on PATH: %+v, want fail", r)
+	}
+
+	if err := os.Remove(filepath.Join(pathDir, "claude")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(flat, filepath.Join(versions, "2.1.150")); err != nil {
+		t.Fatal(err)
+	}
+	r = CheckClaudeBinary()
+	if r.Status != StatusOK || !strings.Contains(r.Detail, "provider teammates need ≥ "+teammate.MinTeammateCC) {
+		t.Fatalf("2.1.150: %+v, want ok with the teammate note", r)
 	}
 }
 
@@ -647,125 +690,184 @@ func TestCheckSkillInstalled_PluginPerLane(t *testing.T) {
 	}
 }
 
-// ---------- Check 8: fingerprint ----------
+// ---------- Check 8: teammate lane ----------
 
-func TestCheckFingerprint_Missing(t *testing.T) {
-	setupHome(t)
-	t.Setenv("PATH", t.TempDir()) // no claude in PATH
-	r := CheckFingerprint()
-	if r.Status != StatusFail {
-		t.Fatalf("Status = %s, want fail", r.Status)
-	}
-	if !r.Fixable {
-		t.Fatalf("Fixable = false, want true")
-	}
-}
-
-// TestCheckFingerprint_MissingCache_UsesBundledWhenClaudePresent: a fresh
-// install with NO user fingerprint cache but a resolvable claude binary is
-// HEALTHY, because spawn/subagent run on the bundled recipe via LoadOrBundled →
-// ResolveBinaryPath. Doctor must validate that same runtime contract and report
-// OK, not Fail.
-func TestCheckFingerprint_MissingCache_UsesBundledWhenClaudePresent(t *testing.T) {
+// cliLaneHome is setupHome plus a separate CLAUDE_CONFIG_DIR, with the
+// variables check 8 reads from the environment cleared. Returns the Claude
+// Code config dir.
+func cliLaneHome(t *testing.T) string {
+	t.Helper()
 	home := setupHome(t)
-	// Resolvable claude via the versions layout (ccver.Detect), matching the
-	// other fingerprint tests. No user fingerprint.json is written.
-	verDir := filepath.Join(home, ".local", "share", "claude", "versions", "2.1.150")
-	if err := os.MkdirAll(verDir, 0o755); err != nil {
-		t.Fatalf("mkdir verDir: %v", err)
+	claudeDir := filepath.Join(home, "claude-config")
+	if err := os.MkdirAll(claudeDir, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	writeFakeClaude(t, verDir)
-	t.Setenv("PATH", t.TempDir()) // force versions-layout fallback
+	t.Setenv("CLAUDE_CONFIG_DIR", claudeDir)
+	for _, k := range []string{teammate.EnvTeammateCommand, teammate.EnvAgentTeams, teammate.EnvProcessWrapper} {
+		t.Setenv(k, "")
+		if err := os.Unsetenv(k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return claudeDir
+}
 
-	r := CheckFingerprint()
-	if r.Status != StatusOK {
-		t.Fatalf("Status = %s, want ok for missing-cache + bundled + resolvable claude (detail=%s)", r.Status, r.Detail)
+// cliLaneSetup saves one enabled provider and runs a full teammate setup with
+// teammateMode tmux, so check 8 starts from a healthy lane.
+func cliLaneSetup(t *testing.T) teammate.SetupResult {
+	t.Helper()
+	installProviderWithEndpoint(t, "glm", "https://glm.example.test/v1/models", true)
+	res := teammate.Setup(teammate.SetupOptions{TeammateMode: "tmux"})
+	if !res.OK {
+		t.Fatalf("teammate setup: %s: %s", res.ErrorCode, res.ErrorMsg)
 	}
-	if !strings.Contains(r.Detail, "bundled") {
-		t.Fatalf("detail = %q, want it to mention the bundled recipe", r.Detail)
+	return res
+}
+
+// cliSetSetting rewrites one string key of the user settings.json.
+func cliSetSetting(t *testing.T, claudeDir string, value string, keyPath ...string) {
+	t.Helper()
+	if _, err := onboarding.EditSettings(filepath.Join(claudeDir, "settings.json"),
+		[]onboarding.SettingsEdit{{Path: keyPath, Value: value}}); err != nil {
+		t.Fatal(err)
 	}
 }
 
-func TestCheckFingerprint_StaleVsCurrentCC(t *testing.T) {
-	home := setupHome(t)
-	// Fake binary at a known semver layout so ccver.Detect reports 2.1.150.
-	// Detect requires a runnable claude in the dir, so write the executable
-	// (the test's intent is "current cc = 2.1.150", not "empty dir resolves").
-	verDir := filepath.Join(home, ".local", "share", "claude", "versions", "2.1.150")
-	if err := os.MkdirAll(verDir, 0o755); err != nil {
-		t.Fatalf("mkdir verDir: %v", err)
-	}
-	writeFakeClaude(t, verDir)
-	t.Setenv("PATH", t.TempDir()) // force versions-layout fallback
-
-	// Cache a fingerprint with an older cc_version.
-	fp := &fingerprint.Fingerprint{
-		CCVersion:     "2.0.0",
-		CapturedAt:    time.Now().UTC(),
-		BinaryPath:    "/old",
-		Env:           map[string]string{"CLAUDECODE": "1"},
-		FlagsTemplate: []string{"--agent-id", "{name}@{team}"},
-	}
-	if err := fingerprint.Save(fp); err != nil {
-		t.Fatalf("Save fingerprint: %v", err)
+func TestCheckTeammateLaneNotSetUp(t *testing.T) {
+	cliLaneHome(t)
+	r := CheckTeammateLane()
+	if r.ID != 8 || r.Title != "teammate lane (optional)" || r.Status != StatusOK ||
+		r.Detail != "not set up (optional) — run: cc-fleet teammate setup" {
+		t.Fatalf("got %+v", r)
 	}
 
-	r := CheckFingerprint()
-	if r.Status != StatusFail {
-		t.Fatalf("Status = %s, want fail (detail=%s)", r.Status, r.Detail)
+	cfgDir, err := config.ConfigDir()
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !r.Fixable {
-		t.Fatalf("Fixable = false, want true")
+	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(r.Detail, "2.0.0") || !strings.Contains(r.Detail, "2.1.150") {
-		t.Fatalf("detail = %q, want both versions named", r.Detail)
+	if err := os.WriteFile(filepath.Join(cfgDir, "fingerprint.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r = CheckTeammateLane()
+	if r.Status != StatusWarn || !strings.Contains(r.Detail, "legacy fingerprint.json can be deleted") {
+		t.Fatalf("with legacy fingerprint.json: %+v", r)
 	}
 }
 
-func TestCheckFingerprint_OK(t *testing.T) {
-	home := setupHome(t)
-	verDir := filepath.Join(home, ".local", "share", "claude", "versions", "2.1.150")
-	if err := os.MkdirAll(verDir, 0o755); err != nil {
-		t.Fatalf("mkdir verDir: %v", err)
+func TestCheckTeammateLaneBrokenShimFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the teammate lane is unix-only")
 	}
-	// Write the executable so ccver.Detect resolves 2.1.150.
-	writeFakeClaude(t, verDir)
-	t.Setenv("PATH", t.TempDir())
+	claudeDir := cliLaneHome(t)
+	res := cliLaneSetup(t)
+	if r := CheckTeammateLane(); r.Status != StatusOK {
+		t.Fatalf("healthy lane: %+v", r)
+	}
 
-	fp := &fingerprint.Fingerprint{
-		CCVersion:     "2.1.150",
-		CapturedAt:    time.Now().UTC(),
-		BinaryPath:    "/x/claude",
-		Env:           map[string]string{"CLAUDECODE": "1"},
-		FlagsTemplate: []string{},
+	// Shim not executable.
+	if err := os.Chmod(res.Shim, 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if err := fingerprint.Save(fp); err != nil {
-		t.Fatalf("Save fingerprint: %v", err)
+	if r := CheckTeammateLane(); r.Status != StatusFail || !r.Fixable || !strings.Contains(r.FixHint, "cc-fleet repair") {
+		t.Errorf("non-executable shim: %+v", r)
 	}
-	r := CheckFingerprint()
-	if r.Status != StatusOK {
-		t.Fatalf("Status = %s, want ok (detail=%s)", r.Status, r.Detail)
+	if err := os.Chmod(res.Shim, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Shim pins a cc-fleet that no longer exists.
+	if err := os.WriteFile(res.Shim, teammate.RenderShim(filepath.Join(t.TempDir(), "gone", "cc-fleet")), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if r := CheckTeammateLane(); r.Status != StatusFail {
+		t.Errorf("pinned binary gone: %+v", r)
+	}
+
+	// The setting names a file that does not exist.
+	cliSetSetting(t, claudeDir, filepath.Join(t.TempDir(), "missing-shim"), "env", teammate.EnvTeammateCommand)
+	if r := CheckTeammateLane(); r.Status != StatusFail {
+		t.Errorf("missing shim: %+v", r)
+	}
+	if groupForID(8) != GroupOptional {
+		t.Error("a teammate lane Fail must stay Optional")
 	}
 }
 
-func TestCheckFingerprint_CCUnknownWarns(t *testing.T) {
-	setupHome(t)
-	// No PATH, no versions layout — ccver.Detect fails entirely. Even though
-	// the fingerprint exists, we can't compare versions, so we Warn rather
-	// than Fail (check 4 is responsible for the actual "no claude" failure).
-	t.Setenv("PATH", t.TempDir())
+func TestCheckTeammateLaneWarnings(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the teammate lane is unix-only")
+	}
+	cases := []struct {
+		name string
+		mut  func(t *testing.T, claudeDir string, res teammate.SetupResult)
+		want string
+	}{
+		{"mode in-process", func(t *testing.T, d string, _ teammate.SetupResult) {
+			cliSetSetting(t, d, "in-process", teammate.KeyTeammateMode)
+		}, "teammateMode is unset or in-process"},
+		{"agent teams off", func(t *testing.T, d string, _ teammate.SetupResult) {
+			cliSetSetting(t, d, "0", "env", teammate.EnvAgentTeams)
+		}, teammate.EnvAgentTeams},
+		{"defs out of sync", func(t *testing.T, d string, _ teammate.SetupResult) {
+			if err := os.Remove(filepath.Join(d, "agents", "ccf-glm.md")); err != nil {
+				t.Fatal(err)
+			}
+		}, "out of sync: ccf-glm.md"},
+		{"unmarked ccf def", func(t *testing.T, d string, _ teammate.SetupResult) {
+			if err := os.WriteFile(filepath.Join(d, "agents", "ccf-mine.md"), []byte("---\nname: ccf-mine\n---\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}, "not managed by cc-fleet: ccf-mine.md"},
+		{"zinc harbor", func(t *testing.T, d string, _ teammate.SetupResult) {
+			if err := os.WriteFile(filepath.Join(d, ".claude.json"),
+				[]byte(`{"cachedGrowthBookFeatures":{"tengu_zinc_harbor":true}}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, "tengu_zinc_harbor"},
+		{"process wrapper", func(t *testing.T, _ string, _ teammate.SetupResult) {
+			t.Setenv(teammate.EnvProcessWrapper, "/usr/bin/true")
+		}, teammate.EnvProcessWrapper},
+		{"pinned binary differs", func(t *testing.T, _ string, res teammate.SetupResult) {
+			other := filepath.Join(t.TempDir(), "cc-fleet")
+			if err := os.WriteFile(other, []byte("#!/bin/sh\n"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(res.Shim, teammate.RenderShim(other), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, "not this cc-fleet binary"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			claudeDir := cliLaneHome(t)
+			res := cliLaneSetup(t)
+			if r := CheckTeammateLane(); r.Status != StatusOK || !strings.Contains(r.Detail, res.Shim) {
+				t.Fatalf("healthy lane: %+v", r)
+			}
+			tc.mut(t, claudeDir, res)
+			r := CheckTeammateLane()
+			if r.Status != StatusWarn || !strings.Contains(r.Detail, tc.want) {
+				t.Fatalf("got %+v, want warn mentioning %q", r, tc.want)
+			}
+			if !strings.Contains(r.FixHint, "cc-fleet repair") || !strings.Contains(r.FixHint, "cc-fleet teammate setup") {
+				t.Errorf("fix hint = %q", r.FixHint)
+			}
+		})
+	}
+}
 
-	fp := &fingerprint.Fingerprint{
-		CCVersion:  "2.1.150",
-		CapturedAt: time.Now().UTC(),
-		BinaryPath: "/x/claude",
-	}
-	if err := fingerprint.Save(fp); err != nil {
-		t.Fatalf("Save fingerprint: %v", err)
-	}
-	r := CheckFingerprint()
-	if r.Status != StatusWarn {
-		t.Fatalf("Status = %s, want warn (detail=%s)", r.Status, r.Detail)
+func TestGroupOptional358(t *testing.T) {
+	for id := 1; id <= 10; id++ {
+		want := GroupCore
+		if id == 3 || id == 5 || id == 8 {
+			want = GroupOptional
+		}
+		if got := groupForID(id); got != want {
+			t.Errorf("groupForID(%d) = %s, want %s", id, got, want)
+		}
 	}
 }
 
