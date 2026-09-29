@@ -105,6 +105,7 @@ cc-fleet teammate check [provider] [--slot default|strong|fast] [--no-probe] --j
                                          omit it to use the default provider (cc-fleet
                                          default; a provider-less call errors
                                          NO_DEFAULT_PROVIDER / DEFAULT_PROVIDER_DISABLED /
+                                         DEFAULT_PROVIDER_UNKNOWN /
                                          DEFAULT_PROVIDER_RESERVED — the last when a hand-set
                                          default_provider = "claude" resolves: the reserved id
                                          is never an auto-default). Failure codes:
@@ -241,7 +242,7 @@ Scripts that ran `tmux -L "$tmux_socket" …` must switch to `tmux -S "$tmux_soc
 |---|---|---|
 | LLM backend | Anthropic | Any Anthropic-compatible provider (DeepSeek, GLM, …) |
 | Billing | Main session's own quota (OAuth or API key) | Provider metered API |
-| Lifecycle | One-shot, exits when done | Long-lived in a tmux pane, multi-turn |
+| Lifecycle | One-shot, exits when done | Long-lived in a tmux (or iTerm2) pane, multi-turn |
 | Tool stack | Full Claude Code | Full Claude Code (same harness) |
 | Rate limit | Shared with main session | Independent (provider's quota) |
 | Privacy | Anthropic | Provider (e.g. Chinese data → Chinese provider) |

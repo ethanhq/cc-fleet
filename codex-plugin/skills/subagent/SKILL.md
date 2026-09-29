@@ -83,13 +83,13 @@ Useful flags (full list: `cc-fleet subagent --help`):
 | `DEFAULT_PROVIDER_RESERVED` | `default_provider` is hand-set to the reserved `claude` (explicit-only). | The user runs `cc-fleet default --unset` or re-pins a real provider; don't retry. |
 | `CONFIG_LOAD_FAILED` | `providers.toml` failed to load/validate. | `cc-fleet doctor`; surface to the user — don't retry. |
 | `UNKNOWN_PROVIDER` / `PROVIDER_DISABLED` | Provider not configured / disabled. | Tell the user to `cc-fleet add` / `cc-fleet edit <provider> --enable`. |
-| `PROVIDER_RESERVED` | A providers.toml row is named `claude` (reserved for the native leaf). | Tell the user to rename or `cc-fleet remove claude`; no lane uses that row (cc-fleet-shared/providers.md). |
+| `PROVIDER_RESERVED` | A providers.toml row is named `claude` (reserved for the native leaf). | Tell the user to rename or `cc-fleet remove claude`. The subagent and workflow lanes refuse that row; only `cc-fleet run claude` launches it (cc-fleet-shared/providers.md). |
 | `FINGERPRINT_STALE` | The `claude` binary was not found (the code keeps its old name). | Tell the user to install/fix Claude Code or PATH, then retry. `cc-fleet doctor` confirms. |
 | `KEY_INVALID` | Provider 401/403. | Have the user rotate the key; do not retry blindly. |
 | `INSUFFICIENT_BALANCE` | Out of balance / quota (429/402 + balance signature). | Retry can't help — propose the next provider (provider ask ladder, step 4) or handle it in the main session yourself; tell the user they're out of credit. |
 | `RATE_LIMITED` | Provider 429. | Wait briefly, retry once, or propose a switch (provider ask ladder, step 4). |
 | `MODEL_NOT_FOUND` | Model name rejected (400). | `cc-fleet refresh <provider>` then retry, or drop `--model` to use the default. |
-| `PROVIDER_UNREACHABLE` | Transport failure (only with `--probe`). | `cc-fleet doctor`; if urgent, handle it in the main session yourself. |
+| `PROVIDER_UNREACHABLE` | Transport failure (with `--probe`, or at runtime when claude reports one). | `cc-fleet doctor`; if urgent, handle it in the main session yourself. |
 | `SUBAGENT_TIMEOUT` | Exceeded `--timeout`. | Real long task → raise `--timeout` (or use `--background`) and retry; suspected hang → switch provider / fall back (with user confirmation). |
 | `PROVIDER_API_ERROR` | Other provider failure (5xx / overloaded). | Retry once or propose a switch. |
 | `CODEX_PROXY_UNAVAILABLE` | The codex conversion daemon could not start (no login, or the loopback port is held). | Tell the user: `cc-fleet codex login`, or free / change the port (`cc-fleet codex add --port <n>`). |
@@ -133,6 +133,7 @@ A **sync** subagent has nothing to tear down; "cleanup" only concerns `--backgro
 
 - **The one rule that matters: capture `.session_id` BEFORE pruning** if a follow-up is likely. gc deletes cc-fleet's job record (which holds the envelope with the id) but never Claude's transcript — so `--resume` works after gc *iff* you kept the id, and keeping the record without the id buys you nothing.
 - **Prune finished:** `cc-fleet subagent-gc --json` removes finished jobs older than 24h; running jobs are always kept; pinned records are user-owned — never force-remove them. `--older-than 0s` clears all finished jobs now, but it is machine-wide — codex jobs have no lead session to scope to, so it also sweeps other sessions' finished records; prefer the 24h default and identify your own jobs by their `--label`.
+- **gc also deletes workflow runs.** Any `subagent-gc` deletes the runs it reaches (runs idle past the cutoff; `--older-than 0s`: every finished run) with their journals and saved scripts, so `workflow run --resume` / `restart` can no longer replay them — resume or abandon a stopped or failed run before pruning. A stopped or killed run's leftover isolation worktree is first saved to a `cc-fleet/wf-salvage-*` branch (or kept with a `.cc-fleet-keep` marker if that fails); gc prints no notice, so check `git branch --list 'cc-fleet/wf-*'`, and `git worktree list` for a kept directory.
 
 ## Anti-patterns
 - Using subagent as a sustained back-and-forth collaborator → it's one-shot/batch; `--resume` is for a short follow-up, not a long conversation.

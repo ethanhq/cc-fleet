@@ -42,13 +42,7 @@ cc-fleet subagent deepseek --model strong \
 
 The provider arg is **optional** — with no provider, cc-fleet uses the default. `NO_DEFAULT_PROVIDER` / `DEFAULT_PROVIDER_DISABLED` / `DEFAULT_PROVIDER_UNKNOWN` in the failure envelope mean there is no usable default — apply the provider ask ladder above.
 
-**Session grouping — no flag needed by default.** `cc-fleet subagent` auto-detects the parent Claude session (fail-closed: an unvalidatable registry shows `(no session)`, never a guess). The one exception: inside a known team, pass `--lead-session-id` (the team's `leadSessionId` from `~/.claude/teams/<team>/config.json`) to force the job under that team's session — an explicit flag always wins.
-
-```bash
-# Optional explicit override, with a known team:
-lead_session_id=$(jq -r '.leadSessionId // empty' "$HOME/.claude/teams/<team>/config.json")
-cc-fleet subagent --prompt "..." --lead-session-id "$lead_session_id" --json
-```
+**Session grouping — no flag needed.** `cc-fleet subagent` auto-detects the parent Claude session (fail-closed: an unvalidatable registry shows `(no session)`, never a guess) — the same live session id the Agents Board groups your teammates under. The envelope's `lead_session_id` is the id `subagent-gc --session` takes. `--lead-session-id <id>` overrides detection, but never copy it from `~/.claude/teams/<team>/config.json`: the implicit team keeps its startup session id after `/clear`, `/resume`, `--resume` or `--continue`.
 
 Useful flags (full list in cc-fleet-shared/cli-reference.md):
 - **Name it** → `--label "<short-alias>"` (e.g. `--label sort-complexity`). The Agents Board shows the label instead of the opaque job id — pass one on every launch, like a teammate name. Display-only metadata; capped at 256 bytes.
@@ -79,13 +73,13 @@ Useful flags (full list in cc-fleet-shared/cli-reference.md):
 | `DEFAULT_PROVIDER_RESERVED` | `default_provider` is hand-set to the reserved `claude` (explicit-only). | The user runs `cc-fleet default --unset` or re-pins a real provider; don't retry. |
 | `CONFIG_LOAD_FAILED` | `providers.toml` failed to load/validate. | `cc-fleet doctor`; surface to the user — don't retry. |
 | `UNKNOWN_PROVIDER` / `PROVIDER_DISABLED` | Provider not configured / disabled. | Tell the user to `cc-fleet add` / `cc-fleet edit <provider> --enable`. |
-| `PROVIDER_RESERVED` | A providers.toml row is named `claude` (reserved for the native leaf). | Tell the user to rename or `cc-fleet remove claude`; no lane uses that row (cc-fleet-shared/providers.md). |
+| `PROVIDER_RESERVED` | A providers.toml row is named `claude` (reserved for the native leaf). | Tell the user to rename or `cc-fleet remove claude`. The subagent, workflow and teammate lanes refuse that row; only `cc-fleet run claude` launches it (cc-fleet-shared/providers.md). |
 | `FINGERPRINT_STALE` | The `claude` binary was not found (the code keeps its old name). | Tell the user to install/fix Claude Code or PATH, then retry. `cc-fleet doctor` confirms. |
 | `KEY_INVALID` | Provider 401/403. | Have the user rotate the key; do not retry blindly. |
 | `INSUFFICIENT_BALANCE` | Out of balance / quota (429/402 + balance signature). | Retry can't help — propose the next provider (provider ask ladder, step 4) or fall back to native `Agent`; tell the user they're out of credit. |
 | `RATE_LIMITED` | Provider 429. | Wait briefly, retry once, or propose a switch (provider ask ladder, step 4). |
 | `MODEL_NOT_FOUND` | Model name rejected (400). | `cc-fleet refresh <provider>` then retry, or drop `--model` to use the default. |
-| `PROVIDER_UNREACHABLE` | Transport failure (only with `--probe`). | `cc-fleet doctor`; if urgent, fall back to native `Agent`. |
+| `PROVIDER_UNREACHABLE` | Transport failure (with `--probe`, or at runtime when claude reports one). | `cc-fleet doctor`; if urgent, fall back to native `Agent`. |
 | `SUBAGENT_TIMEOUT` | Exceeded `--timeout`. | Real long task → raise `--timeout` (or use `--background`) and retry; suspected hang → switch provider / fall back (with user confirmation). |
 | `PROVIDER_API_ERROR` | Other provider failure (5xx / overloaded). | Retry once or propose a switch. |
 | `CODEX_PROXY_UNAVAILABLE` | The codex conversion daemon could not start (no login, or the loopback port is held). | Tell the user: `cc-fleet codex login`, or free / change the port (`cc-fleet codex add --port <n>`). |
@@ -134,6 +128,7 @@ A **sync** subagent has nothing to tear down; "cleanup" only concerns `--backgro
 
 - **The one rule that matters: capture `.session_id` BEFORE pruning** if a follow-up is likely. gc deletes cc-fleet's job record (which holds the envelope with the id) but never Claude's transcript — so `--resume` works after gc *iff* you kept the id, and keeping the record without the id buys you nothing.
 - **Prune finished, scoped to your session:** `cc-fleet subagent-gc --session <lead_session_id> --json` (immediate, skips pinned) — prefer it over a blanket `subagent-gc --older-than 0s` so you never wipe another session's records. Default gc only removes finished jobs older than 24h; running jobs are always kept; pinned records are user-owned — never force-remove them.
+- **gc also deletes workflow runs.** Any `subagent-gc` deletes the runs it reaches (`--session`: that session's finished runs, at once; the default: runs idle past the cutoff) with their journals and saved scripts, so `workflow run --resume` / `restart` can no longer replay them — resume or abandon a stopped or failed run before pruning. A stopped or killed run's leftover isolation worktree is first saved to a `cc-fleet/wf-salvage-*` branch (or kept with a `.cc-fleet-keep` marker if that fails); gc prints no notice, so check `git branch --list 'cc-fleet/wf-*'`, and `git worktree list` for a kept directory.
 
 ## Anti-patterns
 - Using subagent for work that needs multiple turns / collaboration → /cc-fleet:team.
