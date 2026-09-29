@@ -60,7 +60,7 @@ The client-side validator covers a JSON-Schema subset: `type`, `required`, neste
 
 ## Resume — the content-hash journal
 
-Every completed leaf is journaled, keyed by its determinant (provider + model + prompt + schema + profile shape):
+Every completed leaf is journaled, keyed by its determinant (provider + model + prompt + schema + isolation + profile shape):
 
 ```bash
 cc-fleet workflow run audit.js --resume "$RUN"

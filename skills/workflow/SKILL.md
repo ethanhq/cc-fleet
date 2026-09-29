@@ -52,7 +52,7 @@ In a script, `agent()`'s `opts.provider` is **optional**: omitted, the leaf uses
 
 ## Running it
 ```bash
-RUN=$(cc-fleet workflow run audit.js)        # detached; prints ONLY the bare run id
+cc-fleet workflow run audit.js               # detached; prints ONLY the bare run id ("$RUN" below)
 cc-fleet workflow status "$RUN" --json       # manifest + every tagged leaf (run→phase→agent)
 cc-fleet workflow list --json                # all runs, newest first
 cc-fleet workflow stop "$RUN"                # reap a running run (engine + in-flight leaves)
@@ -74,14 +74,14 @@ cc-fleet workflow wait "$RUN" --timeout 3m --json  # block silently until the ru
 The run is detached so it outlives this call and your session stays responsive. A non-zero exit from `workflow run` means no run started and no id was printed; stderr says why — e.g. a script or `meta` error, or `engine failed to start: <cause>` when the detached engine died before registering. Do not arm `wait` then (`wait` exits 2 on an empty or unknown id).
 
 ## Waiting on a run: arm `wait` in a backgrounded Bash (push, not poll)
-Right after launching, arm the notifier — a backgrounded Bash whose EXIT is your wake-up:
+Right after launching, arm the notifier — a backgrounded Bash whose EXIT is your wake-up. Put the printed run id into it literally: a separate Bash call does not inherit `$RUN`:
 ```bash
-RUN=$(cc-fleet workflow run audit.js)
-# Bash tool with run_in_background=true; the harness wakes you when it exits:
-cc-fleet workflow wait "$RUN" --timeout 3m --json
+cc-fleet workflow run audit.js
+# a separate Bash call with run_in_background=true; the harness wakes you when it exits:
+cc-fleet workflow wait <run-id> --timeout 3m --json
 ```
 End your turn and keep working — never spawn an agent (or loop yourself) to poll a run.
-On the wake, dispatch on the envelope's `wait_outcome` (+ exit code):
+On the wake, dispatch on the envelope's `wait_outcome` (+ exit code); exit **2** has none (`ok:false`) — an IO error or an empty or unknown run id: check the id against `workflow list --json`, don't re-arm blindly:
 - **`terminal`** (exit 0 done/stopped · 1 failed) — fetch the detail with `workflow status "$RUN" --json` (it carries `run_error` and the per-leaf list; the wait envelope deliberately doesn't) and report.
 - **`engine_gone`** (1) — the engine died without finalizing; propose `cc-fleet workflow run <script> --resume "$RUN"` (the journal replays the finished leaves).
 - **`parked`** (3) — every remaining leaf is held. FIRST re-check `workflow status`: leaves running/queued again means it was a transient (the engine was between leaves) — re-arm silently. Still parked → name the envelope's `held` leaves to the user and propose `restart --leaf`; never wait it out.
@@ -96,17 +96,17 @@ A failed leaf's `error_code` is in `workflow status --json` (`jobs[]`) and in th
 
 | `error_code` | What you do |
 |---|---|
-| `INSUFFICIENT_BALANCE` / `KEY_INVALID` / `RATE_LIMITED` | STOP — provider ask ladder, step 4 (never switch silently). `KEY_INVALID` → the user rotates the key; `RATE_LIMITED` → brief wait, one retry. |
+| `INSUFFICIENT_BALANCE` / `KEY_INVALID` / `RATE_LIMITED` | STOP — provider ask ladder, step 4 (never switch silently). `KEY_INVALID` → the user rotates the key (a codex provider has no key: the user runs `cc-fleet codex login --credential <its secret_ref>`; `protocol` `codex-oauth` and `secret_ref` in `cc-fleet list --json`); `RATE_LIMITED` → brief wait, one retry. |
 | `NO_DEFAULT_PROVIDER` / `DEFAULT_PROVIDER_DISABLED` / `DEFAULT_PROVIDER_UNKNOWN` / `DEFAULT_PROVIDER_RESERVED` | No usable default for a provider-less `agent()` (`RESERVED` = `default_provider` hand-set to `claude`, explicit-only — the user unsets/re-pins) — apply the provider ask ladder, then re-run. |
-| `MODEL_NOT_FOUND` | `cc-fleet refresh <provider>`, or drop the leaf's `model` to use the provider default. |
+| `MODEL_NOT_FOUND` | Give the failing leaf a slot as its `model` (`default` / `strong` / `fast`; see `cc-fleet models <provider> --json`) — also when it inherited the id from `meta.model`. Change `meta.model` only when every leaf inheriting it was rejected: it re-keys all of them, so `--resume` re-runs the finished ones. Then `cc-fleet workflow run <script> --resume "$RUN"` (`restart` re-runs the saved, unedited script). If the user named that model, tell them it was rejected and confirm the substitute before retrying. If a configured slot itself is rejected, the user fixes it with `cc-fleet edit <provider> --default-model/--strong-model/--fast-model <id>` (or the TUI); `cc-fleet refresh` changes nothing a leaf uses. |
 | `SUBAGENT_TIMEOUT` | Raise the leaf's `timeout` or split the task; a leaf with no `timeout` defaults to 300s. |
 | `SUBAGENT_OUTPUT_TOO_LARGE` | The leaf's output exceeded the byte cap — have it write to a file and answer concisely; a blind retry overflows again. |
 | `SUBAGENT_STOPPED` | An operator stopped it (`stop --leaf` / run stop) — terminal, NOT a failure; never auto-retry. |
-| `SUBAGENT_MAX_TURNS` | A leaf hit the `--max-turns` cap. | Raise the leaf's `max_turns` and re-run / `restart --leaf` — a research / multi-file leaf needs ~1 turn per file read or command (give it 30–50, or omit the cap). |
-| `SUBAGENT_FAILED` / `PROVIDER_API_ERROR` | Inspect (`workflow status`); `restart --leaf` once, or propose a provider switch (ask first). A `provider: "claude"` leaf on a logged-out machine fails here (the error preview names the login problem, no dedicated code) — tell the user to log in to Claude Code interactively. |
+| `SUBAGENT_MAX_TURNS` | A leaf hit the `--max-turns` cap — raise its `max_turns` in the script (a research / multi-file leaf needs ~1 turn per file read or command: give it 30–50, or omit the cap), then `cc-fleet workflow run <script> --resume "$RUN"`; `restart --leaf` re-runs the saved script with the old cap. |
+| `SUBAGENT_FAILED` / `PROVIDER_API_ERROR` | Inspect (`workflow status`); `restart --leaf` once, or propose a provider switch (ask first). A `schema` leaf with missing or invalid structured output fails here too, and a restart re-runs the same spec: fix its schema, prompt or `max_turns`, then `cc-fleet workflow run <script> --resume "$RUN"`. A `provider: "claude"` leaf on a logged-out machine fails here (the error preview names the login problem, no dedicated code) — tell the user to log in to Claude Code interactively. A codex / openai-* leaf with `leaf did not complete` and no `leaf launch` line in `cc-fleet workflow watch "$RUN" --timeout 5s` never started: its proxy (or its `isolation: "worktree"` worktree) could not be set up, and only the script's rejection names the cause (`run_error` when uncaught; `parallel` / `pipeline` swallow it) — for `codex proxy unavailable: …` follow the `CODEX_PROXY_UNAVAILABLE` row instead of restarting. |
 | `PROVIDER_UNREACHABLE` | claude reported a transport failure with no HTTP status (connection refused or reset, DNS, TLS, timed out) — the provider is down, or a codex / openai-* loopback proxy died mid-leaf. `cc-fleet doctor`, then `restart --leaf` once; if it persists, tell the user and propose a provider switch (ask first). |
 | `FINGERPRINT_STALE` | The `claude` binary was not found (the code keeps its old name) — the user installs/fixes Claude Code or PATH; `cc-fleet doctor` confirms. |
-| `CODEX_PROXY_UNAVAILABLE` / `CODEX_CLOUDFLARE_BLOCKED` | `cc-fleet codex login` / free the port; a Cloudflare block → switch network, don't rotate credentials. |
+| `CODEX_PROXY_UNAVAILABLE` / `CODEX_CLOUDFLARE_BLOCKED` | The loopback proxy could not start: `cc-fleet codex-proxy status`, then the user frees the port in the provider's `base_url` or fixes the cause the error names — a missing codex login does not cause this (it fails on the request as `KEY_INVALID`). A Cloudflare block → switch network, don't rotate credentials. |
 | `UNKNOWN_PROVIDER` / `PROVIDER_DISABLED` / `CONFIG_LOAD_FAILED` | Config problem — `cc-fleet list --json`, `cc-fleet add` / `edit --enable`; `CONFIG_LOAD_FAILED` → `cc-fleet doctor`. |
 | `PROVIDER_RESERVED` | A providers.toml row is named `claude` (reserved for the native leaf) — the user renames or removes it. |
 | `SUBAGENT_BAD_ARGS` | Bad leaf options — fix the script, re-run. |
@@ -116,7 +116,7 @@ Each run records a content-hash **journal** of its completed leaves. Re-run the 
 ```bash
 cc-fleet workflow run audit.js --resume "$RUN"   # journaled leaves return cached (no provider exec); only un-run leaves run
 ```
-A leaf is keyed by its determinant (provider + model + prompt + schema + slim shape), so an unchanged re-run is ~100% cache hits, a leaf whose prompt you edited (and anything downstream of its output) re-runs, and a run that was killed resumes by replaying what finished before the kill. The determinism lockdown makes this exact: with no clock/PRNG, the same script+args produce the same keys. A **failed** leaf is never journaled, so resume re-runs it.
+A leaf is keyed by its determinant (provider + model + prompt + schema + isolation + slim shape), so an unchanged re-run is ~100% cache hits, a leaf whose prompt you edited (and anything downstream of its output) re-runs, and a run that was killed resumes by replaying what finished before the kill. The determinism lockdown makes this exact: with no clock/PRNG, the same script+args produce the same keys. A **failed** leaf is never journaled, so resume re-runs it.
 
 `--resume` and `restart` run the remaining leaves in the directory the run was first launched from (recorded with the run), whatever your cwd; only the script path you pass to `--resume` is resolved from your cwd. If that directory is gone, they fail with `run directory <dir> no longer exists` — tell the user to restore it or start a fresh run from the project directory. `--resume` checks the script before touching the run (parse, compile, `meta`): a broken one is refused (exit 1, the error on stderr) and the run and its saved script — the one `restart` runs — stay as they were; fix the script and re-issue the same command.
 

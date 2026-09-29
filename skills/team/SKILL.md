@@ -133,9 +133,9 @@ The one runtime difference from a native teammate. A provider teammate's brain *
    | `error_class` | Meaning | What you do |
    |---|---|---|
    | `insufficient_balance` | Provider out of balance / quota. | Retrying can't help. Stop the teammate; STOP, tell the user, propose the next provider, wait for confirm (provider ask ladder, step 4). |
-   | `auth` | Provider rejected the key (`401`/`403`). | Stop the teammate. Tell the user to rotate the key — file backend: `cc-fleet edit <provider> --api-key-stdin <<<"$NEW_KEY"` (or `--api-key-file <path>`); other backends via the secret manager. Don't start another teammate on the same provider. **Never** the raw key in argv. |
+   | `auth` | Provider rejected the key (`401`/`403`). | Stop the teammate. Tell the user to rotate the key — file backend: `cc-fleet edit <provider> --api-key-stdin <<<"$NEW_KEY"` (or `--api-key-file <path>`); other backends via the secret manager. A codex provider has no key: the user runs `cc-fleet codex login --credential <its secret_ref>` (`protocol` `codex-oauth` and `secret_ref` in `cc-fleet list --json`). Don't start another teammate on the same provider. **Never** the raw key in argv. |
    | `rate_limit` | Provider `429`. | Stop the teammate; wait a bit and start a fresh one, or propose a switch (confirm first). Never keep a wedged teammate looping. |
-   | `api_error` | Generic provider failure (5xx, overloaded, rejected). | Stop the teammate; retry once, or propose a switch (confirm first). |
+   | `api_error` | Generic provider failure (5xx, overloaded, rejected). | Stop the teammate; retry once, or propose a switch (confirm first). On a codex provider, read the pane first: `codex login required` or `codex auth rejected` is a login failure — don't retry; the user runs `cc-fleet codex login --credential <its secret_ref>`. |
    | `cloudflare_blocked` | The ChatGPT backend's edge blocked this IP/client — not a key problem. | Stop the teammate; switch network or retry later; don't rotate credentials. |
 
 3. **`unknown` or not specific enough → `capture-pane` and read it yourself** (same command + key-safety note as above). `ps --check` is the first probe; the raw pane is a fine fallback.

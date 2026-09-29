@@ -101,7 +101,7 @@ cc-fleet import fleet-providers.toml                # 在新机器上应用
 
 ```bash
 printf '%s' "$KEY" | cc-fleet edit deepseek --api-key-stdin   # 重新录入 file 后端密钥
-cc-fleet codex login                                          # 任何 codex provider
+cc-fleet codex add --name <provider>                          # codex provider 不随包导入:逐个重新添加,再执行它打印的 next: 登录命令
 cc-fleet doctor
 ```
 
@@ -206,7 +206,7 @@ cc-fleet workflow rm "$RUN" / prune          # 删除一个 run / 清掉所有�
 - **`wait` 退出码:**`0` done/stopped · `1` failed 或 engine-gone · `3` **parked**(剩下的 leaf 全部 held — 需要操作员介入)· `124` 超时(心跳快照,不是结论)· `130` 被中断· `2` IO/未知 run。挂在后台 shell 里,它的退出就是推送通知 — 不需要任何轮询。envelope 只带 outcome + 状态计数 + 花费;leaf 级细节在 `workflow status` 里。
 - **held** 的 leaf(`stop --leaf` 或看板 `x`)无限期挂起 — 不是错误、不会重试; `restart --leaf` 原地重跑(同一 job id,attempt +1)。
 - `run` 的 flag:`--max-concurrency`(默认 `min(16, cores-2)`)、`--budget-usd` / `--budget-tokens`(到顶后引擎不再铸新 leaf)、`--args-json`(脚本的 `args`)、`--no-persist-io`(关闭 prompt/answer 下钻)、`--saved`(跑保存过的脚本)。
-- journal 按内容哈希记每个 leaf(provider + 模型 + prompt + schema + profile 形状), `--resume` 只重跑变过或没跑完的;失败的 leaf 不会进 journal。
+- journal 按内容哈希记每个 leaf(provider + 模型 + prompt + schema + isolation + profile 形状), `--resume` 只重跑变过或没跑完的;失败的 leaf 不会进 journal。
 - `--resume` 和 `restart` 在 run 启动时的目录(记在 manifest 里)运行剩下的 leaf,而不是调用者的当前目录;该目录已不存在时 run 以明确的错误失败。
 - `--resume` 先解析、编译新脚本并校验 `meta`;不通过时直接报错,什么都不写,run 和它保存的脚本(`restart` 运行的就是它)保持原样。
 - `isolation: "worktree"` 的 leaf 留下改动时,会在删除 worktree 之前把改动存成分支 `cc-fleet/wf-<job>-a<attempt>`(见[编写 workflow 脚本](workflows.md#isolated-worktrees))。run 被 stop 或 kill 之后,下一次 `restart` / `--resume` 的清理或 `workflow rm` / `prune` 会把没保存的改动抢救到 `cc-fleet/wf-salvage-*` 分支;存不下来的目录保留并带 `.cc-fleet-keep` 标记,`rm` / `prune` / `restart` 会在 stderr 上为每个保留的目录打一行。cc-fleet 从不删除这些分支。
@@ -221,7 +221,7 @@ cc-fleet codex add      # 注册 provider(端口 + 默认模型自动选好)
 cc-fleet codex login    # 一次性设备码 OAuth(打印 URL + 验证码)
 ```
 
-`claude` 进程对一个本地回环转换 daemon(`codex-proxy`,懒启动,闲置自退)说 Anthropic API;daemon 翻译成 OpenAI Responses API 调 ChatGPT 后端。OAuth bearer 只存在于 daemon 内部 — `keyget` 发给 claude 的只是一个低价值的回环握手 secret,token 不会进 env、argv 或任何 profile。cc-fleet 维护**自己**的 token 链(`codex login`),不读写 `~/.codex` 的认证,codex CLI 的登录不受影响。
+`claude` 进程对一个本地回环转换 daemon(`codex-proxy`,懒启动,闲置自退)说 Anthropic API;daemon 翻译成 OpenAI Responses API 调 ChatGPT 后端。OAuth bearer 只存在于 daemon 内部 — `keyget` 发给 claude 的只是一个低价值的回环握手 secret,token 不会进 env、argv 或任何 profile。cc-fleet 维护**自己**的 token 链(`codex login`),从不写 `~/.codex`,codex CLI 的登录不受影响。没有自己的登录时,默认凭证上的 codex provider(`secret_ref` 为 `codex-oauth`,通常是第一个添加的)只读借用 codex CLI 在 `~/.codex` 的登录,仅限该 access token 有效期内(cc-fleet 从不刷新它);`codex status` 显示当前用的是哪个来源。
 
 多份订阅可以共存:`codex add --name codex-work` 再注册一个 provider, `codex login|logout|status --credential <ref>` 独立管理每份凭证。同一个 daemon 还服务 TUI 里注册的 OpenAI 协议 provider(`openai-responses`、`openai-chat`) — 每个 provider 一个端口,上游 key 同样的待遇。
 

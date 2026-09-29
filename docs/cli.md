@@ -101,7 +101,7 @@ After import, finish the setup:
 
 ```bash
 printf '%s' "$KEY" | cc-fleet edit deepseek --api-key-stdin   # re-enter file-backend keys
-cc-fleet codex login                                          # for any codex providers
+cc-fleet codex add --name <provider>                          # codex providers are not imported: re-add each, then run the "next:" login it prints
 cc-fleet doctor
 ```
 
@@ -206,7 +206,7 @@ cc-fleet workflow rm "$RUN" / prune          # delete a run / every engine-less 
 - **`wait` exit codes:** `0` done/stopped · `1` failed or engine-gone · `3` **parked** (every remaining leaf is held — operator action required) · `124` timeout (a heartbeat snapshot, not a verdict) · `130` interrupted · `2` IO/unknown run. Armed in a backgrounded shell, its exit is a push notification — no polling loop needed. The envelope carries outcome + status counts + spend; per-leaf detail stays in `workflow status`.
 - A **held** leaf (`stop --leaf`, or the board's `x`) is parked indefinitely — not an error, not retried; `restart --leaf` re-runs it in place (same job id, attempt +1).
 - `run` flags: `--max-concurrency` (default `min(16, cores-2)`), `--budget-usd` / `--budget-tokens` (the engine stops minting leaves at the cap), `--args-json` (the script's `args`), `--no-persist-io` (disable prompt/answer drill-in), `--saved` (run a saved script).
-- The journal keys each leaf by content hash (provider + model + prompt + schema + profile shape), so `--resume` re-runs only what changed or never finished; failed leaves are never journaled.
+- The journal keys each leaf by content hash (provider + model + prompt + schema + isolation + profile shape), so `--resume` re-runs only what changed or never finished; failed leaves are never journaled.
 - `--resume` and `restart` run the remaining leaves in the directory the run was started from (recorded in the manifest), not the caller's cwd; if that directory is gone the run fails with a clear error.
 - `--resume` parses and compiles the new script and checks its `meta` first; a script that fails is refused before anything is written, so the run and its saved script (the one `restart` runs) stay as they were.
 - A leaf with `isolation: "worktree"` that leaves changes behind is saved as branch `cc-fleet/wf-<job>-a<attempt>` before its worktree is removed (see [Writing workflows](workflows.md#isolated-worktrees)). After a run is stopped or killed, the next `restart` / `--resume` clean-up or `workflow rm` / `prune` rescues unsaved work to a `cc-fleet/wf-salvage-*` branch; a directory it cannot save is kept with a `.cc-fleet-keep` marker, and `rm` / `prune` / `restart` print one line per kept directory on stderr. cc-fleet never deletes these branches.
@@ -221,7 +221,7 @@ cc-fleet codex add      # register the provider (port + default model auto-picke
 cc-fleet codex login    # one-time device-code OAuth (prints a URL + code)
 ```
 
-The `claude` process speaks the Anthropic API to a loopback conversion daemon (`codex-proxy`, started lazily, self-exits when idle); the daemon translates to the OpenAI Responses API and calls the ChatGPT backend. The OAuth bearer lives only inside the daemon — `keyget` hands claude a low-value loopback handshake secret, and the token never enters env, argv, or any profile. cc-fleet keeps its **own** token chain (`codex login`), never reading or writing `~/.codex` auth, so the codex CLI's login is unaffected.
+The `claude` process speaks the Anthropic API to a loopback conversion daemon (`codex-proxy`, started lazily, self-exits when idle); the daemon translates to the OpenAI Responses API and calls the ChatGPT backend. The OAuth bearer lives only inside the daemon — `keyget` hands claude a low-value loopback handshake secret, and the token never enters env, argv, or any profile. cc-fleet keeps its **own** token chain (`codex login`) and never writes `~/.codex`, so the codex CLI's login is unaffected. With no own login, the codex provider on the default credential (`secret_ref` `codex-oauth`, normally the first one added) rides the codex CLI's `~/.codex` login read-only while that access token is valid (cc-fleet never refreshes it); `codex status` shows which source is active.
 
 Multiple subscriptions coexist: `codex add --name codex-work` registers another provider, and `codex login|logout|status --credential <ref>` manage each credential independently. The same daemon also serves the OpenAI-protocol provider classes (`openai-responses`, `openai-chat`) registered through the TUI — one port per provider, upstream key handled the same way.
 

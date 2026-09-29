@@ -303,7 +303,7 @@ cc-fleet 也能插进 **OpenAI Codex**:一个 Codex 插件让 Codex 会话扇出
 **Codex(ChatGPT 订阅)**:一次设备码登录,ChatGPT 订阅就成了普通 Provider,Workflow / Team / Subagent / run 全部可用。
 
 > [!WARNING]
-> **Codex 属非官方用法。** 在 codex CLI 之外复用 ChatGPT 订阅可能违反 OpenAI 条款,`ccf codex login` 会先要求你明确确认。OAuth token 只存在于本地转换 daemon 内,cc-fleet 维护独立的登录链,不碰 codex CLI 的认证。
+> **Codex 属非官方用法。** 在 codex CLI 之外复用 ChatGPT 订阅可能违反 OpenAI 条款,`ccf codex login` 会先要求你明确确认。OAuth token 只存在于本地转换 daemon 内,cc-fleet 维护独立的登录链,从不写 codex CLI 的认证(没有自己的登录时,默认凭证上的 codex provider 只读借用它)。
 
 ---
 
