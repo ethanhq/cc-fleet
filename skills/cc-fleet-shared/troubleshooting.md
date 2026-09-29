@@ -33,7 +33,7 @@ The same codes reach you two other ways:
 | `BAD_AGENT_CALL` | (guard) The `Agent` call itself is wrong for a teammate (see `detail`). | Fix the call; never retry it as is. |
 | `CLAUDE_NOT_FOUND` | No claude binary found for this session's version. | Tell the user to install / fix Claude Code or PATH; `cc-fleet doctor` confirms. |
 | `PROFILE_WRITE_FAILED` | Could not write `~/.claude/profiles/<provider>.json`. | Tell the user to check that directory's permissions, then run `cc-fleet repair`. |
-| `PROVIDER_UNREACHABLE` | DNS / connect / timeout to the provider's models endpoint (3s probe failed). | Suggest `cc-fleet doctor`; if urgent, fall back to native `Agent({model: 'sonnet'})` and tell the user the provider is sick. |
+| `PROVIDER_UNREACHABLE` | DNS / connect / timeout to the provider's models endpoint (10s probe failed). | Suggest `cc-fleet doctor`; if urgent, fall back to native `Agent({model: 'sonnet'})` and tell the user the provider is sick. |
 | `KEY_INVALID` | Provider returned HTTP 401/403 — key wrong/expired. | Tell the user: re-add via `cc-fleet edit <provider> --api-key-stdin <<<"$NEW_KEY"` (file backend) or rotate in the secret manager and re-run. Don't retry without user action. **Never** put the raw key on the command line. |
 | `UNKNOWN_PROVIDER` | The provider name isn't in `providers.toml`. | `cc-fleet list --json` to see configured providers; tell the user to `cc-fleet add <provider>` first. Don't guess. |
 | `PROVIDER_DISABLED` | The provider row has `enabled = false`. | Pick a different provider or tell the user to `cc-fleet edit <provider> --enable`. |

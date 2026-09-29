@@ -7,12 +7,17 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 )
 
 // messagesProbeBody is a minimal syntactically-valid Messages request. The probe
 // attaches no credentials, so an Anthropic-protocol endpoint that authenticates
 // requests rejects it at auth (401/403) without reaching a model.
 const messagesProbeBody = `{"model":"x","max_tokens":1,"messages":[{"role":"user","content":"hi"}]}`
+
+// sniffTimeout caps the probe. It only feeds a hint and gives up silently, so a
+// hung base_url must not hold up the launch any longer than this.
+const sniffTimeout = 3 * time.Second
 
 // sniffClient never follows redirects: a redirecting base_url answers with its
 // 3xx (not the redirect target's status), so a host canonicalization can't turn
@@ -39,7 +44,7 @@ func MessagesRouteMissing(baseURL string) bool {
 		return false
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), probeTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), sniffTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.JoinPath("v1", "messages").String(), strings.NewReader(messagesProbeBody))
 	if err != nil {

@@ -35,7 +35,7 @@ type Request struct {
 	OutputFormat string        // "text" | "json" — claude's inner output format
 	JSON         bool          // cc-fleet's own machine-readable Result envelope (forces inner json)
 	Timeout      time.Duration // hard wall-clock deadline; 0 → 300s
-	Probe        bool          // pre-run 3s reachability check; default off (opposite of spawn)
+	Probe        bool          // pre-run reachability check (up to 10s); default off (opposite of spawn)
 
 	PermissionMode string  // empty → --dangerously-skip-permissions; else --permission-mode <v>
 	Resume         string  // --resume <session_id> (multi-turn)

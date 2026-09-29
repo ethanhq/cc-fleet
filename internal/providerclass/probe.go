@@ -14,8 +14,10 @@ import (
 )
 
 // probeTimeout caps the provider reachability check: long enough for a healthy
-// provider, short enough that an outage doesn't stall the caller.
-const probeTimeout = 3 * time.Second
+// provider, short enough that an outage doesn't stall the caller. A request
+// carrying a key skips CDN caches, so a healthy provider can take about 3s just
+// to answer (OpenRouter); fast failures (DNS, refused, 401) still return at once.
+const probeTimeout = 10 * time.Second
 
 // Probe is the outcome of a provider reachability check (Reachability). It is
 // decision-only: callers map it onto their own Result type. Block=true means
@@ -29,7 +31,7 @@ type Probe struct {
 	Warn       string // non-blocking warning (e.g. a 5xx); print to stderr, then proceed
 }
 
-// Reachability does a 3s GET against the provider's models_endpoint (with the
+// Reachability does a bounded GET against the provider's models_endpoint (with the
 // provider key, best-effort) and classifies the outcome. spawn and subagent both
 // call it so the classification stays single-sourced.
 //

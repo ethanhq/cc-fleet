@@ -68,7 +68,7 @@ printf '%s' "$DEEPSEEK_API_KEY" | cc-fleet add deepseek \
   --secret-backend file --secret-ref deepseek.key --api-key-stdin
 ```
 
-`add` probes the models endpoint synchronously (3s) and only persists on success. Optional model-roster flags: `--strong-model` / `--fast-model` (tier slots), `--effort low|medium|high|xhigh|max` (reasoning effort), `--default-permission` (the default permission mode for `cc-fleet run` sessions). `edit` patches any of these later, plus `--key-rotation` and `--enable`/`--disable`.
+`add` probes the models endpoint synchronously (up to 10s) and only persists on success. Optional model-roster flags: `--strong-model` / `--fast-model` (tier slots), `--effort low|medium|high|xhigh|max` (reasoning effort), `--default-permission` (the default permission mode for `cc-fleet run` sessions). `edit` patches any of these later, plus `--key-rotation` and `--enable`/`--disable`.
 
 Once provider teammates are set up, `add` / `edit` / `remove` also resync the `ccf-*` agent definitions. If that sync fails, or a `ccf-*.md` without the cc-fleet marker is in the way (it is never overwritten), the command itself still succeeds and `--json` carries a `teammate_sync_error` string; `cc-fleet repair` retries the sync and prints a warning for such a file (its `--json` lists it in `agent_defs.conflicts`).
 
