@@ -53,6 +53,21 @@ func TestRenderFleetEmpty(t *testing.T) {
 	}
 }
 
+// TestRenderFleetShowsState: a teammate that is not simply running shows its
+// discovery state; a running one does not.
+func TestRenderFleetShowsState(t *testing.T) {
+	out := renderFleet(fleetSnap{teammates: []teardown.Teammate{
+		{Team: "t", Name: "gone", State: teardown.StateOrphaned},
+		{Team: "t", Name: "live", State: teardown.StateRunning},
+	}}, fixedNow)
+	if !strings.Contains(out, "t/gone") || !strings.Contains(out, teardown.StateOrphaned) {
+		t.Errorf("orphaned state missing:\n%s", out)
+	}
+	if strings.Contains(out, teardown.StateRunning) {
+		t.Errorf("running state should not be printed:\n%s", out)
+	}
+}
+
 // TestFleetLeadIDsDedup: lead ids are collected from teammates + jobs and de-duplicated.
 func TestFleetLeadIDsDedup(t *testing.T) {
 	ids := fleetLeadIDs(

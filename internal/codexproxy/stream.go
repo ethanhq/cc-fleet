@@ -36,6 +36,7 @@ type blockState struct {
 // closed first), never a clean message_stop.
 type streamConverter struct {
 	out     sseSink
+	cc      *convCtx // receives upErrType when an upstream error event is surfaced
 	model   string
 	toolMap *toolNameMap // restores a sanitized tool name onto the response tool_use block
 	// redact masks a streaming error message before it reaches the client (set when a
@@ -54,7 +55,7 @@ type streamConverter struct {
 }
 
 func newStreamConverter(out sseSink, cc *convCtx) *streamConverter {
-	c := &streamConverter{out: out, model: cc.model, toolMap: cc.toolMap, blocks: map[string]*blockState{}, stopReason: "end_turn"}
+	c := &streamConverter{out: out, cc: cc, model: cc.model, toolMap: cc.toolMap, blocks: map[string]*blockState{}, stopReason: "end_turn"}
 	if cc.apiKey != "" {
 		// openai-* presents a real key — scrub it (exact + pattern) from any error chunk.
 		// codex has none (cc.apiKey == "") so redact stays nil and its errors pass through.
@@ -199,6 +200,10 @@ func (c *streamConverter) failStream(ev *responsesEvent) error {
 	if rerr != nil && rerr.Message != "" {
 		msg = "codex upstream: " + rerr.Message
 	}
+	c.cc.upErrType = "api_error"
+	if rerr != nil && (rerr.Code == "rate_limit_exceeded" || rerr.Code == "insufficient_quota") {
+		c.cc.upErrType = "rate_limit_error"
+	}
 	return c.emitError(msg)
 }
 
@@ -289,7 +294,7 @@ func (c *streamConverter) ensureStarted() error {
 	return c.out.event("message_start", map[string]any{
 		"type": "message_start",
 		"message": map[string]any{
-			"id": "msg_codexproxy", "type": "message", "role": "assistant", "model": c.model,
+			"id": newMessageID(), "type": "message", "role": "assistant", "model": c.model,
 			"content": []any{}, "stop_reason": nil, "stop_sequence": nil,
 			"usage": map[string]any{"input_tokens": 0, "output_tokens": 0},
 		},

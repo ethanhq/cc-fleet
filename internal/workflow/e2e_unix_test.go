@@ -17,7 +17,7 @@ import (
 )
 
 // e2eEnv is the fully-wired real-leaf sandbox: an isolated HOME/XDG config dir, a fake
-// `claude` binary reachable through the fingerprint cache, and a `[fake]` provider in
+// `claude` binary first on PATH (claudebin resolves it), and a `[fake]` provider in
 // providers.toml. The engine drives the REAL subagent.Run (runLeaf is NOT overridden) so
 // every leaf shells out to the fake claude over stdin, exactly as production would shell
 // out to a provider. Everything here keys off the PROMPT, never a clock/PID/random, so the
@@ -30,7 +30,7 @@ type e2eEnv struct {
 }
 
 // fakeClaudeScript is the deterministic fake `claude`. It answers --version with the
-// fingerprint's version (2.1.150, above the slim floor, so the default slim profile
+// fixed version (2.1.150, above the slim floor, so the default slim profile
 // stays effective) WITHOUT logging an exec record. Otherwise it (a) appends the stdin
 // prompt to an invocation log framed by a record separator so a test can count/identify
 // execs, and (b) prints a `claude --output-format json` success envelope:
@@ -62,7 +62,7 @@ printf '{"type":"result","subtype":"success","is_error":false,"result":"%s","num
 `
 
 // newE2EEnv builds the sandbox and points the runtime at the fake claude. It mirrors
-// integration_unix_test.go's wiring exactly (fingerprint.json + providers.toml), adding the
+// integration_unix_test.go's wiring exactly (fake claude first on PATH + providers.toml), adding the
 // PROMPT_LOG env the fake appends to. The returned env's promptLog is read back by tests.
 func newE2EEnv(t *testing.T) *e2eEnv {
 	t.Helper()
@@ -81,15 +81,16 @@ func newE2EEnv(t *testing.T) *e2eEnv {
 	promptLog := filepath.Join(home, "prompts.log")
 	t.Setenv("PROMPT_LOG", promptLog)
 
-	fakeClaude := filepath.Join(home, "claude")
+	fakeDir := filepath.Join(home, "bin")
+	if err := os.MkdirAll(fakeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	fakeClaude := filepath.Join(fakeDir, "claude")
 	if err := os.WriteFile(fakeClaude, []byte(fakeClaudeScript), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	t.Setenv("PATH", fakeDir+":/usr/bin:/bin")
 
-	fpJSON := `{"cc_version":"2.1.150","binary_path":"` + fakeClaude + `","env":{},"flags_template":[]}`
-	if err := os.WriteFile(filepath.Join(cfgDir, "fingerprint.json"), []byte(fpJSON), 0o600); err != nil {
-		t.Fatal(err)
-	}
 	providers := "version = 1\n\n[fake]\n" +
 		"base_url = \"https://example.invalid/anthropic\"\n" +
 		"default_model = \"fake-model\"\n" +
@@ -566,7 +567,7 @@ func TestE2ECrashRecovery(t *testing.T) {
 
 	// Pre-seed the journal as if the two parallel fan-out leaves finished before the crash.
 	// Their keys are the engine's exact content keys: a bare agent() resolves the default
-	// slim shape under the e2e fingerprint (2.1.150 ≥ the slim floor).
+	// slim shape under the e2e fake claude (2.1.150 ≥ the slim floor).
 	jp, _ := subagent.RunJournalPath(runID)
 	j := loadJournal(jp)
 	j.append(bareSlimKey(t, "fake", "alpha"), "LEAF:alpha")

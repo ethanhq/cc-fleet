@@ -113,7 +113,7 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// One per-request conversion context (model + upstream key + tool-name map),
-	// shared read-only by call and convert.
+	// shared by call and convert; convert also records upErrType in it.
 	cc := newConvCtx(&areq, upstreamKey)
 	body, err := s.up.call(r.Context(), &areq, cc)
 	if err != nil {
@@ -123,6 +123,14 @@ func (s *server) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer body.Close()
+
+	if !areq.Stream {
+		// The upstream is always streamed; fold its events into one JSON Message.
+		asm := newMessageAssembler()
+		cerr := s.up.convert(body, asm, cc)
+		asm.write(w, cc.upErrType, cerr)
+		return
+	}
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")

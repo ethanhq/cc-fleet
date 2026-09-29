@@ -15,3 +15,13 @@ var dropListUpper = upperKeys(dropList)
 func inDropList(name string) bool {
 	return dropListUpper[strings.ToUpper(name)]
 }
+
+// teammateScrubUpper is teammateScrub keyed by upper-cased name.
+var teammateScrubUpper = upperKeys(teammateScrub)
+
+// inTeammateScrub reports whether CleanForTeammate drops name, matching case-
+// insensitively like inDropList.
+func inTeammateScrub(name string) bool {
+	u := strings.ToUpper(name)
+	return teammateScrubUpper[u] || hasTeammateScrubPrefix(u)
+}

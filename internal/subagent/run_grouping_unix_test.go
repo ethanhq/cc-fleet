@@ -5,8 +5,6 @@ package subagent
 import (
 	"context"
 	"testing"
-
-	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 )
 
 // TestBackgroundJobCarriesRunGrouping: a --background launch tags its on-disk
@@ -18,11 +16,7 @@ func TestBackgroundJobCarriesRunGrouping(t *testing.T) {
 	writeMinimalProviders(t, xdg)
 
 	fakeClaude := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
-	orig := loadFP
-	loadFP = func() (*fingerprint.Fingerprint, error) {
-		return &fingerprint.Fingerprint{BinaryPath: fakeClaude}, nil
-	}
-	t.Cleanup(func() { loadFP = orig })
+	binStubResolver(t, fakeClaude, "")
 
 	res := Run(context.Background(), Request{Provider: "glm", Prompt: "hi", JSON: true, Background: true,
 		RunID: "run-bg", Phase: "verify", Label: "v2"})
@@ -46,11 +40,7 @@ func TestRun_SyncResultCarriesRunGrouping(t *testing.T) {
 	writeMinimalProviders(t, xdg)
 
 	fakeClaude := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
-	orig := loadFP
-	loadFP = func() (*fingerprint.Fingerprint, error) {
-		return &fingerprint.Fingerprint{BinaryPath: fakeClaude}, nil
-	}
-	t.Cleanup(func() { loadFP = orig })
+	binStubResolver(t, fakeClaude, "")
 
 	res := Run(context.Background(), Request{Provider: "glm", Prompt: "hi", JSON: true,
 		RunID: "run-sync", Phase: "review", Label: "r3"})

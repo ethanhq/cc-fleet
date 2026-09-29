@@ -1,0 +1,14 @@
+{
+  "session_id": "7c8f769b-1111-2222-3333-444455556666",
+  "transcript_path": "/tmp/transcript.jsonl",
+  "cwd": "/tmp/proj",
+  "permission_mode": "default",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Agent",
+  "tool_input": {
+    "description": "Review the parser",
+    "prompt": "Review internal/parser for bugs. When done, SendMessage team-lead once.",
+    "subagent_type": "ccf-glm",
+    "name": "reviewer"
+  }
+}

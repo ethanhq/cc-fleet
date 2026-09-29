@@ -4,70 +4,64 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 
-	"github.com/ethanhq/cc-fleet/internal/ids"
+	"github.com/ethanhq/cc-fleet/internal/diag"
 	"github.com/ethanhq/cc-fleet/internal/teardown"
 )
 
-// newTeardownCmd builds `cc-fleet teardown <team-or-pane> [--json]`.
-//
-// The argument is interpreted as a tmux pane id when it starts with "%"
-// (matching tmux's own pane-id format), otherwise as a team name. We do
-// not require an explicit flag because the two namespaces are disjoint —
-// team names can't start with %.
+// newTeardownCmd builds `cc-fleet teardown <%N|name@team|team> [--socket <path>] [--json]`.
 func newTeardownCmd() *cobra.Command {
 	var asJSON bool
+	var socket string
 
 	cmd := &cobra.Command{
-		Use:   "teardown <team-or-pane>",
-		Short: "Kill teammate panes and clean up team state (unix-only — needs tmux)",
-		Long: `Clean up cc-fleet teammates and their state.
+		Use:   "teardown <%N|name@team|team>",
+		Short: "Kill cc-fleet provider teammates (unix-only)",
+		Long: `Kill the cc-fleet provider teammates that cc-fleet ps attributes.
 
-The argument is treated as a tmux pane id when it starts with "%"
-(e.g. %42), otherwise as a team name. Pane teardown kills only that pane
-and detaches its member entry from the owning team. Team teardown kills
-every registered pane and removes ~/.claude/teams/<team>/ entirely.
+The target is a tmux pane id (%42; add --socket <path> when several tmux
+servers have that pane), an agent id (name@team), or a team (session-xxxxxxxx
+or the team of a listed teammate). Each teammate's identity (pane, exact argv,
+process start time) is re-verified right before it is killed; one that no
+longer matches is reported as skipped (IDENTITY_MISMATCH) and left alone.
+In-process teammates cannot be killed from outside the lead (IN_PROCESS).
+Claude Code's team directories are never modified, and the lead and native
+teammates are never touched.
 
-Idempotent: tearing down a non-existent team or pane returns ok=true so
-skill flows don't fail on retries.`,
+Idempotent: a target with nothing left to kill returns ok=true with an empty
+killed list.`,
 		Args:          cobra.ExactArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if onWindows {
-				res := teardown.Result{OK: false, Target: args[0], ErrorCode: teardown.ErrCodeInternal, ErrorMsg: windowsUnsupportedMsg("teardown")}
-				return reportTeardown(res, asJSON)
-			}
-			target := args[0]
-			var res teardown.Result
-			if strings.HasPrefix(target, "%") {
-				res = teardown.TeardownPane(target, diagLogger(cmd))
-			} else {
-				// Team names flow into filesystem paths; reject path traversal /
-				// separators / absolute paths via the typed constructor before
-				// teardown runs.
-				if _, err := ids.NewTeamID(target); err != nil {
-					res = teardown.Result{
-						OK:        false,
-						Target:    target,
-						ErrorCode: teardown.ErrCodeInternal,
-						ErrorMsg:  err.Error(),
-					}
-				} else {
-					res = teardown.TeardownTeam(target, diagLogger(cmd))
-				}
-			}
-			return reportTeardown(res, asJSON)
+			return reportTeardown(runTeardown(args[0], socket, diagLogger(cmd)), asJSON)
 		},
 	}
 
 	cmd.Flags().BoolVar(&asJSON, "json", false,
 		"Emit a machine-readable JSON envelope (for skill consumption)")
+	cmd.Flags().StringVar(&socket, "socket", "",
+		"tmux socket path (tmux_socket_path in ps --json) that picks the server of a %N target")
 
 	return cmd
+}
+
+// runTeardown parses arg and tears the target down.
+func runTeardown(arg, socket string, dg *diag.Logger) teardown.Result {
+	res := teardown.Result{Target: arg, Killed: []teardown.Killed{}, Skipped: []teardown.Skipped{}}
+	if onWindows {
+		res.ErrorCode, res.ErrorMsg = teardown.ErrCodeUnsupportedOnWindows, windowsUnsupportedMsg("teardown")
+		return res
+	}
+	t, err := teardown.ParseTarget(arg, socket)
+	if err != nil {
+		res.ErrorCode, res.ErrorMsg = teardown.ErrCodeBadArgs, err.Error()
+		res.Suggestion = "use a pane id (%N, with --socket <path> when several tmux servers have it), an agent id (name@team) or a team name"
+		return res
+	}
+	return teardown.Teardown(t, dg)
 }
 
 // reportTeardown formats res for stdout. JSON mode emits exactly one
@@ -87,27 +81,28 @@ func reportTeardown(res teardown.Result, asJSON bool) error {
 		os.Exit(1)
 	}
 
-	if res.OK {
-		switch {
-		case res.TeamRemoved:
-			fmt.Printf("torn down team %q (panes: %d, members: %d)\n",
-				res.Target, len(res.Panes), len(res.Members))
-		case len(res.Panes) > 0 || len(res.Members) > 0:
-			fmt.Printf("torn down pane %s (members: %v)\n",
-				res.Target, res.Members)
-		default:
-			fmt.Printf("nothing to tear down for %q\n", res.Target)
+	if !res.OK {
+		fmt.Fprintf(os.Stderr, "teardown: %s: %s\n", res.ErrorCode, res.ErrorMsg)
+		if res.Suggestion != "" {
+			fmt.Fprintln(os.Stderr, "  suggestion:", res.Suggestion)
 		}
-		for _, w := range res.Warnings {
-			fmt.Fprintln(os.Stderr, "warning:", w)
+		os.Exit(1)
+	}
+	if len(res.Killed) == 0 && len(res.Skipped) == 0 {
+		fmt.Printf("nothing to tear down for %q\n", res.Target)
+	}
+	for _, k := range res.Killed {
+		if k.PaneID != "" {
+			fmt.Printf("killed %s (pane %s on %s)\n", k.AgentID, k.PaneID, k.Socket)
+		} else {
+			fmt.Printf("killed %s (pid %d)\n", k.AgentID, k.PID)
 		}
-		return nil
 	}
-
-	fmt.Fprintf(os.Stderr, "teardown: %s: %s\n", res.ErrorCode, res.ErrorMsg)
-	for _, w := range res.Warnings {
-		fmt.Fprintln(os.Stderr, "warning:", w)
+	for _, s := range res.Skipped {
+		fmt.Printf("skipped %s: %s\n", s.AgentID, s.Reason)
 	}
-	os.Exit(1)
+	if res.Suggestion != "" {
+		fmt.Println("  suggestion:", res.Suggestion)
+	}
 	return nil
 }

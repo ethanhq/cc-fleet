@@ -35,7 +35,7 @@ cc-fleet workflow wait "$RUN" --timeout 10m   # block until it settles
 ## The API
 
 - **`meta`** — a top-level **pure literal** (no calls, variables, or spreads): `{name, description, whenToUse?, model?, phases?: [{title, detail?}]}`. `name` and `description` are required. It is read statically before the run starts, so the board shows the named, phase-skeletoned run immediately.
-- **`agent(prompt, opts) → Promise<string|object>`** — one provider-subagent leaf. All options are optional: `provider` (omitted → the run's default provider, resolved once at launch and recorded with the run; `provider: "claude"` runs the leaf on your own Claude Code login — literal `model` ids only, explicit-only, bills your subscription, so keep it to a synthesis node or two), `model` (`"strong"` / `"fast"` / a literal id), `schema`, `label`, `phase`, `timeout` (seconds; a leaf with no timeout defaults to 300s), `max_budget_usd`, `max_turns`, `isolation: "worktree"` (run in a fresh git worktree so parallel file-editing leaves don't collide), `profile` (`"slim"` default / `"slim-ro"` read-only / `"full"` diagnostic), `tools` (replaces the whole whitelist, never appends), `skills`, `mcp`. An unknown option key throws — typos fail loudly. On a leaf failure the promise **rejects**: an uncaught top-level `await agent()` aborts the run; inside `parallel`/`pipeline` a failed element degrades to `null`.
+- **`agent(prompt, opts) → Promise<string|object>`** — one provider-subagent leaf. All options are optional: `provider` (omitted → the run's default provider, resolved once at launch and recorded with the run; `provider: "claude"` runs the leaf on your own Claude Code login — literal `model` ids only, explicit-only, bills your subscription, so keep it to a synthesis node or two), `model` (`"strong"` / `"fast"` / a literal id), `schema`, `label`, `phase`, `timeout` (seconds; a leaf with no timeout defaults to 300s), `max_budget_usd`, `max_turns`, `isolation: "worktree"` (run in a fresh git worktree so parallel file-editing leaves don't collide; changes are kept as a branch — see [Isolated worktrees](#isolated-worktrees)), `profile` (`"slim"` default / `"slim-ro"` read-only / `"full"` diagnostic), `tools` (replaces the whole whitelist, never appends), `skills`, `mcp`. An unknown option key throws — typos fail loudly. On a leaf failure the promise **rejects**: an uncaught top-level `await agent()` aborts the run; inside `parallel`/`pipeline` a failed element degrades to `null`.
 - **Background = an unawaited promise.** There is no `run_in_background`: start a leaf with `const p = agent(...)`, keep going, `await p` later. Every leaf — awaited or not — is pool-bounded and journaled, and the run only finalizes after all of them settle. A leaf that rejects with nobody handling it **fails the run**; fire-and-forget tolerance is an explicit `p.catch(() => null)`.
 - **`parallel(thunks) → Promise<array>`** — run 0-arg thunks concurrently; a **barrier** (settles when all finish), `null` where an element failed.
 - **`pipeline(items, ...stages) → Promise<array>`** — push each item through all stages independently, **no inter-stage barrier** (item A can be in stage 3 while B is in stage 1). Each stage is `(prev, item, index) => …`. A failing stage drops that item to `null`. **Default to `pipeline`**; use `parallel` only when a stage genuinely needs all prior results together.
@@ -67,6 +67,21 @@ cc-fleet workflow run audit.js --resume "$RUN"
 ```
 
 Unchanged leaves return cached (no provider call); a leaf you edited — and everything downstream of its output — re-runs. A killed run resumes by replaying what finished — and any re-run reusing the same run id resumes against the journal, `--resume` being the explicit form. Failed leaves are never journaled, so a resume always retries them.
+
+A resumed or restarted run works in the directory it was first started from (recorded with the run), whatever directory you run `--resume` / `restart` from, so its leaves and worktrees land in the same project. If that directory no longer exists, the run fails with `run directory <dir> no longer exists` — restore it, or start a new run from the project directory.
+
+## Isolated worktrees
+
+`isolation: "worktree"` gives the leaf a fresh detached `git worktree` of the run's repository at `HEAD`. When the leaf ends (done or failed):
+
+- **No changes** — the worktree is removed.
+- **Changes** (edited files or new commits) — they are committed as a snapshot and saved as branch `cc-fleet/wf-<job>-a<attempt>` in your repository (a short random suffix is added if that name is taken), then the worktree is removed. The engine log shows `isolation worktree kept: job <job> attempt <n> → branch …` (`cc-fleet workflow watch "$RUN"`). List them with `git branch --list 'cc-fleet/wf-*'`.
+- **The snapshot fails** — the directory stays where it is with a `.cc-fleet-keep` file holding the reason. Clean-ups and `workflow rm` / `prune` skip it, and `rm` / `prune` / `restart` print `keeping <dir>: <reason>` on stderr. Remove the directory yourself once the work is saved.
+- **`UNPROTECTED` in `workflow watch`** — even the `.cc-fleet-keep` marker could not be written, so nothing protects that directory from clean-up. Copy it out by hand before any `workflow restart`, `rm` or `prune`, or a new run in this repository.
+
+A run that was stopped or killed never reaches the end of its leaves. The next clean-up of its worktrees — on `restart` / `--resume`, or `workflow rm` / `prune` — first rescues unsaved work to a branch `cc-fleet/wf-salvage-<run>-<first 8 characters of the worktree directory name>`; a directory it cannot rescue is kept with a `.cc-fleet-keep` marker, as above.
+
+cc-fleet never deletes `cc-fleet/wf-*` branches: merge or cherry-pick what you need, then `git branch -D` them.
 
 ## Live control
 

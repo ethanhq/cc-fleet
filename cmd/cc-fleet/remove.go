@@ -13,10 +13,11 @@ import (
 // `profile_removed` let the skill confirm side-effects without re-reading
 // the filesystem.
 type removeJSONEnvelope struct {
-	OK             bool   `json:"ok"`
-	Removed        string `json:"removed"`
-	SecretRemoved  bool   `json:"secret_removed"`
-	ProfileRemoved bool   `json:"profile_removed"`
+	OK                bool   `json:"ok"`
+	Removed           string `json:"removed"`
+	SecretRemoved     bool   `json:"secret_removed"`
+	ProfileRemoved    bool   `json:"profile_removed"`
+	TeammateSyncError string `json:"teammate_sync_error,omitempty"`
 }
 
 func newRemoveCmd() *cobra.Command {
@@ -53,10 +54,11 @@ file is not an error. Removing a non-existent provider IS an error
 			}
 			if asJSON {
 				emitJSON(removeJSONEnvelope{
-					OK:             true,
-					Removed:        res.Provider,
-					SecretRemoved:  res.SecretRemoved,
-					ProfileRemoved: res.ProfileRemoved,
+					OK:                true,
+					Removed:           res.Provider,
+					SecretRemoved:     res.SecretRemoved,
+					ProfileRemoved:    res.ProfileRemoved,
+					TeammateSyncError: res.TeammateSyncError,
 				})
 				return nil
 			}

@@ -23,7 +23,9 @@ In scope, with examples:
 - the conversion daemon exposing the upstream bearer outside the loopback process;
 - path traversal or shell injection through provider/team/agent names (they flow into file
   paths and the `apiKeyHelper` string);
-- a spawned worker gaining access to the main session's own credentials.
+- a provider teammate or subagent child process gaining access to the main session's own
+  credentials — through its env (the launcher and `childenv` scrub them) or through
+  user/project settings (every provider profile blanks the credential and cloud-backend keys).
 
 Provider-side issues (a vendor's API leaking data, model behavior) are out of scope — report
 those to the provider.

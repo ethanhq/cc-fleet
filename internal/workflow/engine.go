@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/dop251/goja"
@@ -41,20 +42,10 @@ var mintQueuedLeaf = subagent.MintQueuedLeaf
 
 // resolveProfile maps a REQUESTED prompt profile to the effective one (the version
 // gate). A seam so tests drive the downgrade path without a real claude binary.
-// Production loads the fingerprint the same way Run does and resolves the version
-// against THAT recipe's binary; a load failure fails open to full with a reason,
-// matching the resolver's own discipline. Called at most ONCE per engine (see
-// engine.effProfileFor), never per leaf.
-var resolveProfile = func(requested string) (string, string) {
-	if requested == "" || requested == subagent.ProfileFull {
-		return requested, ""
-	}
-	fp, err := subagent.LoadFingerprint()
-	if err != nil {
-		return subagent.ProfileFull, fmt.Sprintf("slim disabled: load fingerprint: %v", err)
-	}
-	return subagent.ResolveEffectiveProfile(requested, fp)
-}
+// Production resolves the claude binary the same way Run does (claudebin) and gates
+// on ITS version; a resolve failure fails open to full with a reason. Called at most
+// ONCE per engine (see engine.effProfileFor), never per leaf.
+var resolveProfile = subagent.ResolveEffectiveProfile
 
 // Options configures a workflow run.
 type Options struct {
@@ -156,6 +147,17 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 		prepared.Error = cause.Error()
 		_ = subagent.SaveRun(prepared)
 	}
+	// Run in the directory the run was launched from, whoever re-executes it (a resume or restart
+	// from another cwd): worktrees, the startup sweep and nested relative script paths resolve there.
+	if prepared.Cwd != "" {
+		if cur, _ := os.Getwd(); cur != prepared.Cwd {
+			if cerr := os.Chdir(prepared.Cwd); cerr != nil {
+				e := runDirErr(prepared.Cwd, cerr)
+				failManifest(e)
+				return e
+			}
+		}
+	}
 
 	src, rerr := os.ReadFile(scriptPath)
 	if rerr != nil {
@@ -254,10 +256,13 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 	// crashed/SIGKILLed engines — provably-dead known runs, plus any whose workdir has vanished.
 	// This run's OWN segment is never reclaimed here (it could belong to a still-live blind-stopped
 	// twin); own-segment cleanup happens in the resume launcher, under a death proof. A non-git cwd
-	// never created any worktree, so skip silently.
+	// never created any worktree, so skip silently. Worktrees the sweep kept for their keep marker are
+	// logged into this invocation's events (the loop hasn't started, so logf is safe here).
 	if cwd, cerr := os.Getwd(); cerr == nil {
 		if root, gerr := gitTopLevel(cwd); gerr == nil {
-			sweepRunWorktreesFn(root)
+			for _, line := range sweepRunWorktreesFn(root) {
+				eng.logf("%s", line)
+			}
 		}
 	}
 
@@ -277,6 +282,14 @@ func Execute(ctx context.Context, scriptPath, runID string, opts Options) (err e
 
 	_, execErr := eng.run(scriptPath, normalized, opts)
 	return execErr
+}
+
+// runDirErr explains why the run's recorded directory can't be entered: gone, or present but refused.
+func runDirErr(dir string, cerr error) error {
+	if os.IsNotExist(cerr) {
+		return fmt.Errorf("workflow: run directory %s no longer exists (%v) — restore it, or start a new run from the project directory", dir, cerr)
+	}
+	return fmt.Errorf("workflow: cannot enter run directory %s (%v) — fix its permissions, or start a new run from the project directory", dir, cerr)
 }
 
 // detachedEnginePID is os.Getpid() for the DETACHED engine child (opts.RunID set by the
@@ -494,11 +507,20 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 			// shares this id). Only a provably-dead prior is reclaimed; a not-provably-dead prior (a live
 			// foreground run flipped to "stopped") is spared so its twin's worktrees survive. Atomic
 			// under the lock above, so no concurrent resumer acts on a stale copy of this proof.
-			if subagent.RunEngineProvablyNotLive(existing) {
-				if cwd, cerr := os.Getwd(); cerr == nil {
-					if root, gerr := gitTopLevel(cwd); gerr == nil {
-						sweepOwnSegmentFn(root, existing.RunID)
-					}
+			// The run's worktrees live in the repo it was launched from (existing.Cwd), not the caller's
+			// cwd; a pre-Cwd manifest falls back to the cwd. A vanished run directory fails the resume
+			// here, before the manifest is touched.
+			runDir := existing.Cwd
+			if runDir != "" {
+				if _, serr := os.Stat(runDir); os.IsNotExist(serr) {
+					return runDirErr(runDir, serr)
+				}
+			} else {
+				runDir, _ = os.Getwd()
+			}
+			if subagent.RunEngineProvablyNotLive(existing) && runDir != "" {
+				if root, gerr := gitTopLevel(runDir); gerr == nil {
+					sweepOwnSegmentFn(root, existing.RunID)
 				}
 			}
 			// Replay the run's original launch options on resume so a leaf's content key — and thus its
@@ -597,7 +619,7 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 	}
 	pid, reaper, lerr := launchDetachedFn(abs, run.RunID, opts)
 	if lerr != nil {
-		finalizeFailedDetach(run.RunID, run, priorRecord, "")
+		finalizeFailedDetach(run.RunID, run, priorRecord, "", "")
 		return "", lerr
 	}
 	if !WaitEngineStarted(run.RunID, pid) {
@@ -606,7 +628,11 @@ func Launch(ctx context.Context, scriptPath string, opts Options, foreground boo
 		// overwrite the failed manifest and run on as a second engine.
 		reaper.kill()
 		_ = reaper.wait()
-		finalizeFailedDetach(run.RunID, run, priorRecord, "workflow: engine did not register within the startup budget")
+		cause := preStartFailure(run.RunID)
+		finalizeFailedDetach(run.RunID, run, priorRecord, "workflow: engine did not register within the startup budget", cause)
+		if cause != "" {
+			return "", fmt.Errorf("workflow: engine failed to start: %s", strings.TrimPrefix(cause, "workflow: "))
+		}
 		return "", fmt.Errorf("workflow: engine failed to start")
 	}
 	// Registered: reap the child asynchronously so it never lingers as a zombie under a
@@ -630,7 +656,11 @@ var launchDetachedFn = launchDetached
 //     failed attempt must NOT erase the prior death proof (a {failed,0,no-fg} record reads
 //     not-provably-dead, stranding the run's leaked worktrees forever). Restore the PRIOR record.
 //   - else a FRESH launch (or an unreadable manifest): mark the minted run failed.
-func finalizeFailedDetach(runID string, minted subagent.WorkflowRun, prior *subagent.WorkflowRun, failMsg string) {
+//
+// cause is what the child itself recorded when it failed before registering (preStartFailure), or "".
+// It replaces failMsg, and on a resume it is recorded onto the restored prior (death proof kept), so
+// the user sees why the attempt never started instead of the prior run's old state.
+func finalizeFailedDetach(runID string, minted subagent.WorkflowRun, prior *subagent.WorkflowRun, failMsg, cause string) {
 	if cur, rerr := subagent.ReadRun(runID); rerr == nil && cur.EnginePID != 0 {
 		cur.Status = "failed"
 		if failMsg != "" {
@@ -640,8 +670,15 @@ func finalizeFailedDetach(runID string, minted subagent.WorkflowRun, prior *suba
 		return
 	}
 	if prior != nil {
-		_ = subagent.SaveRun(*prior)
+		restored := *prior
+		if cause != "" {
+			restored.Status, restored.Error = "failed", cause
+		}
+		_ = subagent.SaveRun(restored)
 		return
+	}
+	if cause != "" {
+		failMsg = cause
 	}
 	minted.Status = "failed"
 	if failMsg != "" {
@@ -649,6 +686,17 @@ func finalizeFailedDetach(runID string, minted subagent.WorkflowRun, prior *suba
 	}
 	minted.EnginePID = 0
 	_ = subagent.SaveRun(minted)
+}
+
+// preStartFailure returns the cause a detached child recorded when it failed before registering its
+// pid — Execute's failManifest (status failed, EnginePID still 0), e.g. a run directory it cannot
+// enter — or "". The launcher flips the manifest to running before it detaches, so such a record can
+// only come from the child.
+func preStartFailure(runID string) string {
+	if cur, err := subagent.ReadRun(runID); err == nil && cur.EnginePID == 0 && cur.Status == "failed" {
+		return cur.Error
+	}
+	return ""
 }
 
 // engineStartupBudget bounds how long a launcher waits — under the per-run execution lock —
@@ -660,13 +708,19 @@ var engineStartupBudget = 10 * time.Second
 // (its first manifest write in Execute's pre-run saveManifest) or the startup budget
 // elapses. The launcher holds the per-run execution lock across this wait, so a serialized
 // second restart/stop/resume always observes a fully-registered engine — never the
-// pre-stamp EnginePID==0 window. Returns false on timeout; the caller must then kill+reap
-// the child before failing the run.
+// pre-stamp EnginePID==0 window. Returns false on timeout, or as soon as the child has recorded
+// a failure before registering (preStartFailure); the caller must then kill+reap the child
+// before failing the run.
 func WaitEngineStarted(runID string, childPID int) bool {
 	deadline := time.Now().Add(engineStartupBudget)
 	for {
-		if run, err := subagent.ReadRun(runID); err == nil && run.EnginePID == childPID {
-			return true
+		if run, err := subagent.ReadRun(runID); err == nil {
+			if run.EnginePID == childPID {
+				return true
+			}
+			if run.EnginePID == 0 && run.Status == "failed" {
+				return false
+			}
 		}
 		if time.Now().After(deadline) {
 			return false

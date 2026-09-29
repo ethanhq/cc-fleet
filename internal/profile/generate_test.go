@@ -46,13 +46,24 @@ func TestGenerateForProvider_Snapshot(t *testing.T) {
 	// A single-model provider (no strong/fast/effort): the opus/sonnet/haiku alias
 	// slots are pinned to the default so no built-in claude-* id can escape to the
 	// provider. CLAUDE_CODE_SUBAGENT_MODEL is not set, so subagents keep their own model:.
+	// The lead's credential and cloud-backend keys are blanked.
 	const want = `{
   "apiKeyHelper": "/usr/local/bin/cc-fleet keyget deepseek",
   "env": {
+    "ANTHROPIC_API_KEY": "",
+    "ANTHROPIC_AUTH_TOKEN": "",
     "ANTHROPIC_BASE_URL": "https://api.deepseek.com/anthropic",
+    "ANTHROPIC_CUSTOM_HEADERS": "",
     "ANTHROPIC_DEFAULT_HAIKU_MODEL": "deepseek-v4-flash",
     "ANTHROPIC_DEFAULT_OPUS_MODEL": "deepseek-v4-flash",
-    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-flash"
+    "ANTHROPIC_DEFAULT_SONNET_MODEL": "deepseek-v4-flash",
+    "CLAUDE_CODE_USE_ANTHROPIC_AWS": "",
+    "CLAUDE_CODE_USE_ANTHROPIC_GOOGLE_CLOUD": "",
+    "CLAUDE_CODE_USE_BEDROCK": "",
+    "CLAUDE_CODE_USE_FOUNDRY": "",
+    "CLAUDE_CODE_USE_GATEWAY": "",
+    "CLAUDE_CODE_USE_MANTLE": "",
+    "CLAUDE_CODE_USE_VERTEX": ""
   }
 }`
 

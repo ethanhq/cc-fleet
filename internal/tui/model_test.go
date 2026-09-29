@@ -70,8 +70,8 @@ func press(t *testing.T, m Model, key string) (Model, tea.Cmd) {
 
 // withProviders returns a fresh model on the Model Providers list with vs already
 // loaded. It pins screenList so the screenList-owned providersMsg is always applied —
-// otherwise a fresh install with agent-teams unconfigured (CI) opens on the setup
-// nudge and the message is dropped, leaving m.providers empty.
+// otherwise a fresh install with provider teammates not set up (CI) opens on the
+// setup nudge and the message is dropped, leaving m.providers empty.
 func withProviders(t *testing.T, vs ...userops.ProviderView) Model {
 	t.Helper()
 	m := NewModel()
@@ -81,10 +81,9 @@ func withProviders(t *testing.T, vs ...userops.ProviderView) Model {
 }
 
 func TestNewModelStartsOnProviderList(t *testing.T) {
-	// Make agent-teams look configured so NewModel takes the normal hub path
-	// (deterministic regardless of the ambient env). The setup-gating branch is
-	// covered separately by TestNewModel_SetupGating.
-	t.Setenv("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1")
+	// TestMain's baseline has the setup nudge acked, so NewModel takes the normal
+	// hub path. The setup-gating branch is covered separately by
+	// TestNewModel_SetupGating.
 	m := NewModel()
 	if m.screen != screenList {
 		t.Fatalf("screen = %d, want screenList", m.screen)
@@ -1494,7 +1493,9 @@ func TestLoadBoardTmuxMissingSkipsEndedSynthesis(t *testing.T) {
 	); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
-	t.Setenv("PATH", t.TempDir()) // tmux absent
+	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
+	t.Setenv("PATH", t.TempDir()) // no real tmux server is scanned
+	fx2discNoTmux(t)
 
 	msg := loadBoard(1)()
 	bm, ok := msg.(boardMsg)
@@ -3217,5 +3218,27 @@ func TestModelPickerFilterSanitizesPaste(t *testing.T) {
 	}
 	if out := m.View(); !strings.Contains(out, "glm-4.5") {
 		t.Fatalf("sanitized filter should still narrow:\n%s", out)
+	}
+}
+
+// TestRunCleanupOutcomeNamesKeptWorktrees: a delete / restart outcome carrying KeptWorktreeNotices
+// says how many worktrees were kept and where the first one is; without notices the line is unchanged.
+func TestRunCleanupOutcomeNamesKeptWorktrees(t *testing.T) {
+	jobs, runs := oneRun()
+	m := runsModel(t, jobs, runs, nil)
+	kept := []string{
+		"keeping /s/run-1/wt-a: git commit failed (remove the directory yourself once the work is saved)",
+		"keeping /s/run-1/wt-b: git commit failed (remove the directory yourself once the work is saved)",
+	}
+	m1, _ := step(t, m, workflowCtlMsg{verb: "delete", runID: "run-1", epoch: m.boardEpoch, kept: kept})
+	if m1.confirm == nil || !strings.HasSuffix(m1.confirm.result, "kept 2 worktree(s) with unsaved work: /s/run-1/wt-a") {
+		t.Fatalf("delete outcome = %+v, want the kept-worktree note", m1.confirm)
+	}
+	m2, _ := step(t, m, workflowCtlMsg{verb: "delete", runID: "run-1", epoch: m.boardEpoch})
+	if m2.confirm == nil || strings.Contains(m2.confirm.result, "kept") {
+		t.Fatalf("delete outcome = %+v, want no kept note without notices", m2.confirm)
+	}
+	if got := keptNotices("run-1", errors.New("boom")); got != nil {
+		t.Fatalf("keptNotices after a failed op = %q, want nil", got)
 	}
 }

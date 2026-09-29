@@ -13,8 +13,6 @@ import (
 	"syscall"
 	"testing"
 	"time"
-
-	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 )
 
 // TestLaunchBackground_CleanupOnWriteMetaFailure: after cmd.Start succeeds, a
@@ -35,11 +33,7 @@ func TestLaunchBackground_CleanupOnWriteMetaFailure(t *testing.T) {
 	// we would still see the process alive when the test ends. We don't
 	// actually wait that long; the cleanup must SIGTERM/SIGKILL it.
 	fakeClaude := writeFakeBin(t, "#!/bin/sh\nsleep 60\n")
-	origFP := loadFP
-	loadFP = func() (*fingerprint.Fingerprint, error) {
-		return &fingerprint.Fingerprint{BinaryPath: fakeClaude}, nil
-	}
-	t.Cleanup(func() { loadFP = origFP })
+	binStubResolver(t, fakeClaude, "")
 
 	// Force writeMeta to fail. Capture the pid that launchBackground started
 	// (via the killProcessGroup seam) so we can prove it was killed.
@@ -130,11 +124,7 @@ printf '%s' '` + smokeSuccessJSON + `'
 exit 0
 `
 	fakeClaude := writeFakeBin(t, script)
-	origFP := loadFP
-	loadFP = func() (*fingerprint.Fingerprint, error) {
-		return &fingerprint.Fingerprint{BinaryPath: fakeClaude}, nil
-	}
-	t.Cleanup(func() { loadFP = origFP })
+	binStubResolver(t, fakeClaude, "")
 
 	// Caller deliberately requests text output — we MUST still force JSON
 	// internally.
@@ -204,11 +194,7 @@ printf '%s' '` + errorEnvelope + `'
 exit 1
 `
 	fakeClaude := writeFakeBin(t, script)
-	origFP := loadFP
-	loadFP = func() (*fingerprint.Fingerprint, error) {
-		return &fingerprint.Fingerprint{BinaryPath: fakeClaude}, nil
-	}
-	t.Cleanup(func() { loadFP = origFP })
+	binStubResolver(t, fakeClaude, "")
 
 	// Caller deliberately requests text output but background=true. StatusFor
 	// must classify the envelope and return failed, NOT treat the JSON-on-stdout

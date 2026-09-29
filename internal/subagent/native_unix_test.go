@@ -9,12 +9,10 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 )
 
 // nativeFake plants a fake claude that records argv + env and emits a success
-// envelope, and points loadFP at it. Returns the argv and env capture paths.
+// envelope, and points the binary resolver at it. Returns the argv and env capture paths.
 func nativeFake(t *testing.T) (argvLog, envLog string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -32,11 +30,7 @@ cat > /dev/null
 printf '%s' '` + successEnvelope + `'
 `
 	fakeClaude := writeFakeBin(t, script)
-	origFP := loadFP
-	loadFP = func() (*fingerprint.Fingerprint, error) {
-		return &fingerprint.Fingerprint{BinaryPath: fakeClaude}, nil
-	}
-	t.Cleanup(func() { loadFP = origFP })
+	binStubResolver(t, fakeClaude, "")
 	return argvLog, envLog
 }
 

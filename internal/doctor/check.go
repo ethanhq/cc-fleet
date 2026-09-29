@@ -1,6 +1,6 @@
 // Package doctor implements the health checks behind `cc-fleet doctor`,
 // split into a Core group (every run mode) and an Optional group (live
-// teammates only — tmux).
+// teammates only — tmux and the teammate lane).
 //
 // Each check is an independent function in checks.go that returns a
 // CheckResult value — none of them panic, even on grossly broken systems.

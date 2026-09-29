@@ -27,6 +27,8 @@ Windows 上 PowerShell 安装器用环境变量覆盖:
 $env:CCF_VERSION = "v0.2.1"; $env:CCF_PREFIX = "$HOME\bin"; irm https://raw.githubusercontent.com/ethanhq/cc-fleet/main/install.ps1 | iex
 ```
 
+在已有安装上重跑 `install.sh`(或 release 归档里的 `./install.sh`)是安全的,即使 cc-fleet 正在运行(例如队友的 `apiKeyHelper`、后台的 `ccf watch`):新二进制先拷到旧文件旁边的临时文件,再改名覆盖过去,运行中的进程继续用它原来的文件,新的也能正常启动。(就地覆盖文件会让 macOS 之后每次启动都杀掉它。)
+
 ## 从其他源安装
 
 下面这些渠道**只装 CLI**,装完还需手动补装插件。npm / go / Releases 在 Linux、macOS、Windows 上通用:
@@ -55,12 +57,24 @@ $env:CCF_VERSION = "v0.2.1"; $env:CCF_PREFIX = "$HOME\bin"; irm https://raw.gith
 
 ## 环境要求
 
-Agent Team 模式依赖 tmux,因此**无法在 Windows 上使用**;其余功能(Subagent / Workflow / run / TUI)完全一致、无任何额外依赖。需要前台运行 Agent Team,先装一个 tmux 即可(macOS:`brew install tmux`;Debian / Ubuntu:`sudo apt install tmux`)。
+Agent Team 模式**无法在 Windows 上使用**;其余功能(Subagent / Workflow / run / TUI)完全一致、无任何额外依赖。Provider Teammate 需要:
+
+- **Claude Code ≥ 2.1.278**,终端版 `claude` — Claude 桌面 App、`claude -p` 和 SDK 会话没有 agent team,用不了;
+- 这个 `claude` 运行在 **tmux 或 iTerm2** 里,Teammate 才能以 pane 打开。先装 tmux(macOS:`brew install tmux`;Debian / Ubuntu:`sudo apt install tmux`),再在里面启动 `claude`;
+- **一次性配置**,然后重启 `claude`(首次运行 TUI 时它会提示并可替你完成):
+
+  ```bash
+  ccf teammate setup           # 列出将要做的改动
+  ccf teammate setup --yes --teammate-mode tmux
+  ```
+
+  它会写入启动器 `~/.config/cc-fleet/bin/claude-teammate`、`~/.claude/agents/` 下的 `ccf-*` agent 定义,以及 `~/.claude/settings.json` 里的两个键(要求时还有 `teammateMode`)。`ccf teammate setup --remove --yes` 撤销;cc-fleet 换了位置后用 `ccf repair` 重新固定启动器;`ccf uninstall` 也会一并撤销。
 
 ## 维护
 
 ```bash
-ccf doctor               # 体检:检查依赖、Provider、插件状态
+ccf doctor               # 体检:检查依赖、Provider、插件状态、teammate lane
+ccf repair               # 重写 Provider profile;重新固定 teammate 启动器
 ccf update               # 沿安装渠道自更新并刷新插件
 ccf update rollback      # 回滚到上一个版本
 ccf uninstall            # 重置配置与状态(保留二进制与 secret)

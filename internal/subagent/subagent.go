@@ -17,7 +17,6 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/childenv"
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/config"
-	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 	"github.com/ethanhq/cc-fleet/internal/ids"
 	"github.com/ethanhq/cc-fleet/internal/leadsession"
 	"github.com/ethanhq/cc-fleet/internal/profile"
@@ -73,17 +72,6 @@ func (w *cappedWriter) Write(p []byte) (int, error) {
 	}
 	return len(p), nil // consume the tail into the void
 }
-
-// loadFP is a seam so tests can inject a fake fingerprint without a real cache.
-// Production = LoadOrBundled: the user's probed cache if present, else the
-// bundled default recipe (a fresh install needs no probe).
-var loadFP = fingerprint.LoadOrBundled
-
-// LoadFingerprint loads the spawn recipe the same way Run does (probed cache or the
-// bundled default). The workflow engine uses it to resolve the effective profile against
-// the SAME recipe binary Run will exec, so its pre-keying version gate can't read a
-// different executable.
-func LoadFingerprint() (*fingerprint.Fingerprint, error) { return loadFP() }
 
 // detectLeadSession is a seam so tests can inject a parent Claude session
 // without relying on the process tree they run under.
@@ -228,38 +216,22 @@ func Run(parent context.Context, req Request) Result {
 		model = v.ResolveModel(req.Model)
 	}
 
-	// 3. Resolve the spawn recipe (probed fingerprint if present, else bundled
-	//    default). Use ONLY the binary path, never fp.Env — it carries the
-	//    nested-CC / teams triggers that must be stripped, not re-applied (see childenv.Clean).
-	fp, err := loadFP()
+	// 3. Binary gate: resolve the live claude binary (claudebin — PATH, then the
+	//    per-version layout; fingerprint.json is never read, so a CC upgrade can't
+	//    leave a stale recorded binary in use). The code stays FINGERPRINT_STALE:
+	//    skills and classify dispatch on it; it now means "no claude binary".
+	binPath, binVersion, err := resolveBinaryPathVersion()
 	if err != nil {
-		// LoadOrBundled never returns ErrNotFound (it falls back to the bundled
-		// recipe); a non-nil error here means an existing cache is corrupt.
-		return fail(ErrCodeFingerprintMissing, fmt.Sprintf("load fingerprint: %v", err),
-			req.Provider, suggestionFor(ErrCodeFingerprintMissing))
-	}
-	// Resolve the binary path live (cached-if-exists, else ccver) so a CC
-	// upgrade that GC'd the recipe's pinned path doesn't strand us.
-	binPath, err := fingerprint.ResolveBinaryPath(fp)
-	if err != nil {
-		return fail(ErrCodeFingerprintStale, err.Error(),
+		dg.Logf("subagent: binary gate: %v", err)
+		return fail(ErrCodeFingerprintStale, errMsgNoClaude,
 			req.Provider, suggestionFor(ErrCodeFingerprintStale))
 	}
-	fp.BinaryPath = binPath
-	// Shared runtime gate — the same helper spawn.Spawn uses, so the two callers
-	// can't drift. After dynamic resolution this is defence in depth (the
-	// resolved path was just stat-ed) but cheap to keep.
-	if err := fingerprint.ValidateForRuntime(fp); err != nil {
-		return fail(ErrCodeFingerprintStale,
-			err.Error(),
-			req.Provider, suggestionFor(ErrCodeFingerprintStale))
-	}
-	dg.Logf("subagent: fingerprint gate ok (binary %s)", binPath)
+	dg.Logf("subagent: binary gate ok (binary %s)", binPath)
 
 	var profilePath string
 	if !native {
 		// 3b. For a codex provider, ensure the conversion daemon is up — after the
-		//     fingerprint gate, before the profile write, so a daemon failure is
+		//     binary gate, before the profile write, so a daemon failure is
 		//     fail-before-mutation and leaves no profile behind.
 		if err := ensureProviderProxy(v, dg); err != nil {
 			return fail(ErrCodeProxyUnavailable, err.Error(), req.Provider, suggestionFor(ErrCodeProxyUnavailable))
@@ -269,9 +241,9 @@ func Run(parent context.Context, req Request) Result {
 		//    so it's safe with no lock even under N concurrent subagents for one
 		//    provider (the package's lock-free invariant).
 		//
-		//    MUST run AFTER the fingerprint gate above, not before — fail-before-
-		//    side-effects, so a corrupt/missing fingerprint never leaves a profile
-		//    file behind. profilePath is only consumed later, so the move is safe.
+		//    MUST run AFTER the binary gate above, not before — fail-before-
+		//    side-effects, so a missing claude never leaves a profile file
+		//    behind. profilePath is only consumed later, so the move is safe.
 		profilePath, err = profile.WriteForProvider(v, "")
 		if err != nil {
 			return fail(ErrCodeFailed, fmt.Sprintf("write profile for %s: %v", req.Provider, err),
@@ -300,14 +272,14 @@ func Run(parent context.Context, req Request) Result {
 	req.LeadSessionID = resolveLeadSession(req.LeadSessionID)
 
 	// 6. Resolve the EFFECTIVE profile (version gate, fail-open to full with a
-	//    reason). Done AFTER the fingerprint gate, against the SAME fp whose binary
-	//    path was just resolved above — no second fingerprint load, so the gate can't
-	//    read a different executable than the one this Run will exec.
-	effective, downgrade := ResolveEffectiveProfile(req.PromptProfile, fp)
+	//    reason). Done AFTER the binary gate, against the version the gate resolved
+	//    for binPath — no second resolution, so the gate can't read a different
+	//    executable than the one this Run will exec.
+	effective, downgrade := gateProfile(req.PromptProfile, binVersion, nil)
 
 	// 7. Background mode: launch detached, return a job handle.
 	if req.Background {
-		return launchBackground(req, fp.BinaryPath, profilePath, model, effective, downgrade, proxyPortOf(v))
+		return launchBackground(req, binPath, profilePath, model, effective, downgrade, proxyPortOf(v))
 	}
 
 	// 8. Synchronous exec with a hard deadline.
@@ -335,7 +307,7 @@ func Run(parent context.Context, req Request) Result {
 		res.RunID, res.Phase, res.Label = req.RunID, req.Phase, req.Label
 		return res
 	}
-	argv := buildArgv(fp.BinaryPath, profilePath, model, req, slim)
+	argv := buildArgv(binPath, profilePath, model, req, slim)
 	hostEnv := os.Environ()
 	env := childenv.Clean(hostEnv)
 	// Counts only — argv carries the prompt/schema and env carries arbitrary
@@ -408,7 +380,7 @@ func Run(parent context.Context, req Request) Result {
 		attempt := req.Attempt
 		onStart = func(childPID int) { recordChildIdentity(jobID, childPID, attempt) }
 	}
-	stdout, stderr, exitCode, runErr := runClaude(ctx, fp.BinaryPath, argv, env, req.PromptReader, req.WorkingDir, act, onStart)
+	stdout, stderr, exitCode, runErr := runClaude(ctx, binPath, argv, env, req.PromptReader, req.WorkingDir, act, onStart)
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	dg.Logf("subagent: claude exited code %d (timeout=%v)", exitCode, timedOut)
 

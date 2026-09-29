@@ -130,16 +130,15 @@ func TestRunClaude_TimeoutKillsProcessGroup(t *testing.T) {
 }
 
 // TestRun_NoUserFingerprint_UsesBundled: with NO
-// ~/.config/cc-fleet/fingerprint.json, Run must NOT return FINGERPRINT_MISSING —
-// LoadOrBundled supplies the embedded recipe and the binary path resolves live.
-// A fast-exit fake claude on PATH keeps the run from reaching the (unreachable)
-// provider or launching a real claude.
+// ~/.config/cc-fleet/fingerprint.json, Run resolves the binary live (claudebin)
+// and never fails the binary gate. A fast-exit fake claude on PATH keeps the run
+// from reaching the (unreachable) provider or launching a real claude.
 func TestRun_NoUserFingerprint_UsesBundled(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
 	t.Setenv("HOME", t.TempDir())
 
-	// Fake claude on PATH so ResolveBinaryPath finds a binary and runClaude
+	// Fake claude on PATH so claudebin.Resolve finds a binary and runClaude
 	// execs something that exits instantly (never touches the invalid base_url).
 	binDir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(binDir, "claude"),
@@ -169,9 +168,35 @@ added_at        = 2026-05-24T05:00:00Z
 	}
 
 	res := Run(context.Background(), Request{Provider: "glm", Prompt: "hi", JSON: true})
-	// The bundled fallback must engage: no FINGERPRINT_MISSING, and the binary
-	// resolved (no FINGERPRINT_STALE either, since the fake claude is on PATH).
-	if res.ErrorCode == ErrCodeFingerprintMissing || res.ErrorCode == ErrCodeFingerprintStale {
-		t.Fatalf("missing user fingerprint must fall back to bundled recipe, got %s: %s", res.ErrorCode, res.ErrorMsg)
+	// The binary resolved live (no FINGERPRINT_STALE, since the fake claude is on PATH).
+	if res.ErrorCode == ErrCodeFingerprintStale {
+		t.Fatalf("with claude on PATH the binary gate must pass, got %s: %s", res.ErrorCode, res.ErrorMsg)
+	}
+}
+
+// TestGateMissingClaudeIsFingerprintStale: with no claude on PATH or under the
+// per-version layout, the real binary gate (claudebin, unstubbed) fails with the
+// kept FINGERPRINT_STALE code and the "claude binary not found" message, before
+// any side effect — no provider profile is written.
+func TestGateMissingClaudeIsFingerprintStale(t *testing.T) {
+	xdg := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("PATH", t.TempDir())
+	writeMinimalProviders(t, xdg)
+
+	res := Run(context.Background(), Request{Provider: "glm", Prompt: "hi", JSON: true})
+	if res.OK || res.ErrorCode != ErrCodeFingerprintStale {
+		t.Fatalf("Run = %+v, want FINGERPRINT_STALE", res)
+	}
+	if res.ErrorMsg != errMsgNoClaude {
+		t.Fatalf("error = %q, want %q", res.ErrorMsg, errMsgNoClaude)
+	}
+	if !strings.Contains(res.ErrorMsg, "claude binary not found") || strings.Contains(res.Suggestion, "refresh-fingerprint") {
+		t.Fatalf("message/suggestion still point at the fingerprint flow: %+v", res)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".claude", "profiles", "glm.json")); !os.IsNotExist(err) {
+		t.Fatalf("profile written before the binary gate failed (stat err=%v)", err)
 	}
 }

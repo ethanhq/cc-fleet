@@ -76,11 +76,15 @@ fi
 # --- Binary + ccf alias -------------------------------------------------------
 
 mkdir -p "${PREFIX}"
-cp "${SCRIPT_DIR}/cc-fleet" "${PREFIX}/cc-fleet"
-chmod +x "${PREFIX}/cc-fleet"
+# Temp file + rename, as in the top-level installer: a new inode, so a running
+# cc-fleet is untouched and macOS never kills the new binary over a stale code
+# signature.
+tmpbin="${PREFIX}/.cc-fleet.tmp.$$"
+cp "${SCRIPT_DIR}/cc-fleet" "$tmpbin" && chmod 0755 "$tmpbin" && mv -f "$tmpbin" "${PREFIX}/cc-fleet" \
+  || { rm -f "$tmpbin"; echo "install.sh: could not install ${PREFIX}/cc-fleet" >&2; exit 1; }
 # Relative symlink (same as `make install-bin` / the top-level installer).
-# os.Executable() resolves it, so a spawned teammate's apiKeyHelper still points
-# at the real cc-fleet path.
+# os.Executable() resolves it, so a provider teammate's apiKeyHelper still
+# points at the real cc-fleet path.
 ln -sf cc-fleet "${PREFIX}/ccf"
 echo "==> Installed: ${PREFIX}/cc-fleet (+ ccf alias)"
 
@@ -194,6 +198,7 @@ cat <<EOF
    cc-fleet update      # later: update cc-fleet + the plugin to the latest release
 
    tmux is needed only for live teammates; subagent / workflow / run work without it.
+   Provider teammates: run 'cc-fleet teammate setup' once (terminal claude inside tmux or iTerm2, Claude Code ≥ 2.1.278).
 
    See README.md in this archive for the full quick-start.
 EOF

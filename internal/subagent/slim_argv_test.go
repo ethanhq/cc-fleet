@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ethanhq/cc-fleet/internal/fingerprint"
+	"github.com/ethanhq/cc-fleet/internal/claudebin"
 )
 
 // ----- buildArgv: full stays byte-identical, slim appends -----
@@ -74,84 +74,78 @@ func TestBuildArgv_JSONSchema(t *testing.T) {
 
 // ----- ResolveEffectiveProfile: pass-through + fail-open -----
 
+// binStubResolver points the binary resolver seam (Run's binary gate and the
+// version gate) at path with the given version, restoring it on cleanup.
+func binStubResolver(t *testing.T, path, version string) {
+	t.Helper()
+	orig := resolveBinaryPathVersion
+	resolveBinaryPathVersion = func() (string, string, error) { return path, version, nil }
+	t.Cleanup(func() { resolveBinaryPathVersion = orig })
+}
+
 func TestResolveEffectiveProfile(t *testing.T) {
-	// The caller already loaded the recipe; ResolveEffectiveProfile resolves the version
-	// against THAT fp, never a re-loaded one.
-	fp := &fingerprint.Fingerprint{BinaryPath: "/v/claude"}
+	origVer := resolveBinaryPathVersion
+	t.Cleanup(func() { resolveBinaryPathVersion = origVer })
 
 	// full / "" pass through unchanged with no resolution.
+	resolveBinaryPathVersion = func() (string, string, error) {
+		t.Fatal("full/\"\" must not resolve the binary")
+		return "", "", nil
+	}
 	for _, p := range []string{"", ProfileFull} {
-		eff, dn := ResolveEffectiveProfile(p, fp)
+		eff, dn := ResolveEffectiveProfile(p)
 		if eff != p || dn != "" {
 			t.Fatalf("ResolveEffectiveProfile(%q) = (%q,%q), want (%q,\"\")", p, eff, dn, p)
 		}
 	}
 
-	origVer := resolveBinaryPathVersion
-	t.Cleanup(func() { resolveBinaryPathVersion = origVer })
-
 	t.Run("at-floor keeps slim", func(t *testing.T) {
-		resolveBinaryPathVersion = func(*fingerprint.Fingerprint) (string, string, error) {
+		resolveBinaryPathVersion = func() (string, string, error) {
 			return "/v/claude", SlimVersionFloor, nil
 		}
-		eff, dn := ResolveEffectiveProfile(ProfileSlim, fp)
+		eff, dn := ResolveEffectiveProfile(ProfileSlim)
 		if eff != ProfileSlim || dn != "" {
 			t.Fatalf("at-floor: got (%q,%q), want (slim,\"\")", eff, dn)
 		}
 	})
 
 	t.Run("newer keeps slim-ro", func(t *testing.T) {
-		resolveBinaryPathVersion = func(*fingerprint.Fingerprint) (string, string, error) {
+		resolveBinaryPathVersion = func() (string, string, error) {
 			return "/v/claude", "2.1.167", nil
 		}
-		eff, _ := ResolveEffectiveProfile(ProfileSlimRO, fp)
+		eff, _ := ResolveEffectiveProfile(ProfileSlimRO)
 		if eff != ProfileSlimRO {
 			t.Fatalf("newer: got %q, want slim-ro", eff)
 		}
 	})
 
 	t.Run("below floor fails open to full", func(t *testing.T) {
-		resolveBinaryPathVersion = func(*fingerprint.Fingerprint) (string, string, error) {
+		resolveBinaryPathVersion = func() (string, string, error) {
 			return "/v/claude", "2.1.50", nil
 		}
-		eff, dn := ResolveEffectiveProfile(ProfileSlim, fp)
+		eff, dn := ResolveEffectiveProfile(ProfileSlim)
 		if eff != ProfileFull || !strings.Contains(dn, "2.1.50") || !strings.Contains(dn, SlimVersionFloor) {
 			t.Fatalf("below floor: got (%q,%q), want full + reason naming the versions", eff, dn)
 		}
 	})
 
 	t.Run("unknown version fails open to full", func(t *testing.T) {
-		resolveBinaryPathVersion = func(*fingerprint.Fingerprint) (string, string, error) {
+		resolveBinaryPathVersion = func() (string, string, error) {
 			return "/v/claude", "", nil
 		}
-		eff, dn := ResolveEffectiveProfile(ProfileSlim, fp)
+		eff, dn := ResolveEffectiveProfile(ProfileSlim)
 		if eff != ProfileFull || !strings.Contains(dn, "unknown") {
 			t.Fatalf("unknown version: got (%q,%q), want full + 'unknown' reason", eff, dn)
 		}
 	})
 
 	t.Run("resolve error fails open to full", func(t *testing.T) {
-		resolveBinaryPathVersion = func(*fingerprint.Fingerprint) (string, string, error) {
-			return "", "", fingerprint.ErrFingerprintStale
+		resolveBinaryPathVersion = func() (string, string, error) {
+			return "", "", claudebin.ErrNotFound
 		}
-		eff, dn := ResolveEffectiveProfile(ProfileSlim, fp)
+		eff, dn := ResolveEffectiveProfile(ProfileSlim)
 		if eff != ProfileFull || dn == "" {
 			t.Fatalf("resolve error: got (%q,%q), want full + non-empty reason", eff, dn)
-		}
-	})
-
-	// The fp passed in is the one resolved against — a nil fp surfaces through the
-	// resolver as a fail-open, never a panic or a second load.
-	t.Run("nil fp fails open via the resolver", func(t *testing.T) {
-		resolveBinaryPathVersion = func(f *fingerprint.Fingerprint) (string, string, error) {
-			if f != nil {
-				t.Fatalf("expected the caller-supplied fp, got %+v", f)
-			}
-			return "", "", fingerprint.ErrFingerprintStale
-		}
-		eff, dn := ResolveEffectiveProfile(ProfileSlim, nil)
-		if eff != ProfileFull || dn == "" {
-			t.Fatalf("nil fp: got (%q,%q), want full + non-empty reason", eff, dn)
 		}
 	})
 }

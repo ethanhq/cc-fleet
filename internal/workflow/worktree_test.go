@@ -26,8 +26,8 @@ func TestWorktreeIsolationWiring(t *testing.T) {
 
 	cleaned := false
 	oldW := createWorktreeFn
-	createWorktreeFn = func(string) (string, func(), error) {
-		return "/tmp/fake-wt", func() { cleaned = true }, nil
+	createWorktreeFn = func(string) (string, func(string, int) string, error) {
+		return "/tmp/fake-wt", func(string, int) string { cleaned = true; return "" }, nil
 	}
 	t.Cleanup(func() { createWorktreeFn = oldW })
 

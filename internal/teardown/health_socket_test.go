@@ -58,10 +58,10 @@ func TestAnnotateHealth_PerPaneSocket(t *testing.T) {
 }
 
 // TestCapturePane_SocketScoped covers the real exec path: a non-empty socket
-// MUST insert `-L <socket>` between tmuxBinary and the subcommand, scoping
-// the capture to the right server. The fake tmux echoes its argv to a file
-// so we can assert the wiring; without the -L the swarm pane silently
-// reaches the default server and the swarm capture fails.
+// path MUST insert `-S <path>` between tmuxBinary and the subcommand, scoping
+// the capture to the pane's own server. The fake tmux echoes its argv to a
+// file so we can assert the wiring; without the -S the pane silently reaches
+// the default server and the capture fails.
 func TestCapturePane_SocketScoped(t *testing.T) {
 	dir := t.TempDir()
 	bin := filepath.Join(dir, "tmux")
@@ -78,18 +78,18 @@ func TestCapturePane_SocketScoped(t *testing.T) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("MOCK_ARGS_FILE", argsLog)
 
-	const sock = "cc-fleet-swarm-cap"
+	const sock = "/tmp/tmux-501/cc-fleet-swarm-cap"
 	if _, err := capturePane(sock, "%77"); err != nil {
 		t.Fatalf("capturePane(sock=%q): %v", sock, err)
 	}
-	// Read recorded argv and check the FIRST invocation began with -L <sock>.
+	// Read recorded argv and check the FIRST invocation began with -S <sock>.
 	data, err := os.ReadFile(argsLog)
 	if err != nil {
 		t.Fatalf("read args.log: %v", err)
 	}
 	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) < 2 || lines[0] != "-L" || lines[1] != sock {
-		t.Fatalf("capturePane argv prefix = %v, want [-L %s ...]", lines, sock)
+	if len(lines) < 2 || lines[0] != "-S" || lines[1] != sock {
+		t.Fatalf("capturePane argv prefix = %v, want [-S %s ...]", lines, sock)
 	}
 }
 

@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/ethanhq/cc-fleet/internal/subagent"
 )
@@ -23,7 +26,7 @@ func TestExecuteFatalFirstStamp(t *testing.T) {
 	origSweep := sweepRunWorktreesFn
 	origLeaf := runLeaf
 	swept, ranLeaf := false, false
-	sweepRunWorktreesFn = func(string) { swept = true }
+	sweepRunWorktreesFn = func(string) []string { swept = true; return nil }
 	runLeaf = func(context.Context, subagent.Request) subagent.Result {
 		ranLeaf = true
 		return subagent.Result{OK: true}
@@ -62,7 +65,7 @@ func TestFinalizeFailedDetach(t *testing.T) {
 	if err := subagent.SaveRun(subagent.WorkflowRun{RunID: "stamped", StartedAt: ts, Status: "running", EnginePID: 4242}); err != nil {
 		t.Fatal(err)
 	}
-	finalizeFailedDetach("stamped", subagent.WorkflowRun{RunID: "stamped"}, nil, "boom")
+	finalizeFailedDetach("stamped", subagent.WorkflowRun{RunID: "stamped"}, nil, "boom", "")
 	if got, _ := subagent.ReadRun("stamped"); got.Status != "failed" || got.EnginePID != 4242 {
 		t.Errorf("child-stamped: want {failed, pid 4242}, got {%s, %d}", got.Status, got.EnginePID)
 	}
@@ -72,7 +75,7 @@ func TestFinalizeFailedDetach(t *testing.T) {
 		t.Fatal(err)
 	}
 	prior := subagent.WorkflowRun{RunID: "resume", StartedAt: ts, Status: "stopped", EnginePID: 0x7ffffffe, EngineProcStart: "tok"}
-	finalizeFailedDetach("resume", subagent.WorkflowRun{RunID: "resume"}, &prior, "boom")
+	finalizeFailedDetach("resume", subagent.WorkflowRun{RunID: "resume"}, &prior, "boom", "")
 	if got, _ := subagent.ReadRun("resume"); got.EnginePID != 0x7ffffffe || got.EngineProcStart != "tok" {
 		t.Errorf("resume-no-stamp: want the prior death proof restored, got {pid %d, tok %q}", got.EnginePID, got.EngineProcStart)
 	}
@@ -81,7 +84,7 @@ func TestFinalizeFailedDetach(t *testing.T) {
 	if err := subagent.SaveRun(subagent.WorkflowRun{RunID: "fresh", StartedAt: ts, Status: "running", EnginePID: 0}); err != nil {
 		t.Fatal(err)
 	}
-	finalizeFailedDetach("fresh", subagent.WorkflowRun{RunID: "fresh", StartedAt: ts, Status: "running"}, nil, "boom")
+	finalizeFailedDetach("fresh", subagent.WorkflowRun{RunID: "fresh", StartedAt: ts, Status: "running"}, nil, "boom", "")
 	if got, _ := subagent.ReadRun("fresh"); got.Status != "failed" {
 		t.Errorf("fresh: want failed, got %s", got.Status)
 	}
@@ -120,5 +123,63 @@ func TestFailedDetachedResumeRestoresPriorDeathProof(t *testing.T) {
 	}
 	if !subagent.RunEngineProvablyNotLive(got) {
 		t.Error("the restored record must read provably dead so the sweep can still reclaim its worktrees")
+	}
+}
+
+// TestDetachedResumeSurfacesPreStartCause: a detached child that fails before registering (its run
+// directory vanished between the resume preflight and Execute's chdir) records why; the launcher must
+// return that cause at once instead of waiting out the startup budget and replying only "engine failed
+// to start", and must record it on the restored prior record without losing the death proof.
+func TestDetachedResumeSurfacesPreStartCause(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("HOME", t.TempDir())
+	script := writeFgTrivialScript(t)
+	const id = "resume-cwd-gone"
+	const deadPID = 0x7ffffffe
+	runDir := t.TempDir()
+	prior := subagent.WorkflowRun{RunID: id, StartedAt: "2026-01-01T00:00:00Z", Status: "failed", Error: "old failure",
+		EnginePID: deadPID, EngineProcStart: "tok", Cwd: runDir}
+	if err := subagent.SaveRun(prior); err != nil {
+		t.Fatal(err)
+	}
+
+	origLaunch := launchDetachedFn
+	launchDetachedFn = func(script, runID string, _ Options) (int, *detachedReaper, error) {
+		// Stand in for the detached child: the real Execute, which cannot enter the run directory
+		// and records that in the manifest before it would stamp its pid.
+		if err := os.RemoveAll(runDir); err != nil {
+			return 0, nil, err
+		}
+		_ = Execute(context.Background(), script, runID, Options{RunID: runID})
+		cmd := exec.Command(os.Args[0], "-test.run=^$") // a real process for the reaper to kill + reap
+		devnull, err := os.Open(os.DevNull)
+		if err != nil {
+			return 0, nil, err
+		}
+		if err := cmd.Start(); err != nil {
+			devnull.Close()
+			return 0, nil, err
+		}
+		return cmd.Process.Pid, &detachedReaper{cmd: cmd, devnull: devnull}, nil
+	}
+	t.Cleanup(func() { launchDetachedFn = origLaunch })
+
+	start := time.Now()
+	_, err := Launch(context.Background(), script, Options{Resume: id}, false)
+	if err == nil || !strings.Contains(err.Error(), "engine failed to start") || !strings.Contains(err.Error(), "run directory") {
+		t.Fatalf("Launch error = %v, want the child's run-directory cause", err)
+	}
+	if el := time.Since(start); el >= engineStartupBudget {
+		t.Errorf("Launch waited %v; a recorded pre-start failure must end the wait early", el)
+	}
+	got, rerr := subagent.ReadRun(id)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if got.Status != "failed" || !strings.Contains(got.Error, "run directory") {
+		t.Errorf("manifest = {%s, %q}, want failed with the run-directory cause", got.Status, got.Error)
+	}
+	if got.EnginePID != deadPID || got.EngineProcStart != "tok" {
+		t.Errorf("the prior death proof must survive, got EnginePID=%d token=%q", got.EnginePID, got.EngineProcStart)
 	}
 }

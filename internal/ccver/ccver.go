@@ -7,7 +7,8 @@
 // Resolution order matches what the user's PATH-driven workflow expects, then
 // falls back to the per-version layout:
 //  1. exec.LookPath("claude")
-//  2. ~/.local/share/claude/versions/<semver>/  — picks the largest semver
+//  2. ~/.local/share/claude/versions/<semver>/claude, or (unix) the flat
+//     ~/.local/share/claude/versions/<semver> file — picks the largest semver
 //
 // Version detection prefers the binary path's basename (cheap, no exec); if
 // that fails the binary is asked directly with a bounded `--version` call.
@@ -92,22 +93,24 @@ func locate() (string, error) {
 	}
 
 	// Collect every entry whose name parses as semver, sort descending, then
-	// pick the FIRST one that actually holds an executable claude (claudeBinName:
-	// `claude` on unix, `claude.exe` on windows).
+	// pick the FIRST one that actually holds an executable claude.
 	//
-	// Descend candidates by descending semver and commit only to a dir whose
-	// <dir>/claudeBinName is an executable regular file: a versioned dir with no
-	// runnable claude must NOT be reported as the install (that's a false-healthy
-	// doctor and a spawn that selects a nonexistent binary).
+	// Each candidate is judged with os.Stat (which follows symlinks — DirEntry's
+	// IsDir/Type do not, and would drop a link to a binary):
+	//   - versions/<semver> is a directory: <dir>/claudeBinName (`claude` on
+	//     unix, `claude.exe` on windows) must pass isExecutableFile;
+	//   - unix only (flatVersionFiles): versions/<semver> may itself be the
+	//     binary when it passes isExecutableFile.
+	// A 0-byte or non-executable file is skipped (the updater leaves such files
+	// behind mid-download): a versioned entry with no runnable claude must NOT be
+	// reported as the install (that's a false-healthy doctor and a launch that
+	// selects a nonexistent binary).
 	type sv struct {
 		name string
 		nums [3]int
 	}
 	var cands []sv
 	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
 		nums, ok := parseSemver(e.Name())
 		if !ok {
 			continue
@@ -126,15 +129,36 @@ func locate() (string, error) {
 		return false
 	})
 	for _, c := range cands {
-		cand := filepath.Join(versionsDir, c.name, claudeBinName)
-		if isExecutableFile(cand) {
-			return cand, nil
+		entry := filepath.Join(versionsDir, c.name)
+		fi, err := os.Stat(entry)
+		if err != nil {
+			continue
+		}
+		if fi.IsDir() {
+			if cand := filepath.Join(entry, claudeBinName); IsExecutable(cand) {
+				return cand, nil
+			}
+			continue
+		}
+		if flatVersionFiles && isExecutableFile(fi) {
+			return entry, nil
 		}
 	}
-	// Every versioned dir was empty / lacked an executable claude — same outcome
-	// as no versioned install at all, so the caller (doctor) Fails rather than
-	// reporting a phantom binary it can never run.
+	// Every versioned entry was empty / lacked an executable claude — same
+	// outcome as no versioned install at all, so the caller (doctor) Fails rather
+	// than reporting a phantom binary it can never run.
 	return "", ErrNotFound
+}
+
+// IsExecutable reports whether path (following symlinks) is a runnable claude
+// candidate by this platform's rule: a non-empty regular file, plus an execute
+// bit on unix. It is the single executability check shared with claudebin.
+func IsExecutable(path string) bool {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return false
+	}
+	return isExecutableFile(fi)
 }
 
 // parseSemver returns the three components of a "X.Y.Z" name. Returns ok=false
@@ -186,19 +210,23 @@ func AtLeast(version, floor string) bool {
 	return true
 }
 
-// versionFromPath pulls a "X.Y.Z" out of the directory containing the binary
-// (the per-version install layout). It also handles the case where the binary
-// path itself ends with the version (less common but cheap to support).
+// versionFromPath pulls a "X.Y.Z" out of the binary path without executing it.
+// The basename comes first: the flat layout (.../versions/2.1.150) and a
+// versioned name (/opt/claude-2.1.150) both end with the version. When the
+// basename is the bare binary name (`claude`, or `claude.exe`), the parent
+// directory is used instead: .../versions/2.1.150/claude.
 func versionFromPath(binaryPath string) string {
 	if binaryPath == "" {
 		return ""
 	}
-	// First try the immediate parent: .../versions/2.1.150/claude
-	if m := versionRegex.FindStringSubmatch(filepath.Base(filepath.Dir(binaryPath))); len(m) >= 2 {
+	base := filepath.Base(binaryPath)
+	if m := versionRegex.FindStringSubmatch(base); len(m) >= 2 {
 		return m[1]
 	}
-	// Fallback: basename of the binary itself (e.g. /opt/claude-2.1.150)
-	if m := versionRegex.FindStringSubmatch(filepath.Base(binaryPath)); len(m) >= 2 {
+	if strings.TrimSuffix(base, ".exe") != "claude" {
+		return ""
+	}
+	if m := versionRegex.FindStringSubmatch(filepath.Base(filepath.Dir(binaryPath))); len(m) >= 2 {
 		return m[1]
 	}
 	return ""

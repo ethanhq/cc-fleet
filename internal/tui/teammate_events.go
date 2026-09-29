@@ -7,8 +7,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/ethanhq/cc-fleet/internal/spawn"
 	"github.com/ethanhq/cc-fleet/internal/subagent"
+	"github.com/ethanhq/cc-fleet/internal/teammate"
 )
 
 // This file holds the teammate detail card's data projections (the sibling of
@@ -28,11 +28,12 @@ type inboxEntry struct {
 	Read      bool   `json:"read"`
 }
 
-// readTeammateInbox reads a teammate's inbox file. spawn.InboxPath validates the
-// team/name path components, so a malformed discovered name can never escape the
-// teams root. An absent or unparseable file degrades to an empty inbox.
+// readTeammateInbox reads a teammate's inbox file. teammate.InboxPath applies
+// Claude Code's own name rules and keeps the path under the teams root, so a
+// malformed discovered name can never escape it. An absent or unparseable file
+// degrades to an empty inbox.
 func readTeammateInbox(team, name string) []inboxEntry {
-	path, err := spawn.InboxPath(team, name)
+	path, err := teammate.InboxPath(team, name)
 	if err != nil {
 		return nil
 	}

@@ -1,8 +1,8 @@
 // Package subagent runs a ONE-SHOT, HEADLESS provider subagent: it launches
 // `claude -p` backed by a third-party provider model (via the provider profile's
 // --settings + --model) and returns the result synchronously. It is the lean
-// half of the spawn pipeline (load provider → write profile → load fingerprint)
-// plus an exec shell, with the entire tmux / team / lock half removed.
+// pipeline (load provider → resolve the claude binary → write profile) plus an
+// exec shell — no tmux, team or lock.
 //
 // Three invariants hold here:
 //
@@ -10,7 +10,7 @@
 //     (`<abs cc-fleet> keyget <provider>`), which claude execs; cc-fleet's subagent
 //     process never reads key bytes, never puts a key in argv/env/log/stdout.
 //   - Lock-free: subagent writes no team config / members / inbox and splits no
-//     tmux pane, so it takes NEITHER WithTeamLock NOR WithServerLock. The only
+//     tmux pane, so it never takes WithServerLock. The only
 //     write is profile.WriteForProvider (already atomic + idempotent), so N
 //     concurrent subagents for one provider are embarrassingly parallel.
 //   - The headless child's env strips the lead's creds AND the nested-CC /
@@ -201,13 +201,12 @@ type Result struct {
 const (
 	// Pre-flight failures (claude never launched). Reuse spawn's code spellings
 	// so the skill already recognizes them.
-	ErrCodeBadArgs            = "SUBAGENT_BAD_ARGS"       // --prompt/--prompt-file missing or both given (CLI layer)
-	ErrCodeUnknownProvider    = "UNKNOWN_PROVIDER"        // provider not in providers.toml
-	ErrCodeProviderDisabled   = "PROVIDER_DISABLED"       // enabled = false
-	ErrCodeProviderReserved   = "PROVIDER_RESERVED"       // a configured row uses the reserved native name — rename/remove it
-	ErrCodeFingerprintMissing = "FINGERPRINT_MISSING"     // never captured → skill self-heal
-	ErrCodeFingerprintStale   = "FINGERPRINT_STALE"       // BinaryPath gone from disk
-	ErrCodeProxyUnavailable   = "CODEX_PROXY_UNAVAILABLE" // codex conversion daemon could not be started
+	ErrCodeBadArgs          = "SUBAGENT_BAD_ARGS"       // --prompt/--prompt-file missing or both given (CLI layer)
+	ErrCodeUnknownProvider  = "UNKNOWN_PROVIDER"        // provider not in providers.toml
+	ErrCodeProviderDisabled = "PROVIDER_DISABLED"       // enabled = false
+	ErrCodeProviderReserved = "PROVIDER_RESERVED"       // a configured row uses the reserved native name — rename/remove it
+	ErrCodeFingerprintStale = "FINGERPRINT_STALE"       // no runnable claude binary (name kept: skills dispatch on it)
+	ErrCodeProxyUnavailable = "CODEX_PROXY_UNAVAILABLE" // codex conversion daemon could not be started
 
 	// Probe failure (only when --probe).
 	ErrCodeProviderUnreachable = "PROVIDER_UNREACHABLE" // transport-layer failure
@@ -227,6 +226,10 @@ const (
 	ErrCodeStopped        = "SUBAGENT_STOPPED"          // a still-running leaf finalized by `workflow stop` (a stop, not a failure)
 	ErrCodeOutputTooLarge = "SUBAGENT_OUTPUT_TOO_LARGE" // child stdout/stderr exceeded the byte cap; group killed
 )
+
+// errMsgNoClaude is the FINGERPRINT_STALE message: the binary gate found no
+// runnable claude.
+const errMsgNoClaude = "claude binary not found — install Claude Code (https://claude.com/claude-code) or put claude on PATH"
 
 // fail builds a failure Result, stamping provider for context (mirrors spawn.fail).
 func fail(code, msg, provider, suggestion string) Result {

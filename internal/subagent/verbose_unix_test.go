@@ -11,7 +11,6 @@ import (
 	"testing"
 
 	"github.com/ethanhq/cc-fleet/internal/diag"
-	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 )
 
 // A verbose sync run traces its steps WITHOUT leaking the prompt, argv values,
@@ -34,11 +33,7 @@ func TestRun_VerboseTraceAllowlist(t *testing.T) {
 	}
 
 	fakeClaude := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
-	orig := loadFP
-	loadFP = func() (*fingerprint.Fingerprint, error) {
-		return &fingerprint.Fingerprint{BinaryPath: fakeClaude}, nil
-	}
-	t.Cleanup(func() { loadFP = orig })
+	binStubResolver(t, fakeClaude, "")
 
 	const promptCanary = "prompt-text-canary-31c8"
 	var buf bytes.Buffer
@@ -51,7 +46,7 @@ func TestRun_VerboseTraceAllowlist(t *testing.T) {
 
 	out := buf.String()
 	for _, marker := range []string{
-		"subagent: fingerprint gate ok",
+		"subagent: binary gate ok",
 		"subagent: profile written",
 		"argv",
 		"subagent: claude exited code 0",
@@ -75,11 +70,7 @@ func TestRun_NilDiagIsNoOp(t *testing.T) {
 	writeMinimalProviders(t, xdg)
 
 	fakeClaude := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
-	orig := loadFP
-	loadFP = func() (*fingerprint.Fingerprint, error) {
-		return &fingerprint.Fingerprint{BinaryPath: fakeClaude}, nil
-	}
-	t.Cleanup(func() { loadFP = orig })
+	binStubResolver(t, fakeClaude, "")
 
 	if res := Run(context.Background(), Request{Provider: "glm", Prompt: "hi", JSON: true}); !res.OK {
 		t.Fatalf("nil-diag run failed: %+v", res)
@@ -95,11 +86,7 @@ func TestLaunchBackground_VerboseLaunchMetadata(t *testing.T) {
 	writeMinimalProviders(t, xdg)
 
 	fakeClaude := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
-	orig := loadFP
-	loadFP = func() (*fingerprint.Fingerprint, error) {
-		return &fingerprint.Fingerprint{BinaryPath: fakeClaude}, nil
-	}
-	t.Cleanup(func() { loadFP = orig })
+	binStubResolver(t, fakeClaude, "")
 
 	var buf bytes.Buffer
 	res := Run(context.Background(), Request{

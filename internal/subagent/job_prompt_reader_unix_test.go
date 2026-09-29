@@ -10,8 +10,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 )
 
 // TestLaunchBackground_PromptReaderError_FailsBeforeStart:
@@ -40,11 +38,7 @@ for a in "$@"; do printf '%s\n' "$a" >> "$CCF_ARGS_LOG"; done
 exit 0
 `
 	fakeClaude := writeFakeBin(t, script)
-	origFP := loadFP
-	loadFP = func() (*fingerprint.Fingerprint, error) {
-		return &fingerprint.Fingerprint{BinaryPath: fakeClaude}, nil
-	}
-	t.Cleanup(func() { loadFP = origFP })
+	binStubResolver(t, fakeClaude, "")
 
 	reader := &failingReader{
 		partial: []byte("partial prompt bytes"),
@@ -115,11 +109,7 @@ for a in "$@"; do printf '%s\n' "$a" >> "$CCF_ARGS_LOG"; done
 exit 0
 `
 	fakeClaude := writeFakeBin(t, script)
-	origFP := loadFP
-	loadFP = func() (*fingerprint.Fingerprint, error) {
-		return &fingerprint.Fingerprint{BinaryPath: fakeClaude}, nil
-	}
-	t.Cleanup(func() { loadFP = origFP })
+	binStubResolver(t, fakeClaude, "")
 
 	// Swap the materializer for a stub that simulates a buggy helper: it writes
 	// a partial file to dst (so a real artifact exists) and then returns an

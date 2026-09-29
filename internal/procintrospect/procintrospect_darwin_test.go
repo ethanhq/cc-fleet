@@ -3,179 +3,94 @@
 package procintrospect
 
 import (
-	"fmt"
+	"encoding/binary"
 	"os"
 	"os/exec"
+	"reflect"
 	"testing"
+	"time"
 )
 
-// The darwin readers recover a process's argv by space-splitting `ps -o
-// command=` output, since macOS exposes no NUL-delimited argv without cgo. The
-// existing real-child test only covers `sleep <n>` — two whitespace-free
-// tokens. Reap (Cmdline), discovery (ProcessTable), and permission inheritance
-// all match cc-fleet markers that sit in a long multi-flag teammate command
-// line, so these tests inject a realistic synthetic command line through the
-// execCommand seam (NO real ps, NO real teammate process) and assert the
-// markers survive the split adjacent to their values — plus a variant that
-// documents the known lossy degradation when an argument itself contains a
-// space.
+const procHelperEnv = "CCF_PROCINTROSPECT_HELPER_SLEEP"
 
-const (
-	fakeChildEnv  = "CCF_PROCINTROSPECT_FAKE_CHILD"
-	fakeOutputEnv = "CCF_PROCINTROSPECT_FAKE_OUTPUT"
-)
-
-// TestHelperProcess is not a real test. When the fake-child env is set it acts
-// as a stand-in for ps(1)/pgrep(1): it prints the canned output supplied via
-// the env and exits, so the darwin readers can be exercised with fully
-// synthetic input. os.Exit before the test framework runs keeps stdout clean
-// (no trailing "PASS"), so .Output() returns exactly the canned bytes.
+// TestHelperProcess is not a real test. When procHelperEnv is set it blocks so
+// a parent test can read its argv, and is killed by that test's cleanup.
 func TestHelperProcess(t *testing.T) {
-	if os.Getenv(fakeChildEnv) != "1" {
+	if os.Getenv(procHelperEnv) != "1" {
 		return
 	}
-	fmt.Fprint(os.Stdout, os.Getenv(fakeOutputEnv))
+	time.Sleep(time.Minute)
 	os.Exit(0)
 }
 
-// stubExecCommand redirects the package execCommand seam at TestHelperProcess,
-// which echoes output on stdout. The original is restored via t.Cleanup. Only
-// Cmdline/ProcessTable are stub-able this way — they call .Output() directly;
-// ProcStart resets cmd.Env and would drop the fake-child env.
-func stubExecCommand(t *testing.T, output string) {
-	t.Helper()
-	orig := execCommand
-	t.Cleanup(func() { execCommand = orig })
-	execCommand = func(_ string, _ ...string) *exec.Cmd {
-		cmd := exec.Command(os.Args[0], "-test.run=^TestHelperProcess$")
-		cmd.Env = append(os.Environ(), fakeChildEnv+"=1", fakeOutputEnv+"="+output)
-		return cmd
+// TestCmdlineExactArgvWithSpaces starts a real child whose argv carries spaces,
+// quotes and an empty string, and asserts Cmdline returns it element by element.
+func TestCmdlineExactArgvWithSpaces(t *testing.T) {
+	want := []string{
+		os.Args[0], "-test.run=^TestHelperProcess$", "--", // "--" ends flag parsing
+		"--settings", "/Users/jo bloggs/.claude/profiles/deep seek.json",
+		`it's "quoted"`, "", "tab\there", "",
 	}
+	cmd := exec.Command(want[0], want[1:]...)
+	cmd.Env = append(os.Environ(), procHelperEnv+"=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_, _ = cmd.Process.Wait()
+	})
+
+	var got []string
+	var err error
+	for i := 0; i < 40; i++ { // the child may not have exec'd yet
+		got, err = Cmdline(cmd.Process.Pid)
+		if err == nil && reflect.DeepEqual(got, want) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("Cmdline(%d) = %q, %v; want %q", cmd.Process.Pid, got, err, want)
 }
 
-// valueAfter returns the token immediately following flag in argv, proving the
-// flag and its value stayed adjacent across the split.
-func valueAfter(argv []string, flag string) (string, bool) {
-	for i, a := range argv {
-		if a == flag {
-			if i+1 < len(argv) {
-				return argv[i+1], true
-			}
-			return "", false
-		}
-	}
-	return "", false
-}
-
-// A realistic teammate command line: claude binary + the full flag set cc-fleet
-// (and native CC) pass when spawning a teammate. None of these values contains
-// whitespace, so the space-split must recover every one.
-const fakeTeammateCmd = "/root/.local/share/claude/bin/claude --agent-id w@t --agent-name w " +
-	"--team-name t --agent-color blue --agent-type general-purpose " +
-	"--settings /root/.cc-fleet/profiles/deepseek.json --model deepseek-chat\n"
-
-// TestCmdline_DarwinRecoversMultiFlagMarkers verifies the per-pid reader (used
-// by the spawn rollback reap + permission inheritance) recovers each cc-fleet
-// marker adjacent to its value out of a long multi-flag command line.
-func TestCmdline_DarwinRecoversMultiFlagMarkers(t *testing.T) {
-	stubExecCommand(t, fakeTeammateCmd)
-
-	argv, err := Cmdline(4321)
-	if err != nil {
-		t.Fatalf("Cmdline: %v", err)
-	}
-
-	want := map[string]string{
-		"--agent-id":   "w@t",
-		"--team-name":  "t",
-		"--agent-type": "general-purpose",
-	}
-	for flag, val := range want {
-		got, ok := valueAfter(argv, flag)
-		if !ok {
-			t.Errorf("marker %q not found in split argv %v", flag, argv)
-			continue
-		}
-		if got != val {
-			t.Errorf("value after %q = %q, want %q (split lost flag→value adjacency)", flag, got, val)
-		}
-	}
-}
-
-// TestProcessTable_DarwinRecoversMultiFlagMarkers verifies the whole-table scan
-// (used by board / hide-show discovery + ghost reap) strips the leading pid and
-// still recovers the markers adjacent to their values.
-func TestProcessTable_DarwinRecoversMultiFlagMarkers(t *testing.T) {
-	// ps -axww -o pid=,command= renders " <pid> <command>"; mimic that shape.
-	stubExecCommand(t, "  4321 "+fakeTeammateCmd)
-
+// TestProcessTableContainsSelf asserts the table scan returns this test process
+// with its exact argv.
+func TestProcessTableContainsSelf(t *testing.T) {
 	procs, err := ProcessTable()
 	if err != nil {
 		t.Fatalf("ProcessTable: %v", err)
 	}
-	var argv []string
 	for _, p := range procs {
-		if p.PID == 4321 {
-			argv = p.Argv
-			break
+		if p.PID == os.Getpid() {
+			if !reflect.DeepEqual(p.Argv, os.Args) {
+				t.Fatalf("ProcessTable argv for self = %q, want %q", p.Argv, os.Args)
+			}
+			return
 		}
 	}
-	if argv == nil {
-		t.Fatalf("ProcessTable did not surface pid 4321; procs = %v", procs)
-	}
-	for flag, val := range map[string]string{
-		"--agent-id":   "w@t",
-		"--team-name":  "t",
-		"--agent-type": "general-purpose",
-	} {
-		got, ok := valueAfter(argv, flag)
-		if !ok || got != val {
-			t.Errorf("value after %q = (%q,%v), want %q (pid-strip or split corrupted argv %v)", flag, got, ok, val, argv)
-		}
-	}
+	t.Fatalf("ProcessTable (%d rows) does not contain self pid %d", len(procs), os.Getpid())
 }
 
-// TestCmdline_DarwinSpaceInSettingsPathDegrades documents the known limitation:
-// an argument that ITSELF contains a space (e.g. a --settings path under a HOME
-// with a space) cannot be perfectly reconstructed by the space-split. The
-// degradation is LOCAL — markers before the spaced argument still recover —
-// while the spaced --settings value is truncated at the first space. This is
-// acceptable because every cc-fleet marker we match on is whitespace-free.
-func TestCmdline_DarwinSpaceInSettingsPathDegrades(t *testing.T) {
-	// --settings path contains a space ("jo bloggs"); --model trails it.
-	const spaced = "/root/.local/share/claude/bin/claude --agent-id w@t --team-name t " +
-		"--agent-type general-purpose --settings /root/jo bloggs/.claude/x.json --model m\n"
-	stubExecCommand(t, spaced)
+func procArgsBuf(argc int32, body string) []byte {
+	b := make([]byte, 4, 4+len(body))
+	binary.LittleEndian.PutUint32(b, uint32(argc))
+	return append(b, body...)
+}
 
-	argv, err := Cmdline(4321)
-	if err != nil {
-		t.Fatalf("Cmdline: %v", err)
+// TestParseProcargs2 covers the layout edge cases a live process rarely shows.
+func TestParseProcargs2(t *testing.T) {
+	got, err := parseProcargs2(procArgsBuf(3, "/bin/x\x00\x00\x00\x00x\x00a b\x00\x00HOME=/h\x00"))
+	if err != nil || !reflect.DeepEqual(got, []string{"x", "a b", ""}) {
+		t.Fatalf("parse = %q, %v; want [x \"a b\" \"\"] (env ignored)", got, err)
 	}
-
-	// Markers BEFORE the spaced argument are unaffected — local degradation.
-	for flag, val := range map[string]string{
-		"--agent-id":   "w@t",
-		"--team-name":  "t",
-		"--agent-type": "general-purpose",
+	for name, buf := range map[string][]byte{
+		"short":         {1, 0},
+		"no exec path":  procArgsBuf(1, "/bin/x"),
+		"truncated":     procArgsBuf(2, "/bin/x\x00x\x00y"),
+		"negative argc": procArgsBuf(-1, "/bin/x\x00"),
 	} {
-		if got, ok := valueAfter(argv, flag); !ok || got != val {
-			t.Errorf("pre-space marker %q = (%q,%v), want %q (degradation should be local, not global)", flag, got, ok, val)
-		}
-	}
-
-	// The spaced --settings value is truncated at the first space: recovery
-	// yields only the leading fragment, NOT the full path. This asserts the
-	// documented lossy behavior so a future "fix" that changes it is noticed.
-	got, ok := valueAfter(argv, "--settings")
-	if !ok {
-		t.Fatalf("--settings marker missing from %v", argv)
-	}
-	if got != "/root/jo" {
-		t.Fatalf("value after --settings = %q, want truncated %q (space-split is lossy here)", got, "/root/jo")
-	}
-	for _, a := range argv {
-		if a == "/root/jo bloggs/.claude/x.json" {
-			t.Fatalf("space-split unexpectedly recovered the full spaced path as one token: %v", argv)
+		if got, err := parseProcargs2(buf); err == nil {
+			t.Errorf("%s: parse = %q, want error", name, got)
 		}
 	}
 }

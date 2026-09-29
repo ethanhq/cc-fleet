@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ethanhq/cc-fleet/internal/diag"
+	"github.com/ethanhq/cc-fleet/internal/teammate"
 	"github.com/ethanhq/cc-fleet/internal/version"
 )
 
@@ -27,12 +28,12 @@ func diagLogger(cmd *cobra.Command) *diag.Logger {
 func newRootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "cc-fleet",
-		Short: "Manage Claude Code provider profiles, secrets, and tmux-spawned teammates",
+		Short: "Manage Claude Code provider profiles, secrets, and provider teammates",
 		Long: `cc-fleet is a tool for managing third-party LLM provider profiles for Claude Code.
 
 It generates ~/.claude/profiles/<provider>.json files, dispatches API keys via
-pluggable secret backends, captures Claude Code settings fingerprints, and spawns
-teammate Claude Code sessions inside tmux windows.`,
+pluggable secret backends, and launches provider teammates for Claude Code's
+native agent teams in tmux panes.`,
 		Version:       version.Resolve(),
 		SilenceUsage:  true,
 		SilenceErrors: true,
@@ -55,8 +56,9 @@ teammate Claude Code sessions inside tmux windows.`,
 	root.PersistentFlags().BoolVar(&verboseFlag, "verbose", false,
 		"step-trace diagnostics: stderr for commands, a 0600 log file for the TUI")
 	root.AddCommand(newKeygetCmd())
-	root.AddCommand(newRefreshFingerprintCmd())
-	root.AddCommand(newSpawnCmd())
+	root.AddCommand(newRefreshFingerprintCmd()) // hidden COMMAND_REMOVED stub
+	root.AddCommand(newSpawnCmd())              // hidden COMMAND_REMOVED stub
+	root.AddCommand(newTeammateCmd())
 	root.AddCommand(newSubagentCmd())
 	root.AddCommand(newSubagentStatusCmd())
 	root.AddCommand(newSubagentGCCmd())
@@ -88,6 +90,11 @@ teammate Claude Code sessions inside tmux windows.`,
 }
 
 func main() {
+	// The teammate launcher runs in every teammate pane via the shim; it
+	// bypasses cobra so Claude Code's argv reaches it untouched.
+	if len(os.Args) > 1 && os.Args[1] == teammate.LaunchVerb {
+		os.Exit(teammate.LaunchMain(os.Args[2:]))
+	}
 	root := newRootCmd()
 	if err := root.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, "cc-fleet:", err)

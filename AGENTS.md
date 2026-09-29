@@ -20,7 +20,8 @@ The contribution standard (required checks, commit/PR rules, screenshots, AI att
 - **Concise comments.** Explain *why*, not *what*; no narration or ticket/changelog notes. Fix
   comments your change makes stale.
 - **Respect the invariants** documented in CLAUDE.md: keys never in env/argv/history; classified
-  `Result` envelopes from `spawn`/`subagent`; validate names before use; honor the lock order.
+  `Result` envelopes from `subagent`/`teammate check`; validate names before use; honor the lock
+  order (`WithProvidersConfigLock` → `WithServerLock`; there is no team lock).
 - **Verify before done:** `go test -race ./...`, `gofmt -l .`, `go vet ./...` clean; plus
   `claude plugin validate . --strict` if you touched the plugin/skill.
 

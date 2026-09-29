@@ -27,7 +27,8 @@
 
 | 命令 | 作用 |
 |------|------|
-| `spawn [provider]` | 把 provider teammate 作为 tmux pane 拉起(仅 unix;省略 provider → 默认)。 |
+| `teammate setup` | 一次性:在 Claude Code 原生 agent teams 上开启 provider teammate(启动器 shim、`ccf-*` agent 定义、两个 settings 键)。 |
+| `teammate check [provider]` | 检查当前 Claude Code 会话能否起 provider teammate,并输出它的 `agent_type`(省略 provider → 默认)。 |
 | `subagent [provider]` | 运行一次性 headless 的 provider subagent(省略 provider → 默认)。 |
 | `subagent-status <job>` | 查询后台任务;`--wait` 阻塞直到落定。 |
 | `subagent-gc` | 清理已结束的 subagent 任务(`--older-than`、`--session`)。 |
@@ -38,15 +39,22 @@
 
 | 命令 | 作用 |
 |------|------|
-| `ps` | 列出存活的 cc-fleet teammate(`--json`、`--check` 检查 pane 健康)。 |
+| `ps` | 列出 Claude Code 起的 provider teammate,每行带 `state`(`--json`、`--check` 检查 pane 健康)。 |
 | `watch` | 以文本流持续输出整个舰队 — teammate、任务、run。 |
-| `hide` / `show` | 收起 / 恢复 teammate 的 tmux pane,不杀进程。 |
-| `teardown <team\|%pane>` | 杀掉 teammate pane 并清理 team 状态。 |
+| `hide` / `show <%N\|name@team>` | 收起 / 恢复 provider teammate 的 tmux pane,不杀进程。 |
+| `teardown <%N\|name@team\|team>` | 逐个复核身份后杀掉 provider teammate;从不改 Claude Code 的 team 文件。 |
 | `doctor` | 健康检查 — 分 Core 与 Optional;仅 Core 失败才算整体失败。 |
-| `repair` | 从 `providers.toml` 重写每个 provider 的 profile JSON。 |
-| `refresh-fingerprint` | 通过探针 agent 重新捕获 Claude Code 的 spawn 模板。 |
+| `repair` | 从 `providers.toml` 重写每个 provider 的 profile JSON;重新固定 teammate 启动器 shim。 |
 | `update` | 沿安装渠道自更新二进制 + 刷新插件(`update rollback` 回滚)。 |
 | `uninstall` | 重置 cc-fleet 状态(可重装);`--all` 连 skills、插件、二进制一起按安装方式卸载。 |
+
+**已移除的命令。**`spawn` 和 `refresh-fingerprint` 已删除:队友现在由 Claude Code 自己起,命令行也由它自己拼,没有 spawn 配方可捕获了。两者保留为隐藏的桩命令,不论带什么参数都输出 `{"ok":false,"error_code":"COMMAND_REMOVED",…}` 并以 1 退出。
+
+| 已移除 | 改用 |
+|--------|------|
+| `cc-fleet spawn <p> --as <name> --team <t>` | `cc-fleet teammate check <p> --json`,然后在 lead 里 `Agent({name, subagent_type: <agent_type>, prompt})`(见 [Teammate](#teammate--原生-agent-teamsprovider-做后端))。spawn 的 flag(`--as`、`--team`、`--model`、`--color`、`--probe`、`--verify`、`--permission-mode` 等)没有替代:队友的命名、配色、布局由 Claude Code 负责,权限档由它传 lead 的;模型用槽位选(`--slot strong` → `ccf-<p>.strong`)。 |
+| `cc-fleet refresh-fingerprint [--probe-team <t>]` | 无需刷新。出问题时跑 `cc-fleet doctor`。 |
+| 原生 `TeamCreate` / `TeamDelete` | 不需要:每个终端 `claude` 会话自带一个团队,会话退出时由 Claude Code 删除。 |
 
 ## 从 CLI 注册 provider
 
@@ -62,11 +70,13 @@ printf '%s' "$DEEPSEEK_API_KEY" | cc-fleet add deepseek \
 
 `add` 会同步探测 models 端点(3 秒),通过才落盘。模型档位相关的可选 flag: `--strong-model` / `--fast-model`(档位槽)、`--effort low|medium|high|xhigh|max`(推理强度)、`--default-permission`(`cc-fleet run` 会话的默认权限档)。之后用 `edit` 可以改这些,外加 `--key-rotation` 与 `--enable`/`--disable`。
 
+开启 provider teammate 之后,`add` / `edit` / `remove` 还会同步 `ccf-*` agent 定义。同步失败,或者已有一个不带 cc-fleet 标记的同名 `ccf-*.md`(不会被覆盖)时,命令本身的结果不受影响,`--json` 里会多一个 `teammate_sync_error` 字符串;`cc-fleet repair` 会重试同步,遇到这类文件会打印告警(`--json` 里列在 `agent_defs.conflicts`)。
+
 **OpenAI 协议与 codex provider 在 TUI 里注册**(添加表单的 OpenAI 组与 CLI-auth 组) — `cc-fleet add` 没有 protocol flag。codex 的 CLI 路径见[Codex](#codex--用-chatgpt-订阅当-provider)。
 
 ## 默认 provider 与模型档位
 
-`cc-fleet default <provider>` 设全局默认;此后所有不带 provider 的 `spawn` / `subagent` / `run` / workflow leaf 都解析到它(单独 `default` 查看,`--unset` 清除)。id `claude` 为原生 leaf 保留,不能设为默认 — `cc-fleet default claude` 会以 `PROVIDER_NAME_INVALID` 拒绝。模型档位让 Claude 拿到稳定的"把手"而不用硬编码模型 ID:
+`cc-fleet default <provider>` 设全局默认;此后所有不带 provider 的 `teammate check` / `subagent` / `run` / workflow leaf 都解析到它(单独 `default` 查看,`--unset` 清除)。id `claude` 为原生 leaf 保留,不能设为默认 — `cc-fleet default claude` 会以 `PROVIDER_NAME_INVALID` 拒绝。模型档位让 Claude 拿到稳定的"把手"而不用硬编码模型 ID:
 
 - `--model strong` / `--model fast` / `--model default` 按档位表解析。
 - 每个槽位可标 1M 上下文(`[1m]`),provider 可设 effort 档 — TUI 表单或 `add`/`edit` flag 均可配置。
@@ -123,7 +133,7 @@ cc-fleet run deepseek --model strong
 cc-fleet run deepseek --dangerously-skip-permissions
 ```
 
-`cc-fleet run [provider]` 用一个交互式 `claude` REPL 替换当前进程,后端换成该 provider — **省略 provider 时解析到全局默认**(profile 钉住 `apiKeyHelper` + base URL;模型取 provider 的 `default_model`,`--model` 可覆盖)。与 spawn/subagent 不同,这是**你自己**在用 provider,不是 Claude 委派。
+`cc-fleet run [provider]` 用一个交互式 `claude` REPL 替换当前进程,后端换成该 provider — **省略 provider 时解析到全局默认**(profile 钉住 `apiKeyHelper` + base URL;模型取 provider 的 `default_model`,`--model` 可覆盖)。与 teammate、subagent 不同,这是**你自己**在用 provider,不是 Claude 委派。
 
 - `--permission-mode <mode>` / `--dangerously-skip-permissions` — 会话权限档(互斥)。`run` 直接 exec 二进制,你给 `claude` 配的 shell 别名里的这类 flag 带不过来 — 在这里传。
 - `--no-probe` — 跳过启动前的端点协议检查(启动前 `run` 会看 Anthropic 协议 provider 的端点对 `POST /v1/messages` 的应答;回 404 且非 Anthropic 错误体的 — 典型是被当成 Anthropic 协议添加的 OpenAI-only 端点 — 会带修复提示直接拒绝,而不是让 claude 报笼统的 "model may not exist")。
@@ -131,21 +141,48 @@ cc-fleet run deepseek --dangerously-skip-permissions
 
 需要交互式终端。Linux、macOS、Windows 均可用。
 
-## Teammate — spawn、查看、隐藏、清理
+## Teammate — 原生 agent teams,provider 做后端
+
+provider teammate 是 Claude Code 自己用 `Agent` 工具起的队友,agent 类型由 cc-fleet 安装:`ccf-<provider>`,以及 strong / fast 槽位的模型与 default 不同时另有的 `ccf-<provider>.strong` / `.fast`。团队、pane、收件箱、`SendMessage`、权限继承和清理都归 Claude Code;cc-fleet 只负责把 pane 里的 `claude` 路由到 provider。
+
+**适用范围:**在 tmux 或 iTerm2 里运行的终端 `claude`(Claude Code ≥ 2.1.278),并且 `teammateMode` 落到 pane(tmux,或在 tmux/iTerm2 里的 auto)。Claude 桌面 App、`claude -p` 和 SDK 会话没有 agent team,进程内(in-process)队友也无法路由 — 这些场景改用 `subagent` / `workflow`。Windows 上不可用(`teammate`、`hide`、`show`、`teardown` 返回 `UNSUPPORTED_ON_WINDOWS`)。
+
+**一次性配置:**
 
 ```bash
-cc-fleet spawn deepseek --as worker --team squad --json   # 通常由 Claude 执行
-cc-fleet ps --json --check                                # 列出 teammate + pane 健康
-cc-fleet hide worker@squad                                # 把 pane 收起
-cc-fleet show worker@squad                                # 恢复
-cc-fleet teardown squad --json                            # 回收 pane + team 状态
+cc-fleet teammate setup                          # 列出将要做的改动,不改任何东西(BAD_ARGS)
+cc-fleet teammate setup --yes                    # 执行
+cc-fleet teammate setup --yes --teammate-mode tmux   # teammateMode 未设置或为 in-process 时一并设为 tmux
+cc-fleet teammate setup --remove --yes           # 撤销(保留 shim 文件)
 ```
 
-tmux 里,pane 在你的 lead 旁分屏;不在 tmux 时,teammate 跑在 detached 的 `cc-fleet-swarm-<team>` server 里(`tmux -L cc-fleet-swarm-<team> attach` 进入)。`hide` / `show` 仅限 tmux 内。teammate lane 仅 unix — Windows 上这些命令一律拒绝(`spawn`/`hide`/`show` 返回 `error_code: UNSUPPORTED_ON_WINDOWS`)。
+`setup --yes` 依次写入:启动器 shim `~/.config/cc-fleet/bin/claude-teammate`(0755)、每个启用的 provider 一个 `~/.claude/agents/ccf-*.md`,以及 `~/.claude/settings.json` 里的 `env.CLAUDE_CODE_TEAMMATE_COMMAND`(指向 shim)和 `env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS="1"`(已开启则不动)。`--teammate-mode` 默认 `keep`;`tmux` 不会改动已有的 `auto` / `tmux` / `iterm2`。`CLAUDE_CODE_TEAMMATE_COMMAND` 已指向别的程序时返回 `SETUP_CONFLICT`(`--force` 覆盖);存在没有 cc-fleet 标记的同名 `ccf-*.md` 时也返回 `SETUP_CONFLICT`,这种文件即使带 `--force` 也不覆盖。完成后重启 `claude`(JSON 里的 `restart_required`)。`--remove` 删除启动器设置和 cc-fleet 的定义,并把 lane 标为未启用;shim 保留(运行中的会话仍指向它),`CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` 和 `teammateMode` 保持原样。`settings.json` 就地编辑:键顺序、symlink 和文件权限都保留。
 
-spawn 进阶 flag:`--verify`/`--no-verify`(spawn 后的 settle 校验 — 仅当本机 Claude Code 比 spawn 配方新时才执行)、`--probe`/`--no-probe`(spawn 前 key 探测,默认开)、`--permission-mode`(不传则继承 lead 的权限档)。
+**每个队友(由 skill 完成):**
 
-**provider team 的清理顺序:**先 `cc-fleet teardown <team>`(回收 tmux pane 和进程),再原生 `TeamDelete`(它只删 `~/.claude/teams/<team>/`)。只跑 `TeamDelete` 会留下游离的 provider pane,继续占用 key 产生费用。
+```bash
+cc-fleet teammate check deepseek --slot strong --json   # 在 lead 的 Bash 工具里运行
+# → {"ok":true,"protocol":1,"agent_type":"ccf-deepseek.strong","team":"session-7c8f769b","backend_hint":"tmux",…}
+```
+
+然后在 lead 里 `Agent({name: "worker-1", subagent_type: "ccf-deepseek.strong", prompt: "…"})`。一定要传 `name`;`ccf-*` 类型不要传 `model`、`isolation`、`cwd` — 插件的 `PreToolUse(Agent)` hook 会拦下这类调用(以及 `check` 会拒绝的任何 `ccf-*` 调用)。`check` 在 `ok` 时以 0 退出,否则以 1 退出,并给出稳定的 `error_code` + `detail`:`TEAMMATE_LANE_UNAVAILABLE`(没有 lead 会话、Claude Code 太旧、会话没有团队 — 桌面 App / `-p` / SDK)、`TEAMMATE_SETUP_REQUIRED`(启动器或定义缺失、被他人占用)、`LEAD_RESTART_REQUIRED`(setup 晚于这个 `claude` 启动)、`TEAMMATE_MODE_IN_PROCESS`、`CLAUDE_NOT_FOUND`,以及与 `subagent` 共用的 provider 错误码。`--no-probe` 跳过 provider 可达性探测。
+
+**查看、收起、结束:**
+
+```bash
+cc-fleet ps --json --check                       # 带 state 和 pane 健康的行
+cc-fleet hide worker-1@session-7c8f769b          # 把 pane 收进 claude-hidden 会话
+cc-fleet show %42 --socket /private/tmp/tmux-501/default
+cc-fleet teardown worker-1@session-7c8f769b --json
+cc-fleet teardown session-7c8f769b --json        # 该团队的全部 provider teammate
+```
+
+- **`ps`** 只列出 cc-fleet 能确认归属的队友:会话团队里 `agentType` 为 `ccf-*`、且 `--settings` 是对应 provider profile 的成员;显示启动器失败行的死 pane;绕过了启动器的 `ccf-*` 队友;0.3.x 的队友(`legacy:true`)。原生队友从不列出,即使它在 provider lead 手下。行字段:`agent_id, name, team, pane_id, provider, model, pid, tmux_socket_path, backend (tmux|in-process|unknown), lead_pid, lead_session_id, state, error_code, hidden, legacy`,带 `--check` 时另有 `status / error_class / detail`。`state` 取值:`running`;`orphaned`(lead 会话已不在);`failed`(启动器拒绝启动,见 `error_code`);`bypassed`(没经过启动器,实际跑在 Claude 上而不是 provider — 用 `TaskStop` 停掉)。表格多一列 `STATE`。
+- **破坏性改名:**行字段 `tmux_socket`(`-L` 的 socket 名,在 tmux 内时为空)改为 `tmux_socket_path`(socket 的绝对路径,总是有值)。把 `tmux -L <tmux_socket> …` 改成 `tmux -S <tmux_socket_path> …`,例如 `tmux -S "$path" capture-pane -p -t %42`。
+- **目标写法**(`hide`、`show`、`teardown`):pane id `%N`(同一个 pane id 出现在多个 tmux server 上时加 `--socket <tmux_socket_path>`,否则返回 `AMBIGUOUS_TARGET`),或 agent id `name@team`;`teardown` 还接受整个 `team`。0.3.x 的 `team`、`team/member` 写法在 `hide` / `show` 上返回 `BAD_ARGS`。
+- **`teardown`** 在击杀前逐个复核身份(pane、精确 argv、进程启动时间),然后杀 pane 并回收进程。输出:`{ok, target, killed:[{agent_id, pane_id, tmux_socket_path, pid}], skipped:[{agent_id, pane_id, reason}], error_code, error_msg, suggestion}`;`reason` 为 `IDENTITY_MISMATCH`(不动它)或 `IN_PROCESS`(在 lead 里用 `TaskStop`)。目标已无可杀的对象时返回 `ok:true` 和空的 `killed`。它从不碰 lead、原生队友和 `~/.claude/teams`。0.3.x 的 `panes`、`members`、`killed_pids`、`team_removed`、`warnings` 字段已删除。
+- **`hide` / `show`** 总是输出单个对象 `{ok, action, agent_id, team, name, pane_id, tmux_socket_path, hidden, error_code, error_msg, suggestion}`。原窗口记在 pane 上(tmux 选项 `@ccf_origin`),不写文件。只支持 tmux pane:detached swarm server 上的队友返回 `SWARM_UNSUPPORTED`,tmux 之外的返回 `BACKEND_UNSUPPORTED`。
+- **结束队友:**让它自己关闭(原生 `shutdown_request`),或在 lead 里 `TaskStop`。`teardown` 用于孤儿(lead 崩溃)、0.3.x 遗留 pane,以及用不了 `TaskStop` 的情况。lead 正常退出时,Claude Code 会自己清掉 pane 和团队目录 — 不再有 `TeamDelete` 这一步。
 
 ## Workflows
 
@@ -170,6 +207,8 @@ cc-fleet workflow rm "$RUN" / prune          # 删除一个 run / 清掉所有�
 - **held** 的 leaf(`stop --leaf` 或看板 `x`)无限期挂起 — 不是错误、不会重试; `restart --leaf` 原地重跑(同一 job id,attempt +1)。
 - `run` 的 flag:`--max-concurrency`(默认 `min(16, cores-2)`)、`--budget-usd` / `--budget-tokens`(到顶后引擎不再铸新 leaf)、`--args-json`(脚本的 `args`)、`--no-persist-io`(关闭 prompt/answer 下钻)、`--saved`(跑保存过的脚本)。
 - journal 按内容哈希记每个 leaf(provider + 模型 + prompt + schema + profile 形状), `--resume` 只重跑变过或没跑完的;失败的 leaf 不会进 journal。
+- `--resume` 和 `restart` 在 run 启动时的目录(记在 manifest 里)运行剩下的 leaf,而不是调用者的当前目录;该目录已不存在时 run 以明确的错误失败。
+- `isolation: "worktree"` 的 leaf 留下改动时,会在删除 worktree 之前把改动存成分支 `cc-fleet/wf-<job>-a<attempt>`(见[编写 workflow 脚本](workflows.md#isolated-worktrees))。run 被 stop 或 kill 之后,下一次 `restart` / `--resume` 的清理或 `workflow rm` / `prune` 会把没保存的改动抢救到 `cc-fleet/wf-salvage-*` 分支;存不下来的目录保留并带 `.cc-fleet-keep` 标记,`rm` / `prune` / `restart` 会在 stderr 上为每个保留的目录打一行。cc-fleet 从不删除这些分支。
 - `workflow saved` 列出看板里保存过的脚本(`run --saved` 接受的名字); `workflow new <name> --phase <title>…` 铸一个带有序 phase 计划的空 run,用于把 `subagent --run-id/--phase` 任务手动归到同一棵看板树下。
 
 ## Codex — 用 ChatGPT 订阅当 provider
@@ -203,12 +242,11 @@ file 后端的 provider 可以存多把 key(`<provider>.keys.json`,权限 `0600`
 
 ## 健康、修复、更新
 
-- `cc-fleet doctor` — 健康检查,分 **Core**(配置、二进制、claude、profile、skill 等)与**Optional**(tmux 两项);只有 Core *失败*才让整体判为失败(skill 检查只 WARN 不 FAIL)。doctor 不替你动手修 — 失败项会打印修复提示。
-- `cc-fleet repair` — 从 `providers.toml` 重建 provider profile JSON。
-- `cc-fleet refresh-fingerprint --probe-team <team>` — CC 升级改了 spawn 模板时重新捕获(skill 会自动触发这个自愈流程)。
+- `cc-fleet doctor` — 健康检查,分 **Core**(配置、二进制、claude、profile、skill 等)与**Optional**(tmux、已 attach 的会话,以及 check 8「teammate lane (optional)」:shim、shim 固定的 cc-fleet 路径、agent 定义、`teammateMode`、agent teams 开关;lane 未开启时为 OK 并提示 not set up);只有 Core *失败*才让整体判为失败(skill 检查只 WARN 不 FAIL)。check 4 在 PATH 或 `~/.local/share/claude/versions` 下找 `claude`,版本低于 provider teammate 所需的 2.1.278 时会注明。doctor 不替你动手修 — 失败项会打印修复提示。
+- `cc-fleet repair` — 从 `providers.toml` 重建 provider profile JSON;lane 已开启或 shim 已存在时,把 shim 重新固定到当前二进制并恢复权限,lane 已开启时同步 `ccf-*` 定义。`--json` 多出 `shim`、`shim_repinned` 和 `agent_defs`(`written` / `removed` / `unchanged`)。从不改 `settings.json`。
 - `cc-fleet update` — 按安装方式自更新:tarball 安装原地换二进制(校验和验证,留 `.previous` 供 `update rollback`),npm/go 安装交给各自的包管理器;同一趟顺手刷新插件。`--check` 只报告不动手;`--binary-only` 跳过插件刷新。Windows 上不可用 — 用 npm 或重新下 zip。
 - `cc-fleet watch` — 整个舰队的只读文本流(teammate + 任务 + run);`--interval`、`--timeout`、`--check`。
-- `cc-fleet uninstall` — 重置全部配置与状态(file 后端 secret 默认保留,`--wipe-secrets` 连同删除);裸 uninstall 不碰 skills、插件、二进制,之后可直接 `init` 重来。`uninstall --all` 是彻底卸载 — skills、插件、最后二进制 + `ccf` 别名,按安装方式路由(npm 装的走 `npm uninstall -g`;进程内删不掉的 — 以及 Windows 上的一切 — 打印成手动命令)。`--all` 默认连 secret 一起清,显式 `--keep-secrets` 才保留;会先确认,非交互或 `--json` 调用必须带 `--yes`。
+- `cc-fleet uninstall` — 先像 `teammate setup --remove` 那样撤销 teammate lane(shim 路径列在 `kept` 里:所有 `claude` 会话都重启过之后可以删),再重置全部配置与状态(file 后端 secret 默认保留,`--wipe-secrets` 连同删除);裸 uninstall 不碰 skills、插件、二进制,之后可直接 `init` 重来。`uninstall --all` 是彻底卸载 — skills、插件、最后二进制 + `ccf` 别名,按安装方式路由(npm 装的走 `npm uninstall -g`;进程内删不掉的 — 以及 Windows 上的一切 — 打印成手动命令)。`--all` 默认连 secret 一起清,显式 `--keep-secrets` 才保留;会先确认,非交互或 `--json` 调用必须带 `--yes`。
 
 ## 文件与路径
 
@@ -218,7 +256,10 @@ file 后端的 provider 可以存多把 key(`<provider>.keys.json`,权限 `0600`
 | `~/.config/cc-fleet/secrets/` | file 后端的 key(目录 `0700`,key `0600`)。 |
 | `~/.config/cc-fleet/subagent-jobs/` | 后台任务元数据 + 结果缓存。 |
 | `~/.config/cc-fleet/subagent-jobs/runs/` | workflow run 的 manifest、journal、事件流。 |
-| `~/.claude/profiles/` | 生成的各 provider spawn profile。 |
-| `~/.claude/teams/<team>/` | 原生 team 状态(由 Claude 管理,cc-fleet 不动)。 |
+| `~/.config/cc-fleet/bin/claude-teammate` | teammate 启动器 shim(`teammate setup`、`repair` 写入)。 |
+| `~/.claude/profiles/` | 生成的各 provider profile(teammate、subagent、`run` 的 `--settings`)。 |
+| `~/.claude/agents/ccf-*.md` | provider teammate 的 agent 定义(由 cc-fleet 管理,带 `managed-by: cc-fleet` 标记)。 |
+| `~/.claude/settings.json` | cc-fleet 写 `env.CLAUDE_CODE_TEAMMATE_COMMAND`、`env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`,以及仅在要求时写 `teammateMode`(`teammate setup`)。 |
+| `~/.claude/teams/<team>/` | 原生 team 状态 — 归 Claude Code 所有;cc-fleet 只读。 |
 
-设置了 `$XDG_CONFIG_HOME` 时,`~/.config/cc-fleet` 基路径随之切换。
+设置了 `$XDG_CONFIG_HOME` 时,`~/.config/cc-fleet` 基路径随之切换;`~/.claude` 下的路径遵循 `$CLAUDE_CONFIG_DIR`(profile 仍在 `~/.claude/profiles`)。

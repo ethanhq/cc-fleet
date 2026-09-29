@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethanhq/cc-fleet/internal/claudebin"
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/diag"
-	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 )
 
 // launch records what execClaude was handed, so a test can assert the argv/env
@@ -165,7 +165,7 @@ func TestRun_GatesFailBeforeExec(t *testing.T) {
 		{"disabled provider", func(t *testing.T) { seedProvider(t, "deepseek", false, "deepseek-chat") },
 			Request{Provider: "deepseek"}, nil, "disabled", false},
 		{"no claude binary", func(t *testing.T) { seedProvider(t, "deepseek", true, "deepseek-chat") },
-			Request{Provider: "deepseek"}, fingerprint.ErrFingerprintStale, "", true},
+			Request{Provider: "deepseek"}, claudebin.ErrNotFound, "", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -175,8 +175,8 @@ func TestRun_GatesFailBeforeExec(t *testing.T) {
 			if err == nil {
 				t.Fatal("want error, got nil")
 			}
-			if tc.wantStaleErrIs && !errors.Is(err, fingerprint.ErrFingerprintStale) {
-				t.Fatalf("err = %v, want ErrFingerprintStale", err)
+			if tc.wantStaleErrIs && !errors.Is(err, claudebin.ErrNotFound) {
+				t.Fatalf("err = %v, want claudebin.ErrNotFound", err)
 			}
 			if tc.wantErrSubstr != "" && !strings.Contains(err.Error(), tc.wantErrSubstr) {
 				t.Fatalf("err = %v, want substring %q", err, tc.wantErrSubstr)

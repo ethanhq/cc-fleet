@@ -2,7 +2,7 @@
 // each provider's `/v1/models` endpoint.
 //
 // The skill consults the cache to resolve `--model` choices before calling
-// `cc-fleet spawn`; `cc-fleet refresh <provider>` re-queries the provider's HTTP
+// launching a provider worker; `cc-fleet refresh <provider>` re-queries the provider's HTTP
 // endpoint to repopulate the cache.
 //
 // Nothing in this package logs provider API keys; see fetch.go for the

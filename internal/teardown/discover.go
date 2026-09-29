@@ -1,417 +1,538 @@
 package teardown
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
+	"sort"
 	"strings"
 
+	"github.com/ethanhq/cc-fleet/internal/claudepaths"
+	"github.com/ethanhq/cc-fleet/internal/ids"
+	"github.com/ethanhq/cc-fleet/internal/leadsession"
 	"github.com/ethanhq/cc-fleet/internal/procintrospect"
-	"github.com/ethanhq/cc-fleet/internal/spawn"
+	"github.com/ethanhq/cc-fleet/internal/profile"
+	"github.com/ethanhq/cc-fleet/internal/teammate"
 	"github.com/ethanhq/cc-fleet/internal/tmux"
 )
 
-// Teammate is the structured row cc-fleet ps emits per live teammate.
-// JSON tags here match what cmd/cc-fleet/ps.go writes to stdout — keep
-// stable.
-//
-// Status / ErrorClass / Detail are health fields populated ONLY by
-// `cc-fleet ps --check` (the capture-pane scan in health.go). They are all
-// omitempty, so a plain `cc-fleet ps --json` (no --check) emits the exact
-// same shape it always has.
-type Teammate struct {
-	Name          string `json:"name"`
-	Team          string `json:"team"`
-	PaneID        string `json:"pane_id"`
-	Provider      string `json:"provider"`
-	Model         string `json:"model"`
-	PID           int    `json:"pid"`
-	LeadSessionID string `json:"lead_session_id,omitempty"`
-	SpawnTime     int64  `json:"-"`
+// Discovery seams: tests substitute these so they never need a live tmux
+// server, a real process table or real lead sessions.
+var (
+	socketPathsFn = tmux.SocketPaths
+	listPanesFn   = func(socketPath string) ([]tmux.PaneInfo, error) {
+		return tmux.NewServerPath(socketPath).ListAllPanes()
+	}
+	captureJoinedFn = func(socketPath, paneID string, lines int) (string, error) {
+		return tmux.NewServerPath(socketPath).CaptureJoined(paneID, lines)
+	}
+	processTableFn = procintrospect.ProcessTable
+	childrenFn     = procintrospect.Children
+	procStartFn    = procintrospect.ProcStart
+	bySessionIDFn  = leadsession.BySessionID
+	liveSessionsFn = leadsession.LiveSessions
+)
 
-	// Socket is the tmux server socket the pane lives on. Populated by
-	// DiscoverTeammates when the pane was found on a private swarm server
-	// (cc-fleet-swarm-<team>); empty when the pane is on the caller's default
-	// tmux server (the normal in-tmux case). omitempty keeps the in-tmux ps JSON
-	// contract byte-identical.
-	//
-	// Downstream consumers (AnnotateHealth's capturePane, panevis.HideRef /
-	// ShowRef, etc.) use this socket to scope tmux ops to the right server;
-	// without it, default-server tmux calls on a swarm pane silently miss.
-	Socket string `json:"tmux_socket,omitempty"`
+// markerCaptureLines is how much pane history is searched for a launch
+// failure marker.
+const markerCaptureLines = 200
 
-	Status     string `json:"status,omitempty"`      // ok | error | unknown (--check only)
-	ErrorClass string `json:"error_class,omitempty"` // set when status=error
-	Detail     string `json:"detail,omitempty"`      // canonical, never raw pane text
+// legacySwarmPrefix names the private tmux servers cc-fleet 0.3.x spawned into.
+const legacySwarmPrefix = "cc-fleet-swarm-"
 
-	// Hidden is populated ONLY by AnnotateHidden (reads the team config.json).
-	// A plain `ps --json` leaves it absent (omitempty), same as the health fields.
-	Hidden bool `json:"hidden,omitempty"`
-}
+var sessionTeamRe = regexp.MustCompile(`^session-[0-9a-f]{8}$`)
 
-// DiscoverTeammates returns every live cc-fleet teammate, identified by a
-// claude process running with --agent-id inside a tmux pane.
+// DiscoverTeammates returns the cc-fleet teammates it can attribute on
+// positive evidence alone; there is no ledger:
+//  1. panes of every tmux server under the per-user socket directory;
+//  2. processes whose exact argv carries --agent-id, minus ones still in the
+//     shim or launcher (their argv still has --agent-type ccf-*);
+//  3. each process is located in a pane by walking pane_pid subtrees;
+//  4. attribution, first hit wins: --agent-type ccf-* → bypassed; a session
+//     team member whose agentType is ccf-<p> and whose --settings is <p>'s
+//     profile → running; a profile --settings plus 0.3.x evidence (a
+//     cc-fleet-swarm-* socket or 0.3.x-only member keys) → legacy. Anything
+//     else — notably a native teammate that inherited a provider lead's
+//     profile --settings — is skipped: not listed, not counted, not cleaned.
+//  5. dead panes whose joined capture ends in a launch failure marker for an
+//     attributable member → failed;
+//  6. in-process ccf-* members of any team config → bypassed;
+//  7. a running teammate without a live lead is orphaned.
 //
-// Pipeline:
-//  1. tmux list-panes -a -F "#{pane_id} #{pane_pid}"  → pane_id ↔ shell pid
-//  2. For each shell pid, walk its process subtree looking for a claude
-//     process whose cmdline contains --agent-id.
-//  3. Parse that cmdline for name / team / provider / model.
-//
-// Teammates outside tmux (e.g. ones a user started manually for testing)
-// are intentionally skipped — cc-fleet only owns the ones it spawned, and
-// every spawn lives in a pane.
-//
-// Returns an empty slice (not nil-error) when no teammates are found. Hard
-// errors (tmux unreachable) are returned as-is so the caller can surface
-// them.
+// Team configs are only read. Without tmux there is no pane information but
+// the other sources are still scanned, and no error is returned: a missing
+// tmux yields whatever those sources find, possibly nothing. An error is
+// returned when the process table cannot be read; a dead server behind a
+// stale socket is skipped.
 func DiscoverTeammates() ([]Teammate, error) {
-	// Scan the default tmux server PLUS every team's private swarm socket: an
-	// out-of-tmux teammate lives on cc-fleet-swarm-<team>, invisible to the
-	// default server's list-panes. A teammate's claude process is found the same
-	// way on either server — via /proc from the pane's shell pid — so a pid is
-	// deduped across servers (it can only belong to one).
-	sockets := append([]string{""}, teamSwarmSockets()...)
-	var teammates []Teammate
-	seen := make(map[int]struct{})
+	sockets := socketPathsFn()
+	if len(sockets) == 0 {
+		// Still ask the server tmux itself resolves ($TMUX, else the default):
+		// a -S socket outside the socket directory is found only this way.
+		sockets = []string{""}
+	}
+	var panes []tmux.PaneInfo
 	for _, sock := range sockets {
-		panes, err := listPanesWithPid(sock)
+		ps, err := listPanesFn(sock)
+		if errors.Is(err, exec.ErrNotFound) {
+			break // no tmux: no pane information
+		}
 		if err != nil {
-			if sock == "" {
-				return nil, fmt.Errorf("list panes: %w", err)
-			}
-			// A swarm socket whose server is already gone yields nothing to list,
-			// not a hard error — skip it (best-effort, ps stays robust).
 			continue
 		}
-		for _, p := range panes {
-			tmId, ok := findTeammateInSubtree(p.PID)
-			if !ok {
-				continue
+		for i := range ps {
+			if ps[i].SocketPath == "" {
+				ps[i].SocketPath = sock
 			}
-			if _, dup := seen[tmId]; dup {
-				continue
-			}
-			argv, err := readCmdline(tmId)
-			if err != nil {
-				// Process disappeared between the subtree walk and the read —
-				// skip silently; ps is a snapshot.
-				continue
-			}
-			info, ok := parseTeammateCmdline(argv)
-			if !ok {
-				continue
-			}
-			info.PaneID = p.PaneID
-			info.PID = tmId
-			// Stamp the socket the pane was found on so downstream annotate /
-			// hide-show / capture can scope tmux ops to the right server.
-			// Empty sock = default server (in-tmux); non-empty = a private
-			// swarm server.
-			info.Socket = sock
-			seen[tmId] = struct{}{}
-			teammates = append(teammates, info)
+		}
+		panes = append(panes, ps...)
+	}
+
+	// Elsewhere procintrospect has no process table; in-process members are
+	// still reported.
+	procs, err := processTableFn()
+	if err != nil && (runtime.GOOS == "linux" || runtime.GOOS == "darwin") {
+		return nil, fmt.Errorf("process table: %w", err)
+	}
+	cands := map[int]procintrospect.Process{}
+	self := os.Getpid()
+	for _, p := range procs {
+		if p.PID != self && discHasAgentID(p.Argv) && !discLaunching(p.Argv) {
+			cands[p.PID] = p
 		}
 	}
-	return teammates, nil
+
+	d := discovery{teams: map[string]*discTeam{}}
+	loc := locateInPanes(panes, cands)
+	pids := make([]int, 0, len(cands))
+	for pid := range cands {
+		pids = append(pids, pid)
+	}
+	sort.Ints(pids)
+	var out []Teammate
+	for _, pid := range pids {
+		pane, inPane := loc[pid]
+		if t, ok := d.classifyProcess(cands[pid], pane, inPane); ok {
+			out = append(out, t)
+		}
+	}
+	for _, p := range panes {
+		if p.Dead {
+			if t, ok := d.failedFromPane(p); ok {
+				out = append(out, t)
+			}
+		}
+	}
+	out = append(out, inProcessBypassed()...)
+	associateLeads(out)
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].Team != out[j].Team {
+			return out[i].Team < out[j].Team
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out, nil
 }
 
-// teamSwarmSockets returns the distinct, non-empty swarm socket names recorded
-// across every team's config.json (Raw["tmuxSocket"]). These are the private
-// tmux servers out-of-tmux teammates live on; ps must scan them in addition to
-// the default server. Best-effort — unreadable teams are skipped.
-func teamSwarmSockets() []string {
-	home := os.Getenv("HOME")
-	if home == "" {
-		return nil
-	}
-	entries, err := os.ReadDir(filepath.Join(home, ".claude", "teams"))
-	if err != nil {
-		return nil
-	}
-	seen := make(map[string]struct{})
-	var sockets []string
-	for _, e := range entries {
-		if !e.IsDir() {
+// discArgs holds the argv flags discovery reads; the last occurrence wins
+// (the launcher appends its --settings/--model after dropping CC's).
+type discArgs struct {
+	agentID, teamName, parentSessionID, settings, model, agentType string
+}
+
+func parseDiscArgs(argv []string) discArgs {
+	var a discArgs
+	for i := 0; i < len(argv); i++ {
+		flag, val, inline := strings.Cut(argv[i], "=")
+		if !inline {
+			if i+1 >= len(argv) {
+				break
+			}
+			val = argv[i+1]
+		}
+		var dst *string
+		switch flag {
+		case "--agent-id":
+			dst = &a.agentID
+		case "--team-name":
+			dst = &a.teamName
+		case "--parent-session-id":
+			dst = &a.parentSessionID
+		case "--settings":
+			dst = &a.settings
+		case "--model":
+			dst = &a.model
+		case "--agent-type":
+			dst = &a.agentType
+		default:
 			continue
 		}
-		tc, loadErr := spawn.LoadTeamConfig(e.Name())
-		if loadErr != nil {
-			continue
-		}
-		if s := tc.TmuxSocket(); s != "" {
-			if _, dup := seen[s]; !dup {
-				seen[s] = struct{}{}
-				sockets = append(sockets, s)
-			}
+		*dst = val
+		if !inline {
+			i++
 		}
 	}
-	return sockets
+	return a
 }
 
-// listPanesWithPid routes through internal/tmux.Server.ListPanesWithPid so
-// every tmux exec funnels through the one Server.command outlet. socket ""
-// targets the default server. An empty tmux server (no panes) returns an empty
-// slice with no error, matching the historical contract. The error is passed
-// through as-is — tmux.ListPanesWithPid already carries the "tmux list-panes: "
-// prefix, so re-wrapping here would double it.
-func listPanesWithPid(socket string) ([]tmux.PanePid, error) {
-	return tmux.NewServer(socket).ListPanesWithPid()
-}
-
-// findTeammateInSubtree breadth-first walks the process subtree rooted at
-// shellPid looking for a claude process whose cmdline contains --agent-id.
-// Returns (pid, true) on first hit, (0, false) otherwise.
-//
-// We use /proc/<pid>/task/<tid>/children which is more portable than pgrep
-// --parent (and doesn't require recursive shell exec).
-func findTeammateInSubtree(shellPid int) (int, bool) {
-	queue := []int{shellPid}
-	seen := map[int]struct{}{shellPid: {}}
-	for len(queue) > 0 {
-		pid := queue[0]
-		queue = queue[1:]
-
-		// Check this pid's cmdline first — the teammate could be the pane's
-		// top-level process (rare, but the spawn cmd uses `env <binary> ...`
-		// which execs through env and then claude, so the depth varies).
-		if argv, err := readCmdline(pid); err == nil {
-			if cmdlineLooksLikeTeammate(argv) {
-				return pid, true
-			}
-		}
-
-		// Enqueue children.
-		for _, child := range readChildren(pid) {
-			if _, dup := seen[child]; dup {
-				continue
-			}
-			seen[child] = struct{}{}
-			queue = append(queue, child)
-		}
-	}
-	return 0, false
-}
-
-// readChildren returns pid's immediate children via procintrospect (Linux /proc
-// task children, darwin `pgrep -P`). Errors degrade to no children.
-func readChildren(pid int) []int {
-	return procintrospect.Children(pid)
-}
-
-// readCmdline returns pid's argv via procintrospect (Linux /proc, darwin ps).
-// On Linux the NUL-separated kernel layout is preserved as an exact slice so
-// arguments containing spaces (e.g.
-// `--settings /tmp/home with space/.claude/profiles/glm.json`) survive intact;
-// on darwin ps space-splits the argv, which is sufficient because cc-fleet's
-// markers (--agent-id, --settings, --model) never contain spaces. An empty
-// cmdline yields a nil slice.
-func readCmdline(pid int) ([]string, error) {
-	return procintrospect.Cmdline(pid)
-}
-
-// cmdlineLooksLikeTeammate returns true if argv names a claude binary AND
-// carries --agent-id. The --agent-id flag is the primary, near-decisive marker
-// (teardown matches the exact <name>@<team>); the binary check below only
-// rejects an unrelated process that happens to carry an --agent-id-like token
-// but isn't actually claude. It takes the argv slice directly so arguments with
-// embedded spaces (e.g. `--settings /tmp/home with space/...`) are not shredded.
-//
-// We look for a claude *executable* token, NOT any "claude" substring: an
-// incidental ".claude" in a path argument (e.g. --settings
-// /home/u/.claude/foo.json) must not match a non-claude process. A token
-// qualifies only if it contains a "/claude/" PATH SEGMENT — which covers our
-// spawn binary …/share/claude/versions/<hash>, whose basename is a version
-// number, NOT "claude" — or its basename contains "claude" (e.g. /usr/bin/claude).
-// Deliberately NOT basename=="claude": that would miss the versions/<hash> path.
-func cmdlineLooksLikeTeammate(argv []string) bool {
-	hasAgentID := false
+func discHasAgentID(argv []string) bool {
 	for _, tok := range argv {
-		if tok == "--agent-id" {
-			hasAgentID = true
-			break
-		}
-	}
-	if !hasAgentID {
-		return false
-	}
-	for _, tok := range argv {
-		if strings.Contains(tok, "/claude/") {
-			return true
-		}
-		base := tok
-		if i := strings.LastIndexByte(tok, '/'); i >= 0 {
-			base = tok[i+1:]
-		}
-		if strings.Contains(base, "claude") {
+		if tok == "--agent-id" || strings.HasPrefix(tok, "--agent-id=") {
 			return true
 		}
 	}
 	return false
 }
 
-// cmdlineAgentID returns the value following --agent-id in argv (e.g.
-// "alice@alpha"), or "" if the flag is absent or has no value. Takes argv
-// []string (the kernel cmdline layout) so we never depend on space-split
-// parsing that can mangle paths with spaces.
-func cmdlineAgentID(argv []string) string {
-	for i := 0; i+1 < len(argv); i++ {
-		if argv[i] == "--agent-id" {
-			return argv[i+1]
+// discLaunching reports a process still in the shim (/bin/sh <shim> …) or the
+// launcher (cc-fleet __teammate-launch …): it has not exec'd claude yet.
+func discLaunching(argv []string) bool {
+	for _, tok := range argv {
+		if tok == teammate.LaunchVerb {
+			return true
 		}
 	}
-	return ""
+	if len(argv) < 2 {
+		return false
+	}
+	if filepath.Base(argv[1]) == teammate.ShimFileName {
+		return true
+	}
+	shim, err := teammate.ShimPath()
+	return err == nil && argv[1] == shim
 }
 
-// discoverTeammatePIDs scans /proc for live claude teammate processes whose
-// --agent-id exactly matches agentID. Unlike findTeammateInSubtree (which
-// walks down from a pane's shell), this searches the whole process table —
-// required because a teammate reparents to init when its tmux pane is killed,
-// leaving it outside any pane subtree (the "ghost teammate").
-//
-// Matching is exact on the full <name>@<team> id, so tearing down one teammate
-// never signals a different team's process. Our own pid is always skipped.
-// Best-effort: unreadable /proc entries (races, permissions) are silently
-// skipped.
-func discoverTeammatePIDs(agentID string) []int {
-	if agentID == "" {
-		return nil
+// splitAgentID splits <name>@<team>, preferring an explicit --team-name suffix
+// (0.3.x team names may contain '@').
+func splitAgentID(agentID, teamName string) (name, team string) {
+	if teamName != "" {
+		if n, ok := strings.CutSuffix(agentID, "@"+teamName); ok && n != "" {
+			return n, teamName
+		}
 	}
-	procs, err := procintrospect.ProcessTable()
-	if err != nil {
-		return nil
+	name, team, _ = strings.Cut(agentID, "@")
+	return name, team
+}
+
+// locateInPanes maps each candidate pid to the live pane whose process subtree
+// contains it. The walk does not descend below a candidate.
+func locateInPanes(panes []tmux.PaneInfo, cands map[int]procintrospect.Process) map[int]tmux.PaneInfo {
+	loc := map[int]tmux.PaneInfo{}
+	if len(cands) == 0 {
+		return loc
 	}
-	self := os.Getpid()
-	var pids []int
-	for _, p := range procs {
-		if p.PID == self {
+	for _, p := range panes {
+		if p.Dead || p.PanePID <= 0 {
 			continue
 		}
-		if cmdlineLooksLikeTeammate(p.Argv) && cmdlineAgentID(p.Argv) == agentID {
-			pids = append(pids, p.PID)
-		}
-	}
-	return pids
-}
-
-// cmdlineTeamName returns the value following --team-name in argv, or "" if
-// absent. Matching on this explicit token (rather than splitting the
-// <name>@<team> agent id) is unambiguous: team and member names may contain '@'.
-func cmdlineTeamName(argv []string) string {
-	for i := 0; i+1 < len(argv); i++ {
-		if argv[i] == "--team-name" {
-			return argv[i+1]
-		}
-	}
-	return ""
-}
-
-// discoverTeamAgentIDsFn is a test seam over discoverTeamAgentIDs so the
-// parse-fail teardown path can be exercised without faking the process table.
-var discoverTeamAgentIDsFn = discoverTeamAgentIDs
-
-// discoverTeamAgentIDs scans the process table for live teammate processes in
-// team, returning their distinct agent ids. The config-free counterpart to
-// discoverTeammatePIDs: used when a team's config can't be parsed, so ghosts
-// still get reaped by team name.
-func discoverTeamAgentIDs(team string) []string {
-	if team == "" {
-		return nil
-	}
-	procs, err := procintrospect.ProcessTable()
-	if err != nil {
-		return nil
-	}
-	self := os.Getpid()
-	seen := map[string]struct{}{}
-	var ids []string
-	for _, p := range procs {
-		if p.PID == self || !cmdlineLooksLikeTeammate(p.Argv) || cmdlineTeamName(p.Argv) != team {
-			continue
-		}
-		if id := cmdlineAgentID(p.Argv); id != "" {
-			if _, ok := seen[id]; !ok {
-				seen[id] = struct{}{}
-				ids = append(ids, id)
-			}
-		}
-	}
-	return ids
-}
-
-// parseTeammateCmdline extracts the structured Teammate fields from a /proc
-// cmdline argv slice. Missing fields are left empty rather than erroring —
-// ps's job is to display what's there.
-//
-// Takes argv []string (NUL-separated kernel layout) so arguments containing
-// spaces — most notably `--settings /tmp/home with space/.../glm.json` — aren't
-// shredded into multiple tokens (which would feed providerFromProfilePath the
-// wrong fragment).
-//
-// Returns ok=false when --agent-id has no value following it (i.e. the
-// cmdline doesn't parse as a teammate at all), or when no name could be
-// resolved.
-func parseTeammateCmdline(argv []string) (Teammate, bool) {
-	var t Teammate
-
-	for i := 0; i < len(argv); i++ {
-		switch argv[i] {
-		case "--agent-id":
-			if i+1 >= len(argv) {
-				return Teammate{}, false
-			}
-			// Format: <name>@<team>. The skill always spawns with this
-			// shape; we tolerate a missing @ by leaving Team empty.
-			val := argv[i+1]
-			if at := strings.Index(val, "@"); at >= 0 {
-				t.Name = val[:at]
-				t.Team = val[at+1:]
-			} else {
-				t.Name = val
-			}
-			i++
-		case "--agent-name":
-			if i+1 < len(argv) {
-				// --agent-id usually arrives first and already populated
-				// Name; if not, take it from here.
-				if t.Name == "" {
-					t.Name = argv[i+1]
+		queue := []int{p.PanePID}
+		seen := map[int]bool{p.PanePID: true}
+		for len(queue) > 0 {
+			pid := queue[0]
+			queue = queue[1:]
+			if _, ok := cands[pid]; ok {
+				if _, dup := loc[pid]; !dup {
+					loc[pid] = p
 				}
-				i++
+				continue
 			}
-		case "--team-name":
-			if i+1 < len(argv) {
-				if t.Team == "" {
-					t.Team = argv[i+1]
+			for _, c := range childrenFn(pid) {
+				if !seen[c] {
+					seen[c] = true
+					queue = append(queue, c)
 				}
-				i++
-			}
-		case "--settings":
-			if i+1 < len(argv) {
-				t.Provider = providerFromProfilePath(argv[i+1])
-				i++
-			}
-		case "--model":
-			if i+1 < len(argv) {
-				t.Model = argv[i+1]
-				i++
 			}
 		}
 	}
-	if t.Name == "" {
-		// Without a name we can't usefully report this teammate.
+	return loc
+}
+
+// classifyProcess applies DiscoverTeammates step 4 to one candidate process.
+func (d *discovery) classifyProcess(p procintrospect.Process, pane tmux.PaneInfo, inPane bool) (Teammate, bool) {
+	a := parseDiscArgs(p.Argv)
+	name, team := splitAgentID(a.agentID, a.teamName)
+	if name == "" {
 		return Teammate{}, false
+	}
+	t := Teammate{
+		AgentID: a.agentID,
+		Name:    name,
+		Team:    team,
+		Model:   a.model,
+		PID:     p.PID,
+		Argv:    p.Argv,
+		Backend: BackendUnknown,
+	}
+	if inPane {
+		t.Backend = BackendTmux
+		t.Socket = pane.SocketPath
+		t.PaneID = pane.PaneID
+		t.Hidden = pane.SessionName == tmux.HiddenSessionName
+	}
+	if strings.HasPrefix(a.agentType, teammate.TypePrefix) {
+		at, _, _ := teammate.ParseAgentType(a.agentType)
+		t.Provider = at.Provider
+		t.State = StateBypassed
+		return withProcStart(t), true
+	}
+	m, haveMember := d.member(team, a.agentID)
+	settingsProvider := profileProvider(a.settings)
+	if sessionTeamRe.MatchString(team) && haveMember && strings.HasPrefix(m.AgentType, teammate.TypePrefix) {
+		if at, _, err := teammate.ParseAgentType(m.AgentType); err == nil && settingsProvider == at.Provider {
+			t.Provider = at.Provider
+			t.State = StateRunning
+			t.SpawnTime = m.JoinedAt
+			return withProcStart(t), true
+		}
+	}
+	if settingsProvider != "" && (isLegacySwarm(t.Socket) || (haveMember && m.legacy)) {
+		t.Provider = settingsProvider
+		t.State = StateRunning
+		t.Legacy = true
+		if haveMember {
+			t.SpawnTime = m.JoinedAt
+		}
+		return withProcStart(t), true
+	}
+	return Teammate{}, false
+}
+
+// withProcStart stamps the process start token teardown re-verifies before a kill.
+func withProcStart(t Teammate) Teammate {
+	t.ProcStart, _ = procStartFn(t.PID)
+	return t
+}
+
+// failedFromPane applies DiscoverTeammates step 5: a dead pane whose joined capture
+// ends in a failure marker. A dead pane has no argv, so attribution relies on
+// the team config member (session teams) or 0.3.x evidence (legacy) only.
+func (d *discovery) failedFromPane(p tmux.PaneInfo) (Teammate, bool) {
+	text, err := captureJoinedFn(p.SocketPath, p.PaneID, markerCaptureLines)
+	if err != nil {
+		return Teammate{}, false
+	}
+	lines := strings.Split(text, "\n")
+	var code, agentID string
+	found := false
+	for i := len(lines) - 1; i >= 0 && !found; i-- {
+		code, agentID, found = teammate.ParseFailureLine(lines[i])
+	}
+	if !found {
+		return Teammate{}, false
+	}
+	name, team := splitAgentID(agentID, "")
+	if name == "" {
+		return Teammate{}, false
+	}
+	t := Teammate{
+		AgentID:   agentID,
+		Name:      name,
+		Team:      team,
+		PaneID:    p.PaneID,
+		Socket:    p.SocketPath,
+		Backend:   BackendTmux,
+		State:     StateFailed,
+		ErrorCode: code,
+		Hidden:    p.SessionName == tmux.HiddenSessionName,
+	}
+	m, haveMember := d.member(team, agentID)
+	switch {
+	case sessionTeamRe.MatchString(team) && haveMember && strings.HasPrefix(m.AgentType, teammate.TypePrefix):
+		at, _, _ := teammate.ParseAgentType(m.AgentType)
+		t.Provider = at.Provider
+	case isLegacySwarm(p.SocketPath) || (haveMember && m.legacy):
+		t.Legacy = true
+	default:
+		return Teammate{}, false
+	}
+	if haveMember {
+		t.SpawnTime = m.JoinedAt
 	}
 	return t, true
 }
 
-// providerFromProfilePath strips the directory and ".json" suffix off a
-// profile path. /root/.claude/profiles/glm.json → "glm". Returns "" for
-// inputs that don't end in .json.
-func providerFromProfilePath(p string) string {
-	base := filepath.Base(p)
-	if !strings.HasSuffix(base, ".json") {
+// inProcessBypassed applies DiscoverTeammates step 6: active ccf-* members that CC
+// runs in-process, found only in team configs (no pid, no pane).
+func inProcessBypassed() []Teammate {
+	root := claudepaths.Teams()
+	if root == "" {
+		return nil
+	}
+	paths, _ := filepath.Glob(filepath.Join(root, "*", "config.json"))
+	var out []Teammate
+	for _, path := range paths {
+		tc, ok := readDiscTeam(path)
+		if !ok {
+			continue
+		}
+		team := tc.Name
+		if team == "" {
+			team = filepath.Base(filepath.Dir(path))
+		}
+		for _, m := range tc.members {
+			if !strings.HasPrefix(m.AgentType, teammate.TypePrefix) || m.BackendType != BackendInProcess ||
+				(m.IsActive != nil && !*m.IsActive) {
+				continue
+			}
+			at, _, _ := teammate.ParseAgentType(m.AgentType)
+			out = append(out, Teammate{
+				AgentID:   m.AgentID,
+				Name:      m.Name,
+				Team:      team,
+				Provider:  at.Provider,
+				Backend:   BackendInProcess,
+				State:     StateBypassed,
+				SpawnTime: m.JoinedAt,
+			})
+		}
+	}
+	return out
+}
+
+// associateLeads applies DiscoverTeammates step 7: the lead is the session named by
+// --parent-session-id unless that session leads another team, else the live
+// session owning the team. A running teammate without one becomes orphaned.
+func associateLeads(ts []Teammate) {
+	var live []leadsession.Session
+	liveLoaded := false
+	for i := range ts {
+		t := &ts[i]
+		parent := parseDiscArgs(t.Argv).parentSessionID
+		t.LeadSessionID = parent
+		s, ok := leadsession.Session{}, false
+		if parent != "" {
+			s, ok = bySessionIDFn(parent)
+			// --resume and --continue register the resumed id, so the session
+			// holding the parent id now may lead another team; the team decides.
+			if ok && t.Team != "" {
+				if lt, found := teammate.FindLeadTeam(s); found && lt.Name != t.Team {
+					ok = false
+				}
+			}
+		}
+		if !ok && t.Team != "" {
+			if !liveLoaded {
+				live, liveLoaded = liveSessionsFn(), true
+			}
+			s, ok = teammate.LeadForTeam(t.Team, live)
+		}
+		if ok {
+			t.LeadPID = s.PID
+			t.LeadSessionID = s.SessionID
+		} else if t.State == StateRunning {
+			t.State = StateOrphaned
+		}
+	}
+}
+
+// profileProvider returns <p> when settings is <profile.ProfilesDir()>/<p>.json
+// for a valid provider name, else "".
+func profileProvider(settings string) string {
+	if settings == "" {
 		return ""
 	}
-	return strings.TrimSuffix(base, ".json")
+	dir, err := profile.ProfilesDir()
+	if err != nil || filepath.Clean(filepath.Dir(settings)) != filepath.Clean(dir) {
+		return ""
+	}
+	name, ok := strings.CutSuffix(filepath.Base(settings), ".json")
+	if !ok || ids.ValidateProviderName(name) != nil {
+		return ""
+	}
+	return name
+}
+
+func isLegacySwarm(socketPath string) bool {
+	return socketPath != "" && strings.HasPrefix(filepath.Base(socketPath), legacySwarmPrefix)
+}
+
+// discovery caches the team configs one DiscoverTeammates call reads.
+type discovery struct {
+	teams map[string]*discTeam // by config path; nil entry: unreadable or missing
+}
+
+// discTeam is the part of a team config.json discovery reads. Claude Code
+// owns the file; cc-fleet never writes it.
+type discTeam struct {
+	Name    string
+	members []discMember
+}
+
+type discMember struct {
+	AgentID     string `json:"agentId"`
+	Name        string `json:"name"`
+	AgentType   string `json:"agentType"`
+	BackendType string `json:"backendType"`
+	IsActive    *bool  `json:"isActive"`
+	JoinedAt    int64  `json:"joinedAt"`
+	legacy      bool   // carries a 0.3.x-only member key (leadSessionId / tmuxSocket)
+}
+
+// member returns team's config member whose agentId is agentID. Claude Code's
+// sanitized directory is read first; 0.3.x kept the config under the raw team
+// name, so a valid raw name that sanitizes differently is read next.
+func (d *discovery) member(team, agentID string) (discMember, bool) {
+	root := claudepaths.Teams()
+	if team == "" || agentID == "" || root == "" {
+		return discMember{}, false
+	}
+	dirs := []string{teammate.SanitizeTeamDir(team)}
+	if team != dirs[0] && ids.ValidateTeamName(team) == nil {
+		dirs = append(dirs, team)
+	}
+	for _, dir := range dirs {
+		path := filepath.Join(root, dir, "config.json")
+		if dir == "" || ids.EnsureUnderRoot(root, path) != nil {
+			continue
+		}
+		tc, seen := d.teams[path]
+		if !seen {
+			tc = nil
+			if loaded, ok := readDiscTeam(path); ok {
+				tc = &loaded
+			}
+			d.teams[path] = tc
+		}
+		if tc == nil {
+			continue
+		}
+		for _, m := range tc.members {
+			if m.AgentID == agentID {
+				return m, true
+			}
+		}
+	}
+	return discMember{}, false
+}
+
+func readDiscTeam(path string) (discTeam, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return discTeam{}, false
+	}
+	var raw struct {
+		Name    string            `json:"name"`
+		Members []json.RawMessage `json:"members"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return discTeam{}, false
+	}
+	tc := discTeam{Name: raw.Name}
+	for _, rm := range raw.Members {
+		var m discMember
+		var keys map[string]json.RawMessage
+		if json.Unmarshal(rm, &m) != nil || json.Unmarshal(rm, &keys) != nil {
+			continue
+		}
+		_, hasLead := keys["leadSessionId"]
+		_, hasSock := keys["tmuxSocket"]
+		m.legacy = hasLead || hasSock
+		tc.members = append(tc.members, m)
+	}
+	return tc, true
 }

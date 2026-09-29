@@ -95,12 +95,8 @@ func fleetSnapshot(check bool) fleetSnap {
 	tm, err := teardown.DiscoverTeammates()
 	if err != nil {
 		tm = nil
-	} else {
-		if check {
-			tm = teardown.AnnotateHealth(tm)
-		}
-		tm = teardown.AnnotateHidden(tm)
-		tm = teardown.AnnotateLeadSession(tm)
+	} else if check {
+		tm = teardown.AnnotateHealth(tm)
 	}
 	jobs, _ := subagent.ListJobs()
 	runs, _ := subagent.ListRuns()
@@ -148,6 +144,9 @@ func renderFleet(s fleetSnap, now time.Time) string {
 	for _, t := range s.teammates {
 		line := fmt.Sprintf("  %s/%s  %s/%s  pane=%s  pid=%d",
 			clean(t.Team), clean(t.Name), clean(t.Provider), clean(t.Model), clean(t.PaneID), t.PID)
+		if t.State != "" && t.State != teardown.StateRunning {
+			line += "  " + clean(t.State)
+		}
 		if t.Status != "" {
 			line += "  " + clean(t.Status)
 			if t.ErrorClass != "" {

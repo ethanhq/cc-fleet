@@ -3,39 +3,62 @@
 package procintrospect
 
 import (
+	"bytes"
+	"encoding/binary"
+	"errors"
 	"os"
 	"os/exec"
 	"strconv"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // execCommand is a seam so darwin tests can stub ps/pgrep without spawning real
 // processes. Production wiring is os/exec.Command.
 var execCommand = exec.Command
 
-// Cmdline returns pid's argv via `ps -p <pid> -ww -o command=`.
+var errBadProcargs = errors.New("procintrospect: malformed kern.procargs2")
+
+// Cmdline returns pid's exact argv from the kern.procargs2 sysctl, so arguments
+// containing spaces, quotes or nothing at all come back unchanged.
 //
-// macOS has no /proc and exposes no NUL-delimited argv to userland without cgo,
-// so the command string is space-split. An argument that itself contains a
-// space (rare — e.g. a --settings path under a HOME that has a space) cannot be
-// perfectly reconstructed, but this is sufficient for every cc-fleet marker
-// (--agent-id <name>@<team>, --settings <provider>.json, --model <id>), none of
-// which contain whitespace. `-ww` disables ps's column truncation so a long
-// teammate command line (binary path + a dozen flags) survives intact.
-//
-// A gone pid makes ps exit non-zero → (nil, err), the same outcome the Linux
-// reader gives for a missing /proc/<pid>/cmdline.
+// A gone pid or one we may not inspect (EPERM) yields (nil, err), the same
+// outcome the Linux reader gives for a missing /proc/<pid>/cmdline.
 func Cmdline(pid int) ([]string, error) {
-	out, err := execCommand("ps", "-p", strconv.Itoa(pid), "-ww", "-o", "command=").Output()
+	buf, err := unix.SysctlRaw("kern.procargs2", pid)
 	if err != nil {
 		return nil, err
 	}
-	line := strings.TrimSpace(string(out))
-	if line == "" {
-		return nil, nil
+	return parseProcargs2(buf)
+}
+
+// parseProcargs2 decodes the kern.procargs2 layout: a little-endian int32 argc
+// (both darwin targets are little-endian),
+// the NUL-terminated exec path plus NUL padding, then argc NUL-terminated
+// argv strings (the environment follows and is ignored).
+func parseProcargs2(buf []byte) ([]string, error) {
+	if len(buf) < 4 {
+		return nil, errBadProcargs
 	}
-	return strings.Fields(line), nil
+	argc := int(int32(binary.LittleEndian.Uint32(buf)))
+	rest := buf[4:]
+	end := bytes.IndexByte(rest, 0)
+	if argc < 0 || end < 0 {
+		return nil, errBadProcargs
+	}
+	rest = bytes.TrimLeft(rest[end:], "\x00")
+	argv := make([]string, 0, argc)
+	for len(argv) < argc {
+		end := bytes.IndexByte(rest, 0)
+		if end < 0 {
+			return nil, errBadProcargs
+		}
+		argv = append(argv, string(rest[:end]))
+		rest = rest[end+1:]
+	}
+	return argv, nil
 }
 
 // Children returns pid's immediate children via `pgrep -P <pid>` — POSIX and
@@ -56,27 +79,22 @@ func Children(pid int) []int {
 	return kids
 }
 
-// ProcessTable enumerates every process as (pid, argv) with ONE
-// `ps -axww -o pid=,command=` (not N per-pid execs). Each line's first
-// whitespace-separated field is the pid; the remainder is the space-split argv
-// (same whitespace caveat as Cmdline). -axww: all users' processes, no
-// truncation.
+// ProcessTable enumerates every process as (pid, argv): one kern.proc.all
+// sysctl for the pids, then Cmdline per pid. Processes whose argv cannot be
+// read (exited, other users' EPERM, kernel_task) are skipped.
 func ProcessTable() ([]Process, error) {
-	out, err := execCommand("ps", "-axww", "-o", "pid=,command=").Output()
+	kps, err := unix.SysctlKinfoProcSlice("kern.proc.all")
 	if err != nil {
 		return nil, err
 	}
 	var procs []Process
-	for _, line := range strings.Split(string(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
+	for _, kp := range kps {
+		pid := int(kp.Proc.P_pid)
+		argv, err := Cmdline(pid)
+		if err != nil || len(argv) == 0 {
 			continue
 		}
-		pid, err := strconv.Atoi(fields[0])
-		if err != nil {
-			continue
-		}
-		procs = append(procs, Process{PID: pid, Argv: fields[1:]})
+		procs = append(procs, Process{PID: pid, Argv: argv})
 	}
 	return procs, nil
 }
@@ -110,7 +128,7 @@ const procStartLayout = "Mon Jan _2 15:04:05 2006"
 // token. LC_ALL=C forces the English ps format regardless of the user's locale.
 //
 // NOTE the token is epoch on darwin but jiffies on linux: it is only meaningful
-// for SAME-PLATFORM equality (RevalidateProcStart) and is compared against the
+// for SAME-PLATFORM equality (the PID-reuse guards) and is compared against the
 // session file's procStart only after leadsession.normalizeFileProcStart maps the
 // file's UTC date string into this same epoch space.
 func ProcStart(pid int) (string, bool) {
@@ -129,4 +147,19 @@ func ProcStart(pid int) (string, bool) {
 		return "", false
 	}
 	return strconv.FormatInt(t.Unix(), 10), true
+}
+
+// StartFollowsClockSteps reports whether StartUnixMilli moves with wall-clock
+// steps made after the process started: lstart is the recorded fork time.
+const StartFollowsClockSteps = false
+
+// StartUnixMilli converts a ProcStart token (Unix seconds) to Unix
+// milliseconds. lstart is whole seconds, so the result can be up to a second
+// early.
+func StartUnixMilli(token string) (int64, bool) {
+	sec, err := strconv.ParseInt(token, 10, 64)
+	if err != nil || sec <= 0 {
+		return 0, false
+	}
+	return sec * 1000, true
 }

@@ -158,7 +158,7 @@ func EnsureForProviderName(name string) error {
 }
 
 // EnsureForProvider ensures the proxy daemon is up for a daemon-backed provider (a
-// no-op for an Anthropic-native provider). Call it after the fingerprint gate and
+// no-op for an Anthropic-native provider). Call it after the binary gate and
 // before the profile write. Keys on the normalized protocol so a codex row
 // predating the protocol field (codex-oauth backend, no protocol) is recognized.
 // dg is the --verbose step-trace sink (nil = silent).
@@ -188,7 +188,7 @@ func EnsureForProvider(v *config.Provider, dg *diag.Logger) error {
 // lazily and single-flight under that port's proxy lock, and registers a launch
 // lease that keeps it alive across the window before the launched claude is
 // visible. A live daemon is reused only if its persisted identity matches; a
-// mismatch is torn down and restarted. Slot it after the fingerprint gate and
+// mismatch is torn down and restarted. Slot it after the binary gate and
 // before the profile-write side effect.
 func EnsureDaemon(port int, protocol, upstreamURL, ref string, dg *diag.Logger) error {
 	if protocol == config.ProtocolCodexOAuth {

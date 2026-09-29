@@ -36,3 +36,26 @@ func TestClean_DropsMixedCaseOnWindows(t *testing.T) {
 		t.Fatalf("Clean dropped a keeper var on windows: %v", out)
 	}
 }
+
+// TestCleanForTeammate_DropsMixedCaseOnWindows: the teammate scrub uses the same
+// case-insensitive matcher for exact keys and prefixes, while the agent-teams
+// markers survive in any case.
+func TestCleanForTeammate_DropsMixedCaseOnWindows(t *testing.T) {
+	in := []string{
+		"anthropic_custom_headers=x-leak: LEAK-HDR",
+		"Claude_Code_OAuth_Token=LEAK-oauth",
+		"anthropic_bedrock_base_url=LEAK-bedrock",
+		"ClaudeCode=1",
+		"claude_code_experimental_agent_teams=1",
+		"PATH=C:\\Windows",
+	}
+	out := CleanForTeammate(in)
+	if joined := strings.Join(out, "\n"); strings.Contains(joined, "LEAK") {
+		t.Fatalf("CleanForTeammate leaked on windows: %q", joined)
+	}
+	for _, kv := range in[3:] {
+		if !containsLine(out, kv) {
+			t.Fatalf("CleanForTeammate dropped keeper %q on windows: %v", kv, out)
+		}
+	}
+}

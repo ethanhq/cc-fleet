@@ -143,7 +143,9 @@ func TestWorktreeCleanupOnLeafFailure(t *testing.T) {
 	})
 	cleaned := false
 	oldW := createWorktreeFn
-	createWorktreeFn = func(string) (string, func(), error) { return "/tmp/wt", func() { cleaned = true }, nil }
+	createWorktreeFn = func(string) (string, func(string, int) string, error) {
+		return "/tmp/wt", func(string, int) string { cleaned = true; return "" }, nil
+	}
 	t.Cleanup(func() { createWorktreeFn = oldW })
 	if _, err := runScript(t, "wtf", 1, failing, `return await agent("edit", {provider: "v", isolation: "worktree"});`); err == nil {
 		t.Error("a failing worktree leaf should surface an error")
@@ -152,7 +154,7 @@ func TestWorktreeCleanupOnLeafFailure(t *testing.T) {
 		t.Error("the worktree must be torn down even when the leaf fails")
 	}
 
-	createWorktreeFn = func(string) (string, func(), error) { return "", nil, context.DeadlineExceeded }
+	createWorktreeFn = func(string) (string, func(string, int) string, error) { return "", nil, context.DeadlineExceeded }
 	if _, err := runScript(t, "wtc", 1, failing, `return await agent("edit", {provider: "v", isolation: "worktree"});`); err == nil {
 		t.Error("a worktree-create failure must surface as an agent error")
 	}

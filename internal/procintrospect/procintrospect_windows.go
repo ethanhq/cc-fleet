@@ -61,3 +61,10 @@ func ProcStart(pid int) (string, bool) {
 	}
 	return strconv.FormatInt(creation.Nanoseconds(), 10), true
 }
+
+// StartFollowsClockSteps is false: StartUnixMilli is unsupported.
+const StartFollowsClockSteps = false
+
+// StartUnixMilli is unsupported: the teammate lane, its only caller, refuses
+// on Windows.
+func StartUnixMilli(token string) (int64, bool) { return 0, false }

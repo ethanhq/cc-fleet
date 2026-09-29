@@ -8,8 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/ethanhq/cc-fleet/internal/fingerprint"
 )
 
 func TestRun_SyncRecordsBoardJobNoAnswerLeak(t *testing.T) {
@@ -19,11 +17,7 @@ func TestRun_SyncRecordsBoardJobNoAnswerLeak(t *testing.T) {
 	writeMinimalProviders(t, xdg)
 
 	fakeClaude := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
-	orig := loadFP
-	loadFP = func() (*fingerprint.Fingerprint, error) {
-		return &fingerprint.Fingerprint{BinaryPath: fakeClaude}, nil
-	}
-	t.Cleanup(func() { loadFP = orig })
+	binStubResolver(t, fakeClaude, "")
 
 	// A SYNCHRONOUS run (no Background). The caller still gets the answer inline.
 	res := Run(context.Background(), Request{Provider: "glm", Prompt: "hi", JSON: true, LeadSessionID: "lead-run-1"})
@@ -71,11 +65,7 @@ func TestRun_SyncAutoDetectsLeadSession(t *testing.T) {
 	writeMinimalProviders(t, xdg)
 
 	fakeClaude := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
-	origFP := loadFP
-	loadFP = func() (*fingerprint.Fingerprint, error) {
-		return &fingerprint.Fingerprint{BinaryPath: fakeClaude}, nil
-	}
-	t.Cleanup(func() { loadFP = origFP })
+	binStubResolver(t, fakeClaude, "")
 
 	origDetect := detectLeadSession
 	detectLeadSession = func() string { return "auto-lead-session" }
@@ -104,11 +94,7 @@ func TestRun_ExplicitLeadSessionOverridesAutoDetect(t *testing.T) {
 	writeMinimalProviders(t, xdg)
 
 	fakeClaude := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
-	origFP := loadFP
-	loadFP = func() (*fingerprint.Fingerprint, error) {
-		return &fingerprint.Fingerprint{BinaryPath: fakeClaude}, nil
-	}
-	t.Cleanup(func() { loadFP = origFP })
+	binStubResolver(t, fakeClaude, "")
 
 	called := false
 	origDetect := detectLeadSession
@@ -142,19 +128,9 @@ func TestRun_SyncSlimRegistrationFailureLeavesNoOrphans(t *testing.T) {
 	writeMinimalProviders(t, xdg)
 
 	fakeClaude := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
-	origFP := loadFP
-	loadFP = func() (*fingerprint.Fingerprint, error) {
-		return &fingerprint.Fingerprint{BinaryPath: fakeClaude}, nil
-	}
-	t.Cleanup(func() { loadFP = origFP })
-
 	// Keep the slim profile effective (the fake binary has no real --version): pin the
 	// resolved version at the floor so a sidecar is actually written before registration.
-	origVer := resolveBinaryPathVersion
-	resolveBinaryPathVersion = func(*fingerprint.Fingerprint) (string, string, error) {
-		return fakeClaude, SlimVersionFloor, nil
-	}
-	t.Cleanup(func() { resolveBinaryPathVersion = origVer })
+	binStubResolver(t, fakeClaude, SlimVersionFloor)
 
 	// Force the board registration to fail AFTER the slim sidecar was written.
 	origWrite := writeMetaFn
