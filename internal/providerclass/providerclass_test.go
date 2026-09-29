@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/ethanhq/cc-fleet/internal/config"
 )
@@ -76,6 +77,20 @@ func TestReachability(t *testing.T) {
 		p := Reachability(providerFor(srv.URL))
 		if p.Block || p.Warn != "" {
 			t.Fatalf("200 → Block=%v Warn=%q, want no block, no warn", p.Block, p.Warn)
+		}
+	})
+
+	t.Run("slow but healthy no block", func(t *testing.T) {
+		// A keyed /models request can take over 3s to answer (OpenRouter skips
+		// its CDN cache): that is a healthy provider, not an unreachable one.
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			time.Sleep(3500 * time.Millisecond)
+			_, _ = w.Write([]byte(`{"data":[]}`))
+		}))
+		defer srv.Close()
+		p := Reachability(providerFor(srv.URL))
+		if p.Block || p.Warn != "" {
+			t.Fatalf("slow 200 → Block=%v Code=%q Msg=%q, want no block", p.Block, p.Code, p.Msg)
 		}
 	})
 

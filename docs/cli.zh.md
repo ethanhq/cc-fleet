@@ -68,7 +68,7 @@ printf '%s' "$DEEPSEEK_API_KEY" | cc-fleet add deepseek \
   --secret-backend file --secret-ref deepseek.key --api-key-stdin
 ```
 
-`add` 会同步探测 models 端点(3 秒),通过才落盘。模型档位相关的可选 flag: `--strong-model` / `--fast-model`(档位槽)、`--effort low|medium|high|xhigh|max`(推理强度)、`--default-permission`(`cc-fleet run` 会话的默认权限档)。之后用 `edit` 可以改这些,外加 `--key-rotation` 与 `--enable`/`--disable`。
+`add` 会同步探测 models 端点(最多 10 秒),通过才落盘。模型档位相关的可选 flag: `--strong-model` / `--fast-model`(档位槽)、`--effort low|medium|high|xhigh|max`(推理强度)、`--default-permission`(`cc-fleet run` 会话的默认权限档)。之后用 `edit` 可以改这些,外加 `--key-rotation` 与 `--enable`/`--disable`。
 
 开启 provider teammate 之后,`add` / `edit` / `remove` 还会同步 `ccf-*` agent 定义。同步失败,或者已有一个不带 cc-fleet 标记的同名 `ccf-*.md`(不会被覆盖)时,命令本身的结果不受影响,`--json` 里会多一个 `teammate_sync_error` 字符串;`cc-fleet repair` 会重试同步,遇到这类文件会打印告警(`--json` 里列在 `agent_defs.conflicts`)。
 

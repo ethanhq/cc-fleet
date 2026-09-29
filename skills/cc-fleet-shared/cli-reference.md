@@ -100,7 +100,7 @@ cc-fleet teammate check [provider] [--slot default|strong|fast] [--no-probe] --j
                                          subagent_type, e.g. ccf-glm.strong — plus team,
                                          model, teammate_mode, backend_hint, warnings[].
                                          Also writes the provider profile and starts a
-                                         codex / openai-* proxy; --no-probe skips the 3s
+                                         codex / openai-* proxy; --no-probe skips the 10s
                                          reachability probe. The provider arg is OPTIONAL —
                                          omit it to use the default provider (cc-fleet
                                          default; a provider-less call errors

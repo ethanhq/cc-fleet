@@ -53,7 +53,7 @@ const (
 
 // probeTimeout caps the synchronous /v1/models probe Add performs after
 // staging the provider on disk. Matches doctor check 6's per-provider budget.
-const probeTimeout = 3 * time.Second
+const probeTimeout = 10 * time.Second
 
 // Op is the typed-error returned by Add/Edit/Remove etc. cmd/ envelopes surface
 // its Code as `error_code`.
@@ -237,7 +237,7 @@ type AddResult struct {
 //  1. validate the requested provider name (regex)
 //  2. refuse to overwrite an existing entry (use Edit/Remove instead)
 //  3. if APIKey is set, write it to <SecretsDir>/<SecretRef> at 0600
-//  4. probe the provider's /v1/models endpoint (3s) using the same secrets path
+//  4. probe the provider's /v1/models endpoint (10s) using the same secrets path
 //     keyget would — failures map to KEY_INVALID, PROVIDER_UNREACHABLE, ADD_FAILED.
 //     A codex-oauth provider skips the probe (its models endpoint is a lazily-started
 //     loopback daemon) and seeds the static codex model list instead.

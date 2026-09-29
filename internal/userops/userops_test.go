@@ -3,6 +3,8 @@ package userops
 import (
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -171,6 +173,23 @@ func TestAdd_RejectsDuplicate(t *testing.T) {
 	}
 	if op.Code != CodeProviderExists {
 		t.Fatalf("err code = %q, want %q", op.Code, CodeProviderExists)
+	}
+}
+
+func TestAdd_SlowButHealthyProviderIsAdded(t *testing.T) {
+	// A keyed /models request can take over 3s to answer (OpenRouter); Add must
+	// not roll a healthy provider back as unreachable.
+	setupHome(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(3500 * time.Millisecond)
+		fmt.Fprint(w, `{"data":[{"id":"m-1"}]}`)
+	}))
+	defer srv.Close()
+	if _, err := Add(AddRequest{
+		Name: "slow", BaseURL: srv.URL, ModelsEndpoint: srv.URL + "/v1/models", DefaultModel: "m-1",
+		SecretBackend: "file", SecretRef: "slow.key", APIKey: "sk-test-MARKER", Enabled: true,
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
 	}
 }
 

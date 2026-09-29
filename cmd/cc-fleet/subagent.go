@@ -240,7 +240,7 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 	cmd.Flags().DurationVar(&timeout, "timeout", 300*time.Second,
 		"Hard wall-clock timeout; on expiry the whole process group is killed")
 	cmd.Flags().BoolVar(&probe, "probe", false,
-		"Probe provider reachability before running (3s; default off, opposite of spawn)")
+		"Probe provider reachability before running (up to 10s; default off, opposite of spawn)")
 	cmd.Flags().StringVar(&permissionMode, "permission-mode", "",
 		"claude permission mode (default: --dangerously-skip-permissions)")
 	cmd.Flags().BoolVar(&asJSON, "json", false,
