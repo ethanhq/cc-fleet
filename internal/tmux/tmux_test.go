@@ -319,7 +319,7 @@ func TestShowPane_EmitsSequence(t *testing.T) {
 		t.Fatalf("ShowPane: %v", err)
 	}
 	calls := readMockArgs(t, argsPath)
-	wantJoin := []string{"join-pane", "-h", "-s", "%42", "-t", "main:0"}
+	wantJoin := []string{"join-pane", "-d", "-h", "-s", "%42", "-t", "main:0"}
 	if !reflect.DeepEqual(findCall(t, calls, "join-pane"), wantJoin) {
 		t.Fatalf("join-pane argv = %v, want %v", findCall(t, calls, "join-pane"), wantJoin)
 	}
