@@ -153,7 +153,8 @@ cc-fleet hide <%N|name@team> [--socket <path>] --json
 cc-fleet show <%N|name@team> [--socket <path>] --json
                                          Hide a teammate's pane (move to the detached
                                          claude-hidden session) / restore it — process
-                                         keeps running. tmux split panes only: a detached
+                                         keeps running; show leaves focus on the lead.
+                                         tmux split panes only: a detached
                                          swarm server returns SWARM_UNSUPPORTED, a non-tmux
                                          pane BACKEND_UNSUPPORTED; the old targets (bare
                                          team, team/member) return BAD_ARGS.

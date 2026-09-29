@@ -162,7 +162,7 @@ Declutter the layout without killing the process:
 
 ```bash
 cc-fleet hide <target> [--socket <tmux_socket_path>] --json    # pane → detached "claude-hidden" session; keeps running
-cc-fleet show <target> [--socket <tmux_socket_path>] --json    # pane → back to its origin window, re-tiled
+cc-fleet show <target> [--socket <tmux_socket_path>] --json    # pane → back to its origin window, re-tiled; focus stays on the lead
 ```
 
 `<target>` = pane id `%42` · `name@team`. Add `--socket` when the envelope says `AMBIGUOUS_TARGET` (the same pane id exists on several tmux servers). The old forms (bare `team`, `team/member`) return `BAD_ARGS`. The origin window is recorded on the pane itself at hide time.

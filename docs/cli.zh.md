@@ -181,7 +181,7 @@ cc-fleet teardown session-7c8f769b --json        # 该团队的全部 provider t
 - **破坏性改名:**行字段 `tmux_socket`(`-L` 的 socket 名,在 tmux 内时为空)改为 `tmux_socket_path`(socket 的绝对路径,总是有值)。把 `tmux -L <tmux_socket> …` 改成 `tmux -S <tmux_socket_path> …`,例如 `tmux -S "$path" capture-pane -p -t %42`。
 - **目标写法**(`hide`、`show`、`teardown`):pane id `%N`(同一个 pane id 出现在多个 tmux server 上时加 `--socket <tmux_socket_path>`,否则返回 `AMBIGUOUS_TARGET`),或 agent id `name@team`;`teardown` 还接受整个 `team`。0.3.x 的 `team`、`team/member` 写法在 `hide` / `show` 上返回 `BAD_ARGS`。
 - **`teardown`** 在击杀前逐个复核身份(pane、精确 argv、进程启动时间),然后杀 pane 并回收进程。输出:`{ok, target, killed:[{agent_id, pane_id, tmux_socket_path, pid}], skipped:[{agent_id, pane_id, reason}], error_code, error_msg, suggestion}`;`reason` 为 `IDENTITY_MISMATCH`(不动它)或 `IN_PROCESS`(在 lead 里用 `TaskStop`)。目标已无可杀的对象时返回 `ok:true` 和空的 `killed`。它从不碰 lead、原生队友和 `~/.claude/teams`。0.3.x 的 `panes`、`members`、`killed_pids`、`team_removed`、`warnings` 字段已删除。
-- **`hide` / `show`** 总是输出单个对象 `{ok, action, agent_id, team, name, pane_id, tmux_socket_path, hidden, error_code, error_msg, suggestion}`。原窗口记在 pane 上(tmux 选项 `@ccf_origin`),不写文件。只支持 tmux pane:detached swarm server 上的队友返回 `SWARM_UNSUPPORTED`,tmux 之外的返回 `BACKEND_UNSUPPORTED`。
+- **`hide` / `show`** 总是输出单个对象 `{ok, action, agent_id, team, name, pane_id, tmux_socket_path, hidden, error_code, error_msg, suggestion}`。原窗口记在 pane 上(tmux 选项 `@ccf_origin`),不写文件。`show` 放回 pane 时不移动焦点:键盘仍在 lead,当前窗口也不变。只支持 tmux pane:detached swarm server 上的队友返回 `SWARM_UNSUPPORTED`,tmux 之外的返回 `BACKEND_UNSUPPORTED`。
 - **结束队友:**让它自己关闭(原生 `shutdown_request`),或在 lead 里 `TaskStop`。`teardown` 用于孤儿(lead 崩溃)、0.3.x 遗留 pane,以及用不了 `TaskStop` 的情况。lead 正常退出时,Claude Code 会自己清掉 pane 和团队目录 — 不再有 `TeamDelete` 这一步。
 
 ## Workflows
