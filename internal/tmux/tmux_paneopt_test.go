@@ -120,7 +120,7 @@ func TestHideShowPanePathServer(t *testing.T) {
 	if !reflect.DeepEqual(calls[1][2:], []string{"break-pane", "-d", "-s", "%4", "-t", HiddenSessionName + ":"}) {
 		t.Fatalf("break-pane call = %v", calls[1])
 	}
-	if !reflect.DeepEqual(calls[2][2:], []string{"join-pane", "-h", "-s", "%4", "-t", "@2"}) {
+	if !reflect.DeepEqual(calls[2][2:], []string{"join-pane", "-d", "-h", "-s", "%4", "-t", "@2"}) {
 		t.Fatalf("join-pane call = %v", calls[2])
 	}
 }

@@ -374,8 +374,10 @@ func (s Server) ShowPane(paneID, originWindow string) error {
 	if originWindow == "" {
 		return errors.New("tmux ShowPane: empty origin window")
 	}
-	// Load-bearing: move the pane back into its origin window.
-	if err := s.command("join-pane", "-h", "-s", paneID, "-t", originWindow).Run(); err != nil {
+	// Load-bearing: move the pane back into its origin window. -d keeps the
+	// window's active pane (the lead) and the session's current window, so the
+	// user's keystrokes don't land in the teammate.
+	if err := s.command("join-pane", "-d", "-h", "-s", paneID, "-t", originWindow).Run(); err != nil {
 		return fmt.Errorf("tmux join-pane %s -> %s: %w", paneID, originWindow, err)
 	}
 	// Best-effort polish: reflow + pin the main pane on the same server.

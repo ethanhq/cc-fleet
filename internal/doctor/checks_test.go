@@ -445,6 +445,22 @@ func TestCheckProviderKeys_AllReachable(t *testing.T) {
 	}
 }
 
+func TestCheckProviderKeys_SlowButHealthy(t *testing.T) {
+	// A keyed /models request can take over 3s to answer (OpenRouter); that is
+	// a healthy provider, not a failed check.
+	setupHome(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(3500 * time.Millisecond)
+		fmt.Fprint(w, `{"data":[{"id":"x","owned_by":"y"}]}`)
+	}))
+	defer srv.Close()
+	installProviderWithEndpoint(t, "deepseek", srv.URL, true)
+	r := CheckProviderKeys()
+	if r.Status != StatusOK {
+		t.Fatalf("Status = %s, want ok (detail=%s)", r.Status, r.Detail)
+	}
+}
+
 func TestCheckProviderKeys_OneFails(t *testing.T) {
 	setupHome(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

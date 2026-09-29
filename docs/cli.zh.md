@@ -68,7 +68,7 @@ printf '%s' "$DEEPSEEK_API_KEY" | cc-fleet add deepseek \
   --secret-backend file --secret-ref deepseek.key --api-key-stdin
 ```
 
-`add` 会同步探测 models 端点(3 秒),通过才落盘。模型档位相关的可选 flag: `--strong-model` / `--fast-model`(档位槽)、`--effort low|medium|high|xhigh|max`(推理强度)、`--default-permission`(`cc-fleet run` 会话的默认权限档)。之后用 `edit` 可以改这些,外加 `--key-rotation` 与 `--enable`/`--disable`。
+`add` 会同步探测 models 端点(最多 10 秒),通过才落盘。模型档位相关的可选 flag: `--strong-model` / `--fast-model`(档位槽)、`--effort low|medium|high|xhigh|max`(推理强度)、`--default-permission`(`cc-fleet run` 会话的默认权限档)。之后用 `edit` 可以改这些,外加 `--key-rotation` 与 `--enable`/`--disable`。
 
 开启 provider teammate 之后,`add` / `edit` / `remove` 还会同步 `ccf-*` agent 定义。同步失败,或者已有一个不带 cc-fleet 标记的同名 `ccf-*.md`(不会被覆盖)时,命令本身的结果不受影响,`--json` 里会多一个 `teammate_sync_error` 字符串;`cc-fleet repair` 会重试同步,遇到这类文件会打印告警(`--json` 里列在 `agent_defs.conflicts`)。
 
@@ -181,7 +181,7 @@ cc-fleet teardown session-7c8f769b --json        # 该团队的全部 provider t
 - **破坏性改名:**行字段 `tmux_socket`(`-L` 的 socket 名,在 tmux 内时为空)改为 `tmux_socket_path`(socket 的绝对路径,总是有值)。把 `tmux -L <tmux_socket> …` 改成 `tmux -S <tmux_socket_path> …`,例如 `tmux -S "$path" capture-pane -p -t %42`。
 - **目标写法**(`hide`、`show`、`teardown`):pane id `%N`(同一个 pane id 出现在多个 tmux server 上时加 `--socket <tmux_socket_path>`,否则返回 `AMBIGUOUS_TARGET`),或 agent id `name@team`;`teardown` 还接受整个 `team`。0.3.x 的 `team`、`team/member` 写法在 `hide` / `show` 上返回 `BAD_ARGS`。
 - **`teardown`** 在击杀前逐个复核身份(pane、精确 argv、进程启动时间),然后杀 pane 并回收进程。输出:`{ok, target, killed:[{agent_id, pane_id, tmux_socket_path, pid}], skipped:[{agent_id, pane_id, reason}], error_code, error_msg, suggestion}`;`reason` 为 `IDENTITY_MISMATCH`(不动它)或 `IN_PROCESS`(在 lead 里用 `TaskStop`)。目标已无可杀的对象时返回 `ok:true` 和空的 `killed`。它从不碰 lead、原生队友和 `~/.claude/teams`。0.3.x 的 `panes`、`members`、`killed_pids`、`team_removed`、`warnings` 字段已删除。
-- **`hide` / `show`** 总是输出单个对象 `{ok, action, agent_id, team, name, pane_id, tmux_socket_path, hidden, error_code, error_msg, suggestion}`。原窗口记在 pane 上(tmux 选项 `@ccf_origin`),不写文件。只支持 tmux pane:detached swarm server 上的队友返回 `SWARM_UNSUPPORTED`,tmux 之外的返回 `BACKEND_UNSUPPORTED`。
+- **`hide` / `show`** 总是输出单个对象 `{ok, action, agent_id, team, name, pane_id, tmux_socket_path, hidden, error_code, error_msg, suggestion}`。原窗口记在 pane 上(tmux 选项 `@ccf_origin`),不写文件。`show` 放回 pane 时不移动焦点:键盘仍在 lead,当前窗口也不变。只支持 tmux pane:detached swarm server 上的队友返回 `SWARM_UNSUPPORTED`,tmux 之外的返回 `BACKEND_UNSUPPORTED`。
 - **结束队友:**让它自己关闭(原生 `shutdown_request`),或在 lead 里 `TaskStop`。`teardown` 用于孤儿(lead 崩溃)、0.3.x 遗留 pane,以及用不了 `TaskStop` 的情况。lead 正常退出时,Claude Code 会自己清掉 pane 和团队目录 — 不再有 `TeamDelete` 这一步。
 
 ## Workflows
@@ -208,6 +208,7 @@ cc-fleet workflow rm "$RUN" / prune          # 删除一个 run / 清掉所有�
 - `run` 的 flag:`--max-concurrency`(默认 `min(16, cores-2)`)、`--budget-usd` / `--budget-tokens`(到顶后引擎不再铸新 leaf)、`--args-json`(脚本的 `args`)、`--no-persist-io`(关闭 prompt/answer 下钻)、`--saved`(跑保存过的脚本)。
 - journal 按内容哈希记每个 leaf(provider + 模型 + prompt + schema + profile 形状), `--resume` 只重跑变过或没跑完的;失败的 leaf 不会进 journal。
 - `--resume` 和 `restart` 在 run 启动时的目录(记在 manifest 里)运行剩下的 leaf,而不是调用者的当前目录;该目录已不存在时 run 以明确的错误失败。
+- `--resume` 先解析、编译新脚本并校验 `meta`;不通过时直接报错,什么都不写,run 和它保存的脚本(`restart` 运行的就是它)保持原样。
 - `isolation: "worktree"` 的 leaf 留下改动时,会在删除 worktree 之前把改动存成分支 `cc-fleet/wf-<job>-a<attempt>`(见[编写 workflow 脚本](workflows.md#isolated-worktrees))。run 被 stop 或 kill 之后,下一次 `restart` / `--resume` 的清理或 `workflow rm` / `prune` 会把没保存的改动抢救到 `cc-fleet/wf-salvage-*` 分支;存不下来的目录保留并带 `.cc-fleet-keep` 标记,`rm` / `prune` / `restart` 会在 stderr 上为每个保留的目录打一行。cc-fleet 从不删除这些分支。
 - `workflow saved` 列出看板里保存过的脚本(`run --saved` 接受的名字); `workflow new <name> --phase <title>…` 铸一个带有序 phase 计划的空 run,用于把 `subagent --run-id/--phase` 任务手动归到同一棵看板树下。
 

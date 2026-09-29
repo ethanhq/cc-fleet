@@ -89,7 +89,7 @@ func newAddCmd() *cobra.Command {
 The provider name must match ^[a-zA-Z][a-zA-Z0-9_-]{0,31}$. Existing entries
 are NOT overwritten — use ` + "`cc-fleet edit`" + ` or ` + "`cc-fleet remove`" + ` first.
 
-Add performs a synchronous probe of the provider's models_endpoint with a 3s
+Add performs a synchronous probe of the provider's models_endpoint with a 10s
 timeout. The probe MUST succeed before the provider is persisted:
 
   KEY_INVALID         provider returned HTTP 401         (exit 1)

@@ -25,9 +25,9 @@ import (
 )
 
 // providerProbeTimeout caps each provider's /v1/models probe in check 6 at
-// 3s/provider so the total check time stays bounded even with several providers
-// configured.
-const providerProbeTimeout = 3 * time.Second
+// 10s/provider so the total check time stays bounded even with several providers
+// configured, while a healthy but slow provider (about 3s with a key) still passes.
+const providerProbeTimeout = 10 * time.Second
 
 // (There is deliberately no agent-teams detector here: agent-teams is a Claude
 // runtime state set by GrowthBook, invisible to an external process. The env
@@ -264,7 +264,7 @@ func CheckAttachedTmux() CheckResult {
 
 // CheckProviderKeys is check 6: every enabled provider's /v1/models endpoint
 // answers within providerProbeTimeout. Each provider is probed with its own
-// 3s-bounded context so a slow provider can't drag the rest down.
+// bounded context so a slow provider can't drag the rest down.
 //
 // "Enabled" means Provider.Enabled = true in providers.toml. Disabled providers are
 // reported in the detail but not probed. A missing providers.toml is OK (returns

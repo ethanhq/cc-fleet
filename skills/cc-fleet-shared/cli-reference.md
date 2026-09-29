@@ -100,7 +100,7 @@ cc-fleet teammate check [provider] [--slot default|strong|fast] [--no-probe] --j
                                          subagent_type, e.g. ccf-glm.strong — plus team,
                                          model, teammate_mode, backend_hint, warnings[].
                                          Also writes the provider profile and starts a
-                                         codex / openai-* proxy; --no-probe skips the 3s
+                                         codex / openai-* proxy; --no-probe skips the 10s
                                          reachability probe. The provider arg is OPTIONAL —
                                          omit it to use the default provider (cc-fleet
                                          default; a provider-less call errors
@@ -153,7 +153,8 @@ cc-fleet hide <%N|name@team> [--socket <path>] --json
 cc-fleet show <%N|name@team> [--socket <path>] --json
                                          Hide a teammate's pane (move to the detached
                                          claude-hidden session) / restore it — process
-                                         keeps running. tmux split panes only: a detached
+                                         keeps running; show leaves focus on the lead.
+                                         tmux split panes only: a detached
                                          swarm server returns SWARM_UNSUPPORTED, a non-tmux
                                          pane BACKEND_UNSUPPORTED; the old targets (bare
                                          team, team/member) return BAD_ARGS.

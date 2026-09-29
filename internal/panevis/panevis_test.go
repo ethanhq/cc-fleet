@@ -184,7 +184,7 @@ func TestShowRestoresAndClears(t *testing.T) {
 	}
 	calls := strings.Join(e.calls(), "\n")
 	for _, want := range []string{
-		"-S " + killSock + " join-pane -h -s %5 -t @7",
+		"-S " + killSock + " join-pane -d -h -s %5 -t @7",
 		"-S " + killSock + " set-option -p -u -t %5 @ccf_origin",
 	} {
 		if !strings.Contains(calls, want) {
@@ -357,7 +357,7 @@ func TestFx2pvStaleHideKeepsOrigin(t *testing.T) {
 	if res := Show("%5", ""); !res.OK || res.Hidden {
 		t.Fatalf("show: %+v", res)
 	}
-	if calls := strings.Join(e.calls(), "\n"); !strings.Contains(calls, "-S "+killSock+" join-pane -h -s %5 -t @7") {
+	if calls := strings.Join(e.calls(), "\n"); !strings.Contains(calls, "-S "+killSock+" join-pane -d -h -s %5 -t @7") {
 		t.Fatalf("show did not rejoin @7:\n%s", calls)
 	}
 }
