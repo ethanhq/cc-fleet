@@ -12,6 +12,7 @@ import (
 func TestDetectFromPIDFindsAncestorSession(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // windows reads USERPROFILE
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 
 	procs := stubProcs(t)
@@ -43,6 +44,7 @@ func TestCodexThread(t *testing.T) {
 func TestDetectFromPIDRejectsRecycledPID(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // windows reads USERPROFILE
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 
 	procs := stubProcs(t)
@@ -72,6 +74,7 @@ func TestDetectFromPIDSupportsClaudeConfigDir(t *testing.T) {
 func TestDetectFromPIDRejectsSessionWithoutProcStart(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // windows reads USERPROFILE
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 
 	procs := stubProcs(t)
@@ -88,6 +91,7 @@ func TestDetectFromPIDRejectsSessionWithoutProcStart(t *testing.T) {
 func TestDetectPID_FromValidatedAncestor(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // windows reads USERPROFILE
 	t.Setenv("CLAUDE_CONFIG_DIR", "")
 
 	// Walk should find the validated ancestor (pid 200) and return that pid.

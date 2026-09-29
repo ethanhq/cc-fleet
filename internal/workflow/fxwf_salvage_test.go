@@ -94,7 +94,7 @@ func TestFxwfSweepSalvagesKilledEngineWork(t *testing.T) {
 		t.Errorf("salvaged new.txt = %q, want the leaf's new file", got)
 	}
 	fxwfAssertGone(t, repo, wt)
-	if joined := strings.Join(lines, "\n"); !strings.Contains(joined, "isolation worktree salvaged: "+cwt) || !strings.Contains(joined, branch) {
+	if joined := strings.Join(lines, "\n"); !strings.Contains(normPath(joined), normPath("isolation worktree salvaged: "+cwt)) || !strings.Contains(joined, branch) {
 		t.Errorf("sweep lines %q must report the salvage of %s onto %s", lines, wt, branch)
 	}
 }
@@ -210,7 +210,7 @@ func TestFxwfSweepKeepsStillDirtyAfterSnapshot(t *testing.T) {
 	if !worktreeListed(t, repo, wt) {
 		t.Error("a kept worktree's registration must stay")
 	}
-	if joined := strings.Join(lines, "\n"); !strings.Contains(joined, "keeping "+canonPath(wt)) {
+	if joined := strings.Join(lines, "\n"); !strings.Contains(normPath(joined), normPath("keeping "+canonPath(wt))) {
 		t.Errorf("sweep lines %q must name the kept worktree", lines)
 	}
 }

@@ -16,7 +16,8 @@ import (
 const procStartedAt int64 = 1_790_000_000_000
 
 // procWriteTeam writes teams/<name>/config.json in Claude Code's native shape:
-// a team-lead row plus one ordinary teammate row with a different cwd.
+// a team-lead row plus one ordinary teammate row with a different cwd. leadCwd
+// is slash-separated and stored with the OS separator, as Claude Code records it.
 func procWriteTeam(t *testing.T, name, leadSessionID, leadCwd string, createdAt int64) string {
 	t.Helper()
 	dir := filepath.Join(claudepaths.Teams(), name)
@@ -30,7 +31,7 @@ func procWriteTeam(t *testing.T, name, leadSessionID, leadCwd string, createdAt 
 		"leadSessionId": leadSessionID,
 		"members": []map[string]any{
 			{"agentId": "worker@" + name, "name": "worker", "cwd": "/elsewhere", "tmuxPaneId": "%3", "backendType": "tmux"},
-			{"agentId": "team-lead@" + name, "name": "team-lead", "cwd": leadCwd, "joinedAt": createdAt, "tmuxPaneId": "leader", "backendType": "in-process"},
+			{"agentId": "team-lead@" + name, "name": "team-lead", "cwd": filepath.FromSlash(leadCwd), "joinedAt": createdAt, "tmuxPaneId": "leader", "backendType": "in-process"},
 		},
 	}
 	data, err := json.MarshalIndent(cfg, "", "  ")
@@ -45,9 +46,9 @@ func procWriteTeam(t *testing.T, name, leadSessionID, leadCwd string, createdAt 
 
 // procSession is a terminal lead session whose process started a second
 // before it registered; ProcStart holds that start in unix ms (see
-// procFakeStart).
+// procFakeStart). cwd is slash-separated, like procWriteTeam's leadCwd.
 func procSession(id, cwd string, startedAt int64) leadsession.Session {
-	return leadsession.Session{PID: 4242, SessionID: id, Cwd: cwd, StartedAt: startedAt, ProcStart: strconv.FormatInt(startedAt-1_000, 10), Version: "2.1.281", Kind: "interactive", Entrypoint: "cli"}
+	return leadsession.Session{PID: 4242, SessionID: id, Cwd: filepath.FromSlash(cwd), StartedAt: startedAt, ProcStart: strconv.FormatInt(startedAt-1_000, 10), Version: "2.1.281", Kind: "interactive", Entrypoint: "cli"}
 }
 
 // procFakeStart reads a session's process start from the unix ms in ProcStart,
