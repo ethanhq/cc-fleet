@@ -70,12 +70,25 @@ cc-fleet codex add [--name|--port|--model]
                                          Register the ChatGPT-subscription provider: picks
                                          the conversion daemon's loopback port and scans
                                          ~/.codex/config.toml for the default model.
-cc-fleet codex login [--accept-risk]     Device-code OAuth login on cc-fleet's OWN token
-                                         chain (~/.codex auth is never read or written).
+cc-fleet codex login [--accept-risk] [--credential <ref>]
+                                         Device-code OAuth login on cc-fleet's OWN token
+                                         chain (never writes ~/.codex). Optional for the
+                                         codex provider on the default credential
+                                         (secret_ref codex-oauth): with no own login it
+                                         rides the codex CLI's ~/.codex login read-only
+                                         while that token is valid (cc-fleet never
+                                         refreshes it). A `codex add --name X` made while
+                                         another codex holds the default needs
+                                         `--credential X` (codex add prints the `next:`).
                                          Shows an account-risk notice first — subscription
                                          reuse outside the codex CLI is unofficial.
-cc-fleet codex logout                    Remove cc-fleet's codex login; stops the daemon.
-cc-fleet codex status                    Show whether cc-fleet has a codex login.
+cc-fleet codex logout [--credential <ref>]
+                                         Remove cc-fleet's own codex login for that
+                                         credential and stop its daemon (the default one
+                                         may still ride ~/.codex).
+cc-fleet codex status [--credential <ref>]
+                                         Credential sources: cli-ride (codex CLI login),
+                                         own-login, and which one is active (or none).
 cc-fleet codex-proxy status              Inspect / stop the local conversion daemon (it is
 cc-fleet codex-proxy stop                started lazily by teammate check / a teammate /
                                          subagent / run and self-exits when no codex
@@ -179,9 +192,16 @@ cc-fleet watch [--check] [--interval] [--timeout]
 
 cc-fleet list --json                     Configured providers + enabled flag + cache
                                          freshness. Use to pick a provider.
-cc-fleet models <provider> --json          Cached model list for provider. Use to pick
-                                         --model. Empty → run refresh.
-cc-fleet refresh <provider> --json         Re-query provider's models endpoint. Updates cache.
+cc-fleet models <provider> --json          The provider's configured roster: {role, id} for
+                                         default / strong / fast from providers.toml (a
+                                         blank slot follows default). NOT the /v1/models
+                                         catalog and not the cache (refresh doesn't change
+                                         it); doesn't check `enabled`. Shows what
+                                         `teammate check --slot` and subagent / run
+                                         `--model default|strong|fast` resolve to.
+cc-fleet refresh <provider> --json         Re-query provider's models endpoint. Updates the
+                                         local cache behind list's models_count /
+                                         models_stale.
 ```
 
 **Removed:** `cc-fleet spawn` and `cc-fleet refresh-fingerprint` return `COMMAND_REMOVED`. A provider teammate now starts with the native `Agent` tool after `teammate check` (/cc-fleet:team); Claude Code builds the teammate command itself, so there is no fingerprint to refresh.

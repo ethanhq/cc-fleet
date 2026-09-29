@@ -303,7 +303,7 @@ cc-fleet plugs into **OpenAI Codex** too: a Codex plugin lets a Codex session fa
 **Codex (ChatGPT subscription)**: one device-code login and your ChatGPT subscription becomes a regular provider — usable across Workflow / Team / Subagent / run.
 
 > [!WARNING]
-> **Codex is unofficial.** Reusing a ChatGPT subscription outside the codex CLI may violate OpenAI's terms, and `ccf codex login` asks you to confirm first. The OAuth token lives only inside the local conversion daemon; cc-fleet keeps its own login chain and never touches the codex CLI's auth.
+> **Codex is unofficial.** Reusing a ChatGPT subscription outside the codex CLI may violate OpenAI's terms, and `ccf codex login` asks you to confirm first. The OAuth token lives only inside the local conversion daemon; cc-fleet keeps its own login chain and never writes the codex CLI's auth (without its own login, the codex provider on the default credential rides it read-only).
 
 ---
 

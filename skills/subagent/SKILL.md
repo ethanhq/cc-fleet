@@ -44,11 +44,11 @@ The provider arg is **optional** — with no provider, cc-fleet uses the default
 
 **Session grouping — no flag needed.** `cc-fleet subagent` auto-detects the parent Claude session (fail-closed: an unvalidatable registry shows `(no session)`, never a guess) — the same live session id the Agents Board groups your teammates under. The envelope's `lead_session_id` is the id `subagent-gc --session` takes. `--lead-session-id <id>` overrides detection, but never copy it from `~/.claude/teams/<team>/config.json`: the implicit team keeps its startup session id after `/clear`, `/resume`, `--resume` or `--continue`.
 
-Useful flags (full list in cc-fleet-shared/cli-reference.md):
+Useful flags (full list: `cc-fleet subagent --help`):
 - **Name it** → `--label "<short-alias>"` (e.g. `--label sort-complexity`). The Agents Board shows the label instead of the opaque job id — pass one on every launch, like a teammate name. Display-only metadata; capped at 256 bytes.
 - **Large / sensitive prompt** → `--prompt-file <path>` (read from file, piped via stdin, kept out of argv / `ps`). Use it once a single prompt approaches **~128 KiB** (`MAX_ARG_STRLEN`, the per-argument cap — not the ~2 MB total `ARG_MAX`). `--prompt-file -` reads stdin.
 - **Long task** → `--timeout 600s` (default 300s). For tasks that may exceed the timeout, run the sync call in a backgrounded Bash, or use `--background` (both below). Note: a provider that's down on **auth (401) or quota (429)** makes claude retry **~180s** before surfacing `KEY_INVALID` / `INSUFFICIENT_BALANCE`, so keep `--timeout ≥ ~200s` (the 300s default is fine) — a shorter timeout reports those as `SUBAGENT_TIMEOUT` instead. `--probe` does **not** catch a bad key (the models endpoint may not 401 it).
-- **Cost / runaway gates** → `--max-budget-usd 0.5` (cap spend) and `--max-turns 8` (cap the agentic tool loop). On fan-out, strongly consider passing these on every call.
+- **Cost / runaway gates** → `--max-budget-usd 0.5` (cap spend) and `--max-turns` (cap the agentic tool loop). On fan-out, strongly consider a budget cap on every call. **Size `--max-turns` generously up front** — a read-heavy / multi-file / git-inspecting task spends ~1 turn per file read or command, so give it **30–50 (or omit it)**; a small cap (8/10) starves it and the leaf fails `SUBAGENT_MAX_TURNS` mid-task.
 - **Prompt profile** — `slim` is the DEFAULT; read-only research → `--profile slim-ro`; `--profile full` ONLY to compare against a full session or diagnose a suspected slim regression. `--tools` REPLACES the whole tool set, never appends. Write prescriptive prompts ("Run `cmd`", "Use the Read tool on X"), not "look at" / "check" — weak provider models skip tools on weak imperatives under any profile. Tool whitelists / `--skills` / `--mcp` defaults / downgrade behavior: cc-fleet-shared/providers.md.
 - **Probe** is **off by default** (`--probe` to opt in): the inner `claude -p` call is itself the authoritative reachability + auth test. On a big fan-out, run one shared `cc-fleet doctor` / probe up front rather than paying up to 10s × N.
 - `--prompt` and `--prompt-file` are mutually exclusive — pass exactly one (else `error_code=SUBAGENT_BAD_ARGS`, no claude launched).
@@ -66,7 +66,7 @@ Useful flags (full list in cc-fleet-shared/cli-reference.md):
 
 | `error_code` | Meaning | What you do |
 |---|---|---|
-| `SUBAGENT_BAD_ARGS` | Missing/both `--prompt` & `--prompt-file`. | Fix the call (exactly one). |
+| `SUBAGENT_BAD_ARGS` | The call itself is invalid (a missing or conflicting prompt flag, a flag value cc-fleet rejects, or a slot keyword on the native `claude` leaf — `error_msg` says which) — or, from `subagent-status`, an invalid or unknown job id (e.g. one already pruned). An unknown flag or an unparsable value (`--timeout 5zz`) never gets here: it exits 1 with one stderr line and no JSON. | Fix the call and re-issue; never retry it unchanged. An unknown job id on `--wait` means the record is gone — stop waiting on it. |
 | `NO_DEFAULT_PROVIDER` | No provider arg and no default configured. | Apply the provider ask ladder. |
 | `DEFAULT_PROVIDER_DISABLED` | The default provider is disabled. | Apply the provider ask ladder; or the user re-enables via `cc-fleet edit <provider> --enable`. |
 | `DEFAULT_PROVIDER_UNKNOWN` | The default names a provider that no longer exists. | Apply the provider ask ladder; the user re-pins with `cc-fleet default <p>`. |
@@ -75,14 +75,14 @@ Useful flags (full list in cc-fleet-shared/cli-reference.md):
 | `UNKNOWN_PROVIDER` / `PROVIDER_DISABLED` | Provider not configured / disabled. | Tell the user to `cc-fleet add` / `cc-fleet edit <provider> --enable`. |
 | `PROVIDER_RESERVED` | A providers.toml row is named `claude` (reserved for the native leaf). | Tell the user to rename or `cc-fleet remove claude`. The subagent, workflow and teammate lanes refuse that row; only `cc-fleet run claude` launches it (cc-fleet-shared/providers.md). |
 | `FINGERPRINT_STALE` | The `claude` binary was not found (the code keeps its old name). | Tell the user to install/fix Claude Code or PATH, then retry. `cc-fleet doctor` confirms. |
-| `KEY_INVALID` | Provider 401/403. | Have the user rotate the key; do not retry blindly. |
+| `KEY_INVALID` | Provider 401/403 (on a codex provider: no usable codex login). | Have the user rotate the key; do not retry blindly. A codex provider has no key: the user runs `cc-fleet codex login --credential <its secret_ref>` (`protocol` `codex-oauth` and `secret_ref` in `cc-fleet list --json`). |
 | `INSUFFICIENT_BALANCE` | Out of balance / quota (429/402 + balance signature). | Retry can't help — propose the next provider (provider ask ladder, step 4) or fall back to native `Agent`; tell the user they're out of credit. |
 | `RATE_LIMITED` | Provider 429. | Wait briefly, retry once, or propose a switch (provider ask ladder, step 4). |
-| `MODEL_NOT_FOUND` | Model name rejected (400). | `cc-fleet refresh <provider>` then retry, or drop `--model` to use the default. |
+| `MODEL_NOT_FOUND` | Model name rejected (400). | Drop `--model`, or pass a slot (`default`/`strong`/`fast`; see `cc-fleet models <provider> --json`), and retry. If the user named that model, tell them it was rejected and confirm the substitute before retrying. If a configured slot itself is rejected, the user fixes it with `cc-fleet edit <provider> --default-model/--strong-model/--fast-model <id>` (or the TUI); `cc-fleet refresh` changes nothing a run uses. |
 | `PROVIDER_UNREACHABLE` | Transport failure (with `--probe`, or at runtime when claude reports one). | `cc-fleet doctor`; if urgent, fall back to native `Agent`. |
 | `SUBAGENT_TIMEOUT` | Exceeded `--timeout`. | Real long task → raise `--timeout` (or use `--background`) and retry; suspected hang → switch provider / fall back (with user confirmation). |
 | `PROVIDER_API_ERROR` | Other provider failure (5xx / overloaded). | Retry once or propose a switch. |
-| `CODEX_PROXY_UNAVAILABLE` | The codex conversion daemon could not start (no login, or the loopback port is held). | Tell the user: `cc-fleet codex login`, or free / change the port (`cc-fleet codex add --port <n>`). |
+| `CODEX_PROXY_UNAVAILABLE` | The codex / openai-* conversion daemon could not start (e.g. its loopback port is held; `error_msg` names the cause — only `did not become ready on port <n>` when the daemon exited on start). A missing codex login does not cause this — it fails on the request as `KEY_INVALID`. | Run `cc-fleet codex-proxy status`; tell the user to free the port in the provider's `base_url` or move it (`cc-fleet edit <provider> --base-url http://127.0.0.1:<n>/`, a codex provider also `--models-endpoint http://127.0.0.1:<n>/v1/models`), or fix the named cause. |
 | `CODEX_CLOUDFLARE_BLOCKED` | The ChatGPT backend's edge blocked this IP/client — not a key problem. | Switch network/IP or retry later; don't rotate credentials. |
 | `SUBAGENT_MAX_TURNS` | claude hit the `--max-turns` cap without finishing (the spent cost is surfaced — not silently $0). | Raise `--max-turns` (or omit it) and retry — a read-heavy / multi-file task needs ~1 turn per file read or command; a genuinely long task can use `--background`. |
 | `SUBAGENT_FAILED` | claude exited with no parseable result (or budget exhaustion). For a `claude` native leaf on a logged-out machine, this is the login failure — the error preview names it (no dedicated code). | Inspect; retry or switch provider. A logged-out native leaf → tell the user to log in to Claude Code interactively. |
@@ -112,7 +112,7 @@ cc-fleet subagent --prompt "<long task>" --background --json
 # arm the notifier (backgrounded Bash — its exit wakes you):
 cc-fleet subagent-status <job_id> --wait --timeout 5m --json
 ```
-Wake-up dispatch on the exit code: **0** done (envelope has `.result`) · **1** failed OR stopped — check `.status` first: `stopped` is an operator stop, never auto-retry; `failed` → dispatch on `.error_code` · **3** held (a workflow-leaf id an operator parked — surface it, never wait it out) · **124** still pending at `--timeout` (a heartbeat: re-arm; escalate only if the job is far past its own `--timeout`) · **130** interrupted. Always pass `--timeout`, and re-arm any still-pending wait after a session restart.
+Wake-up dispatch on the exit code: **0** done (envelope has `.result`) · **1** failed OR stopped — check `.status` first: `stopped` is an operator stop, never auto-retry; `failed`, or no `.status` (an invalid or unknown job id) → dispatch on `.error_code` · **3** held (a workflow-leaf id an operator parked — surface it, never wait it out) · **124** still pending at `--timeout` (a heartbeat: re-arm; escalate only if the job is far past its own `--timeout`) · **130** interrupted. Always pass `--timeout`, and re-arm any still-pending wait after a session restart.
 
 `cc-fleet subagent-gc --json` prunes finished job files.
 
