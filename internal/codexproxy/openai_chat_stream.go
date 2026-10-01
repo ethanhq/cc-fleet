@@ -28,10 +28,12 @@ type chatStreamConverter struct {
 	failed    bool
 	nextIndex int
 
-	textOpen  bool
-	textIndex int
-	tools     map[int]int  // chat tool_calls index -> Anthropic block index
-	toolOpen  map[int]bool // chat tool_calls index -> open
+	thinkOpen  bool
+	thinkIndex int
+	textOpen   bool
+	textIndex  int
+	tools      map[int]int  // chat tool_calls index -> Anthropic block index
+	toolOpen   map[int]bool // chat tool_calls index -> open
 
 	stopReason      string
 	inTokens        int
@@ -41,7 +43,7 @@ type chatStreamConverter struct {
 
 func newChatStreamConverter(out sseSink, cc *convCtx) *chatStreamConverter {
 	c := &chatStreamConverter{
-		out: out, model: cc.model, toolMap: cc.toolMap, textIndex: -1,
+		out: out, model: cc.model, toolMap: cc.toolMap, thinkIndex: -1, textIndex: -1,
 		tools: map[int]int{}, toolOpen: map[int]bool{}, stopReason: "end_turn",
 	}
 	if cc.apiKey != "" {
@@ -65,6 +67,7 @@ type chatDelta struct {
 	Role             string              `json:"role"`
 	Content          *string             `json:"content"`
 	ReasoningContent *string             `json:"reasoning_content"`
+	Reasoning        *string             `json:"reasoning"` // the same channel under the name some gateways use
 	Refusal          *string             `json:"refusal"`
 	ToolCalls        []chatToolCallDelta `json:"tool_calls"`
 }
@@ -149,14 +152,27 @@ func (c *chatStreamConverter) handle(ev *chatChunk) error {
 		return nil // a usage-only chunk carries no choices
 	}
 	ch := ev.Choices[0]
-	// content text and refusal both surface as visible text; reasoning_content is a
-	// separate channel and is deliberately dropped (never concatenated into text).
+	// reasoning_content streams as a thinking block, never concatenated into text.
+	// Dropping it left the client with no bytes for as long as the model reasoned,
+	// and a long think tripped Claude Code's stream-idle watchdog.
+	if txt := chatReasoningText(ch.Delta); txt != "" {
+		if err := c.thinkingDelta(txt); err != nil {
+			return err
+		}
+	}
+	// content text and refusal both surface as visible text.
 	if txt := chatVisibleText(ch.Delta); txt != "" {
+		if err := c.closeThinking(); err != nil {
+			return err
+		}
 		if err := c.textDelta(txt); err != nil {
 			return err
 		}
 	}
 	for _, tc := range ch.Delta.ToolCalls {
+		if err := c.closeThinking(); err != nil {
+			return err
+		}
 		if err := c.toolDelta(tc); err != nil {
 			return err
 		}
@@ -177,6 +193,58 @@ func chatVisibleText(d chatDelta) string {
 		return *d.Refusal
 	}
 	return ""
+}
+
+// chatReasoningText returns a delta's reasoning text, from reasoning_content or the
+// reasoning alias.
+func chatReasoningText(d chatDelta) string {
+	if d.ReasoningContent != nil {
+		return *d.ReasoningContent
+	}
+	if d.Reasoning != nil {
+		return *d.Reasoning
+	}
+	return ""
+}
+
+// thinkingDelta opens a thinking block on the first reasoning fragment and streams
+// the rest as thinking_delta. The block carries no signature: Chat Completions has
+// no encrypted reasoning, and the text itself goes back upstream as
+// reasoning_content on the next turn (translateChatMessage).
+func (c *chatStreamConverter) thinkingDelta(txt string) error {
+	if !c.thinkOpen {
+		// Reasoning that resumes after visible text opens a new thinking block; close
+		// the text block first so blocks never interleave.
+		if c.textOpen {
+			c.textOpen = false
+			if err := c.out.event("content_block_stop", map[string]any{"type": "content_block_stop", "index": c.textIndex}); err != nil {
+				return err
+			}
+		}
+		c.thinkIndex = c.nextIndex
+		c.nextIndex++
+		c.thinkOpen = true
+		if err := c.out.event("content_block_start", map[string]any{
+			"type": "content_block_start", "index": c.thinkIndex,
+			"content_block": map[string]any{"type": "thinking", "thinking": "", "signature": ""},
+		}); err != nil {
+			return err
+		}
+	}
+	return c.out.event("content_block_delta", map[string]any{
+		"type": "content_block_delta", "index": c.thinkIndex,
+		"delta": map[string]any{"type": "thinking_delta", "thinking": txt},
+	})
+}
+
+// closeThinking closes an open thinking block before a text or tool block starts,
+// so blocks never interleave.
+func (c *chatStreamConverter) closeThinking() error {
+	if !c.thinkOpen {
+		return nil
+	}
+	c.thinkOpen = false
+	return c.out.event("content_block_stop", map[string]any{"type": "content_block_stop", "index": c.thinkIndex})
 }
 
 func (c *chatStreamConverter) textDelta(txt string) error {
@@ -293,6 +361,9 @@ func (c *chatStreamConverter) emitError(msg string) error {
 }
 
 func (c *chatStreamConverter) closeAllOpen() error {
+	if err := c.closeThinking(); err != nil {
+		return err
+	}
 	if c.textOpen {
 		c.textOpen = false
 		if err := c.out.event("content_block_stop", map[string]any{"type": "content_block_stop", "index": c.textIndex}); err != nil {

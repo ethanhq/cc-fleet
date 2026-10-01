@@ -117,7 +117,8 @@ type chatFunction struct {
 }
 
 // translateChatRequest maps an Anthropic Messages request to a Chat Completions
-// request. thinking is dropped (most compatible endpoints don't accept it); the
+// request. The thinking config is dropped (most compatible endpoints don't accept
+// it), but an assistant turn's thinking text goes back as reasoning_content; the
 // usage chunk is requested via stream_options.include_usage.
 func translateChatRequest(a *anthropicRequest, cc *convCtx) (*chatRequest, error) {
 	r := &chatRequest{
@@ -148,7 +149,8 @@ func translateChatRequest(a *anthropicRequest, cc *convCtx) (*chatRequest, error
 // translateChatMessage maps one Anthropic message to one or more Chat messages.
 // tool_result blocks become role:"tool" messages emitted FIRST (Chat requires a
 // tool result to immediately follow the assistant turn that called it); text +
-// images form the message content; assistant tool_use blocks become tool_calls.
+// images form the message content; assistant tool_use blocks become tool_calls;
+// assistant thinking text becomes reasoning_content.
 func translateChatMessage(m anthropicMessage, cc *convCtx) ([]any, error) {
 	if s := stringContent(m.Content); s != nil {
 		return []any{map[string]any{"role": m.Role, "content": *s}}, nil
@@ -163,6 +165,7 @@ func translateChatMessage(m anthropicMessage, cc *convCtx) ([]any, error) {
 		parts     []map[string]any
 		hasImage  bool
 		text      strings.Builder
+		reasoning strings.Builder
 		toolCalls []map[string]any
 	)
 	for _, b := range blocks {
@@ -185,7 +188,11 @@ func translateChatMessage(m anthropicMessage, cc *convCtx) ([]any, error) {
 				"role": "tool", "tool_call_id": b.ToolUseID, "content": toolResultOutput(b),
 			})
 		case "thinking":
-			// dropped — Chat Completions has no thinking input channel.
+			// The stream converter turned the model's reasoning_content into this block.
+			// Thinking-mode models such as deepseek-v4-pro reject a follow-up turn whose
+			// tool-calling assistant message lacks it (400 "The reasoning_content in the
+			// thinking mode must be passed back to the API").
+			reasoning.WriteString(b.Thinking)
 		}
 	}
 
@@ -204,6 +211,11 @@ func translateChatMessage(m anthropicMessage, cc *convCtx) ([]any, error) {
 		msg := map[string]any{"role": "assistant", "content": content}
 		if len(toolCalls) > 0 {
 			msg["tool_calls"] = toolCalls
+		}
+		// Only a turn that carried reasoning sends the field, so an endpoint that never
+		// produced reasoning_content never receives it.
+		if reasoning.Len() > 0 {
+			msg["reasoning_content"] = reasoning.String()
 		}
 		out = append(out, msg)
 	} else if content != nil {
