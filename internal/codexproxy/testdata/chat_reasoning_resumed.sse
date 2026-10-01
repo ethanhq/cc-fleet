@@ -1,0 +1,11 @@
+data: {"choices":[{"index":0,"delta":{"role":"assistant","reasoning":"first think"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"reasoning":"second think"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{"content":" answer"},"finish_reason":null}]}
+
+data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
