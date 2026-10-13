@@ -307,6 +307,21 @@ func TestPluginInstalled_HonorsClaudeConfigDir(t *testing.T) {
 	}
 }
 
+// TestPluginInstalled_IgnoresOrphanedCopy: Claude Code keeps an uninstalled
+// plugin's cache dir and marks it with .orphaned_at; that is not an install.
+func TestPluginInstalled_IgnoresOrphanedCopy(t *testing.T) {
+	cache := pluginSandbox(t, true)
+	if !pluginInstalled() {
+		t.Fatal("pluginInstalled() = false with the plugin cached")
+	}
+	if err := os.WriteFile(filepath.Join(cache, ".orphaned_at"), []byte("1791889510666"), 0o600); err != nil {
+		t.Fatalf("write orphan marker: %v", err)
+	}
+	if pluginInstalled() {
+		t.Fatal("pluginInstalled() = true for a cached copy Claude Code marked orphaned")
+	}
+}
+
 func TestUninstallPlugin_NotCachedIsNoop(t *testing.T) {
 	pluginSandbox(t, false)
 	calls := stubRunner(t, false)
@@ -372,6 +387,37 @@ func TestUninstallPlugin_RunsClaude(t *testing.T) {
 		if got := strings.Join(calls[i], " "); !strings.HasSuffix(got, "--scope user") {
 			t.Fatalf("call %q, want a trailing --scope user", got)
 		}
+	}
+}
+
+// Claude Code's own uninstall keeps the cache dir and marks it with
+// .orphaned_at. A guessed user-scope attempt that ends that way is complete:
+// no manual commands.
+func TestUninstallPlugin_OrphanedCacheIsComplete(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("plants a #!/bin/sh fake claude not runnable on windows")
+	}
+	cache := pluginSandbox(t, true)
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake claude: %v", err)
+	}
+	t.Setenv("PATH", bin)
+	old := execRunner
+	execRunner = func(_ context.Context, _ io.Writer, _ string, args ...string) error {
+		if len(args) > 1 && args[1] == "uninstall" {
+			return os.WriteFile(filepath.Join(cache, ".orphaned_at"), []byte("1791889510666"), 0o600)
+		}
+		return nil
+	}
+	t.Cleanup(func() { execRunner = old })
+
+	removed, manual := UninstallPlugin(context.Background(), io.Discard)
+	if len(manual) != 0 {
+		t.Fatalf("manual=%v, want none: the only cached copy is orphaned", manual)
+	}
+	if len(removed) != 2 {
+		t.Fatalf("removed=%v, want plugin + marketplace entries", removed)
 	}
 }
 

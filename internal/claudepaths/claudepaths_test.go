@@ -147,3 +147,32 @@ func TestGlobalConfigPlacement(t *testing.T) {
 		t.Fatalf("GlobalConfig() with CLAUDE_CONFIG_DIR and no home = %q, want %q", got, want)
 	}
 }
+
+// TestPluginVersionDirs_SkipsOrphaned: a copy Claude Code marked with
+// .orphaned_at (uninstalled, or replaced by an update) is not installed; the
+// copy counts again once the marker is gone, as after a reinstall.
+func TestPluginVersionDirs_SkipsOrphaned(t *testing.T) {
+	setHome(t, t.TempDir())
+	cfg := filepath.Join(t.TempDir(), "cfg")
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+	plugin := filepath.Join(cfg, "plugins", "cache", "ethanhq", "cc-fleet")
+	old, cur := filepath.Join(plugin, "0.3.4"), filepath.Join(plugin, "0.4.0")
+	for _, dir := range []string{old, cur} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	marker := filepath.Join(old, ".orphaned_at")
+	if err := os.WriteFile(marker, []byte("1791889510666"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := PluginVersionDirs("cc-fleet"), []string{cur}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("PluginVersionDirs() = %v, want %v", got, want)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := PluginVersionDirs("cc-fleet"), []string{old, cur}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("PluginVersionDirs() = %v, want %v", got, want)
+	}
+}

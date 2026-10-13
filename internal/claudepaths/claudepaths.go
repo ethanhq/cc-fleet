@@ -47,10 +47,18 @@ func Sessions() string { return under("sessions") }
 // Teams returns Root()/teams (one directory per agent team).
 func Teams() string { return under("teams") }
 
-// PluginVersionDirs returns every cached copy of plugin,
-// Root()/plugins/cache/<marketplace>/<plugin>/<version>, in lexical order. It
-// lists the directories rather than globbing, so a config root whose name
-// holds glob metacharacters still resolves to itself.
+// orphanMarker is the file Claude Code writes into a cached plugin version it
+// no longer has installed (uninstalled, or replaced by an update) and deletes
+// later; it removes the file when that version is installed again.
+const orphanMarker = ".orphaned_at"
+
+// PluginVersionDirs returns the cached copies of plugin that Claude Code has
+// not marked orphaned, Root()/plugins/cache/<marketplace>/<plugin>/<version>,
+// in lexical order. It is a best-effort probe of what is installed, not the
+// registration: any entry named orphanMarker counts as the marker, and a copy
+// whose marker cannot be checked is kept. It lists the directories rather than
+// globbing, so a config root whose name holds glob metacharacters still
+// resolves to itself.
 func PluginVersionDirs(plugin string) []string {
 	cache := under(filepath.Join("plugins", "cache"))
 	if cache == "" {
@@ -62,7 +70,11 @@ func PluginVersionDirs(plugin string) []string {
 		dir := filepath.Join(cache, m.Name(), plugin)
 		versions, _ := os.ReadDir(dir)
 		for _, v := range versions {
-			dirs = append(dirs, filepath.Join(dir, v.Name()))
+			vdir := filepath.Join(dir, v.Name())
+			if _, err := os.Lstat(filepath.Join(vdir, orphanMarker)); err == nil {
+				continue
+			}
+			dirs = append(dirs, vdir)
 		}
 	}
 	return dirs

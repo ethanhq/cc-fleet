@@ -36,7 +36,7 @@ func UninstallPlugin(ctx context.Context, out io.Writer) (removed, manual []stri
 	if exe, err := exePath(); err == nil {
 		_, man = detectMethod(exe)
 	}
-	// The cache glob is only a probe, not the registration. Skip ONLY when the
+	// The cache listing is only a probe, not the registration. Skip ONLY when the
 	// cache is empty AND the install manifest never chose the plugin — a
 	// cleared cache must not leave a manifest-recorded registration behind.
 	if !pluginInstalled() && man.Skill != "plugin" {

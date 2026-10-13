@@ -54,8 +54,9 @@ func updatePlugin(ctx context.Context, scope, skill string, out io.Writer) error
 	return runCmd(ctx, out, claude, "plugin", "install", pluginRef, "--scope", scope)
 }
 
-// pluginInstalled reports whether Claude Code has the cc-fleet plugin cached
-// (~/.claude/plugins/cache/<marketplace>/cc-fleet/<version>/). Offline + cheap.
+// pluginInstalled reports whether Claude Code's plugin cache holds a copy of
+// the cc-fleet plugin it has not marked orphaned (claudepaths.PluginVersionDirs).
+// A probe, not the registration. Offline + cheap.
 func pluginInstalled() bool {
 	return len(claudepaths.PluginVersionDirs("cc-fleet")) > 0
 }

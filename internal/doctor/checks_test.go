@@ -29,6 +29,17 @@ func writePluginCache(t *testing.T, home, ver string) {
 	}
 }
 
+// orphanPluginCache marks a cached plugin version the way Claude Code does when
+// it is uninstalled or replaced by an update: the directory stays, holding an
+// .orphaned_at file.
+func orphanPluginCache(t *testing.T, home, ver string) {
+	t.Helper()
+	marker := filepath.Join(home, ".claude", "plugins", "cache", "ethanhq", "cc-fleet", ver, ".orphaned_at")
+	if err := os.WriteFile(marker, []byte("1791889510666"), 0o600); err != nil {
+		t.Fatalf("write orphan marker: %v", err)
+	}
+}
+
 // pinVersion overrides the binary's reported version for one test and restores
 // it after. version.Version is the link-time stamp; Resolve() returns it
 // verbatim when it differs from the dev default.
@@ -743,6 +754,31 @@ func TestCheckSkillInstalled_PluginPerLane(t *testing.T) {
 	}
 }
 
+// TestCheckSkillInstalled_OrphanedPluginCopyNotCounted: an uninstalled plugin's
+// cached copy stays on disk, marked orphaned; its skills are not installed.
+func TestCheckSkillInstalled_OrphanedPluginCopyNotCounted(t *testing.T) {
+	home := setupHome(t)
+	root := filepath.Join(home, ".claude", "plugins", "cache", "ethanhq", "cc-fleet", "0.2.0", "skills")
+	for _, lane := range skillLanes {
+		d := filepath.Join(root, lane)
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "SKILL.md"), []byte("# skill"), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	writeSharedDocs(t, root, sharedDirName)
+	if r := CheckSkillInstalled(); r.Status != StatusOK {
+		t.Fatalf("Status = %s detail = %q, want ok while the plugin is installed", r.Status, r.Detail)
+	}
+	orphanPluginCache(t, home, "0.2.0")
+	r := CheckSkillInstalled()
+	if r.Status != StatusWarn || !strings.Contains(r.Detail, "no cc-fleet skills found") {
+		t.Fatalf("Status = %s detail = %q, want warn: the only copy is orphaned", r.Status, r.Detail)
+	}
+}
+
 // TestCheckSkillInstalled_PluginUnderClaudeConfigDir: Claude Code keeps its
 // plugin cache under CLAUDE_CONFIG_DIR, so the per-lane skills are found there.
 // A legacy skill left under $HOME/.claude/skills is not loaded any more, so it
@@ -1101,6 +1137,26 @@ func TestCheckPluginVersionMatch_NewestCachedWins(t *testing.T) {
 	r := CheckPluginVersionMatch()
 	if r.Status != StatusOK {
 		t.Fatalf("Status = %s, want ok (newest cached 0.1.8 matches; detail=%s)", r.Status, r.Detail)
+	}
+}
+
+// TestCheckPluginVersionMatch_IgnoresOrphanedVersion: a version Claude Code
+// marked orphaned is not the installed plugin, even when it is the newest one
+// cached; with every copy orphaned there is no plugin to compare.
+func TestCheckPluginVersionMatch_IgnoresOrphanedVersion(t *testing.T) {
+	home := setupHome(t)
+	pinVersion(t, "v0.1.6")
+	writePluginCache(t, home, "0.1.6")
+	writePluginCache(t, home, "0.1.8")
+	orphanPluginCache(t, home, "0.1.8")
+	r := CheckPluginVersionMatch()
+	if r.Status != StatusOK || !strings.Contains(r.Detail, "plugin 0.1.6") {
+		t.Fatalf("Status = %s detail = %q, want ok against the installed plugin 0.1.6", r.Status, r.Detail)
+	}
+	orphanPluginCache(t, home, "0.1.6")
+	r = CheckPluginVersionMatch()
+	if r.Status != StatusOK || !strings.Contains(r.Detail, "no cc-fleet plugin installed") {
+		t.Fatalf("Status = %s detail = %q, want ok with no plugin installed", r.Status, r.Detail)
 	}
 }
 
