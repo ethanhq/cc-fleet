@@ -283,7 +283,7 @@ func TestRefuseNonTmuxBackend(t *testing.T) {
 }
 
 // TestLegacyTargetBadArgs: the 0.3.x bare team and team/member forms, and
-// malformed ids, are BAD_ARGS with the new syntax as suggestion.
+// malformed ids, are BAD_ARGS, and the suggestion contains name@team.
 func TestLegacyTargetBadArgs(t *testing.T) {
 	e := killSetup(t, killRow("%5", false))
 	for _, target := range []string{"session-7c8f769b", "alpha", "alpha/worker", "", "%x", "w 1@alpha"} {

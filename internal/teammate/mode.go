@@ -115,8 +115,8 @@ func resolveMode(in ModeInput) (ModeDecision, string) {
 }
 
 // modeSettingsLayers reads the settings chain in precedence order: policy
-// (managed-settings.json, then managed-settings.d/*.json by name), the lead's
-// --settings (file or inline JSON), local, project, user. The lead's
+// (managed-settings.d/*.json, later names first, then managed-settings.json),
+// the lead's --settings (file or inline JSON), local, project, user. The lead's
 // --setting-sources, when given, limits the local, project and user layers to
 // those it lists. Unreadable or non-object sources are skipped.
 func modeSettingsLayers(argv []string, cwd string) []settingsLayer {

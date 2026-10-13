@@ -131,8 +131,7 @@ func TestRunClaude_TimeoutKillsProcessGroup(t *testing.T) {
 
 // TestRun_NoUserFingerprint_UsesBundled: with NO
 // ~/.config/cc-fleet/fingerprint.json, Run resolves the binary live (claudebin)
-// and never fails the binary gate. A fast-exit fake claude on PATH keeps the run
-// from reaching the (unreachable) provider or launching a real claude.
+// and never fails the binary gate.
 func TestRun_NoUserFingerprint_UsesBundled(t *testing.T) {
 	xdg := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", xdg)
@@ -168,7 +167,6 @@ added_at        = 2026-05-24T05:00:00Z
 	}
 
 	res := Run(context.Background(), Request{Provider: "glm", Prompt: "hi", JSON: true})
-	// The binary resolved live (no FINGERPRINT_STALE, since the fake claude is on PATH).
 	if res.ErrorCode == ErrCodeFingerprintStale {
 		t.Fatalf("with claude on PATH the binary gate must pass, got %s: %s", res.ErrorCode, res.ErrorMsg)
 	}

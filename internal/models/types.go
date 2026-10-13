@@ -1,9 +1,9 @@
 // Package models caches and refreshes per-provider model lists fetched from
 // each provider's `/v1/models` endpoint.
 //
-// The skill consults the cache to resolve `--model` choices before calling
-// launching a provider worker; `cc-fleet refresh <provider>` re-queries the provider's HTTP
-// endpoint to repopulate the cache.
+// The skill consults the cache to resolve `--model` choices before it launches
+// a provider worker; `cc-fleet refresh <provider>` re-queries the provider's
+// HTTP endpoint to repopulate the cache.
 //
 // Nothing in this package logs provider API keys; see fetch.go for the
 // Authorization-header handling rules.

@@ -19,7 +19,6 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/fileutil"
 )
 
-// agentDefMode is the mode of a generated agent definition.
 const agentDefMode os.FileMode = 0o644
 
 // RenderAgentDef renders the managed agent definition for t. The model:
@@ -293,11 +292,9 @@ func frontmatterName(path string) string {
 	return ""
 }
 
-// yamlScalar decodes a single-line YAML scalar the way a YAML parser reads the
-// definition: a double-quoted string with its escapes, a single-quoted
-// string where a doubled quote is one quote, or a plain value up to a " #"
-// comment. An
-// unterminated quoted string yields "".
+// yamlScalar decodes a single-line YAML scalar: double-quoted with escapes,
+// single-quoted where a doubled quote is one quote, or plain up to a " #"
+// comment. An unterminated quoted string yields "".
 func yamlScalar(v string) string {
 	switch {
 	case strings.HasPrefix(v, "'"):

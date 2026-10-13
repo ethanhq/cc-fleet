@@ -646,11 +646,9 @@ func TestDiscoverTeammates_NoServer(t *testing.T) {
 }
 
 // TestDiscoverTeammates_TmuxNotFound: tmux is not on PATH, with or without
-// socket files, and the process table and team configs hold no teammate. A
-// missing tmux is not an error (a pure iTerm2 user has none): the result is
-// empty and nil, so ps and teardown stay idempotent after the last teammate
-// ends. With teammates found elsewhere the rows come back
-// (TestFxdiscTmuxNotFoundKeepsRows).
+// socket files, and no other source holds a teammate. The result is empty
+// with no error (a pure iTerm2 user has no tmux), so ps and teardown stay
+// idempotent after the last teammate ends.
 func TestDiscoverTeammates_TmuxNotFound(t *testing.T) {
 	for _, sockets := range [][]string{nil, {"/tmp/tmux-501/default"}} {
 		f := discSetup(t)

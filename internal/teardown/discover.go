@@ -64,11 +64,10 @@ var sessionTeamRe = regexp.MustCompile(`^session-[0-9a-f]{8}$`)
 //  6. in-process ccf-* members of any team config → bypassed;
 //  7. a running teammate without a live lead is orphaned.
 //
-// Team configs are only read. Without tmux there is no pane information but
-// the other sources are still scanned, and no error is returned: a missing
-// tmux yields whatever those sources find, possibly nothing. An error is
-// returned when the process table cannot be read; a dead server behind a
-// stale socket is skipped.
+// Team configs are only read. A missing tmux is not an error: without pane
+// information the other sources are still scanned. An error is returned when
+// the process table cannot be read. A dead server behind a stale socket is
+// skipped.
 func DiscoverTeammates() ([]Teammate, error) {
 	sockets := socketPathsFn()
 	if len(sockets) == 0 {

@@ -167,9 +167,9 @@ func selfPath() (string, error) {
 	return filepath.EvalSymlinks(exe)
 }
 
-// shQuote quotes s for POSIX sh with single quotes; an embedded quote closes
-// the quoted segment, is emitted as \', and reopens a new segment. Same rule as tmux.Quote, kept separate because the tmux package sheds
-// everything but Quote later in this change.
+// shQuote quotes s for POSIX sh with single quotes. An embedded quote closes
+// the quoted segment, is emitted as \', and reopens a new segment. Same rule
+// as tmux.Quote.
 func shQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

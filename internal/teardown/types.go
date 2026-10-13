@@ -17,7 +17,7 @@ type Teammate struct {
 	PID           int      `json:"pid"`
 	ProcStart     string   `json:"-"`
 	Argv          []string `json:"-"`                          // exact argv read at discovery; teardown compares it element-wise with Cmdline(pid) before killing
-	Socket        string   `json:"tmux_socket_path,omitempty"` // breaking rename: 0.3.x emitted tmux_socket (a -L name); now the absolute path for -S
+	Socket        string   `json:"tmux_socket_path,omitempty"` // absolute path for -S (0.3.x emitted tmux_socket, a -L name)
 	Backend       string   `json:"backend"`                    // tmux | in-process | unknown (iTerm2 native splits report unknown)
 	LeadPID       int      `json:"lead_pid,omitempty"`
 	LeadSessionID string   `json:"lead_session_id,omitempty"`

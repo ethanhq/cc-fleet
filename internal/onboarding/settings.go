@@ -15,7 +15,7 @@ import (
 )
 
 // SettingsEdit is one key edit applied by EditSettings. Path names the key from
-// the top level, e.g. {"env","CLAUDE_CODE_TEAMMATE_COMMAND"} or {"teammateMode"}.
+// the top level.
 type SettingsEdit struct {
 	Path   []string // e.g. {"env","CLAUDE_CODE_TEAMMATE_COMMAND"}, {"teammateMode"}
 	Value  string   // the string value written when Delete is false

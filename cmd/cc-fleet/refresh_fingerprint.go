@@ -2,7 +2,6 @@ package main
 
 import "github.com/spf13/cobra"
 
-// Removed-command copy.
 const (
 	refreshFingerprintRemovedMsg        = "fingerprints were removed: Claude Code builds the teammate command itself"
 	refreshFingerprintRemovedSuggestion = "nothing to refresh; run `cc-fleet doctor` if something fails"

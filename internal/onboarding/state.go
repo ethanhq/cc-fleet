@@ -7,8 +7,7 @@
 //
 // The consented settings write happens in teammate.Setup (internal/teammate),
 // fired from the TUI only when the user explicitly chooses "enable it for me";
-// its gate is teammate.NeedsSetupNudge. The order-preserving settings editor it
-// uses (EditSettings, SettingsString) lives in settings.go.
+// its gate is teammate.NeedsSetupNudge.
 //
 // The orchestration (setup screens, TTY gating) lives in internal/tui; this
 // package holds the pure, unit-testable pieces: decision persistence (state.go),

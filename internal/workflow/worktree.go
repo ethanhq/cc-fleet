@@ -17,7 +17,7 @@ import (
 )
 
 // createWorktreeFn is a seam so tests inject a fake worktree (no real git) — production is
-// createWorktree. It returns the worktree path, a finish func, and an error.
+// createWorktree.
 var createWorktreeFn = createWorktree
 
 // keepMarkerName marks an isolation worktree whose snapshot failed: both sweeps and subagent.PurgeRun
@@ -43,7 +43,7 @@ var reclaimVerdicts = subagent.SegmentReclaimVerdicts
 // at HEAD, under a run-scoped temp root, and returns its path + a finish. A leaf run with
 // cwd = this worktree edits an isolated copy, so parallel file-editing leaves don't
 // collide. finish (deferred by the caller on done/fail/panic) saves any leaf changes as a
-// branch, then removes the worktree (finishWorktree).
+// branch and removes the worktree, or keeps it when saving fails (finishWorktree).
 // The git registration lands in the user's repo .git; a graceful path removes it at once,
 // while an engine SIGKILL/crash skips the deferred cleanup and leaves a stale registration —
 // reclaimed later under a death proof: the next engine's startup sweepRunWorktrees (a

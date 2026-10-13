@@ -95,16 +95,10 @@ func locate() (string, error) {
 	// Collect every entry whose name parses as semver, sort descending, then
 	// pick the FIRST one that actually holds an executable claude.
 	//
-	// Each candidate is judged with os.Stat (which follows symlinks — DirEntry's
-	// IsDir/Type do not, and would drop a link to a binary):
-	//   - versions/<semver> is a directory: <dir>/claudeBinName (`claude` on
-	//     unix, `claude.exe` on windows) must pass isExecutableFile;
-	//   - unix only (flatVersionFiles): versions/<semver> may itself be the
-	//     binary when it passes isExecutableFile.
-	// A 0-byte or non-executable file is skipped (the updater leaves such files
-	// behind mid-download): a versioned entry with no runnable claude must NOT be
-	// reported as the install (that's a false-healthy doctor and a launch that
-	// selects a nonexistent binary).
+	// Each candidate is judged with os.Stat, which follows symlinks: DirEntry's
+	// IsDir/Type do not and would drop a link to a binary. An entry without a
+	// runnable claude (see isExecutableFile) is skipped, so doctor never reports
+	// and a launch never selects a binary that cannot run.
 	type sv struct {
 		name string
 		nums [3]int

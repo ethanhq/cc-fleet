@@ -36,7 +36,7 @@ func binLayoutHome(t *testing.T) string {
 
 // TestLocatedFlatVersionsLayout covers the flat layout (versions/<semver> is the
 // binary itself), symlinks judged by their target, 0-byte and non-executable
-// files skipped, and semver-descending selection (TM-8).
+// files skipped, and semver-descending selection.
 func TestLocatedFlatVersionsLayout(t *testing.T) {
 	const script = "#!/bin/sh\nexit 0\n"
 

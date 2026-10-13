@@ -49,8 +49,7 @@ func ValidateProfile(p string) error {
 
 // resolveBinaryPathVersion resolves (path, version) for the exact binary that
 // will run — Run's binary gate and the version gate both use it. A var so tests
-// can supply a fake binary and version without a real claude. Production =
-// claudebin.Resolve (version process-cached per resolved path).
+// can supply a fake binary and version without a real claude.
 var resolveBinaryPathVersion = claudebin.Resolve
 
 // ResolveEffectiveProfile maps a REQUESTED profile to the one that will actually
@@ -59,9 +58,6 @@ var resolveBinaryPathVersion = claudebin.Resolve
 // a below-floor / unknown version — or any error resolving the binary — fails
 // OPEN to "full" with a human downgrade reason (never silent, never failing the
 // leaf for an optimization).
-//
-// The version is that of the binary resolveBinaryPathVersion returns — the same
-// resolver Run's binary gate uses, so the gate reads the executable Run execs.
 func ResolveEffectiveProfile(requested string) (effective string, downgrade string) {
 	if requested == "" || requested == ProfileFull {
 		return requested, ""

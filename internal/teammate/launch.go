@@ -27,8 +27,8 @@ var (
 	resolveLeadBinaryFn = resolveLeadBinary
 )
 
-// The argv flags the launcher reads or rewrites; each is accepted as
-// `--x v` and `--x=v` (design F32).
+// The argv flags the launcher reads or rewrites. Each is accepted as `--x v`
+// and `--x=v`.
 const (
 	flagAgentID         = "--agent-id"
 	flagAgentType       = "--agent-type"

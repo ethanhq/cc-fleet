@@ -82,7 +82,6 @@ func TestCapturePane_SocketScoped(t *testing.T) {
 	if _, err := capturePane(sock, "%77"); err != nil {
 		t.Fatalf("capturePane(sock=%q): %v", sock, err)
 	}
-	// Read recorded argv and check the FIRST invocation began with -S <sock>.
 	data, err := os.ReadFile(argsLog)
 	if err != nil {
 		t.Fatalf("read args.log: %v", err)

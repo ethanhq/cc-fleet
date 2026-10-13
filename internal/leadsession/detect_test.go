@@ -126,15 +126,11 @@ func TestDetectPID_FromValidatedAncestor(t *testing.T) {
 
 // TestPIDWalk_UnsupportedPlatform_ReturnsZero locks the auto-degrade guarantee
 // for platforms with NO process introspection (procintrospect's "other" build):
-// parentPID/procStart return (_,false) so walk bails on the first step. linux,
-// darwin, and windows all have process introspection, so they're excluded here
-// and covered by their own tests.
+// parentPID/procStart return (_,false) so walk bails on the first step.
 func TestPIDWalk_UnsupportedPlatform_ReturnsZero(t *testing.T) {
 	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" || runtime.GOOS == "windows" {
 		t.Skip("introspection-capable platform; degrade is asserted on 'other' only")
 	}
-	// On an unsupported host parentPID returns (0,false) for any pid; walk falls
-	// out before reaching any session file lookup.
 	if got := walkPIDFrom(os.Getpid()); got != 0 {
 		t.Fatalf("PID walk on an unsupported platform = %d, want 0", got)
 	}
@@ -199,7 +195,7 @@ func TestSessionFileValidatesProcStart(t *testing.T) {
 }
 
 // TestLiveSessionsDropsReusedPID: a registry file whose pid now belongs to an
-// unrelated process (design F33) is dropped; non-registry files are ignored.
+// unrelated process is dropped; non-registry files are ignored.
 func TestLiveSessionsDropsReusedPID(t *testing.T) {
 	cfg := t.TempDir()
 	t.Setenv("HOME", t.TempDir())

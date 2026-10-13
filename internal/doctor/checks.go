@@ -225,9 +225,8 @@ func CheckClaudeBinary() CheckResult {
 }
 
 // CheckAttachedTmux is check 5: at least one attached tmux session exists (where
-// a lead started inside tmux splits its teammate panes). This is only a Warn,
-// not a Fail: outside tmux Claude Code runs its own external swarm session, so
-// an attached session is not mandatory. A Warn leaves DoctorResult.OK true.
+// a lead started inside tmux splits its teammate panes). Its absence is only a
+// Warn: outside tmux Claude Code runs its own external swarm session.
 func CheckAttachedTmux() CheckResult {
 	r := CheckResult{ID: 5, Title: "at least one attached tmux session"}
 	panes, err := tmux.ListPanes()

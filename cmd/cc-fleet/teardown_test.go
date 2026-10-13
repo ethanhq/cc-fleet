@@ -11,8 +11,8 @@ import (
 )
 
 // TestTeardownWindowsCode: on Windows teardown refuses with
-// UNSUPPORTED_ON_WINDOWS (it used to report INTERNAL), before parsing or
-// discovery, in the regular envelope shape.
+// UNSUPPORTED_ON_WINDOWS before parsing or discovery, in the regular envelope
+// shape.
 func TestTeardownWindowsCode(t *testing.T) {
 	orig := onWindows
 	t.Cleanup(func() { onWindows = orig })

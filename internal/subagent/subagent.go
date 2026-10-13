@@ -241,9 +241,8 @@ func Run(parent context.Context, req Request) Result {
 		//    so it's safe with no lock even under N concurrent subagents for one
 		//    provider (the package's lock-free invariant).
 		//
-		//    MUST run AFTER the binary gate above, not before — fail-before-
-		//    side-effects, so a missing claude never leaves a profile file
-		//    behind. profilePath is only consumed later, so the move is safe.
+		//    MUST run AFTER the binary gate above, not before. A missing claude must
+		//    never leave a profile file behind (fail-before-side-effects).
 		profilePath, err = profile.WriteForProvider(v, "")
 		if err != nil {
 			return fail(ErrCodeFailed, fmt.Sprintf("write profile for %s: %v", req.Provider, err),
@@ -272,9 +271,8 @@ func Run(parent context.Context, req Request) Result {
 	req.LeadSessionID = resolveLeadSession(req.LeadSessionID)
 
 	// 6. Resolve the EFFECTIVE profile (version gate, fail-open to full with a
-	//    reason). Done AFTER the binary gate, against the version the gate resolved
-	//    for binPath — no second resolution, so the gate can't read a different
-	//    executable than the one this Run will exec.
+	//    reason). It uses the version the binary gate resolved for binPath, so the
+	//    gate and the exec can't see different executables.
 	effective, downgrade := gateProfile(req.PromptProfile, binVersion, nil)
 
 	// 7. Background mode: launch detached, return a job handle.

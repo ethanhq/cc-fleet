@@ -468,8 +468,7 @@ func loadBoard(epoch int) tea.Cmd {
 		fullSeq := boardRefreshSeq.Add(1)
 		items, err := teardown.DiscoverTeammates()
 		// tmux absent from PATH isn't a board failure: discovery returns what it
-		// finds without panes, and the board adds a degrade flag. A discovery
-		// error stays fatal to the board.
+		// finds without panes, and the board adds a degrade flag.
 		_, lookErr := lookPathFn("tmux")
 		tmuxMissing := lookErr != nil
 		if err == nil {

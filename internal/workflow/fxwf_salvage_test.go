@@ -76,7 +76,7 @@ func fxwfAssertGone(t *testing.T, repo, wt string) {
 	}
 }
 
-// (a) An engine killed before its finish ran: the death-proof sweep saves the leaf's uncommitted work on
+// An engine killed before its finish ran: the death-proof sweep saves the leaf's uncommitted work on
 // a cc-fleet/wf-salvage-* branch before deleting the worktree, and reports it in its lines.
 func TestFxwfSweepSalvagesKilledEngineWork(t *testing.T) {
 	const id = "fxwf-killed"
@@ -99,7 +99,7 @@ func TestFxwfSweepSalvagesKilledEngineWork(t *testing.T) {
 	}
 }
 
-// (b) The same killed-engine worktree, deleted through PurgeRun (workflow rm / prune): salvaged first.
+// The same killed-engine worktree, deleted through PurgeRun (workflow rm / prune): salvaged first.
 func TestFxwfPurgeRunSalvagesKilledEngineWork(t *testing.T) {
 	const id = "fxwf-purged"
 	repo, wt := fxwfKilledRun(t, id)
@@ -118,7 +118,7 @@ func TestFxwfPurgeRunSalvagesKilledEngineWork(t *testing.T) {
 	}
 }
 
-// (c) A leaf that committed inside its worktree (detached HEAD, no ref contains it) is salvaged too.
+// A leaf that committed inside its worktree (detached HEAD, no ref contains it) is salvaged too.
 func TestFxwfSweepSalvagesUnreferencedCommit(t *testing.T) {
 	const id = "fxwf-committed"
 	repo, wt := fxwfKilledRun(t, id)
@@ -143,7 +143,7 @@ func TestFxwfSweepSalvagesUnreferencedCommit(t *testing.T) {
 	fxwfAssertGone(t, repo, wt)
 }
 
-// (d) A clean worktree still at base is removed as before, with no branch and no salvage line.
+// A clean worktree still at base is removed, with no branch and no salvage line.
 func TestFxwfSweepCleanWorktreeNoBranch(t *testing.T) {
 	const id = "fxwf-clean"
 	repo, wt := fxwfKilledRun(t, id)
@@ -198,7 +198,7 @@ func fxwfAssertKept(t *testing.T, wt string) {
 	}
 }
 
-// (e) Still dirty after the snapshot commit → the sweep keeps the worktree and marks it.
+// Still dirty after the snapshot commit → the sweep keeps the worktree and marks it.
 func TestFxwfSweepKeepsStillDirtyAfterSnapshot(t *testing.T) {
 	const id = "fxwf-nested"
 	repo, wt := fxwfKilledRun(t, id)
@@ -215,7 +215,7 @@ func TestFxwfSweepKeepsStillDirtyAfterSnapshot(t *testing.T) {
 	}
 }
 
-// (e) finishWorktree applies the same post-snapshot check.
+// finishWorktree applies the same post-snapshot check.
 func TestFxwfFinishKeepsStillDirtyAfterSnapshot(t *testing.T) {
 	repo := initSweepRepo(t)
 	wfIsolate(t)

@@ -3,10 +3,6 @@
 // points at cc-fleet's shim; the shim hands ccf-<provider> agent types to
 // `cc-fleet __teammate-launch`, which swaps in the provider's profile and model
 // and execs the lead's own claude binary.
-//
-// This file holds the lane's shared contract: constants,
-// error codes, detail words, the agent-type grammar, the failure line, and the
-// check / setup JSON envelopes.
 package teammate
 
 import (
@@ -196,9 +192,8 @@ func failureLineField(s string) string {
 // failureLineRe is the failure-line grammar ParseFailureLine matches.
 var failureLineRe = regexp.MustCompile(`^cc-fleet teammate: ([A-Z_]+): ([^:\s]+): `)
 
-// ParseFailureLine matches one pane line against ^cc-fleet teammate: ([A-Z_]+): ([^:\s]+): .
-// Pane text comes from tmux.Server.CaptureJoined (capture-pane -p -J -S -200),
-// so lines tmux wrapped are already joined back.
+// ParseFailureLine matches one pane line against failureLineRe. Pane text comes
+// from tmux.Server.CaptureJoined, which joins lines tmux wrapped.
 func ParseFailureLine(line string) (code, agentID string, ok bool) {
 	m := failureLineRe.FindStringSubmatch(line)
 	if m == nil {

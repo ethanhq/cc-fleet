@@ -42,9 +42,7 @@ var mintQueuedLeaf = subagent.MintQueuedLeaf
 
 // resolveProfile maps a REQUESTED prompt profile to the effective one (the version
 // gate). A seam so tests drive the downgrade path without a real claude binary.
-// Production resolves the claude binary the same way Run does (claudebin) and gates
-// on ITS version; a resolve failure fails open to full with a reason. Called at most
-// ONCE per engine (see engine.effProfileFor), never per leaf.
+// Called at most ONCE per engine (see engine.effProfileFor), never per leaf.
 var resolveProfile = subagent.ResolveEffectiveProfile
 
 // Options configures a workflow run.
