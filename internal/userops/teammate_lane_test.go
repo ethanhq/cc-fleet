@@ -151,10 +151,10 @@ func TestSyncErrorIsNonFatal(t *testing.T) {
 	}
 }
 
-// TestFx2tmSyncConflictIsWarning: an unmarked ccf-<p>.md already on disk is
+// TestSyncConflictIsWarning: an unmarked ccf-<p>.md already on disk is
 // never overwritten; Add/Edit/Remove still succeed and report it in
 // teammate_sync_error, and Repair reports it in agent_defs.conflicts.
-func TestFx2tmSyncConflictIsWarning(t *testing.T) {
+func TestSyncConflictIsWarning(t *testing.T) {
 	claudeDir := cliLaneHome(t)
 	cliSetLane(t, true)
 	def := filepath.Join(claudeDir, "agents", "ccf-glm.md")

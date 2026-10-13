@@ -12,11 +12,11 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/procintrospect"
 )
 
-// TestFx2discPsJSONNoTmux: with tmux absent and no teammate anywhere, `ps
+// TestPsJSONNoTmux: with tmux absent and no teammate anywhere, `ps
 // --json` succeeds with an empty array. runPs exits the process on failure, so
 // it runs in a re-executed test binary.
-func TestFx2discPsJSONNoTmux(t *testing.T) {
-	if os.Getenv("FX2DISC_PS_CHILD") == "1" {
+func TestPsJSONNoTmux(t *testing.T) {
+	if os.Getenv("PS_NOTMUX_CHILD") == "1" {
 		if err := runPs(true, false); err != nil {
 			os.Exit(3)
 		}
@@ -36,9 +36,9 @@ func TestFx2discPsJSONNoTmux(t *testing.T) {
 	if err := os.MkdirAll(tmuxDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command(os.Args[0], "-test.run=^TestFx2discPsJSONNoTmux$")
+	cmd := exec.Command(os.Args[0], "-test.run=^TestPsJSONNoTmux$")
 	cmd.Env = append(os.Environ(),
-		"FX2DISC_PS_CHILD=1",
+		"PS_NOTMUX_CHILD=1",
 		"PATH="+filepath.Join(root, "bin"),
 		"HOME="+filepath.Join(root, "home"),
 		"CLAUDE_CONFIG_DIR="+filepath.Join(root, "claude"),

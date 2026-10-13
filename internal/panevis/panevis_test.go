@@ -339,10 +339,10 @@ func TestHideShowTargetSelection(t *testing.T) {
 	}
 }
 
-// TestFx2pvStaleHideKeepsOrigin: a second hide holding a stale visible
+// TestStaleHideKeepsOrigin: a second hide holding a stale visible
 // snapshot (a double `h` in the TUI) re-reads the pane's session under the
 // lock, keeps the origin window, and show still returns the pane there.
-func TestFx2pvStaleHideKeepsOrigin(t *testing.T) {
+func TestStaleHideKeepsOrigin(t *testing.T) {
 	e := killSetup(t, killRow("%5", false))
 	if res := Hide("%5", ""); !res.OK || !res.Hidden {
 		t.Fatalf("first hide: %+v", res)
@@ -362,9 +362,9 @@ func TestFx2pvStaleHideKeepsOrigin(t *testing.T) {
 	}
 }
 
-// TestFx2pvStaleShowNotHidden: show holding a stale hidden snapshot of a pane
+// TestStaleShowNotHidden: show holding a stale hidden snapshot of a pane
 // that is visible again is NOT_HIDDEN and does not act on a leftover origin.
-func TestFx2pvStaleShowNotHidden(t *testing.T) {
+func TestStaleShowNotHidden(t *testing.T) {
 	e := killSetup(t, killRow("%5", false))
 	if err := os.WriteFile(e.state, []byte("@3"), 0o600); err != nil {
 		t.Fatal(err)
@@ -378,9 +378,9 @@ func TestFx2pvStaleShowNotHidden(t *testing.T) {
 	}
 }
 
-// TestFx2pvHideRollbackKeepsPriorOrigin: a failed break-pane rolls back only
+// TestHideRollbackKeepsPriorOrigin: a failed break-pane rolls back only
 // the origin this hide wrote; a record that was already there is restored.
-func TestFx2pvHideRollbackKeepsPriorOrigin(t *testing.T) {
+func TestHideRollbackKeepsPriorOrigin(t *testing.T) {
 	e := killSetup(t, killRow("%5", false))
 	if err := os.WriteFile(e.state, []byte("@3"), 0o600); err != nil {
 		t.Fatal(err)

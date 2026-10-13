@@ -481,10 +481,10 @@ func TestRefuseSelfExec(t *testing.T) {
 	}
 }
 
-// TestFxtmRefuseSelfOnPathBeforeVersionProbe: with the real resolver, a PATH
+// TestRefuseSelfOnPathBeforeVersionProbe: with the real resolver, a PATH
 // `claude` that links to the shim is refused before anything runs it (a
 // `--version` probe would recurse into the launcher).
-func TestFxtmRefuseSelfOnPathBeforeVersionProbe(t *testing.T) {
+func TestRefuseSelfOnPathBeforeVersionProbe(t *testing.T) {
 	h := hermeticHome(t)
 	shim, err := ShimPath()
 	if err != nil {

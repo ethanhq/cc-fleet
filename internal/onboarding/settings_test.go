@@ -415,8 +415,8 @@ func TestSettingsString(t *testing.T) {
 	}
 }
 
-// TestFxtmSettingsStringNonString: JSON null (and any other non-string) is not present.
-func TestFxtmSettingsStringNonString(t *testing.T) {
+// TestSettingsStringNonString: JSON null (and any other non-string) is not present.
+func TestSettingsStringNonString(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "settings.json")
 	setWrite(t, path, `{"teammateMode":null,"env":{"CLAUDE_CODE_TEAMMATE_COMMAND": null,"B":true,"O":{},"L":[]}}`, 0o600)
 	for _, keys := range [][]string{

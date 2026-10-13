@@ -118,9 +118,9 @@ func TestModeSourceChain(t *testing.T) {
 	})
 }
 
-// TestFxtmModeSettingSources: the lead's --setting-sources limits the user,
+// TestModeSettingSources: the lead's --setting-sources limits the user,
 // project and local layers; policy and --settings are always read.
-func TestFxtmModeSettingSources(t *testing.T) {
+func TestModeSettingSources(t *testing.T) {
 	h := evalModeSetup(t)
 	user := filepath.Join(h.ClaudeDir, "settings.json")
 	project := filepath.Join(h.proj, ".claude", "settings.json")

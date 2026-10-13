@@ -666,9 +666,9 @@ func TestDiscoverTeammates_TmuxNotFound(t *testing.T) {
 	}
 }
 
-// TestFx2discTeardownTeamWithoutTmux: with tmux absent and no teammate left,
+// TestTeardownTeamWithoutTmux: with tmux absent and no teammate left,
 // tearing a session team down again is a successful no-op, not INTERNAL.
-func TestFx2discTeardownTeamWithoutTmux(t *testing.T) {
+func TestTeardownTeamWithoutTmux(t *testing.T) {
 	f := discSetup(t)
 	listPanesFn = f.origListPanes
 	f.sockets = []string{"/tmp/tmux-501/default"}
@@ -726,10 +726,10 @@ func TestParseDiscArgs(t *testing.T) {
 	}
 }
 
-// TestFxdiscTmuxNotFoundKeepsRows: without tmux there is no pane information,
+// TestTmuxNotFoundKeepsRows: without tmux there is no pane information,
 // but the process table and in-process configs are still scanned; rows found
 // there come back without an error.
-func TestFxdiscTmuxNotFoundKeepsRows(t *testing.T) {
+func TestTmuxNotFoundKeepsRows(t *testing.T) {
 	for _, sockets := range [][]string{nil, {"/tmp/tmux-501/default"}} {
 		f := discSetup(t)
 		listPanesFn = f.origListPanes
@@ -758,10 +758,10 @@ func TestFxdiscTmuxNotFoundKeepsRows(t *testing.T) {
 	}
 }
 
-// TestFxdiscLegacyRawTeamDir: 0.3.x kept a team's config under its raw name
+// TestLegacyRawTeamDir: 0.3.x kept a team's config under its raw name
 // (teams/My_Team), not Claude Code's sanitized directory; a member key found
 // there is still the positive evidence that makes the row legacy.
-func TestFxdiscLegacyRawTeamDir(t *testing.T) {
+func TestLegacyRawTeamDir(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		key  string

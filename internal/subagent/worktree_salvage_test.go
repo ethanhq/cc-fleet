@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-// fxwfGit runs git in dir, failing the test on error.
-func fxwfGit(t *testing.T, dir string, args ...string) string {
+// mustGit runs git in dir, failing the test on error.
+func mustGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	out, err := salvageGit(dir, args...)
 	if err != nil {
@@ -18,21 +18,21 @@ func fxwfGit(t *testing.T, dir string, args ...string) string {
 	return strings.TrimSpace(out)
 }
 
-// fxwfWorktree makes a committed repo plus a detached worktree at <tmp>/<seg>/<dir> and returns both.
-func fxwfWorktree(t *testing.T, seg, dir string) (repo, wt string) {
+// repoWithWorktree makes a committed repo plus a detached worktree at <tmp>/<seg>/<dir> and returns both.
+func repoWithWorktree(t *testing.T, seg, dir string) (repo, wt string) {
 	t.Helper()
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
 	repo = t.TempDir()
-	fxwfGit(t, repo, "init", "-q")
-	fxwfGit(t, repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init")
+	mustGit(t, repo, "init", "-q")
+	mustGit(t, repo, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "init")
 	wt = filepath.Join(t.TempDir(), seg, dir)
-	fxwfGit(t, repo, "worktree", "add", "-q", "--detach", wt, "HEAD")
+	mustGit(t, repo, "worktree", "add", "-q", "--detach", wt, "HEAD")
 	return repo, wt
 }
 
-func TestFxwfSalvageWorktreeNotAWorktree(t *testing.T) {
+func TestSalvageWorktreeNotAWorktree(t *testing.T) {
 	d := t.TempDir()
 	if note, remove := SalvageWorktree(d); !remove || note != "" {
 		t.Errorf("a dir with no .git = (%q, %v), want removable with no note", note, remove)
@@ -45,9 +45,9 @@ func TestFxwfSalvageWorktreeNotAWorktree(t *testing.T) {
 	}
 }
 
-func TestFxwfSalvageWorktreeStatusFailureKeeps(t *testing.T) {
-	_, wt := fxwfWorktree(t, "seg", "0123456789")
-	gd := fxwfGit(t, wt, "rev-parse", "--absolute-git-dir")
+func TestSalvageWorktreeStatusFailureKeeps(t *testing.T) {
+	_, wt := repoWithWorktree(t, "seg", "0123456789")
+	gd := mustGit(t, wt, "rev-parse", "--absolute-git-dir")
 	if err := os.WriteFile(filepath.Join(gd, "index"), []byte("garbage"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -60,9 +60,9 @@ func TestFxwfSalvageWorktreeStatusFailureKeeps(t *testing.T) {
 	}
 }
 
-func TestFxwfSalvageWorktreeBranchCollisionRetries(t *testing.T) {
-	repo, wt := fxwfWorktree(t, "seg", "0123456789")
-	fxwfGit(t, repo, "branch", "cc-fleet/wf-salvage-seg-01234567") // the name is taken
+func TestSalvageWorktreeBranchCollisionRetries(t *testing.T) {
+	repo, wt := repoWithWorktree(t, "seg", "0123456789")
+	mustGit(t, repo, "branch", "cc-fleet/wf-salvage-seg-01234567") // the name is taken
 	if err := os.WriteFile(filepath.Join(wt, "f.txt"), []byte("leaf"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -71,7 +71,7 @@ func TestFxwfSalvageWorktreeBranchCollisionRetries(t *testing.T) {
 		t.Fatalf("SalvageWorktree = (%q, %v), want a suffixed salvage branch", note, remove)
 	}
 	branch := strings.Fields(note)[1]
-	if got := fxwfGit(t, repo, "show", branch+":f.txt"); got != "leaf" {
+	if got := mustGit(t, repo, "show", branch+":f.txt"); got != "leaf" {
 		t.Errorf("salvaged f.txt = %q, want %q", got, "leaf")
 	}
 }

@@ -357,9 +357,9 @@ func TestFindShadowingDefsByFrontmatterName(t *testing.T) {
 	}
 }
 
-// TestFxtmFindShadowingDefsFollowsDirSymlinks: Claude Code's loader follows
+// TestFindShadowingDefsFollowsDirSymlinks: Claude Code's loader follows
 // directory symlinks under .claude/agents, so the scan does too, without looping.
-func TestFxtmFindShadowingDefsFollowsDirSymlinks(t *testing.T) {
+func TestFindShadowingDefsFollowsDirSymlinks(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinks need extra privileges on Windows")
 	}
@@ -406,10 +406,10 @@ func TestFxtmFindShadowingDefsFollowsDirSymlinks(t *testing.T) {
 	}
 }
 
-// TestFx2tmFrontmatterNameYAMLScalars: the name value is read as a YAML scalar
+// TestFrontmatterNameYAMLScalars: the name value is read as a YAML scalar
 // (quotes, escapes, trailing comments), so a valid definition written in any of
 // those forms is still found as a shadow.
-func TestFx2tmFrontmatterNameYAMLScalars(t *testing.T) {
+func TestFrontmatterNameYAMLScalars(t *testing.T) {
 	h := hermeticHome(t)
 	agents := filepath.Join(h.Home, "proj", ".claude", "agents")
 	if err := os.MkdirAll(agents, 0o755); err != nil {

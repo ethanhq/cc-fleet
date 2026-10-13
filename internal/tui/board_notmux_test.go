@@ -10,19 +10,19 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/teardown"
 )
 
-// fx2discNoTmux makes the board's tmux probe report tmux as absent.
-func fx2discNoTmux(t *testing.T) {
+// stubNoTmux makes the board's tmux probe report tmux as absent.
+func stubNoTmux(t *testing.T) {
 	t.Helper()
 	orig := lookPathFn
 	t.Cleanup(func() { lookPathFn = orig })
 	lookPathFn = func(string) (string, error) { return "", exec.ErrNotFound }
 }
 
-// TestFx2discLoadBoardTmuxMissingKeepsRows: the degrade flag comes from the
+// TestLoadBoardTmuxMissingKeepsRows: the degrade flag comes from the
 // board's own tmux probe, not from a discovery error. Discovery rows found
 // without tmux (an in-process ccf-* member) stay on the board, the notice
 // flag is set and no recorded team is synthesized as ended.
-func TestFx2discLoadBoardTmuxMissingKeepsRows(t *testing.T) {
+func TestLoadBoardTmuxMissingKeepsRows(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("HOME", t.TempDir())
 	claudeDir := t.TempDir()
@@ -44,7 +44,7 @@ func TestFx2discLoadBoardTmuxMissingKeepsRows(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "config.json"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	fx2discNoTmux(t)
+	stubNoTmux(t)
 
 	bm, ok := loadBoard(1)().(boardMsg)
 	if !ok {

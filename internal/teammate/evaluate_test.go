@@ -348,9 +348,9 @@ func TestEvaluateEveryCode(t *testing.T) {
 	}
 }
 
-// TestFxtmEvaluateWindowsRefusal runs on every platform (evalSetup is skipped
+// TestEvaluateWindowsRefusal runs on every platform (evalSetup is skipped
 // on Windows): step 1 refuses before any lead session or file is looked at.
-func TestFxtmEvaluateWindowsRefusal(t *testing.T) {
+func TestEvaluateWindowsRefusal(t *testing.T) {
 	hermeticHome(t)
 	oldGOOS, oldDetect := evalGOOS, detectSessionFn
 	t.Cleanup(func() { evalGOOS, detectSessionFn = oldGOOS, oldDetect })
@@ -415,10 +415,10 @@ func TestEvaluateRestartRequired(t *testing.T) {
 	})
 }
 
-// TestFxtmEvaluateModeFileNewerThanLead: with a sentinel blocker, a
+// TestEvaluateModeFileNewerThanLead: with a sentinel blocker, a
 // teammateMode read from a settings file changed after the lead started may
 // not be the mode the lead runs, so a restart is required.
-func TestFxtmEvaluateModeFileNewerThanLead(t *testing.T) {
+func TestEvaluateModeFileNewerThanLead(t *testing.T) {
 	blocker := func(t *testing.T, f *evalFixture) {
 		evalWriteFile(t, filepath.Join(f.proj, ".claude", "settings.json"), `{"availableModels":["sonnet"]}`)
 	}

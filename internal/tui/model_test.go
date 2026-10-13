@@ -1495,7 +1495,7 @@ func TestLoadBoardTmuxMissingSkipsEndedSynthesis(t *testing.T) {
 	}
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	t.Setenv("PATH", t.TempDir()) // no real tmux server is scanned
-	fx2discNoTmux(t)
+	stubNoTmux(t)
 
 	msg := loadBoard(1)()
 	bm, ok := msg.(boardMsg)
