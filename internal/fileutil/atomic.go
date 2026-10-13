@@ -23,7 +23,8 @@ import (
 //     filesystem (atomic at the kernel level).
 //  2. Chmod the temp to exactly mode regardless of umask. CreateTemp's
 //     0600-before-umask is not enough.
-//  3. Write data, Close, Rename. Any failure jumps to cleanup.
+//  3. Write data, Close, Rename (re-tried on windows while another handle
+//     holds the target open — renameRetry). Any failure jumps to cleanup.
 //  4. Defer os.Remove on the temp path so a failure before rename never
 //     leaves an orphan; after a successful rename the temp name no longer
 //     exists, so the deferred Remove no-ops.
@@ -61,7 +62,7 @@ func AtomicWrite(path string, data []byte, mode os.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("fileutil.AtomicWrite: close temp %s: %w", tmpPath, err)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := renameRetry(tmpPath, path); err != nil {
 		return fmt.Errorf("fileutil.AtomicWrite: rename %s -> %s: %w", tmpPath, path, err)
 	}
 	return nil

@@ -9,8 +9,8 @@ import (
 	"time"
 )
 
-// TestAtomicWriteReplacesOpenTarget: a reader holding the target open (os.Open grants no
-// FILE_SHARE_DELETE) only delays the replace, never fails it — callers such as the job-meta
+// TestAtomicWriteReplacesOpenTarget: a reader briefly holding the target open (os.Open grants
+// no FILE_SHARE_DELETE) delays the replace instead of failing it — callers such as the job-meta
 // hold protocol drop a failed write.
 func TestAtomicWriteReplacesOpenTarget(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "meta.json")
