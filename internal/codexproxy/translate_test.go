@@ -93,8 +93,38 @@ func TestTranslateRequest_OmitsForbiddenFieldsAndForcesStore(t *testing.T) {
 	if len(r.Input) != 1 {
 		t.Fatalf("want 1 input item, got %d", len(r.Input))
 	}
-	if r.PromptCacheKey != "user_abc_session_123" {
-		t.Fatalf("prompt_cache_key=%q (want the metadata user_id)", r.PromptCacheKey)
+	if r.PromptCacheKey != "4c900ce79a89cf62cade79ffa195ec8e" || contains(s, "user_abc_session_123") {
+		t.Fatalf("prompt_cache_key=%q (want the digest of a legacy user_id, never the raw value): %s", r.PromptCacheKey, s)
+	}
+}
+
+// Claude Code's metadata.user_id is a JSON object that also names the install and
+// the Claude account; only its session id may reach the upstream.
+func TestTranslateRequest_PromptCacheKeyIsSessionOnly(t *testing.T) {
+	const device, account, session = "0f1e2d3c4b5a69788796a5b4c3d2e1f0", "9b2f6c1e-acc0-4a11-8d57-0c3e5a7b9d10", "5e7a1c3d-5e55-4b0a-9f21-6d8c0b2a4e6f"
+	a := parseReq(t, `{"model":"m","messages":[{"role":"user","content":"hi"}],"metadata":{"user_id":`+
+		`"{\"device_id\":\"`+device+`\",\"account_uuid\":\"`+account+`\",\"session_id\":\"`+session+`\"}"}}`)
+	r, err := translateRequest(a, newConvCtx(a, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := json.Marshal(r)
+	if r.PromptCacheKey != session {
+		t.Fatalf("prompt_cache_key=%q, want the session id %q", r.PromptCacheKey, session)
+	}
+	if s := string(b); contains(s, device) || contains(s, account) {
+		t.Fatalf("request carries the device id or account uuid: %s", s)
+	}
+}
+
+func TestTranslateRequest_NoUserIDOmitsPromptCacheKey(t *testing.T) {
+	a := parseReq(t, `{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	r, err := translateRequest(a, newConvCtx(a, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := json.Marshal(r); contains(string(b), "prompt_cache_key") {
+		t.Fatalf("request must omit prompt_cache_key without a user_id: %s", b)
 	}
 }
 

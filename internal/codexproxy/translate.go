@@ -98,8 +98,9 @@ type responsesTool struct {
 
 // translateRequest maps an Anthropic Messages request to a Responses request.
 // max_tokens and temperature are intentionally omitted (the ChatGPT backend 400s
-// on them). store is forced false. The claude session id inside metadata.user_id
-// becomes prompt_cache_key so the backend's prompt cache follows the conversation.
+// on them). store is forced false. prompt_cache_key is the sessionKey of
+// metadata.user_id, so the backend's prompt cache follows the conversation
+// without the upstream seeing the rest of that field.
 func translateRequest(a *anthropicRequest, cc *convCtx) (*responsesRequest, error) {
 	choice, parallel := translateToolChoice(a.ToolChoice, cc)
 	r := &responsesRequest{
@@ -109,7 +110,7 @@ func translateRequest(a *anthropicRequest, cc *convCtx) (*responsesRequest, erro
 		Stream:            true,
 		ToolChoice:        choice,
 		ParallelToolCalls: parallel,
-		PromptCacheKey:    a.Metadata.UserID,
+		PromptCacheKey:    sessionKey(a.Metadata.UserID),
 	}
 	for _, m := range a.Messages {
 		items, err := translateMessage(m, cc)
