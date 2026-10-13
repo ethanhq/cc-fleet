@@ -289,6 +289,10 @@ type Model struct {
 	formMode formMode
 	editName string
 
+	// The extra_body row as the edit form first showed it; submitEdit sends the row
+	// only when it differs.
+	editExtraBody string
+
 	// Model picker: models fetched from the provider's models_endpoint to fill the
 	// default_model field. While loading, modelList is nil and modelsErr is nil;
 	// the picker view branches on those. modelFilter is the live type-to-narrow
@@ -2118,6 +2122,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.form = newEditForm(v)
 		m.formMode = modeEdit
 		m.editName = v.Name
+		m.editExtraBody = m.form.value("extra_body")
 		m.addProtocol = v.Protocol // the form's provider class (drives the codex model picker)
 		m.screen = screenForm
 		return m, textinput.Blink
@@ -4553,6 +4558,15 @@ func (m Model) submitEdit() (tea.Model, tea.Cmd) {
 		upstream := m.form.value("upstream_url")
 		models := m.form.value("models_endpoint")
 		req.UpstreamURL, req.ModelsEndpoint = &upstream, &models
+		// The text input drops newlines and U+FFFD, so an untouched row is not sent:
+		// saving another field must not rewrite the stored value.
+		if extra := m.form.value("extra_body"); extra != m.editExtraBody {
+			if err := config.ValidateExtraBody(m.addProtocol, extra); err != nil {
+				m.form.err = err.Error()
+				return m, nil
+			}
+			req.ExtraBody = &extra
+		}
 		required["Upstream URL"], required["Models endpoint"] = upstream, models
 		order = append([]string{"Upstream URL", "Models endpoint"}, order...)
 	case config.ProtocolCodexOAuth:

@@ -199,9 +199,12 @@ func newEditForm(v userops.ProviderView) form {
 	var fields []formField
 	switch v.Protocol {
 	case config.ProtocolOpenAIChat, config.ProtocolOpenAIResponses:
+		extra := newTextInput(v.ExtraBody, `{"provider":{"only":["deepseek"]}}`, false)
+		extra.CharLimit = config.MaxExtraBodyBytes // runes vs bytes: approximate; submit validates
 		fields = append(fields,
 			formField{key: "upstream_url", label: "Upstream URL", kind: fieldText, input: newTextInput(v.UpstreamURL, "https://api.openai.com/v1", false)},
-			formField{key: "models_endpoint", label: "Models endpoint", kind: fieldText, input: newTextInput(v.ModelsEndpoint, "https://…/v1/models", false)})
+			formField{key: "models_endpoint", label: "Models endpoint", kind: fieldText, input: newTextInput(v.ModelsEndpoint, "https://…/v1/models", false)},
+			formField{key: "extra_body", kind: fieldText, input: extra})
 	case config.ProtocolCodexOAuth:
 		// loopback base_url + models_endpoint are internal; nothing to edit there.
 	default:
@@ -474,6 +477,8 @@ func fieldNote(key string) string {
 		return "enter / space toggles whether the provider is enabled."
 	case "manage_keys":
 		return "enter opens the per-provider key manager."
+	case "extra_body":
+		return "extra body — JSON object added to every upstream request, from the next worker start. Not for secrets."
 	}
 	return ""
 }
@@ -482,7 +487,7 @@ func fieldNote(key string) string {
 // per-width note reserve can find the tallest wrap (default_1m stands in for all
 // three 1M toggles — they share a note).
 var fieldNoteKeys = []string{
-	"default_model", "strong_model", "fast_model", "default_1m", "effort", "permission", "enabled", "manage_keys",
+	"default_model", "strong_model", "fast_model", "default_1m", "effort", "permission", "enabled", "manage_keys", "extra_body",
 }
 
 // fieldNoteReserve is the tallest a field note wraps to at this width (≥1). The edit
@@ -586,6 +591,8 @@ func cardKey(key string) string {
 		return "key"
 	case "manage_keys":
 		return "keys"
+	case "extra_body":
+		return "extra"
 	}
 	return key // name / enabled already read as card keys
 }

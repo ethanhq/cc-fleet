@@ -535,6 +535,7 @@ type EditRequest struct {
 	BaseURL        *string // nil = no change
 	UpstreamURL    *string // openai-* real upstream base
 	ModelsEndpoint *string
+	ExtraBody      *string // openai-* extra request-body members, a JSON object ("" clears)
 	DefaultModel   *string
 	StrongModel    *string // "strong" capability slot ("" clears → follows DefaultModel)
 	FastModel      *string // "fast" capability slot ("" clears → follows DefaultModel)
@@ -596,6 +597,9 @@ func editLocked(req EditRequest) (*EditResult, error) {
 	}
 	if req.ModelsEndpoint != nil {
 		v.ModelsEndpoint = *req.ModelsEndpoint
+	}
+	if req.ExtraBody != nil {
+		v.ExtraBody = *req.ExtraBody // config.Validate rejects a bad value
 	}
 	profileFieldChanged := false
 	if req.DefaultModel != nil && *req.DefaultModel != v.DefaultModel {
@@ -843,8 +847,9 @@ type ProviderView struct {
 	ModelsEndpoint string `json:"models_endpoint"`
 	SecretBackend  string `json:"secret_backend"`
 	SecretRef      string `json:"secret_ref"`
-	Protocol       string `json:"protocol"`     // resolved wire class: "" | openai-chat | openai-responses | codex-oauth
-	UpstreamURL    string `json:"upstream_url"` // real OpenAI base for openai-* (base_url is the loopback daemon)
+	Protocol       string `json:"protocol"`             // resolved wire class: "" | openai-chat | openai-responses | codex-oauth
+	UpstreamURL    string `json:"upstream_url"`         // real OpenAI base for openai-* (base_url is the loopback daemon)
+	ExtraBody      string `json:"extra_body,omitempty"` // JSON object added to every upstream request body (openai-*)
 	Enabled        bool   `json:"enabled"`
 	ModelsCount    int    `json:"models_count"`
 	ModelsStale    bool   `json:"models_stale"`
@@ -901,6 +906,7 @@ func List() (*ListResult, error) {
 			SecretRef:      v.SecretRef,
 			Protocol:       v.EffectiveProtocol(),
 			UpstreamURL:    v.UpstreamURL,
+			ExtraBody:      v.ExtraBody,
 			Enabled:        v.Enabled,
 			Default:        name == effDefault,
 		}
