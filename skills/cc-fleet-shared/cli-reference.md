@@ -157,7 +157,9 @@ cc-fleet teardown <%N|name@team|team> [--socket <path>] --json
                                          tmux_socket_path, pid}], skipped[{agent_id, pane_id,
                                          reason}]}; reason IDENTITY_MISMATCH (no longer that
                                          teammate — nothing killed) or IN_PROCESS (TaskStop
-                                         it). Nothing left → ok:true, killed:[]. Never edits
+                                         it). Nothing left → ok:true, killed:[]. A bare team
+                                         must be session-xxxxxxxx or the team of a teammate
+                                         ps lists, else BAD_ARGS. Never edits
                                          ~/.claude/teams, never touches the lead or native
                                          teammates. For a live teammate prefer a
                                          shutdown_request or TaskStop.

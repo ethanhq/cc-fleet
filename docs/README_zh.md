@@ -238,7 +238,7 @@ ccf workflow run audit.js --resume "$RUN"   # 重放 journal,跑完的 leaf 命�
 **前置要求**:Agent Team 是唯一需要提前配置的 lane,**暂不支持 Windows**。用前满足两个条件 - 
 
 1. **Claude Code ≥ 2.1.278,在 tmux 或 iTerm2 里运行终端版 `claude`**(`tmux new-session -s work`),Teammate 的 pane 才能在你旁边分屏显示。Claude 桌面 App、`claude -p` 和 SDK 会话没有 agent team — 在那里 Claude 会改用 Subagent 和 Workflow;
-2. **做一次配置**:首次运行 `ccf` 时会提示并可以替你完成,也可以自己运行下面这条,然后重启 `claude`:
+2. **做一次配置**:有已启用的 provider 时,`ccf` 第一次启动会提示并可以替你完成,也可以自己运行下面这条,然后重启 `claude`:
 
 ```bash
 cc-fleet teammate setup --yes --teammate-mode tmux

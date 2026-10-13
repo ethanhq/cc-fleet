@@ -198,7 +198,7 @@ cat <<EOF
    cc-fleet update      # later: update cc-fleet + the plugin to the latest release
 
    tmux is needed only for live teammates; subagent / workflow / run work without it.
-   Provider teammates: run 'cc-fleet teammate setup' once (terminal claude inside tmux or iTerm2, Claude Code ≥ 2.1.278).
+   Provider teammates: run 'cc-fleet teammate setup --yes --teammate-mode tmux' once (terminal claude inside tmux or iTerm2, Claude Code ≥ 2.1.278).
 
    See README.md in this archive for the full quick-start.
 EOF

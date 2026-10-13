@@ -61,7 +61,7 @@ Agent Team mode **can't run on Windows**; everything else (Subagent / Workflow /
 
 - **Claude Code ≥ 2.1.278**, the terminal `claude` — not the Claude desktop app, `claude -p`, or an SDK session, which have no agent team;
 - **tmux or iTerm2** around that `claude`, so teammates open in panes. Install tmux first (macOS: `brew install tmux`; Debian / Ubuntu: `sudo apt install tmux`) and start `claude` inside it;
-- **a one-time setup**, then a `claude` restart (the TUI offers to do it on first run):
+- **a one-time setup**, then a `claude` restart (the TUI offers to do it the first time it starts with a provider enabled):
 
   ```bash
   ccf teammate setup           # shows what it would change

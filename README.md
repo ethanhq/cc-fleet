@@ -238,7 +238,7 @@ ccf workflow run audit.js --resume "$RUN"   # replay the journal, finished leave
 **Prerequisites**: Agent Team is the only lane that needs setup up front, and it **doesn't support Windows yet**. Before you use it:
 
 1. **Claude Code ≥ 2.1.278, the terminal `claude`, inside tmux or iTerm2** (`tmux new-session -s work`) so teammate panes can show up alongside you. The Claude desktop app, `claude -p` and SDK sessions have no agent team — there, Claude uses subagents and workflows instead;
-2. **Run the one-time setup**: the first time you run `ccf` it offers to do this for you — or run it yourself, then restart `claude`:
+2. **Run the one-time setup**: the first time you start `ccf` with a provider enabled, it offers to do this for you — or run it yourself, then restart `claude`:
 
 ```bash
 cc-fleet teammate setup --yes --teammate-mode tmux

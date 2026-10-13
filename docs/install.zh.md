@@ -61,7 +61,7 @@ Agent Team 模式**无法在 Windows 上使用**;其余功能(Subagent / Workflo
 
 - **Claude Code ≥ 2.1.278**,终端版 `claude` — Claude 桌面 App、`claude -p` 和 SDK 会话没有 agent team,用不了;
 - 这个 `claude` 运行在 **tmux 或 iTerm2** 里,Teammate 才能以 pane 打开。先装 tmux(macOS:`brew install tmux`;Debian / Ubuntu:`sudo apt install tmux`),再在里面启动 `claude`;
-- **一次性配置**,然后重启 `claude`(首次运行 TUI 时它会提示并可替你完成):
+- **一次性配置**,然后重启 `claude`(有已启用的 provider 时,TUI 第一次启动会提示并可替你完成):
 
   ```bash
   ccf teammate setup           # 列出将要做的改动

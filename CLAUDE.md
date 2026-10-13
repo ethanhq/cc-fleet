@@ -21,7 +21,8 @@ There are **four execution lanes** — internalize this split, most of the code 
   which execs the launcher `cc-fleet __teammate-launch`; the launcher swaps in the provider's
   profile and model and execs the lead's exact `claude`. `teammate check` (lead's Bash) and
   `teammate guard` (the plugin's `PreToolUse(Agent)` hook) share one `Evaluate`. Terminal
-  `claude` in tmux/iTerm2 only, Claude Code ≥ 2.1.278; not the desktop app, `-p`, or SDK.
+  `claude` only (`teammateMode` `tmux` anywhere, `auto` inside tmux/iTerm2), Claude Code ≥
+  2.1.278; not the desktop app, `-p`, or SDK.
   Unix-only.
 - **Subagent** — `internal/subagent`. `claude -p` headless, one-shot (or `--background` with a
   job file); classified `Result` envelope on stdout. The reserved id `claude` runs the leaf on
