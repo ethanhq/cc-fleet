@@ -2,8 +2,8 @@
 //
 // AtomicWrite is the single place that implements the create-tempfile + chmod +
 // write + close + rename + cleanup discipline used by config / models / profile
-// / fingerprint / secrets / spawn / userops for every 0o600 metadata or secret
-// file, so a future hardening only changes one implementation.
+// / secrets / userops and the rest for every 0o600 metadata or secret file, so
+// a future hardening only changes one implementation.
 package fileutil
 
 import (

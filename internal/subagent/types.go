@@ -127,7 +127,7 @@ type Usage struct {
 	CacheCreationInputTokens int `json:"cache_creation_input_tokens,omitempty"` // tokens billed to WRITE the prompt cache
 }
 
-// Result is cc-fleet's stable outer envelope (mirrors spawn.Result style). It
+// Result is cc-fleet's stable outer envelope. It
 // is decoupled from claude's inner schema: Run parses the inner envelope, then
 // distills these fields, so a claude version bump doesn't break the skill
 // contract. The JSON tags are part of that contract — keep them stable.
@@ -199,8 +199,8 @@ type Result struct {
 // (auth↔KEY_INVALID, rate_limit↔RATE_LIMITED, …) for a consistent mental model
 // across teammate (`ps --check`) and subagent.
 const (
-	// Pre-flight failures (claude never launched). Reuse spawn's code spellings
-	// so the skill already recognizes them.
+	// Pre-flight failures (claude never launched). Codes shared with the teammate
+	// lane are spelled the same, so the skill already recognizes them.
 	ErrCodeBadArgs          = "SUBAGENT_BAD_ARGS"       // --prompt/--prompt-file missing or both given (CLI layer)
 	ErrCodeUnknownProvider  = "UNKNOWN_PROVIDER"        // provider not in providers.toml
 	ErrCodeProviderDisabled = "PROVIDER_DISABLED"       // enabled = false
@@ -231,7 +231,7 @@ const (
 // runnable claude.
 const errMsgNoClaude = "claude binary not found — install Claude Code (https://claude.com/claude-code) or put claude on PATH"
 
-// fail builds a failure Result, stamping provider for context (mirrors spawn.fail).
+// fail builds a failure Result, stamping provider for context.
 func fail(code, msg, provider, suggestion string) Result {
 	return Result{
 		OK:         false,

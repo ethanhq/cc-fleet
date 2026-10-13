@@ -6,12 +6,12 @@
 //
 // Both must map provider noise into the same small vocabulary
 // (insufficient_balance / cloudflare_blocked / auth / rate_limit / api_error) with
-// the same priority, and a reachability probe (the spawn / subagent `--probe`) must
+// the same priority, and a reachability probe (`teammate check` / subagent `--probe`) must
 // classify a models-endpoint result identically. Keeping both here stops the two
 // copies from drifting.
 //
 // Imports are deliberately limited to config / models / secrets / neterr so this
-// package never forms an import cycle with spawn / teardown / subagent.
+// package never forms an import cycle with teammate / teardown / subagent.
 package providerclass
 
 import "strings"

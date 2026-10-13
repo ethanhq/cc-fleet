@@ -1,4 +1,4 @@
-// Typed TeamID / AgentName: an optional fail-fast boundary at CLI / spawn.Spawn
+// Typed TeamID / AgentName: an optional fail-fast boundary at a caller's
 // entry; low-level helpers keep validating plain strings. A zero-value
 // TeamID/AgentName ("") is invalid by construction — callers MUST check err.
 

@@ -346,7 +346,7 @@ type Model struct {
 //
 // NewModel is only ever called from tui.Run, which cmd/cc-fleet gates to the
 // bare-interactive both-TTY path — so the onboarding probes here never run for
-// spawn/subagent/piped/agent callers.
+// subagent/piped/agent callers.
 func NewModel() Model {
 	if onboarding.NeedsClaudeInstall() {
 		return Model{screen: screenInstallClaude}
@@ -1440,7 +1440,7 @@ func (modelsMsg) owningScreen() screen { return screenModelPick }
 const modelsFetchTimeout = 12 * time.Second
 
 // fetchModelsCmd fetches the provider's model list off the Update goroutine and
-// reuses models.FetchWithKey (the same secrets-free core the spawn probe uses).
+// reuses models.FetchWithKey (the same secrets-free core the reachability probe uses).
 // For an add the key is the one just typed into the form (not yet persisted);
 // for an edit it's read from disk via secrets.Keyget. Any error / empty result
 // is delivered as a modelsMsg and the picker falls back to manual text entry.
@@ -4409,8 +4409,8 @@ func (m Model) submitAddCodex() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	// First codex → the default (cli-ride-capable) credential; later ones → their own,
-	// keyed on the provider name. secret_ref carries this so spawn/login resolve the
-	// same credential file.
+	// keyed on the provider name. secret_ref carries this so every lane and login
+	// resolve the same credential file.
 	ref := codexproxy.SecretRef
 	if m.codexDefaultTaken() {
 		ref = name

@@ -48,7 +48,7 @@ type innerUsage struct {
 }
 
 // classify turns a finished claude invocation into a Result. It never returns
-// an error — every path yields a Result (mirrors spawn). timedOut is the only
+// an error — every path yields a Result. timedOut is the only
 // out-of-band signal (ctx.DeadlineExceeded); innerJSON says whether we ran
 // claude with --output-format json (and therefore expect a parseable envelope).
 //

@@ -16,8 +16,8 @@ import (
 )
 
 // onWindows reports whether the binary is running on Windows. The teammate lane
-// (spawn / teardown / hide / show) drives tmux, which cc-fleet does not support
-// on Windows; only the subagent lane (lane-2) is supported there. A package var
+// (teardown / hide / show) drives tmux, which cc-fleet does not support
+// on Windows; subagent, workflow, run and the TUI work there. A package var
 // (not a const) so it reads at runtime.
 var onWindows = runtime.GOOS == "windows"
 

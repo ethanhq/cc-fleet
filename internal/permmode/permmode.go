@@ -1,7 +1,7 @@
-// Package permmode is the shared permission-mode vocabulary for cc-fleet's
-// claude launchers (spawn teammates and run sessions): the --permission-mode
-// enum, its validation, and the enum→CLI-flag mapping. One source so spawn and
-// run can't drift on what a mode means or maps to.
+// Package permmode is the shared permission-mode vocabulary for cc-fleet (the
+// `run` launcher, config validation and the TUI): the --permission-mode enum,
+// its validation, and the enum→CLI-flag mapping. One source so they can't drift
+// on what a mode means or maps to.
 package permmode
 
 // The accepted --permission-mode values (mirrors native Claude Code).
@@ -26,7 +26,7 @@ func IsValid(mode string) bool {
 	return false
 }
 
-// ToFlags is the INHERITANCE mapping (spawn): bypassPermissions →
+// ToFlags is the INHERITANCE mapping: bypassPermissions →
 // --dangerously-skip-permissions; acceptEdits / auto → --permission-mode <mode>;
 // default / plan / unknown → no flag. plan and default collapse to no flag on
 // purpose — a lead in plan/default mode must NOT propagate a permission flag to

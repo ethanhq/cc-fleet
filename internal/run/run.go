@@ -1,9 +1,10 @@
 // Package run implements `cc-fleet run <provider>` (lane 0): launch an interactive
 // foreground claude REPL backed by a provider's profile + default model, handing
 // the process over to claude (an execve on unix, a wait-on-child on Windows). It
-// is a strict subset of the spawn pipeline — no tmux, team, locks, settle gate, or
-// fingerprint recipe placeholders — and holds the same key-safety invariant
-// (provider auth flows only through the profile apiKeyHelper; no key in env/argv).
+// uses no tmux and no team; the only locks are codexproxy's, taken whenever a
+// daemon-backed provider's proxy is started or reused. It holds the same key-safety
+// invariant as the other lanes (provider auth flows only through the profile
+// apiKeyHelper; no key in env/argv).
 package run
 
 import (

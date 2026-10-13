@@ -24,8 +24,8 @@ import (
 const maxRunTagLen = 256
 
 // newSubagentCmd builds `cc-fleet subagent [provider]` — a one-shot headless
-// provider subagent. It follows the spawn command's --json / SilenceErrors
-// discipline so the skill gets exactly one envelope on stdout.
+// provider subagent. It keeps the --json / SilenceErrors discipline so the
+// skill gets exactly one envelope on stdout.
 func newSubagentCmd() *cobra.Command {
 	var (
 		prompt         string

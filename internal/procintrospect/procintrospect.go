@@ -12,9 +12,9 @@
 //     Toolhelp32 parent lookup; argv/table stay unsupported (no PEB read).
 //   - other   (procintrospect_other.go)   — degrades to empty/unsupported.
 //
-// It is the single shared home for the pattern: spawn (rollback reap) and
-// teardown (ps / board / hide-show discovery + ghost reap) both compose these
-// primitives instead of each open-coding a /proc scan.
+// It is the single shared home for the pattern: teardown (ps / board / hide-show
+// discovery + ghost reap) and the other callers compose these primitives
+// instead of each open-coding a /proc scan.
 //
 // All readers are best-effort: a vanished pid, a permission error, or a race
 // against process exit yields a nil/empty result rather than a hard failure.

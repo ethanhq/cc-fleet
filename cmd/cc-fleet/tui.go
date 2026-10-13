@@ -18,7 +18,7 @@ import (
 //
 // Any pipe, redirect, CI runner, or `cc-fleet </dev/null` therefore keeps the
 // existing behavior (cobra prints help) and never blocks on the event loop.
-// Subcommands (`add`, `spawn`, …) bypass this entirely — cobra only calls the
+// Subcommands (`add`, `subagent`, …) bypass this entirely — cobra only calls the
 // root Run when no subcommand matched.
 func shouldEnterTUI(args []string, stdinTTY, stdoutTTY bool) bool {
 	return len(args) == 0 && stdinTTY && stdoutTTY
@@ -30,8 +30,8 @@ func shouldEnterTUI(args []string, stdinTTY, stdoutTTY bool) bool {
 //
 // First-run onboarding (the install-Claude and agent-teams setup screens) lives
 // INSIDE the TUI: tui.NewModel opens on a setup screen when needed. Because the
-// TUI is gated here to the bare-interactive both-TTY path, spawn/subagent/piped/
-// agent callers never see the setup screens.
+// TUI is gated here to the bare-interactive both-TTY path, subagent/piped/agent
+// callers never see the setup screens.
 func runTUIIfInteractive(args []string, verbose bool) (handled bool, err error) {
 	stdinTTY := term.IsTerminal(os.Stdin.Fd())
 	stdoutTTY := term.IsTerminal(os.Stdout.Fd())
@@ -40,7 +40,7 @@ func runTUIIfInteractive(args []string, verbose bool) (handled bool, err error) 
 	}
 	// Pre-TUI (terminal still in normal mode): offer a once-a-day update if a
 	// newer release is cached. Gated to exactly this bare-interactive path, so
-	// keyget / subagent / spawn / --json / non-TTY callers never reach it.
+	// keyget / subagent / --json / non-TTY callers never reach it.
 	maybePromptUpdate()
 	return true, tui.Run(verbose)
 }

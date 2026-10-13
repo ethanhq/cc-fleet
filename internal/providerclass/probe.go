@@ -32,8 +32,8 @@ type Probe struct {
 }
 
 // Reachability does a bounded GET against the provider's models_endpoint (with the
-// provider key, best-effort) and classifies the outcome. spawn and subagent both
-// call it so the classification stays single-sourced.
+// provider key, best-effort) and classifies the outcome. teammate check and
+// subagent both call it so the classification stays single-sourced.
 //
 //   - transport failure (DNS / dial / TLS / timeout)  -> Block PROVIDER_UNREACHABLE
 //   - HTTP 401 / 403                                   -> Block KEY_INVALID
@@ -46,8 +46,8 @@ type Probe struct {
 // probe/refresh — the real call authenticates against base_url at runtime — so a
 // misbehaving endpoint must not block the caller.
 //
-// The Code values are the canonical error-code strings shared with spawn.Result
-// and subagent.Result (their ErrCode* consts equal these literals).
+// The Code values are the canonical error-code strings shared with teammate.Result
+// and subagent.Result (their Code* / ErrCode* consts equal these literals).
 func Reachability(v *config.Provider) Probe {
 	if v == nil || v.ModelsEndpoint == "" {
 		// No probe possible — treat as success rather than blocking.

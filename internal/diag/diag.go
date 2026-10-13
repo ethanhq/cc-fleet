@@ -16,10 +16,9 @@ import (
 )
 
 // Logger writes one redacted, timestamped line per Logf call. The mutex
-// serializes concurrent Logf calls so their lines never interleave — the
-// spawn / subagent / teardown orchestrators thread one Logger across
-// concurrent leaves. The Logger never closes its writer; whoever opened the
-// underlying file owns its lifecycle.
+// serializes concurrent Logf calls so their lines never interleave. The Logger
+// never closes its writer; whoever opened the underlying file owns its
+// lifecycle.
 type Logger struct {
 	mu sync.Mutex
 	w  io.Writer
@@ -36,7 +35,7 @@ func New(w io.Writer) *Logger {
 // Logf formats one diagnostic line, masks key-like material, prefixes a
 // wall-clock timestamp, and writes it under the lock. Write errors are
 // dropped — diagnostics never fail the operation they trace. Callers start
-// format with a short component tag ("spawn: …") so interleaved traces stay
+// format with a short component tag ("subagent: …") so interleaved traces stay
 // legible.
 func (l *Logger) Logf(format string, args ...any) {
 	if l == nil {

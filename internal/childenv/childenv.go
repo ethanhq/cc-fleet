@@ -12,8 +12,8 @@ import "strings"
 // child must not inherit any of these from the launching shell, or an operator's
 // exported value would override the profile (these env vars outrank the profile's
 // settings effortLevel, and ANTHROPIC_MODEL would shadow --model). The subagent /
-// run path strips them here; the spawn teammate path unsets the SAME set in its
-// `env -u` prefix — one exported list so the two launchers can't drift on the
+// run path strips them through Clean, the teammate launcher through
+// CleanForTeammate — one exported list so the launchers can't drift on the
 // policy. The profile then re-injects the per-provider values.
 var ModelEnvKeys = []string{
 	"ANTHROPIC_MODEL",

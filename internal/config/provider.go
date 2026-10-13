@@ -2,7 +2,7 @@
 //
 // providers.toml is the single source of truth users edit by hand. This package
 // only deals with the on-disk format and schema validation — it does not know
-// about secrets backends, profile generation, or spawn fingerprints.
+// about secrets backends or profile generation.
 package config
 
 import (
@@ -61,7 +61,7 @@ type Config struct {
 	Version   int                  `toml:"version"`
 	Providers map[string]*Provider `toml:"-"`
 	// DefaultProvider is the global default provider name a provider-less invocation
-	// resolves to (subagent / spawn / run / workflow agent()). "" = unset (then a
+	// resolves to (subagent / teammate check / run / workflow agent()). "" = unset (then a
 	// sole enabled provider serves implicitly, else the caller errors). Existence
 	// is NOT validated at Load — a use-time error keeps a config with a since-removed
 	// default loadable, so even `cc-fleet default --unset` can run.
@@ -111,7 +111,7 @@ type Provider struct {
 	Effort string `toml:"effort,omitempty"`
 	// DefaultPermission is the permission mode cc-fleet run uses when the caller
 	// passes neither --permission-mode nor --dangerously-skip-permissions ("" = no
-	// default → Claude's own default mode). Run-only; spawn inherits the lead's
+	// default → Claude's own default mode). Run-only; a teammate inherits the lead's
 	// mode and subagent keeps its own default.
 	DefaultPermission string `toml:"default_permission,omitempty"`
 }
@@ -175,7 +175,7 @@ func (v *Provider) FastModelOrDefault() string {
 // keywords default/strong/fast name the matching slot, any other value is a
 // literal id passed through, and "" is DefaultModel. Keyword-first — the three
 // reserved words always name a slot (a real model id is never one of these bare
-// words). One resolver for every launcher (spawn / subagent / run, and the
+// words). One resolver for every launcher (teammate / subagent / run, and the
 // workflow leaf via subagent.Run) so the keyword semantics can't drift.
 func (v *Provider) ResolveModel(requested string) string {
 	switch requested {

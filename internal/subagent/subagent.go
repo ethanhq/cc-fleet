@@ -141,8 +141,8 @@ func proxyPortOf(v *config.Provider) int {
 	return p
 }
 
-// Run executes the full subagent pipeline and returns a structured Result. Like
-// Spawn it NEVER returns a Go error — every failure path produces a Result.
+// Run executes the full subagent pipeline and returns a structured Result. It
+// NEVER returns a Go error — every failure path produces a Result.
 // Its hard deadline derives from parent (the workflow engine's per-leaf cancel
 // handle; the CLI lane passes context.Background()): a cancelled parent kills the
 // exec promptly and classifies as a stop, not a failure. nil falls back to Background.
@@ -250,7 +250,7 @@ func Run(parent context.Context, req Request) Result {
 		}
 		dg.Logf("subagent: profile written %s", profilePath)
 
-		// 5. Optional reachability probe (default OFF). Shares spawn's classifier;
+		// 5. Optional reachability probe (default OFF). Shares teammate check's classifier;
 		//    on Block we abort, on Warn we note and proceed.
 		if req.Probe {
 			p := providerclass.Reachability(v)

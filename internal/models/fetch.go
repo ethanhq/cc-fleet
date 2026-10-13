@@ -119,7 +119,7 @@ func Fetch(ctx context.Context, v *config.Provider) ([]Model, error) {
 // request + parse + error-classification path without persisting the key first:
 //
 //   - the add wizard (key just typed in the TUI, not yet written to disk), and
-//   - the spawn reachability probe (which classifies the result into
+//   - the provider reachability probe (which classifies the result into
 //     PROVIDER_UNREACHABLE / KEY_INVALID / OK).
 //
 // An empty key sends no Authorization header, so it doubles as a keyless

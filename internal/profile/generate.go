@@ -76,8 +76,8 @@ func GenerateForProvider(v *config.Provider, helperBinary string) ([]byte, error
 	// CLAUDE_CODE_SUBAGENT_MODEL is deliberately NOT set: setting it (even to
 	// "inherit") makes every Task subagent take that one model, overriding its own
 	// model: frontmatter; leaving it unset lets each subagent pick its model the
-	// native way, resolved through the alias slots above. childenv / spawn's env -u
-	// still scrub it from the ambient env so an operator's shell value can't pin it.
+	// native way, resolved through the alias slots above. childenv still scrubs
+	// it from the ambient env so an operator's shell value can't pin it.
 	// The [1m] context marker is stripped from the alias slots: only the main model
 	// (via --model) carries it, where Claude Code's strip-before-request is the
 	// documented behavior.
