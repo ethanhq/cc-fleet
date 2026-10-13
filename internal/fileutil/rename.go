@@ -14,8 +14,7 @@ const (
 	renameDelay    = 10 * time.Millisecond
 )
 
-// renameRetry is os.Rename hardened for AtomicWrite's replace. On unix isRenameBlocked is always
-// false, so it is exactly one os.Rename — no retry, no behavior change.
+// renameRetry is os.Rename, but on windows it retries a replace blocked by another open handle.
 func renameRetry(from, to string) error {
 	return retryTransientRename(func() error { return os.Rename(from, to) }, isRenameBlocked, renameAttempts, renameDelay)
 }

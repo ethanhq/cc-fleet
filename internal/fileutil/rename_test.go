@@ -6,10 +6,8 @@ import (
 	"time"
 )
 
-// TestRetryTransientRenameLoop exercises the retry core off-platform (unix's isRenameBlocked is
-// always false, so the production wrapper never loops here): a transient error retries up to the
-// attempt bound, a non-transient error returns at once, and an exhausted retry returns the last
-// transient error — the shape the windows replace relies on.
+// TestRetryTransientRenameLoop exercises the retry core off-platform: unix's isRenameBlocked is
+// always false, so the production wrapper never loops here.
 func TestRetryTransientRenameLoop(t *testing.T) {
 	transient := errors.New("access denied")
 	isTransient := func(err error) bool { return errors.Is(err, transient) }
