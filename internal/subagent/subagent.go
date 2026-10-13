@@ -491,8 +491,10 @@ func buildArgv(binaryPath, profilePath, model string, req Request, slim slimArgv
 		argv = append(argv, "--json-schema", req.JSONSchema)
 	}
 
-	if len(req.DisallowedTools) > 0 {
-		argv = append(argv, "--disallowedTools", strings.Join(req.DisallowedTools, ","))
+	// claude splits the list itself, outside parentheses; re-splitting here
+	// would rewrite a rule such as Bash(echo a, b).
+	if req.DisallowedTools != "" {
+		argv = append(argv, "--disallowedTools", req.DisallowedTools)
 	}
 
 	// Slim profiles: replace the main prompt with the rendered native-mirror

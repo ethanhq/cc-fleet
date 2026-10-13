@@ -54,20 +54,32 @@ func TestBuildArgv_Slim(t *testing.T) {
 	})
 }
 
-// DisallowedTools emits one comma-joined --disallowedTools value on any
-// profile, so rules containing spaces survive as single entries.
+// DisallowedTools reaches claude as one --disallowedTools element, byte for
+// byte, on any profile: claude splits the list itself (outside parentheses),
+// so a rule like Bash(echo a, b) must not be re-split or re-joined.
 func TestBuildArgv_DisallowedTools(t *testing.T) {
 	const bin, prof, model = "/v/claude", "/p/glm.json", "glm-4.6"
-	deny := []string{"mcp__broker__place_order", "Bash(git push:*)"}
-
-	full := buildArgv(bin, prof, model, Request{Prompt: "x", DisallowedTools: deny}, slimArgv{})
-	assertPairAfter(t, full, "--disallowedTools", "mcp__broker__place_order,Bash(git push:*)")
-	assertSeq(t, full, bin, "--dangerously-skip-permissions", "--settings", prof, "--model", model, "-p", "x")
-
 	slim := slimArgv{promptFile: "/abs/job.slimprompt", tools: []string{"Read"}}
-	got := buildArgv(bin, prof, model, Request{Prompt: "x", PromptProfile: ProfileSlim, MCP: true, DisallowedTools: deny}, slim)
-	assertPairAfter(t, got, "--disallowedTools", "mcp__broker__place_order,Bash(git push:*)")
-	assertPairAfter(t, got, "--tools", "Read")
+
+	for _, deny := range []string{
+		"Bash(echo a, b)",
+		"mcp__broker, Bash(git push:*)",
+		"Edit Bash(git *)",
+	} {
+		t.Run(deny, func(t *testing.T) {
+			full := buildArgv(bin, prof, model, Request{Prompt: "x", DisallowedTools: deny}, slimArgv{})
+			assertPairAfter(t, full, "--disallowedTools", deny)
+			assertSeq(t, full, bin, "--dangerously-skip-permissions", "--settings", prof, "--model", model, "-p", "x")
+
+			got := buildArgv(bin, prof, model, Request{Prompt: "x", PromptProfile: ProfileSlim, MCP: true, DisallowedTools: deny}, slim)
+			assertPairAfter(t, got, "--disallowedTools", deny)
+			assertPairAfter(t, got, "--tools", "Read")
+		})
+	}
+
+	// Empty adds no flag (the command maps a blank value to empty).
+	got := buildArgv(bin, prof, model, Request{Prompt: "x", PromptProfile: ProfileSlim, MCP: true}, slim)
+	assertAbsent(t, got, "--disallowedTools")
 }
 
 // JSONSchema emits the --json-schema pair profile-independently: for a full

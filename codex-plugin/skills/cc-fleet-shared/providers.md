@@ -53,7 +53,7 @@ A provider with no built-in seed works the same way — the user adds it first: 
 
 ## Prompt profiles (subagent + workflow leaves)
 
-One model, two surfaces with identical semantics: flags on `cc-fleet subagent` (`--profile`, `--tools`, `--skills=false`, `--mcp`) and options on a workflow `agent()` leaf (`profile`, `tools`, `skills`, `mcp`).
+One model, two surfaces with identical semantics: flags on `cc-fleet subagent` (`--profile`, `--tools`, `--skills=false`, `--mcp`) and options on a workflow `agent()` leaf (`profile`, `tools`, `skills`, `mcp`); `--disallowed-tools` is the one CLI-only flag.
 
 - **`slim` — the DEFAULT.** Generic-subagent mirror: keeps CLAUDE.md + gitStatus, write-capable. Tools: Bash, Edit, Glob, Grep, Read, Skill, Write.
 - **`slim-ro`.** Read-only Explore mirror: no CLAUDE.md, advisory read-only. Tools: Bash, Glob, Grep, Read, Skill.
@@ -66,6 +66,8 @@ Rule of thumb: the leaf writes files → `slim`; read-only research → `slim-ro
 - **`--tools` / `tools` REPLACES the whole set, never appends.** `--tools "WebSearch"` gives the subagent ONLY WebSearch. Any tool beyond the default whitelist (e.g. WebSearch / WebFetch) must be passed explicitly.
 - **`--skills=false` / `skills: false`** drops the Skill tool + the host skill listing (default keeps both).
 - **`--mcp` / `mcp`** defaults per profile: `slim` inherits the host MCP config (native parity); `slim-ro` runs `--strict-mcp-config`. An explicit value (either way) overrides.
+
+`--tools` / `tools` does not restrict MCP tools on any profile: an inherited MCP config exposes every host server's tools regardless of the whitelist. To keep a subagent off specific MCP tools (e.g. a broker's order tools), pass `--disallowed-tools mcp__<server>__<tool>` (or `mcp__<server>`), a comma- or space-separated list passed to claude as-is. It works on every profile and exists only on the CLI, not as a workflow `agent()` option.
 
 The profiles need **claude ≥ 2.1.88**. On an older claude the profile **fails open to `full`** — the subagent envelope carries `slim_downgrade`; a workflow leaf logs a notice.
 

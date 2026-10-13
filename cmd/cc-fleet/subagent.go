@@ -142,10 +142,8 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 				return reportSubagent(subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
 					ErrorMsg: fmt.Sprintf("invalid --tools: %v", err), Provider: provider}, asJSON)
 			}
-			disallowedList, err := splitDisallowedCSV(disallowed)
-			if err != nil {
-				return reportSubagent(subagent.Result{OK: false, ErrorCode: subagent.ErrCodeBadArgs,
-					ErrorMsg: fmt.Sprintf("invalid --disallowed-tools: %v", err), Provider: provider}, asJSON)
+			if strings.TrimSpace(disallowed) == "" {
+				disallowed = ""
 			}
 			noSkills := !skills
 			if isFull && (len(toolList) > 0 || noSkills || cmd.Flags().Changed("mcp")) {
@@ -196,7 +194,7 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 				Tools:           toolList,
 				NoSkills:        noSkills,
 				MCP:             mcp,
-				DisallowedTools: disallowedList,
+				DisallowedTools: disallowed,
 				PersistIO:       !noPersistIO,
 				Diag:            diagLogger(cmd),
 			}
@@ -273,7 +271,7 @@ suggestion names the spent cost and how to retry (raise the cap or switch model)
 	cmd.Flags().StringVar(&tools, "tools", "",
 		"Comma/space-separated tool set (slim only; replaces the profile default)")
 	cmd.Flags().StringVar(&disallowed, "disallowed-tools", "",
-		"Comma-separated tools or permission rules to deny (passed to claude --disallowedTools; any profile; also matches MCP tools, e.g. mcp__broker__place_order)")
+		"Tools or permission rules to deny, comma- or space-separated, passed as-is to claude --disallowedTools (any profile; also matches MCP tools, e.g. mcp__broker__place_order)")
 	cmd.Flags().BoolVar(&skills, "skills", true,
 		"Include the Skill tool + host skill listing (slim only; default true, native parity)")
 	cmd.Flags().BoolVar(&mcp, "mcp", false,
@@ -299,24 +297,6 @@ func splitToolsCSV(s string) ([]string, error) {
 			return nil, fmt.Errorf("empty tool entry in %q", s)
 		}
 		out = append(out, names...)
-	}
-	return out, nil
-}
-
-// splitDisallowedCSV parses --disallowed-tools. Only commas delimit, so a
-// permission rule with a space ("Bash(git push:*)") stays one entry. A blank
-// value yields nil; an empty entry inside a non-blank value is an error.
-func splitDisallowedCSV(s string) ([]string, error) {
-	if strings.TrimSpace(s) == "" {
-		return nil, nil
-	}
-	var out []string
-	for _, seg := range strings.Split(s, ",") {
-		entry := strings.TrimSpace(seg)
-		if entry == "" {
-			return nil, fmt.Errorf("empty entry in %q", s)
-		}
-		out = append(out, entry)
 	}
 	return out, nil
 }
