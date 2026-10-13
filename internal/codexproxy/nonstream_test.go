@@ -152,6 +152,25 @@ func TestNonStreamAssemblesMessage(t *testing.T) {
 	}
 }
 
+func TestNonStreamChatReasoningAssembles(t *testing.T) {
+	r := cpPost(t, cpProxy(t, config.ProtocolOpenAIChat, chatFixtureSSE(t, "chat_reasoning")), false)
+	if r.status != http.StatusOK || r.body["stop_reason"] != "end_turn" {
+		t.Fatalf("status %d: %s", r.status, r.raw)
+	}
+	content, _ := r.body["content"].([]any)
+	if len(content) != 2 {
+		t.Fatalf("content = %s", r.raw)
+	}
+	th, _ := content[0].(map[string]any)
+	if th["type"] != "thinking" || th["thinking"] != "The user wants a ping." || th["signature"] != "" {
+		t.Fatalf("thinking block = %v", th)
+	}
+	tx, _ := content[1].(map[string]any)
+	if tx["type"] != "text" || tx["text"] != "pong" {
+		t.Fatalf("text block = %v", tx)
+	}
+}
+
 func TestNonStreamErrorMapsStatus(t *testing.T) {
 	chatErr := func(code string) string {
 		return "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"part\"},\"finish_reason\":null}]}\n\n" +

@@ -68,7 +68,7 @@ type chatDelta struct {
 	Role             string              `json:"role"`
 	Content          *string             `json:"content"`
 	ReasoningContent *string             `json:"reasoning_content"`
-	Reasoning        *string             `json:"reasoning"` // the same channel under the name some gateways use
+	Reasoning        json.RawMessage     `json:"reasoning"` // the same channel under the name some gateways use; raw so a non-string value cannot fail the whole chunk
 	Refusal          *string             `json:"refusal"`
 	ToolCalls        []chatToolCallDelta `json:"tool_calls"`
 }
@@ -212,13 +212,14 @@ func chatVisibleText(d chatDelta) string {
 }
 
 // chatReasoningText returns a delta's reasoning text, from reasoning_content or the
-// reasoning alias.
+// reasoning alias when that holds a string.
 func chatReasoningText(d chatDelta) string {
 	if d.ReasoningContent != nil {
 		return *d.ReasoningContent
 	}
-	if d.Reasoning != nil {
-		return *d.Reasoning
+	var s string
+	if json.Unmarshal(d.Reasoning, &s) == nil {
+		return s
 	}
 	return ""
 }

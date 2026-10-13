@@ -238,8 +238,12 @@ func translateChatMessage(m anthropicMessage, cc *convCtx) ([]any, error) {
 			// The stream converter turned the model's reasoning_content into this block.
 			// Thinking-mode models such as deepseek-v4-pro reject a follow-up turn whose
 			// tool-calling assistant message lacks it (400 "The reasoning_content in the
-			// thinking mode must be passed back to the API").
-			reasoning.WriteString(b.Thinking)
+			// thinking mode must be passed back to the API"). Only an unsigned block is
+			// the converter's own; a signed one came from an Anthropic model or the
+			// Responses lane.
+			if b.Signature == "" {
+				reasoning.WriteString(b.Thinking)
+			}
 		}
 	}
 
