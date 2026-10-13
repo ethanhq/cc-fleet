@@ -67,7 +67,7 @@ applied; everything else is preserved.
 
   --base-url            Update the ANTHROPIC_BASE_URL in the profile JSON too
   --models-endpoint     Update /v1/models URL used by cc-fleet refresh
-  --default-model       Update the model used when spawn omits --model
+  --default-model       Update the model used when --model is omitted
   --secret-backend      Switch secret backend (file|pass|1password|vault|keyring)
   --secret-ref          Switch the reference used by the secret backend
   --api-key             Rotate the key (file backend only; writes to the

@@ -51,7 +51,7 @@ default). This is intentionally NOT the full ` + "`/v1/models`" + ` catalog — 
 list is only used by the TUI model picker; ` + "`cc-fleet models`" + ` shows just the
 few configured slots so a provider with a large catalog can't flood an agent.
 
-Use ` + "`--model default|strong|fast`" + ` (or a literal id) on spawn/subagent/run to
+Use ` + "`--model default|strong|fast`" + ` (or a literal id) on subagent/run to
 select a slot. Use --json for skill consumption.`,
 		Args:          cobra.ExactArgs(1),
 		SilenceErrors: true,

@@ -195,7 +195,7 @@ when stdin is a tty; otherwise the command exits 1 with a usage error.`,
 	cmd.Flags().StringVar(&modelsEndpoint, "models-endpoint", "",
 		"Provider /v1/models URL used for probe + cc-fleet refresh (required)")
 	cmd.Flags().StringVar(&defaultModel, "default-model", "",
-		"Model id passed to spawn when --model is omitted (required)")
+		"Model id used when --model is omitted (required)")
 	cmd.Flags().StringVar(&strongModel, "strong-model", "",
 		"Optional model id for the 'strong' slot (blank → follows --default-model)")
 	cmd.Flags().StringVar(&fastModel, "fast-model", "",

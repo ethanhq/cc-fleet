@@ -32,9 +32,10 @@ provider is enabled — that sole provider (source "auto"), or "unset".
 With a <provider> argument, pin it as the default. Pinning refuses to overwrite
 an existing default unless --force is given. --unset clears the pin.
 
-The default is the provider a provider-less spawn / subagent / run / workflow
-agent() resolves to; the model is still chosen per call from that provider's
-default/strong/fast roster.`,
+The default is the provider a provider-less teammate check / subagent / run /
+workflow agent() resolves to; the model is still chosen per call from that provider's
+default/strong/fast roster. A workflow run resolves it once at launch and keeps
+that provider on --resume / restart.`,
 		Args:          cobra.MaximumNArgs(1),
 		SilenceErrors: true,
 		SilenceUsage:  true,
