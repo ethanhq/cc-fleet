@@ -96,6 +96,11 @@ type Provider struct {
 	// Required for openai-*, forbidden otherwise. May carry a clean path prefix,
 	// usually ending in /v1.
 	UpstreamURL string `toml:"upstream_url,omitempty"`
+	// ExtraBody is a JSON object whose members are added to every request body the
+	// conversion daemon sends upstream, for provider-specific options such as
+	// OpenRouter's {"provider":{"only":["deepseek"]}}. openai-* only; "" = none. It
+	// is stored in plain text and rides the daemon argv, so it is not for secrets.
+	ExtraBody string `toml:"extra_body,omitempty"`
 	// StrongModel / FastModel are the optional "strong" and "fast" capability
 	// slots; blank → the slot follows DefaultModel. They populate the Claude Code
 	// model-tier env in the provider profile (opus/haiku aliases + subagent), so a
@@ -399,6 +404,9 @@ func parse(data []byte) (*Config, error) {
 		if !ok {
 			return nil, fmt.Errorf("config: top-level key %q is not a table", key)
 		}
+		if err := extraBodyIsString(key, sub); err != nil {
+			return nil, err
+		}
 		var buf bytes.Buffer
 		if err := toml.NewEncoder(&buf).Encode(sub); err != nil {
 			return nil, fmt.Errorf("config: re-encode provider %q: %w", key, err)
@@ -656,6 +664,9 @@ func (v *Provider) validateWire(name string) error {
 		if v.UpstreamURL != "" {
 			return fmt.Errorf("config: provider %q: upstream_url is only valid for an openai-* protocol", name)
 		}
+	}
+	if err := ValidateExtraBody(v.EffectiveProtocol(), v.ExtraBody); err != nil {
+		return fmt.Errorf("config: provider %q: %w", name, err)
 	}
 	return nil
 }

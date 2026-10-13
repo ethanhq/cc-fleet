@@ -107,6 +107,9 @@ func ParseBundle(data []byte) (*Bundle, error) {
 		if !ok {
 			return nil, fmt.Errorf("config: bundle key %q is not a table", key)
 		}
+		if err := extraBodyIsString(key, sub); err != nil {
+			return nil, err
+		}
 		var buf bytes.Buffer
 		if err := toml.NewEncoder(&buf).Encode(sub); err != nil {
 			return nil, fmt.Errorf("config: re-encode bundle provider %q: %w", key, err)
