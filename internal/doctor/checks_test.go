@@ -48,7 +48,21 @@ func setupHome(t *testing.T) string {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home) // windows reads USERPROFILE; keep the sandbox hermetic there
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("CLAUDE_CONFIG_DIR", "") // empty counts as unset
 	return home
+}
+
+// relocatedHome is setupHome plus a CLAUDE_CONFIG_DIR outside $HOME/.claude.
+// Returns the home dir and the relocated Claude Code config dir.
+func relocatedHome(t *testing.T) (home, cfg string) {
+	t.Helper()
+	home = setupHome(t)
+	cfg = filepath.Join(t.TempDir(), "claude-config")
+	if err := os.MkdirAll(cfg, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+	return home, cfg
 }
 
 // writeFakeClaude drops a runnable `claude` into dir for ccver.Detect to exec
@@ -160,9 +174,32 @@ func TestCheckSettingsJSON_Invalid(t *testing.T) {
 func TestCheckSettingsJSON_NoHome(t *testing.T) {
 	t.Setenv("HOME", "")
 	t.Setenv("USERPROFILE", "") // windows home var, so the no-home path holds on windows runners
+	t.Setenv("CLAUDE_CONFIG_DIR", "")
 	r := CheckSettingsJSON()
 	if r.Status != StatusFail {
 		t.Fatalf("Status = %s, want fail when HOME empty", r.Status)
+	}
+}
+
+// TestCheckSettingsJSON_HonorsClaudeConfigDir: the settings.json Claude Code
+// reads is the one under CLAUDE_CONFIG_DIR; a broken $HOME/.claude/settings.json
+// is not consulted.
+func TestCheckSettingsJSON_HonorsClaudeConfigDir(t *testing.T) {
+	home, cfg := relocatedHome(t)
+	decoy := filepath.Join(home, ".claude")
+	if err := os.MkdirAll(decoy, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(decoy, "settings.json"), []byte(`{"broken":`), 0o600); err != nil {
+		t.Fatalf("write decoy: %v", err)
+	}
+	want := filepath.Join(cfg, "settings.json")
+	if err := os.WriteFile(want, []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("write settings: %v", err)
+	}
+	r := CheckSettingsJSON()
+	if r.Status != StatusOK || r.Detail != want {
+		t.Fatalf("Status = %s detail = %q, want ok reading %s", r.Status, r.Detail, want)
 	}
 }
 
@@ -706,6 +743,70 @@ func TestCheckSkillInstalled_PluginPerLane(t *testing.T) {
 	}
 }
 
+// TestCheckSkillInstalled_PluginUnderClaudeConfigDir: Claude Code keeps its
+// plugin cache under CLAUDE_CONFIG_DIR, so the per-lane skills are found there.
+// A legacy skill left under $HOME/.claude/skills is not loaded any more, so it
+// does not compete.
+func TestCheckSkillInstalled_PluginUnderClaudeConfigDir(t *testing.T) {
+	home, cfg := relocatedHome(t)
+	writeSkill(t, home, "cc-fleet")
+	root := filepath.Join(cfg, "plugins", "cache", "ethanhq", "cc-fleet", "0.2.0", "skills")
+	for _, lane := range skillLanes {
+		d := filepath.Join(root, lane)
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "SKILL.md"), []byte("# skill"), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	writeSharedDocs(t, root, sharedDirName)
+	r := CheckSkillInstalled()
+	if r.Status != StatusOK || !strings.Contains(r.Detail, root) {
+		t.Fatalf("Status = %s detail = %q, want ok naming %s", r.Status, r.Detail, root)
+	}
+}
+
+// TestCheckSkillInstalled_ManualUnderClaudeConfigDir: manually installed skills
+// count where Claude Code loads them, $CLAUDE_CONFIG_DIR/skills, and the hint
+// for a competing legacy copy names that directory as one shell word.
+func TestCheckSkillInstalled_ManualUnderClaudeConfigDir(t *testing.T) {
+	setupHome(t)
+	cfg := filepath.Join(t.TempDir(), "Claude [work] Config")
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+	skills := filepath.Join(cfg, "skills")
+	for _, dir := range []string{"cc-fleet-subagent", "cc-fleet-team", "cc-fleet-workflow", "cc-fleet"} {
+		d := filepath.Join(skills, dir)
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(d, "SKILL.md"), []byte("# skill"), 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	writeSharedDocs(t, skills, sharedDirName)
+	r := CheckSkillInstalled()
+	want := "remove the legacy copy: rm -rf -- '" + filepath.Join(skills, "cc-fleet") + "'"
+	if r.Status != StatusWarn || r.FixHint != want {
+		t.Fatalf("Status = %s hint = %q, want warn with hint %q", r.Status, r.FixHint, want)
+	}
+}
+
+// TestCheckSkillInstalled_HomeSkillsNotLoadedWhenRelocated: with
+// CLAUDE_CONFIG_DIR set, Claude Code does not read $HOME/.claude/skills, so
+// skills that exist only there are reported as missing.
+func TestCheckSkillInstalled_HomeSkillsNotLoadedWhenRelocated(t *testing.T) {
+	home, _ := relocatedHome(t)
+	for _, lane := range skillLanes {
+		writeSkill(t, home, "cc-fleet-"+lane)
+	}
+	writeSharedDocs(t, filepath.Join(home, ".claude", "skills"), sharedDirName)
+	r := CheckSkillInstalled()
+	if r.Status != StatusWarn || !strings.Contains(r.Detail, "no cc-fleet skills found") {
+		t.Fatalf("Status = %s detail = %q, want warn: no skills where Claude Code looks", r.Status, r.Detail)
+	}
+}
+
 // ---------- Check 8: teammate lane ----------
 
 // cliLaneHome is setupHome plus a separate CLAUDE_CONFIG_DIR, with the
@@ -919,6 +1020,20 @@ func TestCheckOAuthCredentials_PresentLegacy(t *testing.T) {
 	}
 }
 
+// TestCheckOAuthCredentials_HonorsClaudeConfigDir: the credentials file is
+// looked up under CLAUDE_CONFIG_DIR, where Claude Code writes it.
+func TestCheckOAuthCredentials_HonorsClaudeConfigDir(t *testing.T) {
+	_, cfg := relocatedHome(t)
+	want := filepath.Join(cfg, ".credentials.json")
+	if err := os.WriteFile(want, []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	r := CheckOAuthCredentials()
+	if r.Status != StatusOK || r.Detail != want {
+		t.Fatalf("Status = %s detail = %q, want ok reporting %s", r.Status, r.Detail, want)
+	}
+}
+
 func TestCheckOAuthCredentials_MissingIsOK(t *testing.T) {
 	// Absence is informational, NOT a warning. A main session on a provider profile
 	// legitimately has no credentials.json — doctor must not show a yellow WARN
@@ -986,6 +1101,22 @@ func TestCheckPluginVersionMatch_NewestCachedWins(t *testing.T) {
 	r := CheckPluginVersionMatch()
 	if r.Status != StatusOK {
 		t.Fatalf("Status = %s, want ok (newest cached 0.1.8 matches; detail=%s)", r.Status, r.Detail)
+	}
+}
+
+// TestCheckPluginVersionMatch_HonorsClaudeConfigDir: the plugin version comes
+// from the cache under CLAUDE_CONFIG_DIR, not from a matching leftover under
+// $HOME/.claude.
+func TestCheckPluginVersionMatch_HonorsClaudeConfigDir(t *testing.T) {
+	home, cfg := relocatedHome(t)
+	pinVersion(t, "v0.1.8")
+	writePluginCache(t, home, "0.1.8") // not the cache Claude Code uses
+	if err := os.MkdirAll(filepath.Join(cfg, "plugins", "cache", "ethanhq", "cc-fleet", "0.1.6"), 0o755); err != nil {
+		t.Fatalf("mkdir plugin cache: %v", err)
+	}
+	r := CheckPluginVersionMatch()
+	if r.Status != StatusWarn || !strings.Contains(r.Detail, "plugin 0.1.6") {
+		t.Fatalf("Status = %s detail = %q, want warn against the relocated plugin 0.1.6", r.Status, r.Detail)
 	}
 }
 

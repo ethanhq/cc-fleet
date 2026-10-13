@@ -42,8 +42,8 @@ func homeDir() (string, error) {
 	return homedir.Home()
 }
 
-// claudeDir returns $HOME/.claude — Claude Code's per-user config root that
-// most checks below inspect (settings.json, profiles/, skills/, credentials).
+// claudeDir returns $HOME/.claude whatever CLAUDE_CONFIG_DIR says — where
+// cc-fleet keeps its provider profiles (check 2).
 func claudeDir() (string, error) {
 	h, err := homeDir()
 	if err != nil {
@@ -52,12 +52,26 @@ func claudeDir() (string, error) {
 	return filepath.Join(h, ".claude"), nil
 }
 
+// claudeRoot returns Claude Code's config root ($CLAUDE_CONFIG_DIR, else
+// $HOME/.claude) that most checks below inspect (settings.json, skills/, the
+// plugin cache, credentials), or the home-directory error when there is none.
+func claudeRoot() (string, error) {
+	if root := claudepaths.Root(); root != "" {
+		return root, nil
+	}
+	_, err := homeDir()
+	if err == nil {
+		err = errors.New("home directory is not set")
+	}
+	return "", err
+}
+
 // CheckSettingsJSON is check 1: ~/.claude/settings.json exists and parses as
 // JSON. We deliberately do NOT validate schema (Claude Code owns that) — a
 // well-formed but empty object {} passes.
 func CheckSettingsJSON() CheckResult {
 	r := CheckResult{ID: 1, Title: "~/.claude/settings.json exists and is valid JSON"}
-	cdir, err := claudeDir()
+	cdir, err := claudeRoot()
 	if err != nil {
 		r.Status = StatusFail
 		r.Detail = err.Error()
@@ -69,7 +83,7 @@ func CheckSettingsJSON() CheckResult {
 		r.Status = StatusFail
 		if errors.Is(err, os.ErrNotExist) {
 			r.Detail = fmt.Sprintf("not found: %s", path)
-			r.FixHint = "create ~/.claude/settings.json (Claude Code auto-creates it on first run)"
+			r.FixHint = fmt.Sprintf("create %s (Claude Code auto-creates it on first run)", path)
 		} else {
 			r.Detail = err.Error()
 		}
@@ -352,7 +366,7 @@ var sharedDocs = []string{"cli-reference.md", "providers.md", "routing.md", "tro
 // auto-install — the source lives in the cc-fleet repo).
 func CheckSkillInstalled() CheckResult {
 	r := CheckResult{ID: 7, Title: "cc-fleet skills installed (per-lane, or legacy single skill)"}
-	cdir, err := claudeDir()
+	cdir, err := claudeRoot()
 	if err != nil {
 		r.Status = StatusFail
 		r.Detail = err.Error()
@@ -364,12 +378,12 @@ func CheckSkillInstalled() CheckResult {
 	// (Claude Code loads every dir under skills/, so the old router competes). A legacy
 	// skill that only lingers in the plugin cache is a stale, inactive version, not a
 	// conflict — so it must not WARN.
-	manualLegacy := manualLegacySkillPath(cdir) != ""
+	manualLegacy := manualLegacySkillPath(cdir)
 	switch {
-	case newWhere != "" && manualLegacy:
+	case newWhere != "" && manualLegacy != "":
 		r.Status = StatusWarn
 		r.Detail = "both the per-lane skills and a legacy ~/.claude/skills/cc-fleet skill are installed — the old router competes"
-		r.FixHint = "remove the legacy copy: rm -rf ~/.claude/skills/cc-fleet"
+		r.FixHint = "remove the legacy copy: rm -rf -- " + tmux.Quote(filepath.Dir(manualLegacy))
 	case newWhere != "" && !sharedDocsPresent(newRoot, newPrefix):
 		r.Status = StatusWarn
 		r.Detail = "the per-lane skills are installed but the shared docs they link are missing beside them"
@@ -399,17 +413,10 @@ func perLaneSkillsPath(cdir string) (root, prefix, label string) {
 	if skills := filepath.Join(cdir, "skills"); allLanesPresent(skills, "cc-fleet-") {
 		return skills, "cc-fleet-", skills + " (per-lane)"
 	}
-	// Plugin: ~/.claude/plugins/cache/<marketplace>/cc-fleet/<version>/skills/<lane>/SKILL.md.
-	// Glob one lane to enumerate candidate version roots, then require the siblings
-	// under the SAME root.
-	pattern := filepath.Join(cdir, "plugins", "cache", "*", "cc-fleet", "*", "skills", skillLanes[0], "SKILL.md")
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return "", "", ""
-	}
-	for _, m := range matches {
-		skillsRoot := filepath.Dir(filepath.Dir(m)) // .../skills
-		if allLanesPresent(skillsRoot, "") {
+	// Plugin: ~/.claude/plugins/cache/<marketplace>/cc-fleet/<version>/skills/<lane>/SKILL.md,
+	// all three under the SAME version root.
+	for _, v := range claudepaths.PluginVersionDirs("cc-fleet") {
+		if skillsRoot := filepath.Join(v, "skills"); allLanesPresent(skillsRoot, "") {
 			return skillsRoot, "", skillsRoot + " (plugin, per-lane)"
 		}
 	}
@@ -474,12 +481,8 @@ func legacySkillPath(cdir string) string {
 	if m := manualLegacySkillPath(cdir); m != "" {
 		return m
 	}
-	pattern := filepath.Join(cdir, "plugins", "cache", "*", "cc-fleet", "*", "skills", "cc-fleet", "SKILL.md")
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return ""
-	}
-	for _, m := range matches {
+	for _, v := range claudepaths.PluginVersionDirs("cc-fleet") {
+		m := filepath.Join(v, "skills", "cc-fleet", "SKILL.md")
 		if info, statErr := os.Stat(m); statErr == nil && !info.IsDir() {
 			return m
 		}
@@ -501,15 +504,14 @@ func CheckPluginVersionMatch() CheckResult {
 		r.Detail = fmt.Sprintf("development build (%s) — not comparable", cur)
 		return r
 	}
-	cdir, err := claudeDir()
-	if err != nil {
+	if _, err := claudeRoot(); err != nil {
 		// Can't locate ~/.claude — checks 1-2 already cover a broken home dir;
 		// this informational check never alarms on its own.
 		r.Status = StatusOK
 		r.Detail = fmt.Sprintf("could not locate ~/.claude (%s)", err.Error())
 		return r
 	}
-	pv, ok := pluginVersion(cdir)
+	pv, ok := pluginVersion()
 	if !ok {
 		r.Status = StatusOK
 		r.Detail = "no cc-fleet plugin installed (nothing to compare)"
@@ -532,14 +534,9 @@ func CheckPluginVersionMatch() CheckResult {
 // path segment is the plugin's version; the cache can hold several, so the
 // newest comparable release wins (a stale leftover never WARNs against a
 // matching current one). A non-release segment is ignored.
-func pluginVersion(cdir string) (string, bool) {
-	pattern := filepath.Join(cdir, "plugins", "cache", "*", "cc-fleet", "*")
-	matches, err := filepath.Glob(pattern)
-	if err != nil {
-		return "", false // only ErrBadPattern, impossible for this fixed pattern
-	}
+func pluginVersion() (string, bool) {
 	best := ""
-	for _, m := range matches {
+	for _, m := range claudepaths.PluginVersionDirs("cc-fleet") {
 		info, statErr := os.Stat(m)
 		if statErr != nil || !info.IsDir() {
 			continue
@@ -696,7 +693,7 @@ func zincHarborOn() bool {
 // and this check can never flip doctor's overall OK.
 func CheckOAuthCredentials() CheckResult {
 	r := CheckResult{ID: 9, Title: "OAuth credentials.json exists (informational)"}
-	cdir, err := claudeDir()
+	cdir, err := claudeRoot()
 	if err != nil {
 		// Can't even locate ~/.claude — report OK-informational (this check never
 		// alarms); checks 1-2 already cover a genuinely broken home dir.

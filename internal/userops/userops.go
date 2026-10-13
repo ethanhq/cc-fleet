@@ -1276,7 +1276,7 @@ func Uninstall(req UninstallRequest) (*UninstallResult, error) {
 		return res, nil
 	}
 	skillsRoot := filepath.Join(home, ".claude", "skills")
-	if teamsDir := filepath.Join(home, ".claude", "teams"); fileExists(teamsDir) {
+	if teamsDir := claudepaths.Teams(); fileExists(teamsDir) {
 		res.Kept = append(res.Kept, teamsDir) // always Claude Code's, never touched
 	}
 	if !req.All {

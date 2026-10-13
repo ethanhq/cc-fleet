@@ -159,8 +159,10 @@ binary replaces it by rename.
   `env.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS` and, only on request, `teammateMode`.
 - `~/.claude/teams/<team>/config.json` — native team state, owned by Claude Code; cc-fleet only
   reads it.
-- The `~/.claude` paths honor `$CLAUDE_CONFIG_DIR` (via `internal/claudepaths`); profiles stay
-  under `~/.claude/profiles`.
+- Claude Code's own `~/.claude` paths (settings, agents, sessions, teams, skills, plugin
+  cache, credentials) honor `$CLAUDE_CONFIG_DIR` (via `internal/claudepaths`); cc-fleet's own
+  files there — profiles, the tmux server lock, the installers' default skills directory
+  (also used by `init` and `uninstall`) — stay under `$HOME/.claude`.
 
 ## Command map (`cmd/cc-fleet/`)
 

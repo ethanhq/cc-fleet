@@ -30,6 +30,7 @@ func setupHome(t *testing.T) string {
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home) // windows reads USERPROFILE
 	t.Setenv("XDG_CONFIG_HOME", "")
+	t.Setenv("CLAUDE_CONFIG_DIR", "") // empty counts as unset
 	return home
 }
 
@@ -932,6 +933,31 @@ func TestUninstall_PreservesSkillAndTeamsDirs(t *testing.T) {
 	}
 	if _, err := os.Stat(teamsDir); err != nil {
 		t.Fatalf("teams dir wiped: %v", err)
+	}
+}
+
+// TestUninstall_KeptNamesRelocatedTeamsDir: with CLAUDE_CONFIG_DIR set, the
+// teams dir reported as kept is the one Claude Code uses.
+func TestUninstall_KeptNamesRelocatedTeamsDir(t *testing.T) {
+	home := setupHome(t)
+	cfg := filepath.Join(t.TempDir(), "claude-config")
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+	if _, err := Init(); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	teamsDir := filepath.Join(cfg, "teams")
+	unused := filepath.Join(home, ".claude", "teams")
+	for _, d := range []string{teamsDir, unused} {
+		if err := os.MkdirAll(d, 0o700); err != nil {
+			t.Fatalf("MkdirAll %s: %v", d, err)
+		}
+	}
+	res, err := Uninstall(UninstallRequest{KeepSecrets: true})
+	if err != nil {
+		t.Fatalf("Uninstall: %v", err)
+	}
+	if !contains(res.Kept, teamsDir) || contains(res.Kept, unused) {
+		t.Fatalf("Kept = %v, want %s and not %s", res.Kept, teamsDir, unused)
 	}
 }
 

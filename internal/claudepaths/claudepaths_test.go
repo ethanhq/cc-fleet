@@ -1,7 +1,9 @@
 package claudepaths
 
 import (
+	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -84,6 +86,41 @@ func TestRootEmptyWhenHomeUnresolvable(t *testing.T) {
 		if got != "" {
 			t.Errorf("%s() = %q with no resolvable home, want \"\"", name, got)
 		}
+	}
+	if got := PluginVersionDirs("cc-fleet"); got != nil {
+		t.Errorf("PluginVersionDirs() = %v with no resolvable home, want nil", got)
+	}
+}
+
+// TestPluginVersionDirs: every <marketplace>/<plugin>/<version> under the config
+// root is listed, and a root whose name holds glob metacharacters is read
+// literally — "claude[work]" as a pattern would match the sibling "claudew".
+func TestPluginVersionDirs(t *testing.T) {
+	setHome(t, t.TempDir())
+	base := t.TempDir()
+	cfg := filepath.Join(base, "claude[work]")
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+	mk := func(root string, parts ...string) string {
+		t.Helper()
+		dir := filepath.Join(append([]string{root, "plugins", "cache"}, parts...)...)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	mk(filepath.Join(base, "claudew"), "ethanhq", "cc-fleet", "9.9.9")
+	if got := PluginVersionDirs("cc-fleet"); got != nil {
+		t.Fatalf("PluginVersionDirs() = %v, want nil: only the sibling directory has the plugin", got)
+	}
+
+	want := []string{
+		mk(cfg, "ethanhq", "cc-fleet", "0.3.4"),
+		mk(cfg, "ethanhq", "cc-fleet", "0.4.0"),
+		mk(cfg, "other", "cc-fleet", "0.1.0"),
+	}
+	mk(cfg, "ethanhq", "another-plugin", "1.0.0")
+	if got := PluginVersionDirs("cc-fleet"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("PluginVersionDirs() = %v, want %v", got, want)
 	}
 }
 

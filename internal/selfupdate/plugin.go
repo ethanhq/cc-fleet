@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
-	"path/filepath"
 	"strings"
 
-	"github.com/ethanhq/cc-fleet/internal/homedir"
+	"github.com/ethanhq/cc-fleet/internal/claudepaths"
 )
 
 // updatePlugin brings the Claude Code plugin to the latest version, preserving
@@ -58,12 +57,7 @@ func updatePlugin(ctx context.Context, scope, skill string, out io.Writer) error
 // pluginInstalled reports whether Claude Code has the cc-fleet plugin cached
 // (~/.claude/plugins/cache/<marketplace>/cc-fleet/<version>/). Offline + cheap.
 func pluginInstalled() bool {
-	home, err := homedir.Home()
-	if err != nil {
-		return false
-	}
-	matches, _ := filepath.Glob(filepath.Join(home, ".claude", "plugins", "cache", "*", "cc-fleet", "*"))
-	return len(matches) > 0
+	return len(claudepaths.PluginVersionDirs("cc-fleet")) > 0
 }
 
 // updateViaPkgManager runs an installer-managed binary update (npm / go). The

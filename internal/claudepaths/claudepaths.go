@@ -2,8 +2,8 @@
 // path honors CLAUDE_CONFIG_DIR the way Claude Code does, so cc-fleet reads the
 // same sessions/, teams/, agents/ and settings.json the running lead uses.
 //
-// The functions are pure: they read the environment on every call and cache
-// nothing, so tests can change HOME / CLAUDE_CONFIG_DIR at any time.
+// The functions cache nothing: they read the environment on every call, so
+// tests can change HOME / CLAUDE_CONFIG_DIR at any time.
 //
 // cc-fleet's provider profiles are NOT resolved here: they stay under
 // profile.ProfilesDir() (~/.claude/profiles) regardless of CLAUDE_CONFIG_DIR,
@@ -46,6 +46,27 @@ func Sessions() string { return under("sessions") }
 
 // Teams returns Root()/teams (one directory per agent team).
 func Teams() string { return under("teams") }
+
+// PluginVersionDirs returns every cached copy of plugin,
+// Root()/plugins/cache/<marketplace>/<plugin>/<version>, in lexical order. It
+// lists the directories rather than globbing, so a config root whose name
+// holds glob metacharacters still resolves to itself.
+func PluginVersionDirs(plugin string) []string {
+	cache := under(filepath.Join("plugins", "cache"))
+	if cache == "" {
+		return nil
+	}
+	markets, _ := os.ReadDir(cache)
+	var dirs []string
+	for _, m := range markets {
+		dir := filepath.Join(cache, m.Name(), plugin)
+		versions, _ := os.ReadDir(dir)
+		for _, v := range versions {
+			dirs = append(dirs, filepath.Join(dir, v.Name()))
+		}
+	}
+	return dirs
+}
 
 // GlobalConfig returns Claude Code's global config file: $CLAUDE_CONFIG_DIR/.claude.json
 // when CLAUDE_CONFIG_DIR is set, otherwise <home>/.claude.json (a sibling of the

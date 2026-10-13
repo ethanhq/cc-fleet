@@ -280,6 +280,7 @@ func pluginSandbox(t *testing.T, cached bool) string {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Setenv("CLAUDE_CONFIG_DIR", "") // empty counts as unset
 	dir := filepath.Join(home, ".claude", "plugins", "cache", marketplace, "cc-fleet", "9.9.9")
 	if cached {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -287,6 +288,23 @@ func pluginSandbox(t *testing.T, cached bool) string {
 		}
 	}
 	return dir
+}
+
+// TestPluginInstalled_HonorsClaudeConfigDir: the probe reads the plugin cache
+// under CLAUDE_CONFIG_DIR, where Claude Code keeps it, not $HOME/.claude.
+func TestPluginInstalled_HonorsClaudeConfigDir(t *testing.T) {
+	pluginSandbox(t, true) // cached under $HOME/.claude only
+	cfg := filepath.Join(t.TempDir(), "claude-config")
+	t.Setenv("CLAUDE_CONFIG_DIR", cfg)
+	if pluginInstalled() {
+		t.Fatal("pluginInstalled() = true from $HOME/.claude while CLAUDE_CONFIG_DIR points elsewhere")
+	}
+	if err := os.MkdirAll(filepath.Join(cfg, "plugins", "cache", marketplace, "cc-fleet", "9.9.9"), 0o700); err != nil {
+		t.Fatalf("mkdir plugin cache: %v", err)
+	}
+	if !pluginInstalled() {
+		t.Fatal("pluginInstalled() = false with the plugin cached under CLAUDE_CONFIG_DIR")
+	}
 }
 
 func TestUninstallPlugin_NotCachedIsNoop(t *testing.T) {
