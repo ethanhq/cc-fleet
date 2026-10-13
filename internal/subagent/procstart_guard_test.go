@@ -72,10 +72,11 @@ func TestProcessAlive_SyncToken(t *testing.T) {
 }
 
 // TestProcessAlive_GuardComposition pins how the two reuse guards compose for a
-// background job (settings marker present): a token MISMATCH is decisive (the
-// per-provider --settings value can collide-match a later claude job of the
-// same provider), while a token MATCH is not sufficient alone (the darwin token
-// is seconds-coarse) — a readable argv must still agree.
+// background job (settings marker present): a token MISMATCH is decisive; a
+// token MATCH is not sufficient alone (the darwin token is seconds-coarse), so a
+// readable argv must still look like claude, without needing this job's
+// --settings (TestProcessAlive_WrapperRewroteSettings); with no readable token
+// the full argv check (claude AND this job's --settings) decides.
 func TestProcessAlive_GuardComposition(t *testing.T) {
 	origHas, origStart, origArgv := hasArgvIntrospection, procStartFn, reuseGuardArgv
 	t.Cleanup(func() { hasArgvIntrospection, procStartFn, reuseGuardArgv = origHas, origStart, origArgv })
@@ -97,13 +98,18 @@ func TestProcessAlive_GuardComposition(t *testing.T) {
 	}
 	reuseGuardArgv = foreignArgv
 	if processAlive(self, "/p/minimax.json", "tok-1") {
-		t.Error("a token match must not override an argv mismatch (coarse-token collision)")
+		t.Error("a token match must not override a non-claude argv (coarse-token collision)")
 	}
-	// Token unreadable → the argv guard alone decides.
+	// Token matches but argv can't be read (a just-exited pid / proc race) → kill(0) is trusted.
+	reuseGuardArgv = func(int) ([]string, bool) { return nil, false }
+	if !processAlive(self, "/p/minimax.json", "tok-1") {
+		t.Error("a token match with unreadable argv must trust kill(0) and read alive")
+	}
+	// Token unreadable → the full argv guard (claude AND this job's --settings) decides.
 	reuseGuardArgv = matchingArgv
 	procStartFn = func(int) (string, bool) { return "", false }
 	if !processAlive(self, "/p/minimax.json", "tok-1") {
-		t.Error("an unreadable token must fall back to the (matching) argv guard")
+		t.Error("an unreadable token must fall back to the full argv guard, which matches here")
 	}
 }
 

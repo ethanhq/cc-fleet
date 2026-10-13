@@ -60,10 +60,10 @@ type jobMeta struct {
 	Stream        bool   `json:"stream,omitempty"`
 	LeadSessionID string `json:"lead_session_id,omitempty"`
 	// SettingsPath is the claude `--settings <profile>` for a BACKGROUND job: the
-	// per-provider profile path, unique enough to bind meta.PID to its claude child
-	// so processAlive can reject a recycled pid. A sync job leaves this empty —
-	// its PID is the cc-fleet process, not a claude child, so the reuse guard
-	// must NOT apply (processAlive degrades to a bare kill(0)).
+	// per-provider profile path. processAlive matches it in argv only without a
+	// usable ProcStart, since a wrapper may rewrite the flag. A sync job leaves
+	// this empty — its PID is the cc-fleet process, not a claude child, so the
+	// argv guard must NOT apply.
 	SettingsPath string `json:"settings_path,omitempty"`
 	// ProcStart is meta.PID's kernel start-time token (procintrospect.ProcStart),
 	// captured at registration: the recycled-PID guard wherever argv can't bind
@@ -1021,15 +1021,13 @@ func queuedPlaceholder(meta jobMeta) bool {
 	return (meta.Status == "queued" || meta.Status == "held") && meta.PID == 0
 }
 
-// processAlive reports whether pid is alive AND (when settingsPath is known)
-// still the claude subagent this job launched. A bare kill(pid,0) only proves
-// SOME process holds the pid — after a finished job's pid is recycled, an
-// unrelated process would falsely read "running" forever (StatusFor) and never
-// GC. So given the job's --settings marker we additionally require the live
-// process's cmdline to still look like that claude child. kill(pid,0): nil →
-// alive; ESRCH → gone; EPERM → alive but not ours. An empty settingsPath (a sync
-// job — its pid is cc-fleet, not a claude child — or a legacy meta) and any
-// platform without process introspection degrade to the bare kill(0).
+// processAlive reports whether pid is alive and, as far as can be told, still
+// the process this job launched. kill(pid,0) decides alive (nil, or EPERM: alive
+// but not ours) or gone (ESRCH), but that only proves SOME process holds the
+// pid: once a finished job's pid is recycled it would read "running" forever
+// (StatusFor) and never GC, so the recorded start token and the claude argv
+// narrow it, as below. ReapJob signals the pid's process tree on this same
+// predicate.
 func processAlive(pid int, settingsPath, procStart string) bool {
 	if pid <= 0 {
 		return false
@@ -1037,22 +1035,21 @@ func processAlive(pid int, settingsPath, procStart string) bool {
 	if !pidAlive(pid) {
 		return false
 	}
-	// Two reuse guards compose, each trusted only in its safe direction. The
-	// start token: a MISMATCH always proves a recycled pid (one process keeps
-	// one start time) and is decisive; a MATCH is not sufficient alone — the
-	// darwin token is seconds-coarse (ps lstart), so a same-second recycle can
-	// collide. The argv marker: catches what a coarse token match misses, but
-	// its --settings value is per-provider and can collide with a later claude
-	// job of the same provider — which the token mismatch catches. Token-less
-	// metas (legacy / capture failure) keep the argv-only behavior; with no
-	// readable marker either, trust kill(0) as before.
+	// A readable start token that differs from the recorded one proves a recycled
+	// pid (one process keeps one start time) and is decisive. With no argv
+	// introspection here, or an empty settingsPath (a sync job — its pid is
+	// cc-fleet, not a claude child — or a legacy meta), the answer after that
+	// check is alive.
 	//
-	// After a token MATCH the argv only has to show a claude binary, not this
-	// job's --settings value: a wrapper between cc-fleet and claude can rewrite
-	// that flag (cmux's claude shim merges it into a temp settings file), and
-	// requiring the profile path then reads a running job as gone at its first
-	// poll. What this gives up is a pid recycled by another claude process within
-	// the same second as the job's start; a non-claude recycle still reads dead.
+	// With a readable, equal token argv only has to look like claude — any entry
+	// with a "/claude/" path segment or a basename containing "claude". A wrapper
+	// between cc-fleet and claude can rewrite --settings (cmux's claude wrapper
+	// merges it into its own file and execs claude on the same pid), and requiring
+	// the profile path then read a running job as gone. That gives up a pid
+	// recycled within the token's precision (whole seconds on darwin) by another
+	// process whose argv has such an entry. With no readable token (legacy meta or
+	// capture failure) the full check stays: claude-looking argv AND this job's
+	// --settings value.
 	tokenMatched := false
 	if procStart != "" {
 		if live, ok := procStartFn(pid); ok {
