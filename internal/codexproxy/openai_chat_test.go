@@ -9,7 +9,9 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -240,19 +242,74 @@ func TestOpenAIChatUpstream_CallConvertAndRedact(t *testing.T) {
 	}
 }
 
+// Fixed pieces of a realistic Claude Code metadata.user_id, which is a JSON
+// string carrying the install's device id and the Claude account uuid next to
+// the session id.
+const (
+	testDeviceID    = "d3v1ce-9f2a41c7e05b"
+	testAccountUUID = "acc0unt-5b1e0c3d-77aa-4c0e"
+)
+
+func claudeUserID(sessionID string) string {
+	return `{"device_id":"` + testDeviceID + `","account_uuid":"` + testAccountUUID + `","session_id":"` + sessionID + `"}`
+}
+
+var hex32 = regexp.MustCompile(`^[0-9a-f]{32}$`)
+
+// reqWithUserID builds a request whose metadata.user_id is userID verbatim;
+// marshalling escapes it, so a JSON-object user_id reaches the request as a string.
+func reqWithUserID(t *testing.T, userID string) *anthropicRequest {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"model":      "m",
+		"max_tokens": 10,
+		"messages":   []map[string]string{{"role": "user", "content": "hi"}},
+		"metadata":   map[string]string{"user_id": userID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parseReq(t, string(raw))
+}
+
+// headerServer answers every request with an empty SSE stream; seen returns the
+// headers of the latest request it received.
+func headerServer(t *testing.T) (srv *httptest.Server, seen func() http.Header) {
+	t.Helper()
+	var mu sync.Mutex
+	var last http.Header
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		last = r.Header.Clone()
+		mu.Unlock()
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	t.Cleanup(srv.Close)
+	return srv, func() http.Header {
+		mu.Lock()
+		defer mu.Unlock()
+		return last
+	}
+}
+
+// sendReq sends a through up and returns the headers headerServer saw.
+func sendReq(t *testing.T, up upstream, seen func() http.Header, a *anthropicRequest) http.Header {
+	t.Helper()
+	body, err := up.call(context.Background(), a, newConvCtx(a, "key"))
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	body.Close()
+	return seen()
+}
+
 // call must attach x-opencode-session on an opencode.ai upstream (OpenCode Go's
 // gateway has rejected headerless requests with 400 MissingSessionID since
-// 2026-09-06) and reuse claude's own metadata.user_id as the value, since
-// translateRequest already reuses that same field as the Responses upstream's
-// prompt_cache_key for the same "stable id per conversation" purpose.
+// 2026-09-06). The value is an opaque digest per conversation: metadata.user_id
+// also carries the device id and account uuid, which must not reach the gateway.
 func TestOpenAIChatUpstream_OpenCodeGoSessionHeader(t *testing.T) {
-	var gotSession string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotSession = r.Header.Get("x-opencode-session")
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n"))
-	}))
-	defer srv.Close()
+	srv, seen := headerServer(t)
 
 	// httptest's server is 127.0.0.1, not opencode.ai, so point baseURL's Host at
 	// opencode.ai while dialing the real test listener via a custom transport —
@@ -260,14 +317,42 @@ func TestOpenAIChatUpstream_OpenCodeGoSessionHeader(t *testing.T) {
 	u := newOpenAIChatUpstream("https://opencode.ai/zen/go/v1")
 	u.http.Transport = rewriteHostTransport{targetURL: srv.URL}
 
-	a := parseReq(t, `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}],"metadata":{"user_id":"user_abc_session_123"}}`)
-	body, err := u.call(context.Background(), a, newConvCtx(a, "key"))
-	if err != nil {
-		t.Fatalf("call: %v", err)
+	const sessionID = "11111111-2222-4333-8444-555555555555"
+	got := sendReq(t, u, seen, reqWithUserID(t, claudeUserID(sessionID))).Get("x-opencode-session")
+	if !hex32.MatchString(got) {
+		t.Fatalf("x-opencode-session = %q, want 32 lowercase hex chars", got)
 	}
-	body.Close()
-	if gotSession != "user_abc_session_123" {
-		t.Fatalf("x-opencode-session = %q, want claude's metadata.user_id", gotSession)
+	for _, leaked := range []string{testDeviceID, testAccountUUID, sessionID} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("x-opencode-session = %q leaks %q", got, leaked)
+		}
+	}
+	if again := sendReq(t, u, seen, reqWithUserID(t, claudeUserID(sessionID))).Get("x-opencode-session"); again != got {
+		t.Fatalf("same user_id sent %q then %q, want a stable value", got, again)
+	}
+	other := sendReq(t, u, seen, reqWithUserID(t, claudeUserID("66666666-7777-4888-8999-000000000000"))).Get("x-opencode-session")
+	if other == got {
+		t.Fatalf("a different session_id sent the same value %q", got)
+	}
+}
+
+// The header value depends on the session id alone: the other fields Claude Code
+// puts in metadata.user_id do not change it. An older client's plain string keeps
+// one stable value too.
+func TestOpenCodeSessionID_SessionIDOnly(t *testing.T) {
+	const sessionID = "11111111-2222-4333-8444-555555555555"
+	const want = "cf4c4732fd3b8f8a55b60871950a2f22" // hex(sha256(sessionID)[:16])
+	for _, userID := range []string{
+		claudeUserID(sessionID),
+		`{"device_id":"another-device","account_uuid":"another-account","session_id":"` + sessionID + `"}`,
+		`{"session_id":"` + sessionID + `","parent_session_id":"99999999-aaaa-4bbb-8ccc-dddddddddddd","device_id":"` + testDeviceID + `"}`,
+	} {
+		if got := opencodeSessionID(reqWithUserID(t, userID)); got != want {
+			t.Errorf("user_id %s: x-opencode-session = %q, want %q", userID, got, want)
+		}
+	}
+	if got := opencodeSessionID(reqWithUserID(t, "user_abc")); got != "6bb79e55dbc86636062d3c7466f4c463" {
+		t.Errorf("plain-string user_id: x-opencode-session = %q", got)
 	}
 }
 
@@ -275,25 +360,18 @@ func TestOpenAIChatUpstream_OpenCodeGoSessionHeader(t *testing.T) {
 // (a header present but empty is exactly the condition OpenCode Go rejects) —
 // covering claude requests that, however unobserved in practice, omit it.
 func TestOpenAIChatUpstream_OpenCodeGoSessionHeaderFallback(t *testing.T) {
-	var gotSession string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotSession = r.Header.Get("x-opencode-session")
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-	}))
-	defer srv.Close()
+	srv, seen := headerServer(t)
 
 	u := newOpenAIChatUpstream("https://opencode.ai/zen/go/v1")
 	u.http.Transport = rewriteHostTransport{targetURL: srv.URL}
 
 	a := parseReq(t, `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}]}`)
-	body, err := u.call(context.Background(), a, newConvCtx(a, "key"))
-	if err != nil {
-		t.Fatalf("call: %v", err)
-	}
-	body.Close()
-	if gotSession == "" {
+	first := sendReq(t, u, seen, a).Get("x-opencode-session")
+	if first == "" {
 		t.Fatal("x-opencode-session must never be empty on an opencode.ai call")
+	}
+	if second := sendReq(t, u, seen, a).Get("x-opencode-session"); second == first {
+		t.Fatalf("two calls without metadata sent the same value %q", first)
 	}
 }
 
@@ -337,6 +415,7 @@ func TestIsOpenCodeGoHost(t *testing.T) {
 		{"https://evil.com@opencode.ai/v1", true},  // userinfo before @ is not the host
 		{"https://opencode.ai@evil.com/v1", false}, // userinfo trick the other way must NOT match
 		{"https://127.0.0.1:17223/", false},
+		{"https://[::1%25a.opencode.ai]/v1", false}, // an IPv6 zone, not a subdomain
 		{":::not a url", false},
 	}
 	for _, c := range cases {
@@ -347,34 +426,22 @@ func TestIsOpenCodeGoHost(t *testing.T) {
 }
 
 // A metadata.user_id containing CR/LF must never reach the wire as (or corrupt)
-// the x-opencode-session header — opencodeSessionID falls back to a fresh uuid
-// instead, so a malformed client-supplied value degrades to "no cache affinity"
-// rather than an injection attempt or a client-visible transport error.
-func TestOpenAIChatUpstream_HostileUserIDFallsBackInsteadOfInjecting(t *testing.T) {
-	var gotSession string
-	var otherHeaders int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotSession = r.Header.Get("x-opencode-session")
-		otherHeaders = len(r.Header)
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: [DONE]\n\n"))
-	}))
-	defer srv.Close()
+// the x-opencode-session header — only a digest of it is sent, so a malformed
+// client-supplied value can neither inject a header nor fail the transport.
+func TestOpenAIChatUpstream_HostileUserIDIsDigestedNotInjected(t *testing.T) {
+	srv, seen := headerServer(t)
 
 	u := newOpenAIChatUpstream("https://opencode.ai/zen/go/v1")
 	u.http.Transport = rewriteHostTransport{targetURL: srv.URL}
 
-	raw := `{"model":"m","max_tokens":10,"messages":[{"role":"user","content":"hi"}],"metadata":{"user_id":"line1\r\nX-Injected: evil"}}`
-	a := parseReq(t, raw)
-	body, err := u.call(context.Background(), a, newConvCtx(a, "key"))
-	if err != nil {
-		t.Fatalf("call must not error out on a hostile metadata.user_id: %v", err)
+	h := sendReq(t, u, seen, reqWithUserID(t, "line1\r\nX-Injected: evil"))
+	if got := h.Get("x-opencode-session"); !hex32.MatchString(got) {
+		t.Fatalf("x-opencode-session = %q, want 32 lowercase hex chars", got)
 	}
-	body.Close()
-	if gotSession == "" || strings.Contains(gotSession, "\r") || strings.Contains(gotSession, "\n") {
-		t.Fatalf("x-opencode-session = %q, want a clean fallback uuid", gotSession)
+	if v := h.Values("X-Injected"); len(v) != 0 {
+		t.Fatalf("injected header reached the upstream: %q", v)
 	}
-	if otherHeaders == 0 {
+	if h.Get("Authorization") == "" {
 		t.Fatal("request must still reach the upstream with its normal headers")
 	}
 }

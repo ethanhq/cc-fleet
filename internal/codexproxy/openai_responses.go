@@ -15,12 +15,17 @@ import (
 // the max_output_tokens cap differ (codex omits the cap and rides the ChatGPT
 // backend over OAuth). It is the upstream for the openai-responses protocol.
 type openaiResponsesUpstream struct {
-	http    *http.Client
-	baseURL string
+	http         *http.Client
+	baseURL      string
+	isOpenCodeGo bool // baseURL's host is opencode.ai or a subdomain — see isOpenCodeGoHost
 }
 
 func newOpenAIResponsesUpstream(baseURL string) *openaiResponsesUpstream {
-	return &openaiResponsesUpstream{http: &http.Client{Timeout: 0}, baseURL: baseURL}
+	return &openaiResponsesUpstream{
+		http:         &http.Client{Timeout: 0},
+		baseURL:      baseURL,
+		isOpenCodeGo: isOpenCodeGoHost(baseURL),
+	}
 }
 
 // models is empty: the model list comes from the real upstream models_endpoint.
@@ -58,6 +63,9 @@ func (u *openaiResponsesUpstream) call(ctx context.Context, areq *anthropicReque
 	req.Header.Set("Authorization", "Bearer "+cc.apiKey)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "text/event-stream")
+	if u.isOpenCodeGo {
+		req.Header.Set("x-opencode-session", opencodeSessionID(areq))
+	}
 	resp, err := u.http.Do(req)
 	if err != nil {
 		return nil, &upstreamError{upTransient, http.StatusBadGateway, "openai upstream: " + redactKey(err.Error(), cc.apiKey)}

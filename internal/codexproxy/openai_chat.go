@@ -3,6 +3,8 @@ package codexproxy
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -75,7 +77,7 @@ func (u *openaiChatUpstream) call(ctx context.Context, areq *anthropicRequest, c
 // of it (case-insensitively, tolerating a trailing FQDN dot). Since 2026-09-06
 // OpenCode Go's "Console Go" gateway rejects any request missing an
 // x-opencode-session header with 400 MissingSessionID, a requirement specific to
-// that gateway — every other openai-chat upstream (a direct provider API, a
+// that gateway — every other openai-* upstream (a direct provider API, a
 // different aggregator) has no such header and must not get one injected, so
 // the session header is scoped to this host rather than sent unconditionally.
 func isOpenCodeGoHost(baseURL string) bool {
@@ -84,21 +86,25 @@ func isOpenCodeGoHost(baseURL string) bool {
 		return false
 	}
 	host := strings.ToLower(strings.TrimSuffix(u.Hostname(), "."))
+	// An IPv6 literal can carry a zone that ends like the domain ("::1%a.opencode.ai").
+	if strings.Contains(host, ":") {
+		return false
+	}
 	return host == "opencode.ai" || strings.HasSuffix(host, ".opencode.ai")
 }
 
-// opencodeSessionID returns the value to send in x-opencode-session: the stable
-// per-conversation id OpenCode Go's gateway wants for routing + prompt-cache
-// affinity across a conversation's turns. claude already sends a stable
-// per-session id in metadata.user_id — translateRequest reuses the same value as
-// the Responses upstream's prompt_cache_key — so this reuses it too. Falls back
-// to a fresh uuid (necessarily a different one on every call with no metadata,
-// since nothing per-conversation is available to derive it from) when that
-// field is empty or itself an invalid header value, so a request is never sent
-// header-less, and a client-supplied value can never reach the wire malformed.
+// opencodeSessionID returns the value to send in x-opencode-session: a stable
+// opaque id per conversation, which is all OpenCode Go's gateway needs for
+// routing + prompt-cache affinity. It is a digest of sessionKey, not
+// metadata.user_id itself: that also carries the install's device id and the
+// Claude account uuid, and hashing keeps arbitrary session_id bytes out of a
+// header. Falls back to a fresh uuid (necessarily a different one on every call
+// with no metadata, since nothing per-conversation is available to derive it
+// from) so a request is never sent header-less.
 func opencodeSessionID(a *anthropicRequest) string {
-	if v := a.Metadata.UserID; v != "" && !strings.ContainsAny(v, "\r\n\x00") {
-		return v
+	if k := sessionKey(a.Metadata.UserID); k != "" {
+		sum := sha256.Sum256([]byte(k))
+		return hex.EncodeToString(sum[:16])
 	}
 	return uuid.NewString()
 }

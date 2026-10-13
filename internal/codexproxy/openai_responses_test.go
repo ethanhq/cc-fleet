@@ -60,6 +60,35 @@ data: {"type":"response.completed","response":{"status":"completed","usage":{"in
 	}
 }
 
+// OpenCode Go serves Responses-protocol models on the same gateway, so the
+// Responses lane must send the same x-opencode-session the chat lane would.
+func TestOpenAIResponsesUpstream_OpenCodeGoSessionHeader(t *testing.T) {
+	srv, seen := headerServer(t)
+	ru := newOpenAIResponsesUpstream("https://opencode.ai/zen/go/v1")
+	ru.http.Transport = rewriteHostTransport{targetURL: srv.URL}
+	cu := newOpenAIChatUpstream("https://opencode.ai/zen/go/v1")
+	cu.http.Transport = rewriteHostTransport{targetURL: srv.URL}
+
+	a := reqWithUserID(t, claudeUserID("11111111-2222-4333-8444-555555555555"))
+	got := sendReq(t, ru, seen, a).Get("x-opencode-session")
+	if !hex32.MatchString(got) {
+		t.Fatalf("x-opencode-session = %q, want 32 lowercase hex chars", got)
+	}
+	if want := sendReq(t, cu, seen, a).Get("x-opencode-session"); got != want {
+		t.Fatalf("responses lane sent %q, chat lane sends %q for the same user_id", got, want)
+	}
+}
+
+func TestOpenAIResponsesUpstream_NoSessionHeaderForOtherHosts(t *testing.T) {
+	srv, seen := headerServer(t)
+	u := newOpenAIResponsesUpstream(srv.URL + "/v1")
+
+	h := sendReq(t, u, seen, reqWithUserID(t, claudeUserID("11111111-2222-4333-8444-555555555555")))
+	if v := h.Values("x-opencode-session"); len(v) != 0 {
+		t.Fatalf("x-opencode-session must not be sent to a non-opencode.ai upstream, got %q", v)
+	}
+}
+
 // translateRequest (the codex path) never sets max_output_tokens — the ChatGPT
 // backend 400s on it, so omitempty must drop it.
 func TestResponsesTranslate_CodexOmitsMaxOutput(t *testing.T) {
