@@ -74,6 +74,15 @@ Once provider teammates are set up, `add` / `edit` / `remove` also resync the `c
 
 **OpenAI-protocol and codex providers register through the TUI** (the add form's OpenAI and CLI-auth groups) — `cc-fleet add` has no protocol flag. See [Codex](#codex--reuse-a-chatgpt-subscription-as-a-provider) for the codex CLI path.
 
+**Extra request-body fields (`extra_body`).** An `openai-chat` or `openai-responses` provider can add fields of its own to every request the proxy sends upstream — OpenRouter's provider routing, for example. Set it in the TUI edit form (the `extra` row) or in `providers.toml`:
+
+```toml
+[openrouter]
+extra_body = '{"provider":{"only":["deepseek"],"allow_fallbacks":false}}'
+```
+
+The value is one JSON object held in a TOML **string** — a TOML table is refused — of at most 4096 bytes. When cc-fleet next saves `providers.toml` it rewrites the value as an escaped double-quoted string, which means the same. A field the proxy sets itself (`model`, `messages`, `tools`, `stream`, …) is refused, so `extra_body` adds fields and never overrides one. It is stored in plain text and passed to the proxy on its command line: not a place for secrets. A change takes effect at that provider's next worker start, which restarts its proxy — the old one gets up to 5 seconds to finish requests in flight, and a response still streaming after that is cut off.
+
 ## Default provider & model tiers
 
 `cc-fleet default <provider>` sets the fleet-wide default; every provider-less `teammate check` / `subagent` / `run` / workflow leaf resolves to it (`default` alone shows it, `--unset` clears it). The id `claude` is reserved for the native leaf and can never be the default — `cc-fleet default claude` refuses with `PROVIDER_NAME_INVALID`. A provider's roster gives Claude stable handles instead of hardcoded IDs:
@@ -91,7 +100,7 @@ cc-fleet export --provider deepseek,glm > roster.toml
 cc-fleet import fleet-providers.toml                # apply on the new machine
 ```
 
-What travels: each provider's config (protocol, base URL, for OpenAI-protocol providers the upstream URL, models endpoint, model roster, effort, default permission, key rotation, enabled, secret backend + reference) and the global default. What doesn't: the **key itself** (file-backend keys stay on the source; `pass`/`1password`/`vault`/`keyring` rows carry only their reference), and **codex** providers (their login is machine-local — omitted on export, skipped on import).
+What travels: each provider's config (protocol, base URL, for OpenAI-protocol providers the upstream URL and `extra_body`, models endpoint, model roster, effort, default permission, key rotation, enabled, secret backend + reference) and the global default. What doesn't: the **key itself** (file-backend keys stay on the source; `pass`/`1password`/`vault`/`keyring` rows carry only their reference), and **codex** providers (their login is machine-local — omitted on export, skipped on import).
 
 `import` validates the whole bundle before writing anything, so a bad bundle leaves the roster untouched. A provider that collides with an existing one is skipped unless `--force`, which backs up `providers.toml` first and replaces it in a single atomic write. A daemon-backed (OpenAI-protocol) provider's loopback `base_url` is re-derived on the target — its `upstream_url` is what travels. Import writes config only and never contacts a provider; profiles are rebuilt afterward (a derived cache — re-run `repair` if that step reports a failure).
 

@@ -74,6 +74,15 @@ printf '%s' "$DEEPSEEK_API_KEY" | cc-fleet add deepseek \
 
 **OpenAI 协议与 codex provider 在 TUI 里注册**(添加表单的 OpenAI 组与 CLI-auth 组) — `cc-fleet add` 没有 protocol flag。codex 的 CLI 路径见[Codex](#codex--用-chatgpt-订阅当-provider)。
 
+**额外的请求体字段(`extra_body`)。** `openai-chat` 和 `openai-responses` provider 可以让代理在发往上游的每个请求里多带几个字段,比如 OpenRouter 的供应商路由。在 TUI 编辑表单的 `extra` 一行里填,或直接写进 `providers.toml`:
+
+```toml
+[openrouter]
+extra_body = '{"provider":{"only":["deepseek"],"allow_fallbacks":false}}'
+```
+
+值是放在 TOML **字符串**里的一个 JSON 对象(写成 TOML 表会被拒绝),最长 4096 字节。cc-fleet 下次保存 `providers.toml` 时会把它改写成带转义的双引号字符串,含义不变。代理自己设置的字段(`model`、`messages`、`tools`、`stream` 等)不能出现在里面,所以 `extra_body` 只能加字段,不能覆盖已有字段。它以明文保存,并通过命令行参数传给代理,不要在里面放密钥。修改后在该 provider 下一次启动 worker 时生效,那时它的代理会重启:旧代理最多等 5 秒让在途请求结束,到时还在流式输出的响应会被切断。
+
 ## 默认 provider 与模型档位
 
 `cc-fleet default <provider>` 设全局默认;此后所有不带 provider 的 `teammate check` / `subagent` / `run` / workflow leaf 都解析到它(单独 `default` 查看,`--unset` 清除)。id `claude` 为原生 leaf 保留,不能设为默认 — `cc-fleet default claude` 会以 `PROVIDER_NAME_INVALID` 拒绝。模型档位让 Claude 拿到稳定的"把手"而不用硬编码模型 ID:
@@ -91,7 +100,7 @@ cc-fleet export --provider deepseek,glm > roster.toml
 cc-fleet import fleet-providers.toml                # 在新机器上应用
 ```
 
-随包走的:每个 provider 的配置(protocol、base URL、OpenAI-protocol 的 upstream URL、models endpoint、模型档位、effort、默认权限、key 轮换、enabled、secret 后端 + 引用)与全局默认。不走的:**密钥本身**(file 后端的密钥留在源机;`pass`/`1password`/`vault`/`keyring` 只带引用),以及 **codex** provider(其登录是机器本地的 —— 导出时省略、导入时跳过)。
+随包走的:每个 provider 的配置(protocol、base URL、OpenAI-protocol 的 upstream URL 与 `extra_body`、models endpoint、模型档位、effort、默认权限、key 轮换、enabled、secret 后端 + 引用)与全局默认。不走的:**密钥本身**(file 后端的密钥留在源机;`pass`/`1password`/`vault`/`keyring` 只带引用),以及 **codex** provider(其登录是机器本地的 —— 导出时省略、导入时跳过)。
 
 `import` 在写入任何东西之前先整体校验,坏包不会动你的名册。与现有 provider 冲突的行默认跳过,除非 `--force`;`--force` 会先备份 `providers.toml`,再用一次原子写替换。daemon-backed(OpenAI-protocol)provider 的 loopback `base_url` 在目标机重新派生 —— 随包走的是它的 `upstream_url`。导入只写配置、绝不联网;profile 在之后重建(派生缓存 —— 若该步报错,重跑 `repair`)。
 
