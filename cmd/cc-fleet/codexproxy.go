@@ -21,6 +21,7 @@ func newCodexProxyCmd() *cobra.Command {
 		protocol    string
 		upstreamURL string
 		credential  string
+		extraBody   string
 	)
 	serve := &cobra.Command{
 		Use:           "serve",
@@ -31,13 +32,14 @@ func newCodexProxyCmd() *cobra.Command {
 			if port <= 0 {
 				return fmt.Errorf("--port is required")
 			}
-			return codexproxy.Serve(port, protocol, upstreamURL, credential)
+			return codexproxy.Serve(port, protocol, upstreamURL, credential, extraBody)
 		},
 	}
 	serve.Flags().IntVar(&port, "port", 0, "loopback port to bind")
 	serve.Flags().StringVar(&protocol, "protocol", "", "wire protocol (default: codex-oauth)")
 	serve.Flags().StringVar(&upstreamURL, "upstream-url", "", "real upstream base URL (openai-* protocols)")
 	serve.Flags().StringVar(&credential, "credential", "", "codex credential ref (default: the legacy single credential)")
+	serve.Flags().StringVar(&extraBody, "extra-body", "", "JSON object added to every upstream request body (openai-* protocols)")
 	cmd.AddCommand(serve)
 	cmd.AddCommand(&cobra.Command{
 		Use:   "stop",

@@ -26,8 +26,12 @@ type upstream interface {
 // buildUpstream selects the upstream implementation for a daemon's protocol.
 // codex builds its own OAuth token source bound to the daemon's credential ref;
 // openai-* carries the real key per request (apiKey passed to call), so it only
-// needs the upstream base URL and ignores ref.
-func buildUpstream(protocol, upstreamURL, ref string) (upstream, error) {
+// needs the upstream base URL and ignores ref. extraBody is validated here, where
+// the request splice depends on it holding no field the proxy sets itself.
+func buildUpstream(protocol, upstreamURL, ref, extraBody string) (upstream, error) {
+	if err := config.ValidateExtraBody(protocol, extraBody); err != nil {
+		return nil, err
+	}
 	switch protocol {
 	case config.ProtocolCodexOAuth:
 		source, err := newCLIRideStore(ref)
@@ -36,9 +40,13 @@ func buildUpstream(protocol, upstreamURL, ref string) (upstream, error) {
 		}
 		return newCodexUpstream(source, ref), nil
 	case config.ProtocolOpenAIChat:
-		return newOpenAIChatUpstream(upstreamURL), nil
+		up := newOpenAIChatUpstream(upstreamURL)
+		up.extra = extraMembers(extraBody)
+		return up, nil
 	case config.ProtocolOpenAIResponses:
-		return newOpenAIResponsesUpstream(upstreamURL), nil
+		up := newOpenAIResponsesUpstream(upstreamURL)
+		up.extra = extraMembers(extraBody)
+		return up, nil
 	default:
 		return nil, fmt.Errorf("codexproxy: unsupported protocol %q", protocol)
 	}

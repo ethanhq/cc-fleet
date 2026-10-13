@@ -23,7 +23,8 @@ import (
 type openaiChatUpstream struct {
 	http         *http.Client
 	baseURL      string
-	isOpenCodeGo bool // baseURL's host is opencode.ai or a subdomain — see isOpenCodeGoHost
+	isOpenCodeGo bool   // baseURL's host is opencode.ai or a subdomain — see isOpenCodeGoHost
+	extra        []byte // extra_body's members, appended to every request body; see extraMembers
 }
 
 func newOpenAIChatUpstream(baseURL string) *openaiChatUpstream {
@@ -52,6 +53,7 @@ func (u *openaiChatUpstream) call(ctx context.Context, areq *anthropicRequest, c
 		return nil, &upstreamError{upBadRequest, http.StatusBadRequest, err.Error()}
 	}
 	body, _ := json.Marshal(creq)
+	body = withExtra(body, u.extra)
 	endpoint, err := url.JoinPath(u.baseURL, "chat", "completions")
 	if err != nil {
 		return nil, &upstreamError{upBadRequest, http.StatusBadRequest, "invalid upstream url"}

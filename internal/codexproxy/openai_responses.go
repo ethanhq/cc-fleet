@@ -17,7 +17,8 @@ import (
 type openaiResponsesUpstream struct {
 	http         *http.Client
 	baseURL      string
-	isOpenCodeGo bool // baseURL's host is opencode.ai or a subdomain — see isOpenCodeGoHost
+	isOpenCodeGo bool   // baseURL's host is opencode.ai or a subdomain — see isOpenCodeGoHost
+	extra        []byte // extra_body's members, appended to every request body; see extraMembers
 }
 
 func newOpenAIResponsesUpstream(baseURL string) *openaiResponsesUpstream {
@@ -55,6 +56,7 @@ func (u *openaiResponsesUpstream) call(ctx context.Context, areq *anthropicReque
 		rreq.Reasoning.Effort = "high"
 	}
 	body, _ := json.Marshal(rreq)
+	body = withExtra(body, u.extra)
 	endpoint, err := url.JoinPath(u.baseURL, "responses")
 	if err != nil {
 		return nil, &upstreamError{upBadRequest, http.StatusBadRequest, "invalid upstream url"}
