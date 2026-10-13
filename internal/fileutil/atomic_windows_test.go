@@ -29,3 +29,35 @@ func TestAtomicWriteReplacesOpenTarget(t *testing.T) {
 		t.Fatalf("content = %q, want new", got)
 	}
 }
+
+// TestRenameRetryWaitsForOpenTarget pins the real error without a timer: the replace a reader
+// blocks fails with one isRenameBlocked re-tries, and goes through once the reader closes.
+func TestRenameRetryWaitsForOpenTarget(t *testing.T) {
+	dir := t.TempDir()
+	from, to := filepath.Join(dir, "meta.json.tmp"), filepath.Join(dir, "meta.json")
+	for _, p := range []string{from, to} {
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f, err := os.Open(to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	calls := 0
+	err = retryTransientRename(func() error {
+		calls++
+		err := os.Rename(from, to)
+		if calls == 1 {
+			if !isRenameBlocked(err) {
+				t.Errorf("rename over an open target: err=%v, want a blocked replace", err)
+			}
+			f.Close()
+		}
+		return err
+	}, isRenameBlocked, renameAttempts, renameDelay)
+	if err != nil || calls != 2 {
+		t.Fatalf("err=%v calls=%d, want nil after one retry", err, calls)
+	}
+}
