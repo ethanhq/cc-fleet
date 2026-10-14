@@ -332,6 +332,12 @@ type Model struct {
 	loading  bool
 	quitting bool
 
+	// opsInFlight counts provider writes (add, edit, remove, default) dispatched and
+	// not yet reported back by an opDoneMsg. loading cannot say this: list and model
+	// loads set and clear it too. While it is non-zero the forms are frozen, and the
+	// list opens no new ask and does not hand over to the Board.
+	opsInFlight int
+
 	// diag is the --verbose step-trace sink (nil when verbose is off); Update
 	// writes the dispatched-op trace to it.
 	diag *diag.Logger
@@ -1879,6 +1885,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case opDoneMsg:
 		m.diag.Logf("tui: op %s %q done (err=%v)", msg.verb, msg.name, msg.err != nil)
+		if m.opsInFlight > 0 {
+			m.opsInFlight--
+		}
 		// While a marked codex login flow owns the screen (committing, consent, or
 		// device), a stale result from an earlier, unrelated op is dropped outright:
 		// yanking the user to an outcome modal would free them to start another codex
@@ -2062,6 +2071,11 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.quitting = true
 		return m, tea.Quit
 	case "tab":
+		// Not while a provider write is in flight: its result switches back here, where
+		// a Board modal would swallow it and a Board action left running could not close.
+		if m.opsInFlight > 0 {
+			return m, nil
+		}
 		m.screen = screenSpawn
 		m.loading = !m.boardSeen // a revisit keeps the previous frame until the fresh load lands
 		m.boardJobsErr = nil
@@ -2110,7 +2124,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "d":
 		// No new ask while a mutation is in flight: its outcome modal would find this
 		// one open and be silently swallowed (withInfo never clobbers an open modal).
-		if m.providerCursor < addRow && !m.loading { // a provider row, not the Add row
+		if m.providerCursor < addRow && !m.loading && m.opsInFlight == 0 { // a provider row, not the Add row
 			v := m.providers[m.providerCursor]
 			// State the real consequences per class: a codex remove tears down cc-fleet's
 			// own login (when unreferenced), never ~/.codex; a file-backend remove drops
@@ -2129,7 +2143,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// allowed (even if disabled); SETTING a disabled provider is refused — it can't
 		// serve as the default. A fresh set acts immediately; switching away from a
 		// pinned default confirms first.
-		if m.providerCursor < addRow && !m.loading {
+		if m.providerCursor < addRow && !m.loading && m.opsInFlight == 0 {
 			v := m.providers[m.providerCursor]
 			switch {
 			case m.defaultProvider == v.Name:
@@ -2141,6 +2155,7 @@ func (m Model) updateList(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					"Switch the default provider from "+m.defaultProvider+" to "+v.Name+"?")
 			default:
 				m.loading = true
+				m.opsInFlight++
 				return m, setDefaultCmd(v.Name, false)
 			}
 		}
@@ -3833,6 +3848,7 @@ func (m Model) updateCodexAuth(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.diag.Logf("tui: codex auth → committing (source choice %d)", m.codexSourceCursor)
 			m.codexAuthStage = codexAuthCommitting
 			m.loading = true
+			m.opsInFlight++
 			return m, addProviderCmd(req)
 		}
 	case codexAuthConsent:
@@ -3942,6 +3958,13 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "esc" {
 		return m.toList()
 	}
+	// Frozen while a provider write is in flight. Its result closes the form, so
+	// anything typed or saved now would be lost without a word, and a key confirm
+	// opened now would swallow that result's modal (withInfo never clobbers an open
+	// modal).
+	if m.opsInFlight > 0 {
+		return m, nil
+	}
 	// ← returns to the provider list from a row that doesn't consume it — a text
 	// field keeps the arrow for its input cursor, a choice field cycles options,
 	// and a 1M toggle uses ← to return to its model slot.
@@ -3949,11 +3972,9 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.toList()
 	}
 	// Enter (or →, the descend key) on the "Manage API keys →" action row (edit
-	// form only) opens the per-provider key manager and loads its key set. Not while a
-	// submit is in flight: a key confirm opened in that window would swallow the
-	// pending outcome modal (withInfo never clobbers an open modal).
+	// form only) opens the per-provider key manager and loads its key set.
 	if (msg.String() == "enter" || msg.String() == "right") && m.formMode == modeEdit &&
-		m.form.focusedKey() == "manage_keys" && !m.loading {
+		m.form.focusedKey() == "manage_keys" {
 		m.screen = screenKeys
 		m.keyProvider = m.editName
 		m.keyCursor = 0
@@ -4361,6 +4382,7 @@ func (m Model) submitAddOpenAI() (tea.Model, tea.Cmd) {
 	}
 	m.form.err = ""
 	m.loading = true
+	m.opsInFlight++
 	return m, addProviderCmd(userops.AddRequest{
 		Name:           name,
 		BaseURL:        fmt.Sprintf("http://127.0.0.1:%d/", port),
@@ -4437,6 +4459,7 @@ func (m Model) submitAddCodex() (tea.Model, tea.Cmd) {
 	case "own":
 		// cc-fleet already has its own login for this credential — reuse, no prompt.
 		m.loading = true
+		m.opsInFlight++
 		return m, addProviderCmd(req)
 	case "cli-ride":
 		// A codex subscription is signed in on the system; let the user reuse it or log
@@ -4461,6 +4484,7 @@ func (m Model) submitAddCodex() (tea.Model, tea.Cmd) {
 		m.diag.Logf("tui: codex auth → committing (no source)")
 		m.codexAuthStage = codexAuthCommitting
 		m.loading = true
+		m.opsInFlight++
 		return m, addProviderCmd(req)
 	}
 }
@@ -4486,6 +4510,7 @@ func (m Model) submitAddAnthropic() (tea.Model, tea.Cmd) {
 
 	m.form.err = ""
 	m.loading = true
+	m.opsInFlight++
 	return m, addProviderCmd(userops.AddRequest{
 		Name:           name,
 		BaseURL:        baseURL,
@@ -4546,6 +4571,7 @@ func (m Model) submitEdit() (tea.Model, tea.Cmd) {
 	}
 	m.form.err = ""
 	m.loading = true
+	m.opsInFlight++
 	return m, editProviderCmd(req)
 }
 

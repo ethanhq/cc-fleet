@@ -650,6 +650,11 @@ func TestDeleteFromListConfirmAndCancel(t *testing.T) {
 	if cmd == nil || !m.loading || m.confirm != nil {
 		t.Fatalf("confirm should dispatch remove cmd + set loading + close, cmd=%v loading=%v confirmOpen=%v", cmd, m.loading, m.confirm != nil)
 	}
+	// The remove stays in flight across a list reload: d must not ask again.
+	m, _ = step(t, m, providersMsg{providers: []userops.ProviderView{{Name: "kimi", Enabled: true}}})
+	if m, _ = press(t, m, "d"); m.confirm != nil {
+		t.Fatal("d while the remove is in flight must not open another ask")
+	}
 	m, _ = step(t, m, opDoneMsg{verb: "remove", name: "kimi", err: errors.New("boom")})
 	if m.screen != screenList || m.confirm == nil || !m.confirm.resultErr {
 		t.Fatalf("failed op should pop a red info modal over the list: screen=%d confirmOpen=%v", m.screen, m.confirm != nil)
@@ -667,22 +672,102 @@ func TestDeleteGatedWhileMutationInFlight(t *testing.T) {
 	}
 }
 
-// TestManageKeysGatedWhileMutationInFlight: the manage-keys descent is blocked while a
-// submit is in flight — a key confirm opened in that window would swallow the pending
-// outcome modal.
-func TestManageKeysGatedWhileMutationInFlight(t *testing.T) {
-	m := withProviders(t, userops.ProviderView{
-		Name: "glm", BaseURL: "https://api.example/anthropic",
-		ModelsEndpoint: "https://api.example/v1/models", DefaultModel: "m", Enabled: true,
-	})
-	m, _ = press(t, m, "enter") // edit form
-	for i := 0; i < len(m.form.fields) && m.form.focusedKey() != "manage_keys"; i++ {
-		m, _ = press(t, m, "down")
+// TestListAsksGatedWhileWriteInFlight: a write still in flight keeps d, s and tab shut
+// even after a list reload has cleared loading — the write's outcome modal would find
+// the new ask (or a Board modal) open and be swallowed. The list says it is saving.
+func TestListAsksGatedWhileWriteInFlight(t *testing.T) {
+	vs := []userops.ProviderView{{Name: "kimi", Enabled: true}, {Name: "glm", Enabled: true}}
+	m := withProviders(t, vs...)
+	m, cmd := press(t, m, "s") // no default yet: sets the first provider at once
+	if cmd == nil {
+		t.Fatal("s with no default should dispatch the set")
 	}
-	m.loading = true
-	m, cmd := press(t, m, "enter")
+	m, _ = step(t, m, providersMsg{providers: vs}) // a reload lands before the write's result
+	for _, k := range []string{"d", "s", "tab"} {
+		if m, cmd = press(t, m, k); m.confirm != nil || cmd != nil || m.screen != screenList {
+			t.Fatalf("%s during an in-flight write must do nothing (modal=%v dispatched=%v screen=%d)", k, m.confirm != nil, cmd != nil, m.screen)
+		}
+	}
+	if !strings.Contains(m.View(), "saving…") {
+		t.Fatal("the list should say a write is in flight")
+	}
+	m, _ = step(t, m, opDoneMsg{verb: "set default", name: "kimi"})
+	m, _ = press(t, m, "esc") // dismiss the outcome modal
+	if m, _ = press(t, m, "d"); m.confirm == nil {
+		t.Fatal("after the write's result d must ask again")
+	}
+}
+
+var glmView = userops.ProviderView{
+	Name: "glm", BaseURL: "https://api.example/anthropic",
+	ModelsEndpoint: "https://api.example/v1/models", DefaultModel: "m", Enabled: true,
+}
+
+// TestManageKeysGatedWhileMutationInFlight: the manage-keys descent is blocked while a
+// write is in flight (here one started from the list) — a key confirm opened in that
+// window would swallow the pending outcome modal.
+func TestManageKeysGatedWhileMutationInFlight(t *testing.T) {
+	m := withProviders(t, glmView)
+	m, cmd := press(t, m, "s") // no default yet: the set is dispatched and still in flight
+	if cmd == nil {
+		t.Fatal("s with no default should dispatch the set")
+	}
+	m, _ = press(t, m, "enter") // edit form
+	idx, _ := m.form.indexOfKey("manage_keys")
+	m.form.setFocus(idx)
+	m, cmd = press(t, m, "enter")
 	if m.screen == screenKeys || cmd != nil {
 		t.Fatalf("manage-keys during an in-flight mutation must not open, screen=%d cmd=%v", m.screen, cmd)
+	}
+}
+
+// TestManageKeysOpensAfterLeavingModelPickerEarly: esc out of the model picker before
+// its fetch lands leaves loading set (the late result is dropped). That must not shut
+// the key manager, which waits only for a write in flight.
+func TestManageKeysOpensAfterLeavingModelPickerEarly(t *testing.T) {
+	m, _ := press(t, withProviders(t, glmView), "enter") // edit form
+	idx, _ := m.form.indexOfKey("default_model")
+	m.form.setFocus(idx)
+	m, cmd := press(t, m, "enter")
+	if m.screen != screenModelPick || cmd == nil {
+		t.Fatalf("enter on the default model: screen=%d cmd=%v, want the picker and a fetch", m.screen, cmd)
+	}
+	m, _ = press(t, m, "esc") // back before the fetch lands
+	idx, _ = m.form.indexOfKey("manage_keys")
+	m.form.setFocus(idx)
+	m, cmd = press(t, m, "enter")
+	if m.screen != screenKeys || cmd == nil {
+		t.Fatalf("manage-keys after leaving the picker early: screen=%d cmd=%v, want the key manager", m.screen, cmd)
+	}
+}
+
+// TestFormFrozenWhileWriteInFlight: [Save] dispatches one edit and the form says so;
+// until the result arrives, typing changes nothing and [Save] dispatches nothing — the
+// result closes the form, so a later change would be lost without a word. The result
+// re-arms the form.
+func TestFormFrozenWhileWriteInFlight(t *testing.T) {
+	m, _ := press(t, withProviders(t, glmView), "enter") // edit form
+	save := len(m.form.fields)
+	m.form.setFocus(save)
+	m, first := press(t, m, "enter")
+	if first == nil || !strings.Contains(m.View(), "saving…") {
+		t.Fatalf("save: dispatched=%v, view says saving=%v", first != nil, strings.Contains(m.View(), "saving…"))
+	}
+	idx, _ := m.form.indexOfKey("default_model")
+	m.form.setFocus(idx)
+	m, _ = press(t, m, "x")
+	m.form.setFocus(save)
+	m, second := press(t, m, "enter")
+	if second != nil || m.form.value("default_model") != "m" {
+		t.Fatalf("while the edit is in flight: typed value %q (want it unchanged), second save dispatched=%v",
+			m.form.value("default_model"), second != nil)
+	}
+	m, _ = step(t, m, opDoneMsg{verb: "edit", name: "glm"})
+	m, _ = press(t, m, "esc")   // dismiss the outcome modal
+	m, _ = press(t, m, "enter") // edit form again
+	m.form.setFocus(save)
+	if _, third := press(t, m, "enter"); m.screen != screenForm || third == nil {
+		t.Fatalf("after the edit's result a save must dispatch again: screen=%d dispatched=%v", m.screen, third != nil)
 	}
 }
 

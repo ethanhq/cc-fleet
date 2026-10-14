@@ -260,9 +260,13 @@ func (m Model) viewList() string {
 	bodyH := m.boardBodyHeight()
 	board := renderBoard(listTitle, windowLines(leftLines, cursorLine, bodyH), cardTitle, rightLines, leftW, rightW, bodyH, 0)
 	pad := strings.Repeat(" ", boardMargin)
+	hint := "↑/↓ move · →/⏎ edit · s default · d delete · tab agents board · q quit"
+	if m.opsInFlight > 0 { // s, d and tab wait for the write, see updateList
+		hint = "saving… · ↑/↓ move · q quit"
+	}
 	return indentBox(title+"\n\n"+headerSummaryLine(left, right, m.boardInner()), boardMargin) +
 		"\n" + m.headerRule() + "\n" + indentBox(board, boardMargin) +
-		"\n" + pad + footer("↑/↓ move · →/⏎ edit · s default · d delete · tab agents board · q quit")
+		"\n" + pad + footer(hint)
 }
 
 // providerCacheFig is a provider's models-cache figure: "N models[ (stale)]".
@@ -492,6 +496,9 @@ func (m Model) providerFlowView(ctx, ctxRight, active, rightTitle, hint string, 
 // viewForm renders the add/edit form inside the hub box: the rail stays put, the right
 // pane is the form, the header carries the form title and the footer its key hints.
 func (m Model) viewForm() string {
+	if m.opsInFlight > 0 { // the form is frozen, see updateForm
+		return m.formBase("saving… · esc back to the list")
+	}
 	return m.formBase(m.form.intro)
 }
 

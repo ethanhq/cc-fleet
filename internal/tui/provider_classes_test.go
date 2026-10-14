@@ -98,6 +98,9 @@ func TestAddPicker_OpenAISubmitValidatesThenDispatches(t *testing.T) {
 	if cmd == nil || !m.loading {
 		t.Fatalf("complete OpenAI submit should dispatch: cmd=%v loading=%v", cmd, m.loading)
 	}
+	if _, again := press(t, m, "enter"); again != nil {
+		t.Fatal("a second submit while the add is in flight must dispatch nothing")
+	}
 }
 
 // The codex row opens the add form; submitting it with no usable source commits the

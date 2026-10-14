@@ -186,14 +186,17 @@ func (m Model) runConfirmed() (tea.Model, tea.Cmd) {
 	case confirmRemoveProvider:
 		m.confirm = nil
 		m.loading = true
+		m.opsInFlight++
 		return m, removeProviderCmd(c.id)
 	case confirmSwitchDefault:
 		m.confirm = nil
 		m.loading = true
+		m.opsInFlight++
 		return m, setDefaultCmd(c.id, true) // user confirmed the switch → force
 	case confirmUnsetDefault:
 		m.confirm = nil
 		m.loading = true
+		m.opsInFlight++
 		return m, unsetDefaultCmd(c.id)
 	case confirmDeleteKey:
 		// The keyset can refresh while the modal is open, so the target is re-validated
