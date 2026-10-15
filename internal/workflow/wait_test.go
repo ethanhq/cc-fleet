@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -140,19 +141,38 @@ func TestWaitTimeoutJustFinishedGuard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	go func() {
-		time.Sleep(30 * time.Millisecond)
-		run.Status = "done"
-		_ = subagent.SaveRun(run)
-	}()
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	// Wait first reads Done() after its first poll saw running: flip the run to done and
+	// end the ctx right then, so only the re-read can report it. The hour-long tick never
+	// fires within the test, so it can't report the flip instead.
+	base, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	// One slow tick: the first poll sees running, the ctx fires before the second,
-	// and the re-read must catch the flip to done.
-	res, werr := Wait(ctx, run.RunID, WaitOptions{Interval: 5 * time.Second})
+	ctx := &flipOnDone{Context: base, flip: func() {
+		run.Status = "done"
+		if err := subagent.SaveRun(run); err != nil {
+			t.Error(err)
+		}
+		cancel()
+	}}
+	res, werr := Wait(ctx, run.RunID, WaitOptions{Interval: time.Hour})
+	if !ctx.flipped {
+		t.Fatal("Wait returned before it waited on the ctx")
+	}
 	if werr != nil || res.Outcome != WaitTerminal || res.Run.Status != "done" {
 		t.Fatalf("Wait returned (%s/%s, %v), want terminal/done via the ctx re-read", res.Outcome, res.Run.Status, werr)
 	}
+}
+
+// flipOnDone runs flip the first time Done is called, before handing back the channel.
+type flipOnDone struct {
+	context.Context
+	once    sync.Once
+	flip    func()
+	flipped bool
+}
+
+func (c *flipOnDone) Done() <-chan struct{} {
+	c.once.Do(func() { c.flip(); c.flipped = true })
+	return c.Context.Done()
 }
 
 // TestWaitUnknownRun: an unknown id fails on the first poll (path-free not-found).
