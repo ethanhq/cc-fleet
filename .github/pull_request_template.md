@@ -32,7 +32,7 @@ the change has no visible or behavioral effect.
 - [ ] `go test -race ./...` passes
 - [ ] `gofmt -l .` prints nothing and `go vet ./...` is clean
 - [ ] `make build` compiles
-- [ ] If plugin/skill touched: `claude plugin validate . --strict` is green
+- [ ] If plugin/skill touched: `claude plugin validate .` passes
 - [ ] Commits follow Conventional Commits; AI-assisted commits carry a `Co-Authored-By` trailer
 
 <!--

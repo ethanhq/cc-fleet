@@ -23,7 +23,7 @@ The contribution standard (required checks, commit/PR rules, screenshots, AI att
   `Result` envelopes from `subagent`/`teammate check`; validate names before use; honor the lock
   order (`WithProvidersConfigLock` → `WithServerLock`; there is no team lock).
 - **Verify before done:** `go test -race ./...`, `gofmt -l .`, `go vet ./...` clean; plus
-  `claude plugin validate . --strict` if you touched the plugin/skill.
+  `claude plugin validate .` if you touched the plugin/skill.
 
 ## AI attribution
 

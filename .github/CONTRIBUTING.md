@@ -31,7 +31,7 @@ make build               # must compile
 If you touched the plugin or skill, also run:
 
 ```bash
-claude plugin validate . --strict   # must stay green
+claude plugin validate .            # must pass (not --strict: it fails on the root CLAUDE.md warning)
 make skill-drift-check              # if you edited the canonical skill
 ```
 

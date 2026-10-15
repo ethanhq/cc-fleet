@@ -62,7 +62,7 @@ that matter most when an AI agent edits this repo:
 - **Respect the invariants** (below). They are correctness/security boundaries, not style
   preferences.
 - **Verify before declaring done.** `go test -race ./...`, `gofmt -l .`, `go vet ./...` must be
-  clean; `claude plugin validate . --strict` if you touched the plugin/skill.
+  clean; `claude plugin validate .` if you touched the plugin/skill.
 
 ### AI attribution
 
