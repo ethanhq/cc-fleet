@@ -198,12 +198,14 @@ return {};
 // TestBudgetReservationBoundsConcurrentOvershoot: a parallel() fan-out under a cap races the gate
 // while spent is still ~0 (charges land only at completion). Admission is against spent+reserved, so
 // the real total spend never exceeds the cap by more than ONE leaf's estimate; a gate-refused thunk
-// degrades to null and the run still fulfills.
+// degrades to null, its refusal is logged, and the run still fulfills.
 func TestBudgetReservationBoundsConcurrentOvershoot(t *testing.T) {
 	rec := &recorder{}
 	// Each leaf costs $1.00 — exactly its reservation, so spent tracks reserved with no slack.
 	eng := budgetEngine(t, "bres", 8, costLeaf(rec, 1.0))
 	eng.budgetTotal = 5.0
+	ep := filepath.Join(t.TempDir(), "bres.events")
+	eng.events = newEventWriter(ep)
 	if _, err := eng.run("b.js", []byte(`
 const thunks = [];
 for (let i = 0; i < 20; i++) {
@@ -220,6 +222,13 @@ return {};
 	}
 	if eng.budgetReserved != 0 {
 		t.Errorf("every reservation must be released; budgetReserved = %v, want 0", eng.budgetReserved)
+	}
+	data, err := os.ReadFile(ep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.Count(string(data), "refused: agent: budget exceeded"), 20-len(rec.prompts()); got != want || want == 0 {
+		t.Errorf("logged %d refusals, want one per refused thunk (%d)", got, want)
 	}
 }
 

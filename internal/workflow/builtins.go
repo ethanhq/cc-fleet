@@ -448,7 +448,10 @@ func (e *engine) jsAgent(call goja.FunctionCall) goja.Value {
 	}
 	tokEst := int64(defaultLeafTokenEstimate)
 	if e.budgetWouldExceed(usdEst, tokEst) {
-		panic(e.newError("%v", e.budgetExceededErr(usdEst, tokEst)))
+		err := e.budgetExceededErr(usdEst, tokEst)
+		// parallel()/pipeline() turn this throw into a bare null; the log line says why.
+		e.logf("leaf %q refused: %v", label, err)
+		panic(e.newError("%v", err))
 	}
 	if !e.sched.admit() {
 		panic(e.newError("agent: run exceeded the %d-leaf lifetime cap", maxLifetimeAgents))

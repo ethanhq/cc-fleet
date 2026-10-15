@@ -215,7 +215,7 @@ cc-fleet workflow rm "$RUN" / prune          # 删除一个 run / 清掉所有�
 
 - **`wait` 退出码:**`0` done/stopped · `1` failed 或 engine-gone · `3` **parked**(剩下的 leaf 全部 held — 需要操作员介入)· `124` 超时(心跳快照,不是结论)· `130` 被中断· `2` IO/未知 run。挂在后台 shell 里,它的退出就是推送通知 — 不需要任何轮询。envelope 只带 outcome + 状态计数 + 花费;leaf 级细节在 `workflow status` 里。
 - **held** 的 leaf(`stop --leaf` 或看板 `x`)无限期挂起 — 不是错误、不会重试; `restart --leaf` 原地重跑(同一 job id,attempt +1)。
-- `run` 的 flag:`--max-concurrency`(默认 `min(16, cores-2)`)、`--budget-usd` / `--budget-tokens`(到顶后引擎不再铸新 leaf;每个运行中的 leaf 先占用其中 $1.00 和 5 万 token,所以上限至少要有同时运行的 leaf 数 × 这个量,见[编写 workflow 脚本](workflows.md))、`--args-json`(脚本的 `args`)、`--no-persist-io`(关闭 prompt/answer 下钻)、`--saved`(跑保存过的脚本)。
+- `run` 的 flag:`--max-concurrency`(默认 `min(16, cores-2)`)、`--budget-usd` / `--budget-tokens`(到顶后引擎不再铸新 leaf;每个 leaf 从 `agent()` 调用起就占用其中 $1.00(或更大的 `max_budget_usd`)和 5 万 token,直到结束,排队等执行槽的也算;放不下的 leaf 直接被拒、不排队,见[编写 workflow 脚本](workflows.md))、`--args-json`(脚本的 `args`)、`--no-persist-io`(关闭 prompt/answer 下钻)、`--saved`(跑保存过的脚本)。
 - journal 按内容哈希记每个 leaf(provider + 模型 + prompt + schema + isolation + profile 形状), `--resume` 只重跑变过或没跑完的;失败的 leaf 不会进 journal。
 - `--resume` 和 `restart` 在 run 启动时的目录(记在 manifest 里)运行剩下的 leaf,而不是调用者的当前目录;该目录已不存在时 run 以明确的错误失败。
 - `--resume` 先解析、编译新脚本并校验 `meta`;不通过时直接报错,什么都不写,run 和它保存的脚本(`restart` 运行的就是它)保持原样。
