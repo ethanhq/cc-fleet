@@ -25,11 +25,10 @@ func writeFakeBinWindows(t *testing.T, script string) string {
 	return p
 }
 
-// readPIDWindows polls path until it holds a parseable pid (the grandchild
-// records its pid asynchronously).
-func readPIDWindows(t *testing.T, path string) int {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+// readPIDWindows polls path for up to wait until it holds a parseable pid (the
+// grandchild records its pid asynchronously).
+func readPIDWindows(path string, wait time.Duration) int {
+	deadline := time.Now().Add(wait)
 	for time.Now().Before(deadline) {
 		if data, err := os.ReadFile(path); err == nil {
 			if pid, perr := strconv.Atoi(strings.TrimSpace(string(data))); perr == nil && pid > 0 {
@@ -63,20 +62,36 @@ func TestRunClaude_TimeoutKillsProcessTree(t *testing.T) {
 		"ping -n 60 127.0.0.1 > nul\r\n"
 	bin := writeFakeBinWindows(t, script)
 
-	// PowerShell cold-start needs headroom to spawn and record its pid before the
-	// deadline reaps the tree, so the run hangs for 5s.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Cancel once the grandchild is running, not on a fixed timer: a PowerShell cold
+	// start on a loaded runner can outlast a short deadline, and killing the tree before
+	// the grandchild exists proves nothing. cancel() takes the same ctx-done kill path
+	// as a deadline; the 60s timeout is only a safety net.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
-	start := time.Now()
-	_, _, _, _ = runClaude(ctx, bin, []string{bin}, os.Environ(), nil, "", nil, nil)
-	if elapsed := time.Since(start); elapsed > 12*time.Second {
-		t.Fatalf("runClaude took %v with a sleeping grandchild; tree-kill model broken", elapsed)
+	type ready struct {
+		pid      int
+		alive    bool
+		cancelAt time.Time
 	}
-
-	gpid := readPIDWindows(t, gpidFile)
-	if gpid <= 0 {
+	readyc := make(chan ready, 1)
+	go func() {
+		pid := readPIDWindows(gpidFile, 45*time.Second)
+		r := ready{pid: pid, alive: pid > 0 && pidAlive(pid), cancelAt: time.Now()}
+		cancel()
+		readyc <- r
+	}()
+	_, _, _, _ = runClaude(ctx, bin, []string{bin}, os.Environ(), nil, "", nil, nil)
+	r := <-readyc
+	if r.pid <= 0 {
 		t.Fatalf("grandchild never recorded its pid (%q)", gpidFile)
 	}
+	if !r.alive {
+		t.Fatalf("grandchild pid %d was not running before the kill", r.pid)
+	}
+	if elapsed := time.Since(r.cancelAt); elapsed > 12*time.Second {
+		t.Fatalf("runClaude took %v after the cancel with a sleeping grandchild; tree-kill model broken", elapsed)
+	}
+	gpid := r.pid
 	// The grandchild must be dead — TerminateJobObject reaps every process in the
 	// job atomically.
 	deadline := time.Now().Add(3 * time.Second)
