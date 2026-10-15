@@ -610,6 +610,17 @@ func (e *engine) completeAttempt(jobID string, gen int, h *leafCtl, res subagent
 			return
 		}
 		stoppedClass := res.ErrorCode == subagent.ErrCodeStopped
+		if e.aborted && h.pending != "" {
+			// The run aborted between this leaf's stop/restart pre-mark and its completion:
+			// releaseHeld skipped it (not held yet), and the finalize below suppresses a
+			// stopped cache under a held meta, so resolve the pre-mark here.
+			h.pending = ""
+			if stoppedClass {
+				subagent.ReleaseHeldLeafStopped(jobID, "run stopped while the leaf was held")
+			} else {
+				subagent.NormalizeHeldLeaf(jobID)
+			}
+		}
 		if !e.aborted && h.pending != "" {
 			directive := h.pending
 			h.pending = ""

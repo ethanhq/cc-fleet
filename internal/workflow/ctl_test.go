@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -320,6 +321,119 @@ func TestRunStopReleasesHeldLeaf(t *testing.T) {
 	}
 	if res := subagent.StatusFor(a.JobID); res.Status != "stopped" {
 		t.Errorf("held leaf after run stop = %q, want stopped", res.Status)
+	}
+}
+
+// TestRunStopBeforeLeafStopLands: the run stops after a leaf stop/restart pre-marked the
+// job held but before the attempt reported back, so abort's releaseHeld skips the leaf
+// (not held yet). The late completion must still leave a real outcome, never held: a
+// killed attempt ends stopped, while a success or a genuine failure (a returned error or
+// a leaf panic) keeps its result. The success case leaves a done cache under the held
+// meta — the residue NormalizeHeldLeaf exists for — so it checks the meta, not just the
+// cache-first StatusFor.
+func TestRunStopBeforeLeafStopLands(t *testing.T) {
+	cases := []struct {
+		name, op   string
+		res        subagent.Result
+		doneCache  bool
+		panics     bool
+		wantStatus string
+		wantCode   string
+	}{
+		{"stop killed", "stop", subagent.Result{ErrorCode: subagent.ErrCodeStopped, ErrorMsg: "killed"}, false, false, "stopped", subagent.ErrCodeStopped},
+		{"restart killed", "restart", subagent.Result{ErrorCode: subagent.ErrCodeStopped, ErrorMsg: "killed"}, false, false, "stopped", subagent.ErrCodeStopped},
+		{"stop lost to success", "stop", subagent.Result{OK: true, Result: "ok"}, true, false, "done", ""},
+		{"stop lost to failure", "stop", subagent.Result{ErrorCode: "PROVIDER_API_ERROR", ErrorMsg: "boom"}, false, false, "failed", "PROVIDER_API_ERROR"},
+		{"stop lost to panic", "stop", subagent.Result{}, false, true, "failed", subagent.ErrCodeFailed},
+	}
+	for i, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rec := &recorder{}
+			late := make(chan struct{})
+			var once sync.Once
+			release := func() { once.Do(func() { close(late) }) }
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			runID := fmt.Sprintf("wrl%d", i)
+			jp, err := subagent.RunJournalPath(runID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			jobs := filepath.Dir(filepath.Dir(jp))
+			old := runLeaf
+			runLeaf = func(ctx context.Context, req subagent.Request) subagent.Result {
+				return fakeLeaf(rec, func(leafCall) subagent.Result {
+					<-ctx.Done()
+					<-late
+					if c.doneCache {
+						if err := os.WriteFile(filepath.Join(jobs, req.JobID+".result.json"), []byte(`{"ok":true,"status":"done"}`), 0o600); err != nil {
+							t.Error(err)
+						}
+					}
+					if c.panics {
+						panic("boom")
+					}
+					return c.res
+				})(ctx, req)
+			}
+			t.Cleanup(func() { runLeaf = old })
+			oldR := resolveProfile
+			resolveProfile = func(requested string) (string, string) { return requested, "" }
+			t.Cleanup(func() { resolveProfile = oldR })
+			ctx, cancel := context.WithCancel(context.Background())
+			eng := newTestEngine(ctx, runID, 2)
+			errs, done := make(chan error, 1), make(chan struct{})
+			go func() {
+				_, err := eng.run("c.js", []byte(`return await agent("a", {provider: "v", label: "leaf-a"});`), Options{})
+				errs <- err
+				close(done)
+			}()
+			t.Cleanup(func() { // a failed step must not strand the leaf or the engine
+				cancel()
+				release()
+				select {
+				case <-done:
+				case <-time.After(5 * time.Second):
+					t.Error("engine still running after cancel; waiting before shared state is restored")
+					<-done
+				}
+			})
+			a := jobByLabel(t, "leaf-a", "queued")
+			waitCalled(t, rec, "a")
+			directive(eng, c.op, a.JobID)
+			jobByLabel(t, "leaf-a", "held")
+			cancel()
+			deadline := time.After(5 * time.Second)
+			for aborted := false; !aborted; { // the abort runs on the loop; ask the loop
+				ch := make(chan bool, 1)
+				eng.post(leafCB{state: func() { ch <- eng.aborted }})
+				select {
+				case aborted = <-ch:
+				case <-deadline:
+					t.Fatal("the run never aborted")
+				}
+			}
+			release()
+			select {
+			case err := <-errs:
+				if err == nil || !strings.Contains(err.Error(), "stopped") {
+					t.Fatalf("err = %v, want run stopped", err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatal("run did not return")
+			}
+			if res := subagent.StatusFor(a.JobID); res.Status != c.wantStatus || res.ErrorCode != c.wantCode {
+				t.Errorf("leaf after run stop = %q/%q, want %q/%q", res.Status, res.ErrorCode, c.wantStatus, c.wantCode)
+			}
+			var meta struct {
+				Status string `json:"status"`
+			}
+			if data, err := os.ReadFile(filepath.Join(jobs, a.JobID+".json")); err != nil || json.Unmarshal(data, &meta) != nil {
+				t.Fatalf("read meta: %v", err)
+			}
+			if meta.Status != c.wantStatus {
+				t.Errorf("leaf meta after run stop = %q, want %q", meta.Status, c.wantStatus)
+			}
+		})
 	}
 }
 
