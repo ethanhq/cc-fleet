@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -119,5 +120,132 @@ return { r };
 	// Worktrees are cleaned up: `git worktree list` shows only the main worktree.
 	if out, _ := runGit(repo, "worktree", "list"); strings.Count(out, "\n") > 1 {
 		t.Errorf("worktrees not cleaned up:\n%s", out)
+	}
+}
+
+// TestWorktreeRetriesRacingGit: a `git worktree add` or `remove` that fails once, as when it reads
+// a registration a parallel leaf is tearing down, is retried — the leaf still gets its worktree and
+// nothing stays registered, including a registration whose workdir is already gone (a sweep's case).
+func TestWorktreeRetriesRacingGit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the git shim is a POSIX shell script")
+	}
+	for _, c := range []struct {
+		name, op string
+		gone     bool
+	}{{"add", "add", false}, {"remove", "remove", false}, {"remove a vanished workdir", "remove", true}} {
+		t.Run(c.name, func(t *testing.T) {
+			repo := initSweepRepo(t)
+			t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+			t.Chdir(repo)
+			var wt, mark string
+			if c.op == "add" {
+				mark = gitShim(t, "add")
+				var finish func(string, int) string
+				var err error
+				if wt, finish, err = createWorktree("wtretry"); err != nil {
+					t.Fatalf("createWorktree after one failed add: %v", err)
+				}
+				if _, err := os.Stat(filepath.Join(wt, "f.txt")); err != nil {
+					t.Fatalf("worktree not checked out: %v", err)
+				}
+				if kept := finish("job", 1); kept != "" {
+					t.Errorf("clean worktree kept: %s", kept)
+				}
+			} else {
+				wt = filepath.Join(t.TempDir(), "wt")
+				addWorktree(t, repo, wt)
+				if c.gone {
+					if err := os.RemoveAll(wt); err != nil {
+						t.Fatal(err)
+					}
+				}
+				mark = gitShim(t, "remove")
+				removeWorktree(repo, wt)
+			}
+			if _, err := os.Stat(mark); err != nil {
+				t.Errorf("the shim never failed a worktree %s", c.op)
+			}
+			assertOnlyMainWorktree(t, repo)
+			if _, err := os.Stat(wt); !os.IsNotExist(err) {
+				t.Errorf("workdir %s still there (%v)", wt, err)
+			}
+		})
+	}
+}
+
+// TestWorktreeAddHookFailureNotRetried: an add whose checkout finished before a post-checkout hook
+// failed is final — adding again would run the hook again — and is cleaned up.
+func TestWorktreeAddHookFailureNotRetried(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the hook is a POSIX shell script")
+	}
+	repo := initSweepRepo(t)
+	hooks, runs := t.TempDir(), filepath.Join(t.TempDir(), "runs")
+	if err := os.WriteFile(filepath.Join(hooks, "post-checkout"), []byte("#!/bin/sh\necho ran >> \""+runs+"\"\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := runGit(repo, "config", "core.hooksPath", hooks); err != nil {
+		t.Fatalf("git config: %v %s", err, out)
+	}
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Chdir(repo)
+	if _, _, err := createWorktree("wthook"); err == nil {
+		t.Fatal("createWorktree succeeded despite the failing hook")
+	}
+	data, err := os.ReadFile(runs)
+	if err != nil {
+		t.Fatalf("the post-checkout hook never ran: %v", err)
+	}
+	if n := strings.Count(string(data), "ran"); n != 1 {
+		t.Errorf("post-checkout hook ran %d times, want 1", n)
+	}
+	assertOnlyMainWorktree(t, repo)
+	storeDir, err := subagent.WorktreeStoreDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if left, _ := filepath.Glob(filepath.Join(storeDir, "*", "*")); len(left) != 0 {
+		t.Errorf("workdirs left behind: %v", left)
+	}
+}
+
+// gitShim puts a git first on PATH that fails the first `git worktree <op>` the way a racing add or
+// remove does and passes every other call through to the real git. It returns the marker the shim
+// leaves once it has failed.
+func gitShim(t *testing.T, op string) string {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin, mark := t.TempDir(), filepath.Join(t.TempDir(), "failed")
+	shim := "#!/bin/sh\n" +
+		`if [ "$1" = worktree ] && [ "$2" = ` + op + ` ] && mkdir "` + mark + `" 2>/dev/null; then` + "\n" +
+		`  echo "fatal: failed to read .git/worktrees/x/commondir" >&2; exit 128` + "\n" +
+		"fi\n" +
+		`exec "` + realGit + `" "$@"` + "\n"
+	if err := os.WriteFile(filepath.Join(bin, "git"), []byte(shim), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return mark
+}
+
+// assertOnlyMainWorktree fails unless `git worktree list` succeeds and shows only repo itself.
+func assertOnlyMainWorktree(t *testing.T, repo string) {
+	t.Helper()
+	out, err := runGit(repo, "worktree", "list", "--porcelain")
+	if err != nil {
+		t.Fatalf("worktree list: %v %s", err, out)
+	}
+	n := 0
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "worktree ") {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("%d worktrees registered, want only the main one:\n%s", n, out)
 	}
 }

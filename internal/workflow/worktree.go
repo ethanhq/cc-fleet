@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -26,6 +27,15 @@ const keepMarkerName = ".cc-fleet-keep"
 
 // unprotectedWarning ends the kept line when even the keep marker could not be written.
 const unprotectedWarning = "UNPROTECTED: copy this directory by hand before any workflow restart, rm or prune, or a new run in this repo"
+
+// A `git worktree add` or `remove` lists the repo's worktrees, and fails outright when it reads a
+// registration another add or remove (a parallel isolation leaf, another run) is tearing down
+// ("failed to read .git/worktrees/<id>/commondir"). That clears at once, so both are retried
+// with a growing pause, whatever the error, as git's messages are localized.
+const (
+	worktreeGitAttempts = 3
+	worktreeGitPause    = 50 * time.Millisecond
+)
 
 // sweepRunWorktreesFn / sweepOwnSegmentFn are seams so tests assert the Execute-time and resume-
 // launcher sweeps fire without real git — production is sweepRunWorktrees / sweepOwnSegment.
@@ -67,10 +77,21 @@ func createWorktree(runID string) (string, func(jobID string, attempt int) (kept
 	if err := os.MkdirAll(base, 0o700); err != nil {
 		return "", nil, fmt.Errorf("worktree base: %w", err)
 	}
-	wt := filepath.Join(base, uuid.NewString())
-	if out, gerr := runGit(root, "worktree", "add", "--detach", wt, "HEAD"); gerr != nil {
+	var wt string
+	for attempt := 1; ; attempt++ {
+		wt = filepath.Join(base, uuid.NewString())
+		out, gerr := runGit(root, "worktree", "add", "--detach", wt, "HEAD")
+		if gerr == nil {
+			break
+		}
+		// git clears a half-made worktree itself, but keeps one whose checkout finished before a
+		// post-checkout hook failed; adding again would re-run the hook, so that one is final.
+		_, lerr := os.Lstat(filepath.Join(wt, ".git"))
 		removeWorktree(root, wt) // a partial add may have left a registration and/or a dir
-		return "", nil, fmt.Errorf("git worktree add: %v: %s", gerr, strings.TrimSpace(out))
+		if lerr == nil || attempt == worktreeGitAttempts {
+			return "", nil, fmt.Errorf("git worktree add: %v: %s", gerr, strings.TrimSpace(out))
+		}
+		time.Sleep(time.Duration(attempt) * worktreeGitPause)
 	}
 	baseSHA, gerr := runGit(wt, "rev-parse", "HEAD")
 	if gerr != nil {
@@ -205,9 +226,16 @@ func KeptWorktreeNotices(runID string) []string {
 
 // removeWorktree unregisters wt from root's .git and deletes its workdir, best-effort. The
 // RemoveAll is belt-and-braces: `worktree remove --force` normally clears the dir, but a
-// partial add or a stray file can outlive it; a git error just means nothing was registered.
+// partial add or a stray file can outlive it. A failed remove is retried (a registration whose
+// workdir is already gone is removed too); a git error that persists usually just means nothing
+// was registered.
 func removeWorktree(root, wt string) {
-	_, _ = runGit(root, "worktree", "remove", "--force", wt)
+	for attempt := 1; ; attempt++ {
+		if _, err := runGit(root, "worktree", "remove", "--force", wt); err == nil || attempt == worktreeGitAttempts {
+			break
+		}
+		time.Sleep(time.Duration(attempt) * worktreeGitPause)
+	}
 	_ = os.RemoveAll(wt)
 }
 
