@@ -15,8 +15,8 @@ API key) is never touched.
 There are **four execution lanes** — internalize this split, most of the code maps onto it:
 
 - **Teammate** — `internal/teammate`. A native Claude Code teammate the lead starts with
-  `Agent({name, subagent_type:"ccf-<provider>[.strong|.fast]", prompt})` and drives with
-  `SendMessage`; Claude Code owns the team, pane, inbox and cleanup. Claude Code runs the pane
+  `Agent({description, name, subagent_type:"ccf-<provider>[.strong|.fast]", prompt})` and
+  drives with `SendMessage`; Claude Code owns the team, pane, inbox and cleanup. Claude Code runs the pane
   through `CLAUDE_CODE_TEAMMATE_COMMAND` = cc-fleet's shim (`<ConfigDir>/bin/claude-teammate`),
   which execs the launcher `cc-fleet __teammate-launch`; the launcher swaps in the provider's
   profile and model and execs the lead's exact `claude`. `teammate check` (lead's Bash) and

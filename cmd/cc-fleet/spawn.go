@@ -14,7 +14,7 @@ import (
 // suggestion says what to do next.
 const (
 	spawnRemovedMsg        = "`cc-fleet spawn` was removed: Claude Code now starts teammates natively"
-	spawnRemovedSuggestion = "run `cc-fleet teammate check <provider> --json`, then `Agent({name, subagent_type:<agent_type>, prompt})`"
+	spawnRemovedSuggestion = "run `cc-fleet teammate check <provider> --json`, then `Agent({description, name, subagent_type:<agent_type>, prompt})`"
 )
 
 // newSpawnCmd is the hidden stub left where 0.3.x's `cc-fleet spawn` was:

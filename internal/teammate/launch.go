@@ -90,7 +90,7 @@ func launch(args []string) *LaunchError {
 		return &LaunchError{CodeBadArgs, id, err.Error(), "use ccf-<provider>[.strong|.fast] for a provider teammate, or a native agent type for Claude"}
 	}
 	if err := validateAgentID(vals[flagAgentID]); err != nil {
-		return &LaunchError{CodeBadArgs, id, err.Error(), "start provider teammates with the Agent tool: Agent({name, subagent_type, prompt})"}
+		return &LaunchError{CodeBadArgs, id, err.Error(), "start provider teammates with the Agent tool: Agent({description, name, subagent_type, prompt})"}
 	}
 
 	cfg, err := config.Load()

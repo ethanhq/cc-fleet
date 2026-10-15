@@ -29,7 +29,7 @@ const agentDefMode os.FileMode = 0o644
 // dropped from the description.
 func RenderAgentDef(t AgentType, provider, model string) []byte {
 	typ := t.String()
-	desc := fmt.Sprintf("cc-fleet provider teammate (%s, %s). Named teammate only: Agent({name, subagent_type: \"%s\", prompt}); no model/isolation/cwd.",
+	desc := fmt.Sprintf("cc-fleet provider teammate (%s, %s). Named teammate only: Agent({description, name, subagent_type: \"%s\", prompt}); no model/isolation/cwd.",
 		provider, config.Strip1M(model), typ)
 	var b bytes.Buffer
 	b.WriteString("---\n")

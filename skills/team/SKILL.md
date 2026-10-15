@@ -31,10 +31,10 @@ Steps 1 and 3 are `cc-fleet` via Bash with `--json`; steps 2, 4 and 5 are **nati
    The provider arg is OPTIONAL — omitted, the default provider applies
    (see "The provider ask ladder").
 
-2. Agent({name: "<name>", subagent_type: "<agent_type>",
+2. Agent({description: "<3-5 words>", name: "<name>", subagent_type: "<agent_type>",
           prompt: "<task>. When done, send your result to team-lead with SendMessage — once."})
-   ← native; `name` is what makes it a teammate. Repeat for more teammates
-   (the same agent_type needs no second check).
+   ← native; `name` is what makes it a teammate (`description` is the Agent tool's
+   own required field). Repeat for more teammates (the same agent_type needs no second check).
 
 3. ~10s later: cc-fleet ps --json --check
    ← Bash; find the row whose agent_id is "<name>@<team>"
@@ -65,7 +65,7 @@ The plugin's PreToolUse guard blocks these, and any `ccf-*` call while the lane 
 cc-fleet teammate check --slot strong --json                      # Bash; default provider
 # → {"ok":true,"protocol":1,"provider":"glm","slot":"strong","model":"glm-4.6",
 #    "agent_type":"ccf-glm.strong","team":"session-7c8f769b",...,"warnings":[]}
-Agent({name: "worker-1", subagent_type: "ccf-glm.strong", prompt: "Refactor src/api/handlers.go: split each handler into its own file under src/api/handlers/. Keep tests passing. When done, send your result to team-lead with SendMessage — once."})   # native
+Agent({description: "Split API handlers", name: "worker-1", subagent_type: "ccf-glm.strong", prompt: "Refactor src/api/handlers.go: split each handler into its own file under src/api/handlers/. Keep tests passing. When done, send your result to team-lead with SendMessage — once."})   # native
 cc-fleet ps --json --check                                        # ~10s later: worker-1@session-7c8f769b running
 # … its SendMessage arrives (timeout + ps --check meanwhile); report; end it only after the user confirms:
 SendMessage({to: "worker-1", message: {type: "shutdown_request", reason: "refactor done"}})
@@ -76,9 +76,9 @@ SendMessage({to: "worker-1", message: {type: "shutdown_request", reason: "refact
 ```bash
 cc-fleet teammate check kimi --json                               # → agent_type "ccf-kimi"
 cc-fleet teammate check deepseek --slot strong --json             # → agent_type "ccf-deepseek.strong"
-Agent({name: "zh-1",   subagent_type: "ccf-kimi",            prompt: "Translate docs/intro.md to zh-CN beside it. SendMessage team-lead once when done."})
-Agent({name: "zh-2",   subagent_type: "ccf-kimi",            prompt: "Translate docs/api.md to zh-CN beside it. SendMessage team-lead once when done."})
-Agent({name: "polish", subagent_type: "ccf-deepseek.strong", prompt: "Wait for my next message; I will send you the outputs to copy-edit."})
+Agent({description: "Translate intro", name: "zh-1",   subagent_type: "ccf-kimi",            prompt: "Translate docs/intro.md to zh-CN beside it. SendMessage team-lead once when done."})
+Agent({description: "Translate api",   name: "zh-2",   subagent_type: "ccf-kimi",            prompt: "Translate docs/api.md to zh-CN beside it. SendMessage team-lead once when done."})
+Agent({description: "Copy-edit zh",    name: "polish", subagent_type: "ccf-deepseek.strong", prompt: "Wait for my next message; I will send you the outputs to copy-edit."})
 cc-fleet ps --json --check                                        # all three running?
 # … when zh-1 and zh-2 report:
 SendMessage({to: "polish", message: "Copy-edit docs/intro.zh-CN.md and docs/api.zh-CN.md for tone consistency. SendMessage me the result."})

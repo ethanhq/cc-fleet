@@ -52,7 +52,7 @@ The `cc-fleet` binary is the engine under the skills. Most of the time you let C
 
 | Removed | Use instead |
 |---------|-------------|
-| `cc-fleet spawn <p> --as <name> --team <t>` | `cc-fleet teammate check <p> --json`, then in the lead `Agent({name, subagent_type: <agent_type>, prompt})` (see [Teammates](#teammates--native-agent-teams-provider-backed)). The spawn flags (`--as`, `--team`, `--model`, `--color`, `--probe`, `--verify`, `--permission-mode`, …) have no replacement: Claude Code names, colors and places the teammate and passes the lead's permission mode; pick a model with the slot (`--slot strong` → `ccf-<p>.strong`). |
+| `cc-fleet spawn <p> --as <name> --team <t>` | `cc-fleet teammate check <p> --json`, then in the lead `Agent({description, name, subagent_type: <agent_type>, prompt})` (see [Teammates](#teammates--native-agent-teams-provider-backed)). The spawn flags (`--as`, `--team`, `--model`, `--color`, `--probe`, `--verify`, `--permission-mode`, …) have no replacement: Claude Code names, colors and places the teammate and passes the lead's permission mode; pick a model with the slot (`--slot strong` → `ccf-<p>.strong`). |
 | `cc-fleet refresh-fingerprint [--probe-team <t>]` | Nothing to refresh. If something fails, run `cc-fleet doctor`. |
 | native `TeamCreate` / `TeamDelete` | Nothing: every terminal `claude` session already has its own team, and Claude Code removes it when the session exits. |
 
@@ -175,7 +175,7 @@ cc-fleet teammate check deepseek --slot strong --json   # from the lead's Bash t
 # → {"ok":true,"protocol":1,"agent_type":"ccf-deepseek.strong","team":"session-7c8f769b","backend_hint":"tmux",…}
 ```
 
-then, in the lead, `Agent({name: "worker-1", subagent_type: "ccf-deepseek.strong", prompt: "…"})`. Always pass `name`; never pass `model`, `isolation` or `cwd` for a `ccf-*` type — the plugin's `PreToolUse(Agent)` hook blocks such calls (and any `ccf-*` call that `check` would refuse). `check` exits 0 when `ok`, 1 otherwise, with a stable `error_code` + `detail`: `TEAMMATE_LANE_UNAVAILABLE` (no lead session, Claude Code too old, no session team — desktop app / `-p` / SDK), `TEAMMATE_SETUP_REQUIRED` (launcher or definition missing or foreign), `LEAD_RESTART_REQUIRED` (setup ran after this `claude` started), `TEAMMATE_MODE_IN_PROCESS`, `CLAUDE_NOT_FOUND`, plus the provider errors shared with `subagent`. `--no-probe` skips the provider reachability probe.
+then, in the lead, `Agent({description: "…", name: "worker-1", subagent_type: "ccf-deepseek.strong", prompt: "…"})`. Always pass `name`; never pass `model`, `isolation` or `cwd` for a `ccf-*` type — the plugin's `PreToolUse(Agent)` hook blocks such calls (and any `ccf-*` call that `check` would refuse). `check` exits 0 when `ok`, 1 otherwise, with a stable `error_code` + `detail`: `TEAMMATE_LANE_UNAVAILABLE` (no lead session, Claude Code too old, no session team — desktop app / `-p` / SDK), `TEAMMATE_SETUP_REQUIRED` (launcher or definition missing or foreign), `LEAD_RESTART_REQUIRED` (setup ran after this `claude` started), `TEAMMATE_MODE_IN_PROCESS`, `CLAUDE_NOT_FOUND`, plus the provider errors shared with `subagent`. `--no-probe` skips the provider reachability probe.
 
 **Inspect, park, stop:**
 

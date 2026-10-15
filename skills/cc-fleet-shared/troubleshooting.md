@@ -44,7 +44,7 @@ The same codes reach you two other ways:
 | `UNSUPPORTED_ON_WINDOWS` | Windows has no teammate lane: check, setup, the launcher, teardown, hide and show all refuse. | Run the work through the subagent or workflow lane (both Windows-native, as is `cc-fleet run`). |
 | `SETTINGS_UNPARSEABLE` | (setup) `~/.claude/settings.json` is not a JSON object. | Tell the user to fix the file, then rerun `cc-fleet teammate setup`. |
 | `SETUP_CONFLICT` | (setup) `launcher_foreign`: `CLAUDE_CODE_TEAMMATE_COMMAND` already points at another launcher. `agent_def_foreign`: a `ccf-*.md` agent file cc-fleet does not manage is in the way. | Tell the user. `launcher_foreign` → `--force` replaces their launcher, so only with their explicit consent, and a claude restart follows (`restart_required` in the JSON); `agent_def_foreign` → they rename or remove that file (`--force` does not touch it), then rerun setup. |
-| `COMMAND_REMOVED` | `cc-fleet spawn` or `cc-fleet refresh-fingerprint` was called; both were removed. | `spawn` → `cc-fleet teammate check <provider> --json`, then `Agent({name, subagent_type: <agent_type>, prompt})`. `refresh-fingerprint` → nothing to refresh; `cc-fleet doctor` if something fails. |
+| `COMMAND_REMOVED` | `cc-fleet spawn` or `cc-fleet refresh-fingerprint` was called; both were removed. | `spawn` → `cc-fleet teammate check <provider> --json`, then `Agent({description, name, subagent_type: <agent_type>, prompt})`. `refresh-fingerprint` → nothing to refresh; `cc-fleet doctor` if something fails. |
 | `INTERNAL` | Unexpected local failure (permissions, disk). | Surface `error_msg` + `suggestion` to the user; `cc-fleet doctor`. |
 
 ## `detail` dispatch

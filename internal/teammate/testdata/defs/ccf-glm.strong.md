@@ -1,6 +1,6 @@
 ---
 name: ccf-glm.strong
-description: "cc-fleet provider teammate (glm, glm-4.6). Named teammate only: Agent({name, subagent_type: \"ccf-glm.strong\", prompt}); no model/isolation/cwd."
+description: "cc-fleet provider teammate (glm, glm-4.6). Named teammate only: Agent({description, name, subagent_type: \"ccf-glm.strong\", prompt}); no model/isolation/cwd."
 model: ccf-glm.strong
 ---
 <!-- managed-by: cc-fleet agentdefs v1; regenerate with `cc-fleet repair`; do not edit -->

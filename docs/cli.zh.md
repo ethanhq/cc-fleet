@@ -52,7 +52,7 @@
 
 | 已移除 | 改用 |
 |--------|------|
-| `cc-fleet spawn <p> --as <name> --team <t>` | `cc-fleet teammate check <p> --json`,然后在 lead 里 `Agent({name, subagent_type: <agent_type>, prompt})`(见 [Teammate](#teammate--原生-agent-teamsprovider-做后端))。spawn 的 flag(`--as`、`--team`、`--model`、`--color`、`--probe`、`--verify`、`--permission-mode` 等)没有替代:队友的命名、配色、布局由 Claude Code 负责,权限档由它传 lead 的;模型用槽位选(`--slot strong` → `ccf-<p>.strong`)。 |
+| `cc-fleet spawn <p> --as <name> --team <t>` | `cc-fleet teammate check <p> --json`,然后在 lead 里 `Agent({description, name, subagent_type: <agent_type>, prompt})`(见 [Teammate](#teammate--原生-agent-teamsprovider-做后端))。spawn 的 flag(`--as`、`--team`、`--model`、`--color`、`--probe`、`--verify`、`--permission-mode` 等)没有替代:队友的命名、配色、布局由 Claude Code 负责,权限档由它传 lead 的;模型用槽位选(`--slot strong` → `ccf-<p>.strong`)。 |
 | `cc-fleet refresh-fingerprint [--probe-team <t>]` | 无需刷新。出问题时跑 `cc-fleet doctor`。 |
 | 原生 `TeamCreate` / `TeamDelete` | 不需要:每个终端 `claude` 会话自带一个团队,会话退出时由 Claude Code 删除。 |
 
@@ -175,7 +175,7 @@ cc-fleet teammate check deepseek --slot strong --json   # 在 lead 的 Bash 工�
 # → {"ok":true,"protocol":1,"agent_type":"ccf-deepseek.strong","team":"session-7c8f769b","backend_hint":"tmux",…}
 ```
 
-然后在 lead 里 `Agent({name: "worker-1", subagent_type: "ccf-deepseek.strong", prompt: "…"})`。一定要传 `name`;`ccf-*` 类型不要传 `model`、`isolation`、`cwd` — 插件的 `PreToolUse(Agent)` hook 会拦下这类调用(以及 `check` 会拒绝的任何 `ccf-*` 调用)。`check` 在 `ok` 时以 0 退出,否则以 1 退出,并给出稳定的 `error_code` + `detail`:`TEAMMATE_LANE_UNAVAILABLE`(没有 lead 会话、Claude Code 太旧、会话没有团队 — 桌面 App / `-p` / SDK)、`TEAMMATE_SETUP_REQUIRED`(启动器或定义缺失、被他人占用)、`LEAD_RESTART_REQUIRED`(setup 晚于这个 `claude` 启动)、`TEAMMATE_MODE_IN_PROCESS`、`CLAUDE_NOT_FOUND`,以及与 `subagent` 共用的 provider 错误码。`--no-probe` 跳过 provider 可达性探测。
+然后在 lead 里 `Agent({description: "…", name: "worker-1", subagent_type: "ccf-deepseek.strong", prompt: "…"})`。一定要传 `name`;`ccf-*` 类型不要传 `model`、`isolation`、`cwd` — 插件的 `PreToolUse(Agent)` hook 会拦下这类调用(以及 `check` 会拒绝的任何 `ccf-*` 调用)。`check` 在 `ok` 时以 0 退出,否则以 1 退出,并给出稳定的 `error_code` + `detail`:`TEAMMATE_LANE_UNAVAILABLE`(没有 lead 会话、Claude Code 太旧、会话没有团队 — 桌面 App / `-p` / SDK)、`TEAMMATE_SETUP_REQUIRED`(启动器或定义缺失、被他人占用)、`LEAD_RESTART_REQUIRED`(setup 晚于这个 `claude` 启动)、`TEAMMATE_MODE_IN_PROCESS`、`CLAUDE_NOT_FOUND`,以及与 `subagent` 共用的 provider 错误码。`--no-probe` 跳过 provider 可达性探测。
 
 **查看、收起、结束:**
 
