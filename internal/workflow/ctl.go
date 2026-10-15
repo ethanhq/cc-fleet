@@ -252,7 +252,7 @@ func (e *engine) restartLeafAtom(jobID string, h *leafCtl) {
 // eventually settles the SAME promise — the script observes one slow leaf.
 func (e *engine) wakeLeaf(jobID string, h *leafCtl) {
 	if e.budgetWouldExceed(0, 0) {
-		e.logf("control: leaf %s restart refused — %v; the leaf stays held", jobID, e.budgetExceededErr())
+		e.logf("control: leaf %s restart refused — %v; the leaf stays held", jobID, e.budgetExceededErr(0, 0))
 		return
 	}
 	// A leaf parked by a held PHASE never ran its first attempt: waking it is that

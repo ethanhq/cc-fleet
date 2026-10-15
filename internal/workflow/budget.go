@@ -60,14 +60,24 @@ func (e *engine) budgetCharge(usd float64, tok int64) {
 }
 
 // budgetExceededErr is the gate's refusal, naming only the active cap(s): USD (a list-price
-// estimate) and/or tokens (exact). Loop-held caller.
-func (e *engine) budgetExceededErr() error {
+// estimate) and/or tokens (exact). usd/tok are the reservation the refused leaf asked for
+// (0 for a restart, whose reservation is already held); without them a refusal at, say,
+// $0.12 of $1.00 reads as a bug. Loop-held caller.
+func (e *engine) budgetExceededErr(usd float64, tok int64) error {
 	var parts []string
 	if e.budgetTotal > 0 {
-		parts = append(parts, fmt.Sprintf("$%.4f of $%.2f (list-price estimate)", e.budgetSpent+e.budgetReserved, e.budgetTotal))
+		s := fmt.Sprintf("$%.4f of $%.2f spent or reserved (list-price estimate)", e.budgetSpent+e.budgetReserved, e.budgetTotal)
+		if usd > 0 {
+			s += fmt.Sprintf("; this leaf would reserve $%.2f more", usd)
+		}
+		parts = append(parts, s)
 	}
 	if e.budgetTokensTotal > 0 {
-		parts = append(parts, fmt.Sprintf("%d of %d tokens", e.budgetTokensSpent+e.budgetTokensReserved, e.budgetTokensTotal))
+		s := fmt.Sprintf("%d of %d tokens spent or reserved", e.budgetTokensSpent+e.budgetTokensReserved, e.budgetTokensTotal)
+		if tok > 0 {
+			s += fmt.Sprintf("; this leaf would reserve %d more", tok)
+		}
+		parts = append(parts, s)
 	}
 	return fmt.Errorf("agent: budget exceeded — %s", strings.Join(parts, "; "))
 }

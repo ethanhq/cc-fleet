@@ -448,7 +448,7 @@ func (e *engine) jsAgent(call goja.FunctionCall) goja.Value {
 	}
 	tokEst := int64(defaultLeafTokenEstimate)
 	if e.budgetWouldExceed(usdEst, tokEst) {
-		panic(e.newError("%v", e.budgetExceededErr()))
+		panic(e.newError("%v", e.budgetExceededErr(usdEst, tokEst)))
 	}
 	if !e.sched.admit() {
 		panic(e.newError("agent: run exceeded the %d-leaf lifetime cap", maxLifetimeAgents))
@@ -621,7 +621,7 @@ func (e *engine) completeAttempt(jobID string, gen int, h *leafCtl, res subagent
 				return
 			case directive == "restart" && (stoppedClass || !res.OK):
 				if e.budgetWouldExceed(0, 0) {
-					e.logf("control: leaf %s restart refused — %v; the leaf stays held", jobID, e.budgetExceededErr())
+					e.logf("control: leaf %s restart refused — %v; the leaf stays held", jobID, e.budgetExceededErr(0, 0))
 					h.held = true
 					h.cancel = nil
 					e.emitLeaf("held", spec.phase, spec.label, spec.provider, spec.model)

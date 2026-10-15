@@ -130,8 +130,8 @@ for (let i = 0; i < 10; i++) {
 }
 return {};
 `), Options{})
-	if err == nil || !strings.Contains(err.Error(), "token") {
-		t.Fatalf("expected a token-budget-exceeded error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "100000 of 100000 tokens spent or reserved; this leaf would reserve 50000 more") {
+		t.Fatalf("expected a token-budget-exceeded error naming the reservation, got %v", err)
 	}
 	if n := len(rec.prompts()); n != 2 {
 		t.Errorf("ran %d leaves, want 2 (cap 100k tokens at 50k/leaf)", n)
@@ -187,8 +187,8 @@ for (let i = 0; i < 10; i++) {
 }
 return {};
 `), Options{})
-	if err == nil || !strings.Contains(err.Error(), "budget") {
-		t.Fatalf("expected a budget-exceeded error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "$2.0000 of $2.00 spent or reserved (list-price estimate); this leaf would reserve $1.00 more") {
+		t.Fatalf("expected a budget-exceeded error naming the reservation, got %v", err)
 	}
 	if n := len(rec.prompts()); n != 2 {
 		t.Errorf("ran %d leaves, want 2 (cap $2.00 at $1.00/leaf)", n)
