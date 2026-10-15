@@ -78,8 +78,8 @@ cc-fleet workflow wait "$RUN" --timeout 3m --json  # block silently until the ru
 # If held persists across polls, resume it with restart --leaf/--phase or tell the
 # user it is parked; never wait it out.
 # --max-concurrency N overrides the default pool (min(16, cores-2));
-# --budget-usd N caps total spend (each leaf holds $1 of it from its agent() call, queued or
-# running, until it finishes);
+# --budget-usd N caps total spend (each leaf holds max($1, its max_budget_usd) of it from its
+# agent() call, queued or running, until it finishes);
 # --no-persist-io disables the prompt/answer drill-in.
 ```
 The run is detached so it outlives this call and your session stays responsive. A non-zero exit from `workflow run` means no run started and no id was printed; stderr says why — e.g. a script or `meta` error, or `engine failed to start: <cause>` when the detached engine died before registering. Do not issue `wait` then (`wait` exits 2 on an empty or unknown id).

@@ -514,9 +514,9 @@ with 'workflow status' or watch the board. --foreground runs inline to completio
 	cmd.Flags().BoolVar(&noPersistIO, "no-persist-io", false,
 		"Don't persist leaf prompts/answers for board drill-in (persistence is default-on)")
 	cmd.Flags().Float64Var(&budgetUSD, "budget-usd", 0,
-		"Cap total spend in USD (an Anthropic list-price estimate, not the provider's actual charge); agent() fails once reached (0 = uncapped)")
+		"Cap total spend in USD (an Anthropic list-price estimate, not the provider's actual charge); agent() fails when spent + reservations + its own max($1, max_budget_usd) would pass it (0 = uncapped)")
 	cmd.Flags().Int64Var(&budgetTokens, "budget-tokens", 0,
-		"Cap total tokens (input+output, the exact provider-neutral ceiling); agent() fails once reached (0 = uncapped)")
+		"Cap total tokens (input+output, the exact provider-neutral ceiling); agent() fails when spent + reservations + its own 50000 would pass it (0 = uncapped)")
 	cmd.Flags().BoolVar(&noBudget, "no-budget", false,
 		"Uncap both budgets (on resume, override an inherited cap; an explicit --budget-* value wins)")
 	cmd.Flags().StringVar(&leadSessionID, "lead-session-id", "",

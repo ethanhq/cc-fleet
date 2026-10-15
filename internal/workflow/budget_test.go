@@ -2,9 +2,12 @@ package workflow
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -210,7 +213,7 @@ func TestBudgetReservationBoundsConcurrentOvershoot(t *testing.T) {
 const thunks = [];
 for (let i = 0; i < 20; i++) {
     const j = i;
-    thunks.push(() => agent("x" + j, {provider: "v"}));
+    thunks.push(() => agent("x" + j, {provider: "v", label: "x" + j}));
 }
 await parallel(thunks);
 return {};
@@ -227,8 +230,27 @@ return {};
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := strings.Count(string(data), "refused: agent: budget exceeded"), 20-len(rec.prompts()); got != want || want == 0 {
-		t.Errorf("logged %d refusals, want one per refused thunk (%d)", got, want)
+	// Every thunk calls agent() before any leaf settles, so x0–x4 fill the $5.00 cap and x5–x19 are
+	// refused at the gate: one log line each.
+	if n := len(rec.prompts()); n != 5 {
+		t.Errorf("ran %d leaves, want 5", n)
+	}
+	var refused []string
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var ev EventRecord
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			t.Fatalf("bad event line %q: %v", line, err)
+		}
+		if ev.Kind == "log" && strings.Contains(ev.Msg, "refused: agent: budget exceeded") {
+			refused = append(refused, ev.Msg[:strings.Index(ev.Msg, " refused")])
+		}
+	}
+	var want []string
+	for i := 5; i < 20; i++ {
+		want = append(want, fmt.Sprintf("leaf %q", fmt.Sprintf("x%d", i)))
+	}
+	if !reflect.DeepEqual(refused, want) {
+		t.Errorf("refusals logged for %q, want %q", refused, want)
 	}
 }
 
