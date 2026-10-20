@@ -68,7 +68,7 @@ printf '%s' "$DEEPSEEK_API_KEY" | cc-fleet add deepseek \
   --secret-backend file --secret-ref deepseek.key --api-key-stdin
 ```
 
-`add` 会同步探测 models 端点(最多 10 秒),通过才落盘。模型档位相关的可选 flag: `--strong-model` / `--fast-model`(档位槽)、`--effort low|medium|high|xhigh|max`(推理强度)、`--default-permission`(`cc-fleet run` 会话的默认权限档)。之后用 `edit` 可以改这些,外加 `--key-rotation` 与 `--enable`/`--disable`。
+`add` 会同步探测 models 端点(最多 10 秒),通过才落盘。模型档位相关的可选 flag: `--strong-model` / `--fast-model`(档位槽)、`--effort low|medium|high|xhigh|max`(推理强度)、`--strong-effort` / `--fast-effort`(槽位自己的 effort,留空跟随 `--effort`)、`--default-permission`(`cc-fleet run` 会话的默认权限档)。之后用 `edit` 可以改这些,外加 `--key-rotation` 与 `--enable`/`--disable`。
 
 开启 provider teammate 之后,`add` / `edit` / `remove` 还会同步 `ccf-*` agent 定义。同步失败,或者已有一个不带 cc-fleet 标记的同名 `ccf-*.md`(不会被覆盖)时,命令本身的结果不受影响,`--json` 里会多一个 `teammate_sync_error` 字符串;`cc-fleet repair` 会重试同步,遇到这类文件会打印告警(`--json` 里列在 `agent_defs.conflicts`)。
 
@@ -88,7 +88,7 @@ extra_body = '{"provider":{"only":["deepseek"],"allow_fallbacks":false}}'
 `cc-fleet default <provider>` 设全局默认;此后所有不带 provider 的 `teammate check` / `subagent` / `run` / workflow leaf 都解析到它(单独 `default` 查看,`--unset` 清除)。id `claude` 为原生 leaf 保留,不能设为默认 — `cc-fleet default claude` 会以 `PROVIDER_NAME_INVALID` 拒绝。模型档位让 Claude 拿到稳定的"把手"而不用硬编码模型 ID:
 
 - `--model strong` / `--model fast` / `--model default` 按档位表解析。
-- 每个槽位可标 1M 上下文(`[1m]`),provider 可设 effort 档 — TUI 表单或 `add`/`edit` flag 均可配置。
+- 每个槽位可标 1M 上下文(`[1m]`),也可设自己的 effort(default 用 `effort`,另有 `strong_effort` / `fast_effort`,留空跟随 `effort`)— TUI 表单或 `add`/`edit` flag 均可配置。每次启动都把该槽位的档以 `claude --effort` 传入;`cc-fleet run … --effort` 透传的值优先。
 
 ## 导出 / 导入 provider 名册
 
@@ -100,7 +100,7 @@ cc-fleet export --provider deepseek,glm > roster.toml
 cc-fleet import fleet-providers.toml                # 在新机器上应用
 ```
 
-随包走的:每个 provider 的配置(protocol、base URL、OpenAI-protocol 的 upstream URL 与 `extra_body`、models endpoint、模型档位、effort、默认权限、key 轮换、enabled、secret 后端 + 引用)与全局默认。不走的:**密钥本身**(file 后端的密钥留在源机;`pass`/`1password`/`vault`/`keyring` 只带引用),以及 **codex** provider(其登录是机器本地的 —— 导出时省略、导入时跳过)。
+随包走的:每个 provider 的配置(protocol、base URL、OpenAI-protocol 的 upstream URL 与 `extra_body`、models endpoint、模型档位、effort(三个槽位)、默认权限、key 轮换、enabled、secret 后端 + 引用)与全局默认。不走的:**密钥本身**(file 后端的密钥留在源机;`pass`/`1password`/`vault`/`keyring` 只带引用),以及 **codex** provider(其登录是机器本地的 —— 导出时省略、导入时跳过)。
 
 `import` 在写入任何东西之前先整体校验,坏包不会动你的名册。与现有 provider 冲突的行默认跳过,除非 `--force`;`--force` 会先备份 `providers.toml`,再用一次原子写替换。daemon-backed(OpenAI-protocol)provider 的 loopback `base_url` 在目标机重新派生 —— 随包走的是它的 `upstream_url`。导入只写配置、绝不联网;profile 在之后重建(派生缓存 —— 若该步报错,重跑 `repair`)。
 
@@ -153,7 +153,7 @@ cc-fleet run deepseek --dangerously-skip-permissions
 
 ## Teammate — 原生 agent teams,provider 做后端
 
-provider teammate 是 Claude Code 自己用 `Agent` 工具起的队友,agent 类型由 cc-fleet 安装:`ccf-<provider>`,以及 strong / fast 槽位的模型与 default 不同时另有的 `ccf-<provider>.strong` / `.fast`。团队、pane、收件箱、`SendMessage`、权限继承和清理都归 Claude Code;cc-fleet 只负责把 pane 里的 `claude` 路由到 provider。
+provider teammate 是 Claude Code 自己用 `Agent` 工具起的队友,agent 类型由 cc-fleet 安装:`ccf-<provider>`,以及 strong / fast 槽位的模型或 effort 与 default 不同时另有的 `ccf-<provider>.strong` / `.fast`。团队、pane、收件箱、`SendMessage`、权限继承和清理都归 Claude Code;cc-fleet 只负责把 pane 里的 `claude` 路由到 provider。
 
 **适用范围:**终端 `claude`(Claude Code ≥ 2.1.278),并且 `teammateMode` 落到 pane:`tmux` 在哪里都行,`auto` 要在 tmux 或 iTerm2 里。设置了 `fallbackModel`、`availableModels` 或 `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` 时 `auto` 会被拒绝,因为这时退回进程内的队友可能跑在 Claude 上。不在 tmux 里时,`teammateMode: tmux` 会把 pane 开在 Claude Code 自己的后台 tmux server(`claude-swarm-<pid>`)上,用 `tmux -S <tmux_socket_path> attach` 连上去。Claude 桌面 App、`claude -p` 和 SDK 会话没有 agent team,进程内(in-process)队友也无法路由 — 这些场景改用 `subagent` / `workflow`。Windows 上不可用(`teammate`、`hide`、`show`、`teardown` 返回 `UNSUPPORTED_ON_WINDOWS`)。
 

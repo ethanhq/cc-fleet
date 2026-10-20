@@ -23,8 +23,8 @@ type profileFile struct {
 	APIKeyHelper string            `json:"apiKeyHelper"`
 	Env          map[string]string `json:"env"`
 	// EffortLevel is the settings reasoning-effort field for a non-"max" provider
-	// effort (max rides the env instead — see GenerateForProvider). omitempty so a
-	// provider with no/effort=="max" emits no effortLevel key.
+	// effort (the field can't express max). omitempty so a provider with no
+	// effort or effort=="max" emits no effortLevel key.
 	EffortLevel string `json:"effortLevel,omitempty"`
 }
 
@@ -102,14 +102,14 @@ func GenerateForProvider(v *config.Provider, helperBinary string) ([]byte, error
 		APIKeyHelper: quoteArg(helperBinary) + " keyget " + quoteArg(v.Name),
 		Env:          env,
 	}
-	// Reasoning effort: "max" only via the env (the settings effortLevel field
-	// can't express it); the other levels via the lower-precedence effortLevel, so
-	// a session /effort can still override the default. Empty → neither.
-	switch v.Effort {
-	case "":
-	case "max":
-		env["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
-	default:
+	// Reasoning effort: each launch passes its slot's level as --effort. The env
+	// CLAUDE_CODE_EFFORT_LEVEL outranks --effort, so a provider with an effort blanks
+	// any value the lead's settings layers carry, and the profile only carries the
+	// default slot's non-max level, as the lower-precedence settings effortLevel.
+	if v.HasEffort() {
+		env["CLAUDE_CODE_EFFORT_LEVEL"] = ""
+	}
+	if v.Effort != "max" {
 		pf.EffortLevel = v.Effort
 	}
 

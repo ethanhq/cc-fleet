@@ -329,12 +329,14 @@ func providerDetailLines(v userops.ProviderView, rightW int, configuredDefault s
 	detailField(&lines, "models", v.ModelsEndpoint, rightW)
 	// Surface the full capability roster + effort + run permission so the preview
 	// mirrors the edit form. Each slot shows the concrete model that will run (a
-	// blank strong/fast resolves to the default); effort/permission show off when
-	// unset.
+	// blank strong/fast resolves to the default), each slot effort the level that
+	// will run (blank follows effort); effort/permission show off when unset.
 	detailField(&lines, "default", v.DefaultModel, rightW)
 	detailField(&lines, "strong", resolvedSlot(v.StrongModel, v.DefaultModel), rightW)
 	detailField(&lines, "fast", resolvedSlot(v.FastModel, v.DefaultModel), rightW)
 	detailField(&lines, "effort", orOff(v.Effort), rightW)
+	detailField(&lines, "  strong", orOff(resolvedSlot(v.StrongEffort, v.Effort)), rightW)
+	detailField(&lines, "  fast", orOff(resolvedSlot(v.FastEffort, v.Effort)), rightW)
 	detailFieldStyled(&lines, "run perm", orOff(v.DefaultPerm), rightW, permModeStyle(v.DefaultPerm))
 	detailField(&lines, "cache", providerCacheFig(v), rightW)
 	key := v.SecretBackend
@@ -511,7 +513,14 @@ func (m Model) formBase(hint string) string {
 		active, rightTitle = m.editName, "edit "+trunc(m.editName, 20)
 	}
 	return m.providerFlowView(m.form.title, "", active, rightTitle, hint,
-		func(rightW int) []string { return m.form.viewLines(rightW) })
+		func(rightW int) []string {
+			lines, focus := m.form.viewLines(rightW)
+			// A form taller than the pane scrolls so the focused row stays visible.
+			if h := m.boardBodyHeight(); focus >= h {
+				lines = lines[focus-h+1:]
+			}
+			return lines
+		})
 }
 
 // viewSpawn renders the Agents Board: a project-first master-detail. asMode re-roots

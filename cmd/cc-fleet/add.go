@@ -71,6 +71,8 @@ func newAddCmd() *cobra.Command {
 		strongModel    string
 		fastModel      string
 		effort         string
+		strongEffort   string
+		fastEffort     string
 		defaultPerm    string
 		secretBackend  string
 		secretRef      string
@@ -158,6 +160,8 @@ when stdin is a tty; otherwise the command exits 1 with a usage error.`,
 				StrongModel:    strongModel,
 				FastModel:      fastModel,
 				Effort:         effort,
+				StrongEffort:   strongEffort,
+				FastEffort:     fastEffort,
 				DefaultPerm:    defaultPerm,
 				SecretBackend:  secretBackend,
 				SecretRef:      secretRef,
@@ -202,6 +206,10 @@ when stdin is a tty; otherwise the command exits 1 with a usage error.`,
 		"Optional model id for the 'fast'/background slot (blank → follows --default-model)")
 	cmd.Flags().StringVar(&effort, "effort", "",
 		"Optional reasoning-effort level (low|medium|high|xhigh|max); needs provider support")
+	cmd.Flags().StringVar(&strongEffort, "strong-effort", "",
+		"Optional reasoning-effort level for the 'strong' slot (blank → follows --effort)")
+	cmd.Flags().StringVar(&fastEffort, "fast-effort", "",
+		"Optional reasoning-effort level for the 'fast' slot (blank → follows --effort)")
 	cmd.Flags().StringVar(&defaultPerm, "default-permission", "",
 		"Optional default permission mode for `cc-fleet run` (default|acceptEdits|plan|auto|bypassPermissions)")
 	cmd.Flags().StringVar(&secretBackend, "secret-backend", "file",

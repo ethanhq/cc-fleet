@@ -108,12 +108,15 @@ type Provider struct {
 	// can't serve. omitempty keeps existing files byte-stable.
 	StrongModel string `toml:"strong_model,omitempty"`
 	FastModel   string `toml:"fast_model,omitempty"`
-	// Effort is the optional reasoning-effort level (one of validEfforts; "" =
-	// unset). It is written into the profile by the least-intrusive knob that can
-	// express it — "max" via the CLAUDE_CODE_EFFORT_LEVEL env, the others via the
-	// settings effortLevel field — so a session /effort can still override a
-	// non-max default.
+	// Effort is the default slot's optional reasoning-effort level (one of
+	// validEfforts; "" = unset). Every launch passes its slot's level as --effort
+	// (ResolveEffort); the profile also carries a non-max Effort as the settings
+	// effortLevel, for a process that inherits the profile without a cc-fleet launch.
 	Effort string `toml:"effort,omitempty"`
+	// StrongEffort / FastEffort are the "strong" and "fast" slots' levels; blank →
+	// the slot follows Effort. omitempty keeps existing files byte-stable.
+	StrongEffort string `toml:"strong_effort,omitempty"`
+	FastEffort   string `toml:"fast_effort,omitempty"`
 	// DefaultPermission is the permission mode cc-fleet run uses when the caller
 	// passes neither --permission-mode nor --dangerously-skip-permissions ("" = no
 	// default → Claude's own default mode). Run-only; a teammate inherits the lead's
@@ -193,6 +196,24 @@ func (v *Provider) ResolveModel(requested string) string {
 	default:
 		return requested
 	}
+}
+
+// HasEffort reports whether any slot has a reasoning effort configured.
+func (v *Provider) HasEffort() bool {
+	return v.Effort != "" || v.StrongEffort != "" || v.FastEffort != ""
+}
+
+// ResolveEffort is ResolveModel's counterpart for the reasoning effort: strong and
+// fast name their slot's level (blank → Effort); anything else, a literal model id
+// included, gets the default slot's Effort.
+func (v *Provider) ResolveEffort(requested string) string {
+	switch {
+	case requested == ModelSlotStrong && v.StrongEffort != "":
+		return v.StrongEffort
+	case requested == ModelSlotFast && v.FastEffort != "":
+		return v.FastEffort
+	}
+	return v.Effort
 }
 
 // Provider-resolution sentinels. A provider-less lane invocation maps an empty
@@ -590,9 +611,13 @@ func (v *Provider) validate(mapKey string) error {
 		return fmt.Errorf("config: provider %q: key_rotation %q invalid (want one of %v)",
 			name, v.KeyRotation, ValidKeyRotations())
 	}
-	if !isValidEffort(v.Effort) {
-		return fmt.Errorf("config: provider %q: effort %q invalid (want one of %v)",
-			name, v.Effort, validEfforts)
+	for _, e := range []struct{ key, val string }{
+		{"effort", v.Effort}, {"strong_effort", v.StrongEffort}, {"fast_effort", v.FastEffort},
+	} {
+		if !isValidEffort(e.val) {
+			return fmt.Errorf("config: provider %q: %s %q invalid (want one of %v)",
+				name, e.key, e.val, validEfforts)
+		}
 	}
 	if v.DefaultPermission != "" && !permmode.IsValid(v.DefaultPermission) {
 		return fmt.Errorf("config: provider %q: default_permission %q invalid (want one of %v)",

@@ -383,7 +383,7 @@ func TestUniqueName(t *testing.T) {
 func TestNoteBlockConstantHeight(t *testing.T) {
 	f := newEditForm(userops.ProviderView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
 	noteToConfig := func(ff form) int {
-		lines := ff.viewLines(46)
+		lines, _ := ff.viewLines(46)
 		note, cfg := -1, -1
 		for i, l := range lines {
 			if strings.Contains(l, "Note") && note < 0 {
@@ -408,7 +408,8 @@ func TestNoteBlockConstantHeight(t *testing.T) {
 // rendered at the given width.
 func model1MRow(t *testing.T, f form, width int) string {
 	t.Helper()
-	for _, l := range f.viewLines(width) {
+	lines, _ := f.viewLines(width)
+	for _, l := range lines {
 		if strings.Contains(l, "1M ctx") {
 			return ansi.Strip(l)
 		}
@@ -513,6 +514,7 @@ func TestEditForm_ModelSlotsPrefill(t *testing.T) {
 		StrongModel:   "s[1m]",
 		FastModel:     "fst",
 		Effort:        "high",
+		StrongEffort:  "max",
 		DefaultPerm:   "acceptEdits",
 		SecretBackend: "file",
 	})
@@ -531,8 +533,25 @@ func TestEditForm_ModelSlotsPrefill(t *testing.T) {
 	if got := f.choiceValue("effort"); got != "high" {
 		t.Errorf("effort choice = %q, want high", got)
 	}
+	if got := f.choiceValue("strong_effort"); got != "max" {
+		t.Errorf("strong_effort choice = %q, want max", got)
+	}
+	if got := f.choiceValue("fast_effort"); got != "default" {
+		t.Errorf("unset fast_effort choice = %q, want default", got)
+	}
 	if got := f.choiceValue("permission"); got != "acceptEdits" {
 		t.Errorf("permission choice = %q, want acceptEdits", got)
+	}
+}
+
+// TestModelConfigFromForm_SlotEfforts: a slot effort reads back as its level, and
+// "default" as unset so the slot follows effort.
+func TestModelConfigFromForm_SlotEfforts(t *testing.T) {
+	m := NewModel()
+	m.form = newEditForm(userops.ProviderView{Name: "x", DefaultModel: "d", Effort: "high", StrongEffort: "max", SecretBackend: "file"})
+	_, _, _, effort, strong, fast, _ := m.modelConfigFromForm()
+	if effort != "high" || strong != "max" || fast != "" {
+		t.Errorf("effort/strong/fast = %q/%q/%q, want high/max/\"\"", effort, strong, fast)
 	}
 }
 
@@ -594,7 +613,7 @@ func TestModelConfigFromForm_TypedTrailing1MKept(t *testing.T) {
 	m.form.setValue("default_model", "foo[1m]")
 	m.form.setToggle("default_1m", false)
 
-	def, _, _, _, _ := m.modelConfigFromForm()
+	def, _, _, _, _, _, _ := m.modelConfigFromForm()
 	if def != "foo[1m]" {
 		t.Errorf("default model = %q, want foo[1m] (suffix kept with toggle off)", def)
 	}
@@ -608,7 +627,7 @@ func TestModelConfigFromForm_NoDoubleSuffix(t *testing.T) {
 	m.form.setValue("default_model", "foo[1m]")
 	m.form.setToggle("default_1m", true)
 
-	def, _, _, _, _ := m.modelConfigFromForm()
+	def, _, _, _, _, _, _ := m.modelConfigFromForm()
 	if def != "foo[1m]" {
 		t.Errorf("default model = %q, want foo[1m] (no double suffix)", def)
 	}

@@ -27,6 +27,31 @@ func TestResolveModel(t *testing.T) {
 	}
 }
 
+func TestResolveEffort(t *testing.T) {
+	v := &Provider{Effort: "high", StrongEffort: "max", FastEffort: "low"}
+	cases := map[string]string{
+		"":                "high",
+		"default":         "high",
+		"strong":          "max",
+		"fast":            "low",
+		"strong-model-id": "high", // a literal id runs at the default slot's effort
+	}
+	for in, want := range cases {
+		if got := v.ResolveEffort(in); got != want {
+			t.Errorf("ResolveEffort(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	// Blank strong/fast efforts follow Effort, including an unset one.
+	for _, p := range []*Provider{{Effort: "medium"}, {}} {
+		for _, slot := range []string{"strong", "fast"} {
+			if got := p.ResolveEffort(slot); got != p.Effort {
+				t.Errorf("blank %s effort with Effort %q: got %q", slot, p.Effort, got)
+			}
+		}
+	}
+}
+
 func TestStrongFastModelOrDefault(t *testing.T) {
 	set := &Provider{DefaultModel: "d", StrongModel: "s", FastModel: "f"}
 	if set.StrongModelOrDefault() != "s" || set.FastModelOrDefault() != "f" {
@@ -93,6 +118,9 @@ func TestValidate_EffortAndPermission(t *testing.T) {
 		{"effort empty ok", func(v *Provider) { v.Effort = "" }, false},
 		{"effort max ok", func(v *Provider) { v.Effort = "max" }, false},
 		{"effort bad", func(v *Provider) { v.Effort = "ultra" }, true},
+		{"slot efforts ok", func(v *Provider) { v.StrongEffort, v.FastEffort = "max", "low" }, false},
+		{"strong effort bad", func(v *Provider) { v.StrongEffort = "ultra" }, true},
+		{"fast effort bad", func(v *Provider) { v.FastEffort = "HIGH" }, true},
 		{"perm empty ok", func(v *Provider) { v.DefaultPermission = "" }, false},
 		{"perm acceptEdits ok", func(v *Provider) { v.DefaultPermission = "acceptEdits" }, false},
 		{"perm bad", func(v *Provider) { v.DefaultPermission = "yolo" }, true},

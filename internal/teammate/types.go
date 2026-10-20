@@ -227,6 +227,7 @@ type Result struct {
 	Provider           string   `json:"provider,omitempty"`
 	Slot               Slot     `json:"slot,omitempty"`
 	Model              string   `json:"model,omitempty"`
+	Effort             string   `json:"effort,omitempty"`
 	AgentType          string   `json:"agent_type,omitempty"`
 	Team               string   `json:"team,omitempty"`
 	LeadPID            int      `json:"lead_pid,omitempty"`

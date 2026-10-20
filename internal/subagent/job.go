@@ -157,7 +157,7 @@ var materializePromptFn = materializePromptReader
 // Any failure between cmd.Start and the final Release triggers a process-group
 // SIGTERM (200ms grace) → SIGKILL → Wait → file cleanup so we never leak a
 // detached provider child + orphan .out/.err files.
-func launchBackground(req Request, binaryPath, profilePath, model, effective, downgrade string, proxyPort int) Result {
+func launchBackground(req Request, binaryPath, profilePath, model, effort, effective, downgrade string, proxyPort int) Result {
 	dir, err := jobsDir()
 	if err != nil {
 		return fail(ErrCodeFailed, fmt.Sprintf("resolve jobs dir: %v", err), req.Provider, "")
@@ -205,7 +205,7 @@ func launchBackground(req Request, binaryPath, profilePath, model, effective, do
 		_ = os.WriteFile(filepath.Join(dir, jobID+".prompt"), []byte(req.IOPrompt), 0o600)
 	}
 
-	argv := buildArgv(binaryPath, profilePath, model, innerReq, slim)
+	argv := buildArgv(binaryPath, profilePath, model, effort, innerReq, slim)
 	// Fresh exec.Command (no context) → no deadline; child outlives parent.
 	cmd := exec.Command(binaryPath)
 	cmd.Args = argv

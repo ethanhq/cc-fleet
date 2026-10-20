@@ -169,9 +169,9 @@ func Evaluate(ctx context.Context, in Input) Result {
 	}
 	model := v.ResolveModel(string(slot))
 	typ := AgentType{Provider: name, Slot: slot}
-	// check picks the type; a slot whose model equals the default has no
-	// definition of its own (agentdefs), so it uses the default type.
-	if in.AgentCall == nil && slot != SlotDefault && config.Strip1M(model) == config.Strip1M(v.DefaultModel) {
+	// check picks the type; a slot without a definition of its own (ownSlotDef)
+	// uses the default type.
+	if in.AgentCall == nil && slot != SlotDefault && !ownSlotDef(v, slot) {
 		typ.Slot = SlotDefault
 	}
 	agentType := typ.String()
@@ -261,6 +261,7 @@ func Evaluate(ctx context.Context, in Input) Result {
 		Provider:           name,
 		Slot:               slot,
 		Model:              model,
+		Effort:             v.ResolveEffort(string(slot)),
 		AgentType:          agentType,
 		Team:               team.Name,
 		LeadPID:            sess.PID,

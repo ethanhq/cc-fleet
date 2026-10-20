@@ -26,11 +26,15 @@ const agentDefMode os.FileMode = 0o644
 // teammate that bypasses the launcher asks the provider-less lead API for a
 // model that does not exist. The marker lives in the body as an HTML comment,
 // keeping the frontmatter free of unknown keys. model's trailing [1m] is
-// dropped from the description.
-func RenderAgentDef(t AgentType, provider, model string) []byte {
+// dropped from the description; a set effort follows the model there.
+func RenderAgentDef(t AgentType, provider, model, effort string) []byte {
 	typ := t.String()
+	runsOn := config.Strip1M(model)
+	if effort != "" {
+		runsOn += ", effort " + effort
+	}
 	desc := fmt.Sprintf("cc-fleet provider teammate (%s, %s). Named teammate only: Agent({description, name, subagent_type: \"%s\", prompt}); no model/isolation/cwd.",
-		provider, config.Strip1M(model), typ)
+		provider, runsOn, typ)
 	var b bytes.Buffer
 	b.WriteString("---\n")
 	b.WriteString("name: " + typ + "\n")
@@ -48,9 +52,16 @@ type agentDefTarget struct {
 	data []byte
 }
 
+// ownSlotDef reports whether slot gets a definition of its own: its model
+// (ignoring [1m]) or its effort differs from the default slot's.
+func ownSlotDef(p *config.Provider, slot Slot) bool {
+	return config.Strip1M(p.ResolveModel(string(slot))) != config.Strip1M(p.DefaultModel) ||
+		p.ResolveEffort(string(slot)) != p.Effort
+}
+
 // agentDefTargets lists the definitions for cfg: one per enabled provider whose
-// name is not the reserved native name, plus a strong/fast slot definition only
-// when that slot is set and differs from the default model (ignoring [1m]).
+// name is not the reserved native name, plus a strong/fast definition for each
+// slot that ownSlotDef reports.
 func agentDefTargets(cfg *config.Config) []agentDefTarget {
 	names := make([]string, 0, len(cfg.Providers))
 	for name := range cfg.Providers {
@@ -63,17 +74,16 @@ func agentDefTargets(cfg *config.Config) []agentDefTarget {
 		if p == nil || !p.Enabled || name == config.ReservedNativeProvider {
 			continue
 		}
-		add := func(slot Slot, model string) {
+		add := func(slot Slot) {
 			t := AgentType{Provider: name, Slot: slot}
-			out = append(out, agentDefTarget{file: t.String() + ".md", data: RenderAgentDef(t, name, model)})
+			data := RenderAgentDef(t, name, p.ResolveModel(string(slot)), p.ResolveEffort(string(slot)))
+			out = append(out, agentDefTarget{file: t.String() + ".md", data: data})
 		}
-		add(SlotDefault, p.DefaultModel)
-		base := config.Strip1M(p.DefaultModel)
-		if p.StrongModel != "" && config.Strip1M(p.StrongModel) != base {
-			add(SlotStrong, p.StrongModel)
-		}
-		if p.FastModel != "" && config.Strip1M(p.FastModel) != base {
-			add(SlotFast, p.FastModel)
+		add(SlotDefault)
+		for _, slot := range []Slot{SlotStrong, SlotFast} {
+			if ownSlotDef(p, slot) {
+				add(slot)
+			}
 		}
 	}
 	return out

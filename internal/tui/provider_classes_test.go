@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/config"
@@ -418,7 +419,8 @@ func TestPreviewMatchesEditNoteGap(t *testing.T) {
 		return cfg - note
 	}
 	const w = 60
-	if p, e := gap(providerDetailLines(v, w, "")), gap(newEditForm(v).viewLines(w)); p != e {
+	edit, _ := newEditForm(v).viewLines(w)
+	if p, e := gap(providerDetailLines(v, w, "")), gap(edit); p != e {
 		t.Fatalf("Note→Config gap differs (Config jumps entering edit): preview=%d edit=%d", p, e)
 	}
 }
@@ -443,7 +445,7 @@ func TestCodexAuth_StaleEpochBegunDropped(t *testing.T) {
 // header, before "Config"), wrapped to the pane — never as a banner above it.
 func TestCodexFormNoteInNoteSection(t *testing.T) {
 	f := newCodexAddForm("codex", "gpt-5.5", "reuses the codex CLI login (account …abc) — no key needed")
-	lines := f.viewLines(48)
+	lines, _ := f.viewLines(48)
 	noteHdr, cfgHdr, body := -1, -1, -1
 	for i, l := range lines {
 		switch {
@@ -1003,5 +1005,46 @@ func TestAddPickerUnusedMarkerRowJoinsWindow(t *testing.T) {
 	}
 	if strings.Contains(joined, "\u2191 ") || !strings.Contains(joined, "\u2193 1 more") {
 		t.Fatalf("want no \u2191 and a truthful \u2193 1 more:\n%s", joined)
+	}
+}
+
+// A form taller than the pane scrolls with the focus, so [Save] and an error under it
+// stay reachable on a short terminal.
+func TestFormScrollsToFocus(t *testing.T) {
+	m := NewModel()
+	m, _ = press(t, m, "enter") // + Add -> grouped picker
+	m, _ = press(t, m, "enter") // first preset -> its add form
+	if m.screen != screenForm {
+		t.Fatalf("screen = %d, want screenForm", m.screen)
+	}
+	m.width, m.height = 100, 20
+	save := "[ " + m.form.submit + " ]"
+	if all, _ := m.form.viewLines(80); len(all) <= m.boardBodyHeight() {
+		t.Fatalf("form has %d lines; the test needs one taller than the %d-line pane", len(all), m.boardBodyHeight())
+	}
+	if out := m.View(); strings.Contains(out, save) {
+		t.Fatalf("focus on the first field should leave [Save] below the pane:\n%s", out)
+	}
+	m.form.setFocus(len(m.form.fields))
+	m.form.err = "probe failed"
+	out := m.View()
+	if !strings.Contains(out, save) || !strings.Contains(out, "probe failed") {
+		t.Fatalf("focus on [Save] should scroll it and its error into view:\n%s", out)
+	}
+
+	// An inline 1M toggle has no row of its own: its model row stays in view.
+	m.form.err = ""
+	m.height = 15 // boardBodyHeight floors to 5
+	idx, ok := m.form.indexOfKey("strong_1m")
+	if !ok {
+		t.Fatal("the add form has no strong_1m toggle")
+	}
+	m.form.setFocus(idx)
+	visible := false
+	for _, l := range strings.Split(ansi.Strip(m.View()), "\n") {
+		visible = visible || (strings.Contains(l, "strong") && strings.Contains(l, "1M ctx"))
+	}
+	if !visible {
+		t.Fatalf("focus on the strong 1M toggle should keep the strong model row in view:\n%s", m.View())
 	}
 }

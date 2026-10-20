@@ -113,6 +113,32 @@ func TestRun_ModelOverrideAndPassthrough(t *testing.T) {
 	}
 }
 
+func TestRun_SlotEffortReachesArgv(t *testing.T) {
+	seedProvider(t, "deepseek", true, "deepseek-chat")
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v := cfg.Providers["deepseek"]
+	v.StrongModel, v.Effort, v.StrongEffort = "deepseek-reasoner", "high", "max"
+	if err := config.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+	for model, want := range map[string]string{
+		"":       "--model deepseek-chat --effort high",
+		"strong": "--model deepseek-reasoner --effort max",
+		"fast":   "--model deepseek-chat --effort high",
+	} {
+		got := stubSeams(t, "/fake/claude", nil)
+		if err := Run(Request{Provider: "deepseek", Model: model}); err != nil {
+			t.Fatalf("Run(%q): %v", model, err)
+		}
+		if argv := strings.Join(got.argv[3:], " "); argv != want {
+			t.Errorf("Run(%q) argv tail = %q, want %q", model, argv, want)
+		}
+	}
+}
+
 func TestRun_RejectsReservedPassthrough(t *testing.T) {
 	seedProvider(t, "deepseek", true, "deepseek-chat")
 	for _, bad := range [][]string{
@@ -273,20 +299,25 @@ func TestRun_ProtocolGuard(t *testing.T) {
 }
 
 func TestBuildArgv(t *testing.T) {
-	base := buildArgv("/b", "/p.json", "m", nil, nil)
+	base := buildArgv("/b", "/p.json", "m", "", nil, nil)
 	if strings.Join(base, " ") != "/b --settings /p.json --model m" {
 		t.Fatalf("buildArgv base = %v", base)
 	}
 	// managed flags FIRST (--settings/--model + perm), then passthrough LAST.
-	full := buildArgv("/b", "/p.json", "m", []string{"--dangerously-skip-permissions"}, []string{"--resume", "x"})
+	full := buildArgv("/b", "/p.json", "m", "", []string{"--dangerously-skip-permissions"}, []string{"--resume", "x"})
 	if strings.Join(full, " ") != "/b --settings /p.json --model m --dangerously-skip-permissions --resume x" {
 		t.Fatalf("buildArgv full = %v", full)
 	}
 	// A "--" in the passthrough must not precede the managed flags, or claude
 	// would read --settings/--model as positionals after the terminator.
-	dashes := buildArgv("/b", "/p.json", "m", nil, []string{"--", "-p", "hi"})
+	dashes := buildArgv("/b", "/p.json", "m", "", nil, []string{"--", "-p", "hi"})
 	if strings.Join(dashes, " ") != "/b --settings /p.json --model m -- -p hi" {
 		t.Fatalf("buildArgv with -- = %v", dashes)
+	}
+	// The slot's --effort is managed too; a passthrough --effort comes later and wins.
+	eff := buildArgv("/b", "/p.json", "m", "max", []string{"--permission-mode", "plan"}, []string{"--effort", "low"})
+	if strings.Join(eff, " ") != "/b --settings /p.json --model m --effort max --permission-mode plan --effort low" {
+		t.Fatalf("buildArgv with effort = %v", eff)
 	}
 }
 

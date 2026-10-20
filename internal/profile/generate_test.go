@@ -134,17 +134,17 @@ func TestGenerateForProvider_TiersEffortAndStrip1M(t *testing.T) {
 	if _, ok := back.Env["CLAUDE_CODE_SUBAGENT_MODEL"]; ok {
 		t.Errorf("CLAUDE_CODE_SUBAGENT_MODEL must NOT be set (subagents keep their own model:), got %q", back.Env["CLAUDE_CODE_SUBAGENT_MODEL"])
 	}
-	if _, ok := back.Env["CLAUDE_CODE_EFFORT_LEVEL"]; ok {
-		t.Errorf("a non-max effort must NOT set CLAUDE_CODE_EFFORT_LEVEL env, got %q", back.Env["CLAUDE_CODE_EFFORT_LEVEL"])
+	if e, ok := back.Env["CLAUDE_CODE_EFFORT_LEVEL"]; !ok || e != "" {
+		t.Errorf("env CLAUDE_CODE_EFFORT_LEVEL = %q (present %v), want blank", e, ok)
 	}
 	if back.EffortLevel != "high" {
 		t.Errorf("effortLevel = %q, want high", back.EffortLevel)
 	}
 }
 
-// TestGenerateForProvider_MaxEffortRidesEnv covers effort=max: it must ride the env
-// (the only knob that expresses max) and NOT the settings effortLevel field.
-func TestGenerateForProvider_MaxEffortRidesEnv(t *testing.T) {
+// A max effort stays out of the profile: settings can't express it, and the env
+// would override every slot's --effort.
+func TestGenerateForProvider_MaxEffortLeftToLaunch(t *testing.T) {
 	v := sampleProvider()
 	v.Effort = "max"
 	got, err := GenerateForProvider(v, testHelperBin())
@@ -158,11 +158,36 @@ func TestGenerateForProvider_MaxEffortRidesEnv(t *testing.T) {
 	if err := json.Unmarshal(got, &back); err != nil {
 		t.Fatalf("Unmarshal: %v", err)
 	}
-	if back.Env["CLAUDE_CODE_EFFORT_LEVEL"] != "max" {
-		t.Errorf("env CLAUDE_CODE_EFFORT_LEVEL = %q, want max", back.Env["CLAUDE_CODE_EFFORT_LEVEL"])
+	if e, ok := back.Env["CLAUDE_CODE_EFFORT_LEVEL"]; !ok || e != "" {
+		t.Errorf("env CLAUDE_CODE_EFFORT_LEVEL = %q (present %v), want blank", e, ok)
 	}
 	if back.EffortLevel != "" {
 		t.Errorf("max effort must NOT set the settings effortLevel field, got %q", back.EffortLevel)
+	}
+}
+
+// The env is blanked for a provider with any slot's effort set, and left alone for
+// one with none, so the lead's settings value still applies there.
+func TestGenerateForProvider_EffortEnvBlank(t *testing.T) {
+	for _, c := range []struct {
+		name, fastEffort string
+		blank            bool
+	}{{"no effort", "", false}, {"fast slot only", "low", true}} {
+		v := sampleProvider()
+		v.FastEffort = c.fastEffort
+		got, err := GenerateForProvider(v, testHelperBin())
+		if err != nil {
+			t.Fatalf("GenerateForProvider: %v", err)
+		}
+		var back struct {
+			Env map[string]string `json:"env"`
+		}
+		if err := json.Unmarshal(got, &back); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if e, ok := back.Env["CLAUDE_CODE_EFFORT_LEVEL"]; ok != c.blank || e != "" {
+			t.Errorf("%s: env CLAUDE_CODE_EFFORT_LEVEL = %q (present %v), want present=%v and blank", c.name, e, ok, c.blank)
+		}
 	}
 }
 

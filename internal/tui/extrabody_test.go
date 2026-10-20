@@ -67,7 +67,8 @@ func TestEditForm_ExtraBodyRowAndNote(t *testing.T) {
 		idx, _ := f.indexOfKey("extra_body")
 		f.setFocus(idx)
 		var rendered []string
-		for _, l := range f.viewLines(w) {
+		lines, _ := f.viewLines(w)
+		for _, l := range lines {
 			rendered = append(rendered, strings.TrimSpace(ansi.Strip(l)))
 		}
 		for _, chunk := range wrapTo(note, w-2) {

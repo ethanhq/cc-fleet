@@ -237,7 +237,7 @@ func TestRouteRewritesArgv(t *testing.T) {
 	h := hermeticHome(t)
 	claude := writeFakeClaude(t, h.Bin, "exit 0\n")
 	eff := launchProvider("eff")
-	eff.Effort = "high"
+	eff.Effort, eff.FastEffort = "high", "low"
 	daemon := launchProvider("oai")
 	daemon.Protocol, daemon.BaseURL, daemon.UpstreamURL = config.ProtocolOpenAIChat, "http://127.0.0.1:18431", "https://api.example.invalid/v1"
 	launchSaveConfig(t, launchProvider("p"), eff, daemon)
@@ -253,6 +253,7 @@ func TestRouteRewritesArgv(t *testing.T) {
 		keep    []string // expected argv before the appended --settings/--model
 		psid    string
 		model   string
+		effort  string // expected appended --effort, "" = none
 		profile string
 		daemons int
 	}{
@@ -280,16 +281,22 @@ func TestRouteRewritesArgv(t *testing.T) {
 			model: "p-fast", profile: "/prof/p.json",
 		},
 		{
-			name:  "provider effort strips --effort (space form)",
+			name:  "provider effort replaces --effort (space form)",
 			args:  []string{"--agent-id", "w@session-1", "--effort", "low", "--agent-type", "ccf-eff", "--plan-mode-required"},
 			keep:  []string{"--agent-id", "w@session-1", "--plan-mode-required"},
-			model: "eff-def", profile: "/prof/eff.json",
+			model: "eff-def", effort: "high", profile: "/prof/eff.json",
 		},
 		{
-			name:  "provider effort strips --effort (equals form)",
+			name:  "unset slot effort follows the provider's (equals form)",
 			args:  []string{"--agent-id", "w@session-1", "--effort=max", "--agent-type", "ccf-eff.strong"},
 			keep:  []string{"--agent-id", "w@session-1"},
-			model: "eff-strong", profile: "/prof/eff.json",
+			model: "eff-strong", effort: "high", profile: "/prof/eff.json",
+		},
+		{
+			name:  "slot effort replaces --effort",
+			args:  []string{"--agent-id", "w@session-1", "--effort", "max", "--agent-type", "ccf-eff.fast"},
+			keep:  []string{"--agent-id", "w@session-1"},
+			model: "eff-fast", effort: "low", profile: "/prof/eff.json",
 		},
 		{
 			name:  "daemon-backed provider ensures its proxy",
@@ -306,6 +313,9 @@ func TestRouteRewritesArgv(t *testing.T) {
 				t.Fatalf("= (%d, %q, %q), want a silent exec", code, out, errOut)
 			}
 			want := append(append([]string{claude}, tc.keep...), "--settings", tc.profile, "--model", tc.model)
+			if tc.effort != "" {
+				want = append(want, "--effort", tc.effort)
+			}
 			if rec.execs != 1 || rec.argv0 != claude || !reflect.DeepEqual(rec.argv, want) {
 				t.Errorf("exec'd %q\n got argv %q\nwant argv %q", rec.argv0, rec.argv, want)
 			}

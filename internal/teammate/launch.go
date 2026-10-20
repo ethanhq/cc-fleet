@@ -109,6 +109,7 @@ func launch(args []string) *LaunchError {
 		slot = string(t.Slot)
 	}
 	model := v.ResolveModel(slot)
+	effort := v.ResolveEffort(slot)
 
 	bin, lerr := leadBinary(id, vals[flagParentSessionID])
 	if lerr != nil {
@@ -126,13 +127,17 @@ func launch(args []string) *LaunchError {
 
 	// The type is routed here (and its definition body must never replace the
 	// system prompt), --settings is single-valued so the profile must win, and
-	// the model comes only from the type. A provider effort overrides the lead's.
+	// the model comes only from the type. The slot's effort, when set, replaces
+	// the lead's.
 	drop := map[string]bool{flagAgentType: true, flagSettings: true, flagModel: true}
-	if v.Effort != "" {
+	if effort != "" {
 		drop[flagEffort] = true
 	}
 	_, argv := scanLaunchArgv(args, drop)
 	argv = append(argv, flagSettings, prof, flagModel, model)
+	if effort != "" {
+		argv = append(argv, flagEffort, effort)
+	}
 	return execLead(id, bin, argv, childenv.CleanForTeammate(os.Environ()))
 }
 

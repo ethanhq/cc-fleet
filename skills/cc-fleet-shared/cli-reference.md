@@ -218,6 +218,7 @@ cc-fleet refresh <provider> --json         Re-query provider's models endpoint. 
   "provider": "glm",
   "slot": "strong",
   "model": "glm-4.6",
+  "effort": "high",
   "agent_type": "ccf-glm.strong",
   "team": "session-7c8f769b",
   "lead_pid": 4242,
@@ -230,7 +231,7 @@ cc-fleet refresh <provider> --json         Re-query provider's models endpoint. 
   "warnings": []
 }
 ```
-Proceed only when `ok` is true **and** `protocol` is `1`; pass `agent_type` verbatim as `subagent_type`. A slot whose model equals the default comes back as the default type (`ccf-glm`).
+Proceed only when `ok` is true **and** `protocol` is `1`; pass `agent_type` verbatim as `subagent_type`. A slot whose model and effort equal the default's comes back as the default type (`ccf-glm`). `effort` is the level the teammate runs at; it is absent when none is configured.
 
 ## teammate check JSON envelope (failure)
 ```json

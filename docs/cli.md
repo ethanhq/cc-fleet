@@ -68,7 +68,7 @@ printf '%s' "$DEEPSEEK_API_KEY" | cc-fleet add deepseek \
   --secret-backend file --secret-ref deepseek.key --api-key-stdin
 ```
 
-`add` probes the models endpoint synchronously (up to 10s) and only persists on success. Optional model-roster flags: `--strong-model` / `--fast-model` (tier slots), `--effort low|medium|high|xhigh|max` (reasoning effort), `--default-permission` (the default permission mode for `cc-fleet run` sessions). `edit` patches any of these later, plus `--key-rotation` and `--enable`/`--disable`.
+`add` probes the models endpoint synchronously (up to 10s) and only persists on success. Optional model-roster flags: `--strong-model` / `--fast-model` (tier slots), `--effort low|medium|high|xhigh|max` (reasoning effort), `--strong-effort` / `--fast-effort` (a slot's own effort; blank follows `--effort`), `--default-permission` (the default permission mode for `cc-fleet run` sessions). `edit` patches any of these later, plus `--key-rotation` and `--enable`/`--disable`.
 
 Once provider teammates are set up, `add` / `edit` / `remove` also resync the `ccf-*` agent definitions. If that sync fails, or a `ccf-*.md` without the cc-fleet marker is in the way (it is never overwritten), the command itself still succeeds and `--json` carries a `teammate_sync_error` string; `cc-fleet repair` retries the sync and prints a warning for such a file (its `--json` lists it in `agent_defs.conflicts`).
 
@@ -88,7 +88,7 @@ The value is one JSON object held in a TOML **string** — a TOML table is refus
 `cc-fleet default <provider>` sets the fleet-wide default; every provider-less `teammate check` / `subagent` / `run` / workflow leaf resolves to it (`default` alone shows it, `--unset` clears it). The id `claude` is reserved for the native leaf and can never be the default — `cc-fleet default claude` refuses with `PROVIDER_NAME_INVALID`. A provider's roster gives Claude stable handles instead of hardcoded IDs:
 
 - `--model strong` / `--model fast` / `--model default` resolve through the roster.
-- Each slot can carry a 1M-context marker (`[1m]`) and the provider an effort level — both set in the TUI form or via `add`/`edit` flags.
+- Each slot can carry a 1M-context marker (`[1m]`) and its own effort level (`effort` for default, `strong_effort` / `fast_effort`, blank follows `effort`) — set in the TUI form or via `add`/`edit` flags. Every launch passes its slot's level as `claude --effort`; a passthrough `cc-fleet run … --effort` wins.
 
 ## Export / import the provider roster
 
@@ -100,7 +100,7 @@ cc-fleet export --provider deepseek,glm > roster.toml
 cc-fleet import fleet-providers.toml                # apply on the new machine
 ```
 
-What travels: each provider's config (protocol, base URL, for OpenAI-protocol providers the upstream URL and `extra_body`, models endpoint, model roster, effort, default permission, key rotation, enabled, secret backend + reference) and the global default. What doesn't: the **key itself** (file-backend keys stay on the source; `pass`/`1password`/`vault`/`keyring` rows carry only their reference), and **codex** providers (their login is machine-local — omitted on export, skipped on import).
+What travels: each provider's config (protocol, base URL, for OpenAI-protocol providers the upstream URL and `extra_body`, models endpoint, model roster, effort (all three slots), default permission, key rotation, enabled, secret backend + reference) and the global default. What doesn't: the **key itself** (file-backend keys stay on the source; `pass`/`1password`/`vault`/`keyring` rows carry only their reference), and **codex** providers (their login is machine-local — omitted on export, skipped on import).
 
 `import` validates the whole bundle before writing anything, so a bad bundle leaves the roster untouched. A provider that collides with an existing one is skipped unless `--force`, which backs up `providers.toml` first and replaces it in a single atomic write. A daemon-backed (OpenAI-protocol) provider's loopback `base_url` is re-derived on the target — its `upstream_url` is what travels. Import writes config only and never contacts a provider; profiles are rebuilt afterward (a derived cache — re-run `repair` if that step reports a failure).
 
@@ -153,7 +153,7 @@ Requires an interactive terminal. Works on Linux, macOS, and Windows.
 
 ## Teammates — native agent teams, provider-backed
 
-A provider teammate is a teammate Claude Code starts itself, with the `Agent` tool, from an agent type cc-fleet installs (`ccf-<provider>`, plus `ccf-<provider>.strong` / `.fast` when those slots hold a different model). Claude Code owns the team, the pane, the inbox, `SendMessage`, permission inheritance and cleanup; cc-fleet only routes the pane's `claude` to the provider.
+A provider teammate is a teammate Claude Code starts itself, with the `Agent` tool, from an agent type cc-fleet installs (`ccf-<provider>`, plus `ccf-<provider>.strong` / `.fast` when those slots hold a different model or effort). Claude Code owns the team, the pane, the inbox, `SendMessage`, permission inheritance and cleanup; cc-fleet only routes the pane's `claude` to the provider.
 
 **Where it works:** a terminal `claude` (Claude Code ≥ 2.1.278) with `teammateMode` resolving to a pane: `tmux` anywhere, or `auto` inside tmux or iTerm2. `auto` is refused while `fallbackModel`, `availableModels` or `CLAUDE_CODE_SUBAGENT_MODEL_FORCE` is set, because an in-process fallback could then run on Claude. Outside tmux, `teammateMode: tmux` puts the panes on Claude Code's own detached tmux server (`claude-swarm-<pid>`); attach with `tmux -S <tmux_socket_path> attach`. The Claude desktop app, `claude -p` and SDK sessions have no agent team, and in-process teammates cannot be routed — there, use `subagent` / `workflow`. Not available on Windows (`UNSUPPORTED_ON_WINDOWS` from `teammate`, `hide`, `show` and `teardown`).
 

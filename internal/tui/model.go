@@ -4349,15 +4349,18 @@ func (m Model) submitAdd() (tea.Model, tea.Cmd) {
 }
 
 // modelConfigFromForm reads the shared model-roster rows back: each model slot's
-// bare id recombined with its 1M toggle, effort/permission mapped off→"". Used by
-// every add submitter and submitEdit so the read-back can't drift.
-func (m Model) modelConfigFromForm() (defModel, strong, fast, effort, perm string) {
+// bare id recombined with its 1M toggle, effort/permission mapped off→"" and the
+// slot efforts default→"". Used by every add submitter and submitEdit so the
+// read-back can't drift.
+func (m Model) modelConfigFromForm() (defModel, strong, fast, effort, strongEffort, fastEffort, perm string) {
 	def, strg, fst := m.form.value("default_model"), m.form.value("strong_model"), m.form.value("fast_model")
 	// A typed id that itself ends in [1m] keeps the marker even with the toggle off.
 	return combine1M(def, m.form.boolValue("default_1m") || config.Has1M(def)),
 		combine1M(strg, m.form.boolValue("strong_1m") || config.Has1M(strg)),
 		combine1M(fst, m.form.boolValue("fast_1m") || config.Has1M(fst)),
 		offToEmpty(m.form.choiceValue("effort")),
+		defaultToEmpty(m.form.choiceValue("strong_effort")),
+		defaultToEmpty(m.form.choiceValue("fast_effort")),
 		offToEmpty(m.form.choiceValue("permission"))
 }
 
@@ -4368,7 +4371,7 @@ func (m Model) submitAddOpenAI() (tea.Model, tea.Cmd) {
 	upstream := m.form.value("upstream_url")
 	modelsEndpoint := m.form.value("models_endpoint")
 	apiKey := m.form.value("api_key")
-	defaultModel, strong, fast, effort, perm := m.modelConfigFromForm()
+	defaultModel, strong, fast, effort, strongEffort, fastEffort, perm := m.modelConfigFromForm()
 
 	if missing := missingLabels(map[string]string{
 		"Name":            name,
@@ -4396,6 +4399,8 @@ func (m Model) submitAddOpenAI() (tea.Model, tea.Cmd) {
 		StrongModel:    strong,
 		FastModel:      fast,
 		Effort:         effort,
+		StrongEffort:   strongEffort,
+		FastEffort:     fastEffort,
 		DefaultPerm:    perm,
 		SecretBackend:  "file",
 		SecretRef:      name + ".key",
@@ -4410,7 +4415,7 @@ func (m Model) submitAddOpenAI() (tea.Model, tea.Cmd) {
 // backend; the upstream is the fixed ChatGPT backend, so there is no key.
 func (m Model) submitAddCodex() (tea.Model, tea.Cmd) {
 	name := m.form.value("name")
-	defaultModel, strong, fast, effort, perm := m.modelConfigFromForm()
+	defaultModel, strong, fast, effort, strongEffort, fastEffort, perm := m.modelConfigFromForm()
 	if missing := missingLabels(map[string]string{
 		"Name":          name,
 		"Default model": defaultModel,
@@ -4451,6 +4456,8 @@ func (m Model) submitAddCodex() (tea.Model, tea.Cmd) {
 		StrongModel:    strong,
 		FastModel:      fast,
 		Effort:         effort,
+		StrongEffort:   strongEffort,
+		FastEffort:     fastEffort,
 		DefaultPerm:    perm,
 		SecretBackend:  codexproxy.SecretBackend,
 		SecretRef:      ref,
@@ -4500,7 +4507,7 @@ func (m Model) submitAddAnthropic() (tea.Model, tea.Cmd) {
 	baseURL := m.form.value("base_url")
 	modelsEndpoint := m.form.value("models_endpoint")
 	apiKey := m.form.value("api_key")
-	defaultModel, strong, fast, effort, perm := m.modelConfigFromForm()
+	defaultModel, strong, fast, effort, strongEffort, fastEffort, perm := m.modelConfigFromForm()
 
 	if missing := missingLabels(map[string]string{
 		"Name":            name,
@@ -4524,6 +4531,8 @@ func (m Model) submitAddAnthropic() (tea.Model, tea.Cmd) {
 		StrongModel:    strong,
 		FastModel:      fast,
 		Effort:         effort,
+		StrongEffort:   strongEffort,
+		FastEffort:     fastEffort,
 		DefaultPerm:    perm,
 		SecretBackend:  "file",
 		SecretRef:      name + ".key",
@@ -4537,7 +4546,7 @@ func (m Model) submitEdit() (tea.Model, tea.Cmd) {
 	// Recombine each model slot's bare id with its 1M toggle; the choice fields
 	// map "off" → unset. The TUI is the full editor, so every field is sent
 	// (including a clear) — editLocked diffs against the stored value.
-	defaultModel, strongModel, fastModel, effort, defaultPerm := m.modelConfigFromForm()
+	defaultModel, strongModel, fastModel, effort, strongEffort, fastEffort, defaultPerm := m.modelConfigFromForm()
 	enabled := m.form.boolValue("enabled")
 	req := userops.EditRequest{
 		Name:         m.editName,
@@ -4545,6 +4554,8 @@ func (m Model) submitEdit() (tea.Model, tea.Cmd) {
 		StrongModel:  &strongModel,
 		FastModel:    &fastModel,
 		Effort:       &effort,
+		StrongEffort: &strongEffort,
+		FastEffort:   &fastEffort,
 		DefaultPerm:  &defaultPerm,
 		Enabled:      &enabled,
 	}
@@ -4605,6 +4616,14 @@ func combine1M(id string, on bool) string {
 // offToEmpty maps the "off" dropdown option back to an unset ("") config value.
 func offToEmpty(s string) string {
 	if s == "off" {
+		return ""
+	}
+	return s
+}
+
+// defaultToEmpty maps a slot effort's "default" choice to unset (the slot follows effort).
+func defaultToEmpty(s string) string {
+	if s == "default" {
 		return ""
 	}
 	return s

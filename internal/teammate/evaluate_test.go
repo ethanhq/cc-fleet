@@ -546,6 +546,28 @@ func TestEvaluatePrepareAndProbeSeams(t *testing.T) {
 			t.Fatalf("got %+v", r)
 		}
 	})
+	t.Run("slot on the default model with its own effort", func(t *testing.T) {
+		f := evalSetup(t)
+		cfg, err := config.Load()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cfg.Providers["glm"].FastEffort = "low"
+		if err := config.Save(cfg); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := SyncAgentDefs(cfg); err != nil {
+			t.Fatal(err)
+		}
+		old := time.Now().Add(-time.Hour)
+		if err := os.Chtimes(filepath.Join(f.h.ClaudeDir, "agents", "ccf-glm.fast.md"), old, old); err != nil {
+			t.Fatal(err)
+		}
+		r := Evaluate(context.Background(), Input{Slot: SlotFast})
+		if !r.OK || r.AgentType != "ccf-glm.fast" || r.Model != "glm-4.6" || r.Effort != "low" {
+			t.Fatalf("got %+v", r)
+		}
+	})
 	t.Run("launcher pinned to another binary warns", func(t *testing.T) {
 		f := evalSetup(t)
 		other := writeScript(t, filepath.Join(f.h.Home, "other", "cc-fleet"), "exit 0\n")

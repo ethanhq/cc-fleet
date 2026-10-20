@@ -128,16 +128,20 @@ func Run(req Request) error {
 	if permMode == "" {
 		permMode = v.DefaultPermission
 	}
-	argv := buildArgv(bin, profilePath, model, permmode.ExplicitFlags(permMode), req.ExtraArgs)
+	argv := buildArgv(bin, profilePath, model, v.ResolveEffort(req.Model), permmode.ExplicitFlags(permMode), req.ExtraArgs)
 	return execClaude(v, bin, argv, childenv.Clean(os.Environ()))
 }
 
 // buildArgv builds the claude argv: bin, cc-fleet's managed flags
-// (--settings/--model + permission flags), then the passthrough. Managed flags
-// go first so claude always parses them — a passthrough "--" or value flag can't
-// push them past option parsing and drop the provider profile. argv[0] == bin.
-func buildArgv(bin, profilePath, model string, permFlags, extra []string) []string {
+// (--settings/--model, the slot's --effort + permission flags), then the
+// passthrough. Managed flags go first so claude always parses them — a
+// passthrough "--" or value flag can't push them past option parsing and drop the
+// provider profile — and a passthrough --effort, parsed later, wins. argv[0] == bin.
+func buildArgv(bin, profilePath, model, effort string, permFlags, extra []string) []string {
 	argv := []string{bin, "--settings", profilePath, "--model", model}
+	if effort != "" {
+		argv = append(argv, "--effort", effort)
+	}
 	argv = append(argv, permFlags...)
 	return append(argv, extra...)
 }

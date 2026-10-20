@@ -214,6 +214,8 @@ type AddRequest struct {
 	StrongModel    string // optional "strong" capability slot; blank → follows DefaultModel
 	FastModel      string // optional "fast" capability slot; blank → follows DefaultModel
 	Effort         string // optional reasoning-effort level (config.validEfforts); "" = unset
+	StrongEffort   string // optional "strong" slot level; blank → follows Effort
+	FastEffort     string // optional "fast" slot level; blank → follows Effort
 	DefaultPerm    string // optional default permission mode for `cc-fleet run`; "" = unset
 	SecretBackend  string
 	SecretRef      string
@@ -331,6 +333,8 @@ func addLocked(req AddRequest) (*AddResult, error) {
 		StrongModel:       req.StrongModel,
 		FastModel:         req.FastModel,
 		Effort:            req.Effort,
+		StrongEffort:      req.StrongEffort,
+		FastEffort:        req.FastEffort,
 		DefaultPermission: req.DefaultPerm,
 		SecretBackend:     req.SecretBackend,
 		SecretRef:         req.SecretRef,
@@ -540,6 +544,8 @@ type EditRequest struct {
 	StrongModel    *string // "strong" capability slot ("" clears → follows DefaultModel)
 	FastModel      *string // "fast" capability slot ("" clears → follows DefaultModel)
 	Effort         *string // reasoning-effort level ("" clears); config.Validate rejects bad values
+	StrongEffort   *string // "strong" slot level ("" clears → follows Effort)
+	FastEffort     *string // "fast" slot level ("" clears → follows Effort)
 	DefaultPerm    *string // default permission mode for `cc-fleet run` ("" clears)
 	SecretBackend  *string
 	SecretRef      *string
@@ -614,8 +620,20 @@ func editLocked(req EditRequest) (*EditResult, error) {
 		v.FastModel = *req.FastModel
 		profileFieldChanged = true
 	}
+	hadEffort := v.HasEffort()
 	if req.Effort != nil && *req.Effort != v.Effort {
 		v.Effort = *req.Effort // config.Validate rejects a bad value
+		profileFieldChanged = true
+	}
+	// The slot efforts ride each launch's --effort; the profile only depends on
+	// whether any effort is set.
+	if req.StrongEffort != nil {
+		v.StrongEffort = *req.StrongEffort
+	}
+	if req.FastEffort != nil {
+		v.FastEffort = *req.FastEffort
+	}
+	if v.HasEffort() != hadEffort {
 		profileFieldChanged = true
 	}
 	if req.DefaultPerm != nil {
@@ -840,9 +858,11 @@ type ProviderView struct {
 	Name           string `json:"name"`
 	BaseURL        string `json:"base_url"`
 	DefaultModel   string `json:"default_model"`
-	StrongModel    string `json:"strong_model,omitempty"` // blank → follows default_model
-	FastModel      string `json:"fast_model,omitempty"`   // blank → follows default_model
-	Effort         string `json:"effort,omitempty"`       // reasoning-effort level; blank → unset
+	StrongModel    string `json:"strong_model,omitempty"`  // blank → follows default_model
+	FastModel      string `json:"fast_model,omitempty"`    // blank → follows default_model
+	Effort         string `json:"effort,omitempty"`        // reasoning-effort level; blank → unset
+	StrongEffort   string `json:"strong_effort,omitempty"` // blank → follows effort
+	FastEffort     string `json:"fast_effort,omitempty"`   // blank → follows effort
 	DefaultPerm    string `json:"default_permission,omitempty"`
 	ModelsEndpoint string `json:"models_endpoint"`
 	SecretBackend  string `json:"secret_backend"`
@@ -900,6 +920,8 @@ func List() (*ListResult, error) {
 			StrongModel:    v.StrongModel,
 			FastModel:      v.FastModel,
 			Effort:         v.Effort,
+			StrongEffort:   v.StrongEffort,
+			FastEffort:     v.FastEffort,
 			DefaultPerm:    v.DefaultPermission,
 			ModelsEndpoint: v.ModelsEndpoint,
 			SecretBackend:  v.SecretBackend,

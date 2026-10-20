@@ -21,6 +21,8 @@ type editProviderView struct {
 	StrongModel    string `json:"strong_model,omitempty"`
 	FastModel      string `json:"fast_model,omitempty"`
 	Effort         string `json:"effort,omitempty"`
+	StrongEffort   string `json:"strong_effort,omitempty"`
+	FastEffort     string `json:"fast_effort,omitempty"`
 	DefaultPerm    string `json:"default_permission,omitempty"`
 	ModelsEndpoint string `json:"models_endpoint"`
 	SecretBackend  string `json:"secret_backend"`
@@ -47,6 +49,8 @@ func newEditCmd() *cobra.Command {
 		strongModel    string
 		fastModel      string
 		effort         string
+		strongEffort   string
+		fastEffort     string
 		defaultPerm    string
 		secretBackend  string
 		secretRef      string
@@ -143,6 +147,12 @@ changing a URL or key to revalidate.`,
 			if cmdHasFlag(effort) {
 				req.Effort = &effort
 			}
+			if cmdHasFlag(strongEffort) {
+				req.StrongEffort = &strongEffort
+			}
+			if cmdHasFlag(fastEffort) {
+				req.FastEffort = &fastEffort
+			}
 			if cmdHasFlag(defaultPerm) {
 				req.DefaultPerm = &defaultPerm
 			}
@@ -181,6 +191,8 @@ changing a URL or key to revalidate.`,
 						StrongModel:    res.Provider.StrongModel,
 						FastModel:      res.Provider.FastModel,
 						Effort:         res.Provider.Effort,
+						StrongEffort:   res.Provider.StrongEffort,
+						FastEffort:     res.Provider.FastEffort,
 						DefaultPerm:    res.Provider.DefaultPermission,
 						ModelsEndpoint: res.Provider.ModelsEndpoint,
 						SecretBackend:  res.Provider.SecretBackend,
@@ -203,6 +215,12 @@ changing a URL or key to revalidate.`,
 			}
 			if res.Provider.Effort != "" {
 				fmt.Printf("  effort           = %s\n", res.Provider.Effort)
+			}
+			if res.Provider.StrongEffort != "" {
+				fmt.Printf("  strong_effort    = %s\n", res.Provider.StrongEffort)
+			}
+			if res.Provider.FastEffort != "" {
+				fmt.Printf("  fast_effort      = %s\n", res.Provider.FastEffort)
 			}
 			if res.Provider.DefaultPermission != "" {
 				fmt.Printf("  default_perm     = %s\n", res.Provider.DefaultPermission)
@@ -230,6 +248,10 @@ changing a URL or key to revalidate.`,
 		"New 'fast'/background slot model id (empty arg = no change; clear it in the TUI)")
 	cmd.Flags().StringVar(&effort, "effort", "",
 		"New reasoning-effort level (low|medium|high|xhigh|max; empty arg = no change)")
+	cmd.Flags().StringVar(&strongEffort, "strong-effort", "",
+		"New 'strong' slot reasoning-effort level (empty arg = no change; clear it in the TUI)")
+	cmd.Flags().StringVar(&fastEffort, "fast-effort", "",
+		"New 'fast' slot reasoning-effort level (empty arg = no change; clear it in the TUI)")
 	cmd.Flags().StringVar(&defaultPerm, "default-permission", "",
 		"New default permission mode for `cc-fleet run` (empty arg = no change)")
 	cmd.Flags().StringVar(&secretBackend, "secret-backend", "",

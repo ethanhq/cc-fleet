@@ -209,7 +209,7 @@ func slimCaptureArgv(t *testing.T, bin, settingsPath, model, dir, profile string
 	if err != nil {
 		t.Fatalf("buildSlimArgv(%q): %v", profile, err)
 	}
-	argv := buildArgv(bin, settingsPath, fakeModel, req, sa)
+	argv := buildArgv(bin, settingsPath, fakeModel, "", req, sa)
 	return argv, fakeModel
 }
 

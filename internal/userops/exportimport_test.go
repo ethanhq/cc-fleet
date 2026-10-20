@@ -81,6 +81,7 @@ func TestExportImport_RichFieldsRoundTrip(t *testing.T) {
 		Name: "kimi", BaseURL: "https://api.kimi.example", DefaultModel: "kimi-k2",
 		ModelsEndpoint: "https://api.kimi.example/v1/models", SecretBackend: "file", SecretRef: "kimi.key",
 		StrongModel: "kimi-k2-strong", FastModel: "kimi-k2-fast", Effort: "high",
+		StrongEffort: "max", FastEffort: "low",
 		DefaultPermission: "acceptEdits", KeyRotation: "round_robin", Enabled: false,
 	}
 	seedConfig(t, []*config.Provider{src}, "")
@@ -108,6 +109,8 @@ func TestExportImport_RichFieldsRoundTrip(t *testing.T) {
 		{"strong_model", src.StrongModel, got.StrongModel},
 		{"fast_model", src.FastModel, got.FastModel},
 		{"effort", src.Effort, got.Effort},
+		{"strong_effort", src.StrongEffort, got.StrongEffort},
+		{"fast_effort", src.FastEffort, got.FastEffort},
 		{"default_permission", src.DefaultPermission, got.DefaultPermission},
 		{"key_rotation", src.KeyRotation, got.KeyRotation},
 		{"secret_backend", src.SecretBackend, got.SecretBackend},

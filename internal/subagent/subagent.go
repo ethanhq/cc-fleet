@@ -163,7 +163,7 @@ func Run(parent context.Context, req Request) Result {
 	// child authenticates itself from claude's own credential chain.
 	native := req.Provider == config.ReservedNativeProvider
 	var v *config.Provider
-	var model string
+	var model, effort string
 	if native {
 		// The slot keywords resolve against a provider roster; the native leaf
 		// has none. A literal id passes through; "" omits --model so claude
@@ -212,8 +212,9 @@ func Run(parent context.Context, req Request) Result {
 		}
 
 		// 2. Resolve model (capability keyword default/strong/fast → slot id,
-		//    else a literal id, "" → default_model).
+		//    else a literal id, "" → default_model) and that slot's effort.
 		model = v.ResolveModel(req.Model)
+		effort = v.ResolveEffort(req.Model)
 	}
 
 	// 3. Binary gate: resolve the live claude binary (claudebin — PATH, then the
@@ -277,7 +278,7 @@ func Run(parent context.Context, req Request) Result {
 
 	// 7. Background mode: launch detached, return a job handle.
 	if req.Background {
-		return launchBackground(req, binPath, profilePath, model, effective, downgrade, proxyPortOf(v))
+		return launchBackground(req, binPath, profilePath, model, effort, effective, downgrade, proxyPortOf(v))
 	}
 
 	// 8. Synchronous exec with a hard deadline.
@@ -305,7 +306,7 @@ func Run(parent context.Context, req Request) Result {
 		res.RunID, res.Phase, res.Label = req.RunID, req.Phase, req.Label
 		return res
 	}
-	argv := buildArgv(binPath, profilePath, model, req, slim)
+	argv := buildArgv(binPath, profilePath, model, effort, req, slim)
 	hostEnv := os.Environ()
 	env := childenv.Clean(hostEnv)
 	// Counts only — argv carries the prompt/schema and env carries arbitrary
@@ -434,7 +435,7 @@ func Run(parent context.Context, req Request) Result {
 // slim describes the slim-profile additions and is the empty zero value for a
 // full run, which keeps full's argv byte-identical to before. Its flags are
 // APPENDED after the full argv (claude is order-insensitive for them).
-func buildArgv(binaryPath, profilePath, model string, req Request, slim slimArgv) []string {
+func buildArgv(binaryPath, profilePath, model, effort string, req Request, slim slimArgv) []string {
 	argv := []string{binaryPath}
 
 	// Permissions: default to --dangerously-skip-permissions (headless has no
@@ -461,6 +462,9 @@ func buildArgv(binaryPath, profilePath, model string, req Request, slim slimArgv
 	}
 	if model != "" {
 		argv = append(argv, "--model", model)
+	}
+	if effort != "" {
+		argv = append(argv, "--effort", effort)
 	}
 	argv = append(argv, "-p")
 	if req.PromptReader == nil {

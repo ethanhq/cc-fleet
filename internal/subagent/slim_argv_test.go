@@ -17,7 +17,7 @@ func TestBuildArgv_FullByteIdentical(t *testing.T) {
 	const bin, prof, model = "/v/claude", "/p/glm.json", "glm-4.6"
 	// The exact full argv (golden) — must not drift when slim is the zero value.
 	want := []string{bin, "--dangerously-skip-permissions", "--settings", prof, "--model", model, "-p", "do it"}
-	got := buildArgv(bin, prof, model, Request{Prompt: "do it"}, slimArgv{})
+	got := buildArgv(bin, prof, model, "", Request{Prompt: "do it"}, slimArgv{})
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("full argv drifted:\n got %v\nwant %v", got, want)
 	}
@@ -34,7 +34,7 @@ func TestBuildArgv_Slim(t *testing.T) {
 	t.Run("zero-value MCP keeps strict-mcp-config", func(t *testing.T) {
 		// The user-facing boundaries resolve slim's MCP default to inherit; the
 		// Request zero value stays strict for direct constructors.
-		argv := buildArgv(bin, prof, model, Request{Prompt: "x", PromptProfile: ProfileSlim}, slim)
+		argv := buildArgv(bin, prof, model, "", Request{Prompt: "x", PromptProfile: ProfileSlim}, slim)
 		assertPairAfter(t, argv, "--system-prompt-file", "/abs/job.slimprompt")
 		assertPairAfter(t, argv, "--tools", "Bash,Edit,Read")
 		assertPairAfter(t, argv, "--thinking", "disabled")
@@ -47,7 +47,7 @@ func TestBuildArgv_Slim(t *testing.T) {
 	})
 
 	t.Run("mcp=true omits strict-mcp-config", func(t *testing.T) {
-		argv := buildArgv(bin, prof, model, Request{Prompt: "x", PromptProfile: ProfileSlim, MCP: true}, slim)
+		argv := buildArgv(bin, prof, model, "", Request{Prompt: "x", PromptProfile: ProfileSlim, MCP: true}, slim)
 		assertAbsent(t, argv, "--strict-mcp-config")
 		// the other slim flags remain
 		assertPairAfter(t, argv, "--thinking", "disabled")
@@ -67,18 +67,18 @@ func TestBuildArgv_DisallowedTools(t *testing.T) {
 		"Edit Bash(git *)",
 	} {
 		t.Run(deny, func(t *testing.T) {
-			full := buildArgv(bin, prof, model, Request{Prompt: "x", DisallowedTools: deny}, slimArgv{})
+			full := buildArgv(bin, prof, model, "", Request{Prompt: "x", DisallowedTools: deny}, slimArgv{})
 			assertPairAfter(t, full, "--disallowedTools", deny)
 			assertSeq(t, full, bin, "--dangerously-skip-permissions", "--settings", prof, "--model", model, "-p", "x")
 
-			got := buildArgv(bin, prof, model, Request{Prompt: "x", PromptProfile: ProfileSlim, MCP: true, DisallowedTools: deny}, slim)
+			got := buildArgv(bin, prof, model, "", Request{Prompt: "x", PromptProfile: ProfileSlim, MCP: true, DisallowedTools: deny}, slim)
 			assertPairAfter(t, got, "--disallowedTools", deny)
 			assertPairAfter(t, got, "--tools", "Read")
 		})
 	}
 
 	// Empty adds no flag (the command maps a blank value to empty).
-	got := buildArgv(bin, prof, model, Request{Prompt: "x", PromptProfile: ProfileSlim, MCP: true}, slim)
+	got := buildArgv(bin, prof, model, "", Request{Prompt: "x", PromptProfile: ProfileSlim, MCP: true}, slim)
 	assertAbsent(t, got, "--disallowedTools")
 }
 
@@ -89,13 +89,13 @@ func TestBuildArgv_JSONSchema(t *testing.T) {
 	const schema = `{"type":"object","required":["answer"],"properties":{"answer":{"type":"integer"}}}`
 
 	t.Run("full", func(t *testing.T) {
-		argv := buildArgv(bin, prof, model, Request{Prompt: "x", JSONSchema: schema}, slimArgv{})
+		argv := buildArgv(bin, prof, model, "", Request{Prompt: "x", JSONSchema: schema}, slimArgv{})
 		assertPairAfter(t, argv, "--json-schema", schema)
 	})
 
 	t.Run("slim", func(t *testing.T) {
 		slim := slimArgv{promptFile: "/abs/job.slimprompt", tools: []string{"Read"}}
-		argv := buildArgv(bin, prof, model, Request{Prompt: "x", PromptProfile: ProfileSlim, JSONSchema: schema}, slim)
+		argv := buildArgv(bin, prof, model, "", Request{Prompt: "x", PromptProfile: ProfileSlim, JSONSchema: schema}, slim)
 		assertPairAfter(t, argv, "--json-schema", schema)
 	})
 }

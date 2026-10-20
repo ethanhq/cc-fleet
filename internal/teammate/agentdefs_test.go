@@ -71,12 +71,12 @@ func TestRenderAgentDef(t *testing.T) {
 	}
 	want = bytes.ReplaceAll(want, []byte("\r\n"), []byte("\n")) // a Windows checkout may convert line endings
 	strong := AgentType{Provider: "glm", Slot: SlotStrong}
-	got := RenderAgentDef(strong, "glm", "glm-4.6[1m]")
+	got := RenderAgentDef(strong, "glm", "glm-4.6[1m]", "")
 	if !bytes.Equal(got, want) {
 		t.Fatalf("RenderAgentDef differs from the design format:\n--- got\n%s\n--- want\n%s", got, want)
 	}
 
-	def := RenderAgentDef(AgentType{Provider: "p"}, "p", "m")
+	def := RenderAgentDef(AgentType{Provider: "p"}, "p", "m", "")
 	lines := strings.Split(string(def), "\n")
 	if lines[1] != "name: ccf-p" || lines[3] != "model: ccf-p" {
 		t.Fatalf("name/model lines = %q, %q; the model must be the sentinel type name", lines[1], lines[3])
@@ -85,7 +85,7 @@ func TestRenderAgentDef(t *testing.T) {
 		t.Fatalf("the marker must be the first body line, got %q", lines[5])
 	}
 
-	tricky := RenderAgentDef(AgentType{Provider: "p"}, "p", "m\"x\\y\n\tz\x7f\u2028\u0085[1m]")
+	tricky := RenderAgentDef(AgentType{Provider: "p"}, "p", "m\"x\\y\n\tz\x7f\u2028\u0085[1m]", "")
 	if n := strings.Count(string(tricky), "\n"); n != 7 {
 		t.Fatalf("control characters leaked a line break: %d lines\n%s", n, tricky)
 	}
@@ -125,7 +125,7 @@ func TestSyncWritesSlotDefsOnlyWhenDifferent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(data, RenderAgentDef(AgentType{Provider: "beta", Slot: SlotStrong}, "beta", "b-big[1m]")) {
+	if !bytes.Equal(data, RenderAgentDef(AgentType{Provider: "beta", Slot: SlotStrong}, "beta", "b-big[1m]", "")) {
 		t.Fatalf("ccf-beta.strong.md:\n%s", data)
 	}
 	fi, err := os.Stat(filepath.Join(h.ClaudeDir, "agents", "ccf-alpha.md"))
@@ -134,6 +134,30 @@ func TestSyncWritesSlotDefsOnlyWhenDifferent(t *testing.T) {
 	}
 	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o644 { // Windows has no POSIX modes
 		t.Fatalf("definition mode = %v; want 0644", fi.Mode().Perm())
+	}
+}
+
+// A slot on the default model still gets its own definition when its effort differs;
+// a slot effort equal to the default's does not.
+func TestSyncWritesSlotDefsForEffort(t *testing.T) {
+	h := hermeticHome(t)
+	cfg := defsConfig(&config.Provider{Name: "delta", Enabled: true, DefaultModel: "d[1m]",
+		Effort: "high", StrongEffort: "high", FastEffort: "low"})
+	if _, err := SyncAgentDefs(cfg); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(h.ClaudeDir, "agents")
+	if got, want := defsList(t, dir), []string{"ccf-delta.fast.md", "ccf-delta.md"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("agents dir = %v, want %v", got, want)
+	}
+	for file, runsOn := range map[string]string{"ccf-delta.md": "(delta, d, effort high)", "ccf-delta.fast.md": "(delta, d, effort low)"} {
+		data, err := os.ReadFile(filepath.Join(dir, file))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(data), runsOn) {
+			t.Errorf("%s lacks %q:\n%s", file, runsOn, data)
+		}
 	}
 }
 
@@ -175,7 +199,7 @@ func TestSyncSkipsDisabledAndReserved(t *testing.T) {
 func TestSyncRemovesStaleManaged(t *testing.T) {
 	h := hermeticHome(t)
 	dir := defsAgentsDir(t, h)
-	old := RenderAgentDef(AgentType{Provider: "old"}, "old", "m")
+	old := RenderAgentDef(AgentType{Provider: "old"}, "old", "m", "")
 	if err := os.WriteFile(filepath.Join(dir, "ccf-old.md"), old, 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +303,7 @@ func TestRemoveOnlyManaged(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Carries the marker but is outside the ccf-*.md namespace.
-	if err := os.WriteFile(filepath.Join(dir, "copy.md"), RenderAgentDef(AgentType{Provider: "p"}, "p", "m"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "copy.md"), RenderAgentDef(AgentType{Provider: "p"}, "p", "m", ""), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
