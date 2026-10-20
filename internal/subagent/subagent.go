@@ -308,7 +308,7 @@ func Run(parent context.Context, req Request) Result {
 	}
 	argv := buildArgv(binPath, profilePath, model, effort, req, slim)
 	hostEnv := os.Environ()
-	env := childenv.Clean(hostEnv)
+	env := childenv.WithWorkerEnv(childenv.Clean(hostEnv))
 	// Counts only — argv carries the prompt/schema and env carries arbitrary
 	// user values, so neither is ever logged.
 	dg.Logf("subagent: job %s argv %d args; env %d→%d after cred/marker scrub",

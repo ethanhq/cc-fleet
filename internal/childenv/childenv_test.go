@@ -191,3 +191,14 @@ func containsLine(env []string, want string) bool {
 	}
 	return false
 }
+
+// WithWorkerEnv appends every WorkerEnv switch once, in place of any value environ
+// already carries, and leaves the rest (a no-'=' line included) as it was.
+func TestWithWorkerEnv(t *testing.T) {
+	in := []string{"PATH=/usr/bin", "CLAUDE_CODE_DISABLE_WORKFLOWS=0", "NO_EQUALS_LINE", "CLAUDE_CODE_DISABLE_WORKFLOWS_X=keep"}
+	want := []string{"PATH=/usr/bin", "NO_EQUALS_LINE", "CLAUDE_CODE_DISABLE_WORKFLOWS_X=keep",
+		"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1", "CLAUDE_CODE_GB_DISK_CACHE_WHEN_TELEMETRY_OFF=1", "CLAUDE_CODE_DISABLE_WORKFLOWS=1"}
+	if got := WithWorkerEnv(in); strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("WithWorkerEnv = %q, want %q", got, want)
+	}
+}

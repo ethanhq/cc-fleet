@@ -344,6 +344,7 @@ func TestRouteEnvScrub(t *testing.T) {
 		EnvSubagentModelForce: "1", "CLAUDE_CODE_HOST_CREDS_FILE": "/x",
 	}
 	kept := map[string]string{"CLAUDECODE": "1", EnvAgentTeams: "1", "LAUNCH_TEST_KEEP": "ok"}
+	t.Setenv("CLAUDE_CODE_DISABLE_WORKFLOWS", "0") // replaced by childenv.WorkerEnv
 	for k, v := range scrubbed {
 		t.Setenv(k, v)
 	}
@@ -357,8 +358,8 @@ func TestRouteEnvScrub(t *testing.T) {
 	if code != 0 || errOut != "" || rec.execs != 1 {
 		t.Fatalf("= (%d, %q), execs %d; want a silent exec", code, errOut, rec.execs)
 	}
-	if want := childenv.CleanForTeammate(env); !reflect.DeepEqual(rec.env, want) {
-		t.Errorf("env is not CleanForTeammate(os.Environ())")
+	if want := childenv.WithWorkerEnv(childenv.CleanForTeammate(env)); !reflect.DeepEqual(rec.env, want) {
+		t.Errorf("env is not WithWorkerEnv(CleanForTeammate(os.Environ()))")
 	}
 	got := map[string]string{}
 	for _, kv := range rec.env {

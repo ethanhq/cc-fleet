@@ -90,6 +90,8 @@ The value is one JSON object held in a TOML **string** — a TOML table is refus
 - `--model strong` / `--model fast` / `--model default` resolve through the roster.
 - Each slot can carry a 1M-context marker (`[1m]`) and its own effort level (`effort` for default, `strong_effort` / `fast_effort`, blank follows `effort`) — set in the TUI form or via `add`/`edit` flags. Every launch passes its slot's level as `claude --effort`; a passthrough `cc-fleet run … -- --effort` wins. An `openai-chat` provider sends the effort upstream only when one of its slots has an effort set: as `reasoning: {"effort": …}` to OpenRouter, as `reasoning_effort` elsewhere (`max` becomes `xhigh`). Setting the first effort, or clearing the last, restarts its proxy at the next worker start.
 
+Every `claude` cc-fleet launches — subagent, workflow leaf, teammate, `run` session — runs with `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` (no bootstrap, feature-flag or event-logging calls to Anthropic), `CLAUDE_CODE_GB_DISK_CACHE_WHEN_TELEMETRY_OFF=1` (feature flags come from the local cache, so prompt caching still covers the conversation) and `CLAUDE_CODE_DISABLE_WORKFLOWS=1` (no dynamic workflows). The `claude` you start yourself is not affected.
+
 ## Export / import the provider roster
 
 Carry your provider roster between machines as a keyless, versioned TOML bundle — review it, diff it, or check it into a private dotfiles repo. The bundle never contains a key.

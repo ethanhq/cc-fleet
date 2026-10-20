@@ -1,9 +1,10 @@
 // Package childenv builds the environment handed to a child claude process that
 // cc-fleet launches — a one-shot subagent (`claude -p`) or an interactive `run`
-// session. It only ever strips variables, never injects, so the lead's
+// session. Clean only ever strips variables, never injects, so the lead's
 // credentials and the nested-CC/teams markers cannot leak into the child.
 // A provider teammate uses CleanForTeammate instead, which keeps the teams
-// markers the agent-teams member needs.
+// markers the agent-teams member needs. WithWorkerEnv then sets the fixed
+// switches every worker runs with.
 package childenv
 
 import "strings"
@@ -87,6 +88,45 @@ func Clean(environ []string) []string {
 		out = append(out, kv)
 	}
 	return out
+}
+
+// WorkerEnv is set on every claude cc-fleet launches as a worker (subagent,
+// workflow leaf, teammate, run). Without it Claude Code calls Anthropic for its
+// bootstrap, feature flags and event logging even when a provider serves the
+// model. With that traffic off it reads the feature flags from the on-disk cache
+// (without them prompt caching stops at the fixed prefix), and dynamic workflows
+// are off. Claude Code reads the cache switch before a settings env block
+// applies, so these ride the process env, not the profile.
+var WorkerEnv = []string{
+	"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1",
+	"CLAUDE_CODE_GB_DISK_CACHE_WHEN_TELEMETRY_OFF=1",
+	"CLAUDE_CODE_DISABLE_WORKFLOWS=1",
+}
+
+// WithWorkerEnv returns environ with WorkerEnv appended, dropping any value of
+// those names environ already carries: an execve'd child would see both.
+func WithWorkerEnv(environ []string) []string {
+	out := make([]string, 0, len(environ)+len(WorkerEnv))
+	for _, kv := range environ {
+		if isWorkerKey(kv) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, WorkerEnv...)
+}
+
+func isWorkerKey(kv string) bool {
+	eq := strings.IndexByte(kv, '=')
+	if eq < 0 {
+		return false
+	}
+	for _, w := range WorkerEnv {
+		if strings.HasPrefix(w, kv[:eq+1]) {
+			return true
+		}
+	}
+	return false
 }
 
 // TeammateScrubKeys are the exact names the teammate launcher drops before it

@@ -209,7 +209,7 @@ func launchBackground(req Request, binaryPath, profilePath, model, effort, effec
 	// Fresh exec.Command (no context) → no deadline; child outlives parent.
 	cmd := exec.Command(binaryPath)
 	cmd.Args = argv
-	cmd.Env = childenv.Clean(os.Environ())
+	cmd.Env = childenv.WithWorkerEnv(childenv.Clean(os.Environ()))
 	if effective == ProfileSlimRO {
 		cmd.Env = append(cmd.Env, "CLAUDE_CODE_DISABLE_CLAUDE_MDS=1")
 	}

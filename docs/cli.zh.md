@@ -90,6 +90,8 @@ extra_body = '{"provider":{"only":["deepseek"],"allow_fallbacks":false}}'
 - `--model strong` / `--model fast` / `--model default` 按档位表解析。
 - 每个槽位可标 1M 上下文(`[1m]`),也可设自己的 effort(default 用 `effort`,另有 `strong_effort` / `fast_effort`,留空跟随 `effort`)— TUI 表单或 `add`/`edit` flag 均可配置。每次启动都把该槽位的档以 `claude --effort` 传入;`cc-fleet run … -- --effort` 透传的值优先。`openai-chat` provider 只有在某个槽位设了 effort 时才把它发给上游:发往 OpenRouter 时是 `reasoning: {"effort": …}`,其他接口是 `reasoning_effort`(`max` 变为 `xhigh`)。设了第一个 effort 或清掉最后一个时,它的代理会在下一次启动 worker 时重启。
 
+cc-fleet 启动的每个 `claude`(subagent、workflow leaf、teammate、`run` 会话)都带 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`(不向 Anthropic 发启动、功能开关和事件上报请求)、`CLAUDE_CODE_GB_DISK_CACHE_WHEN_TELEMETRY_OFF=1`(功能开关改读本地缓存,对话的 prompt 缓存照常生效)和 `CLAUDE_CODE_DISABLE_WORKFLOWS=1`(不用 dynamic workflow)。你自己启动的 `claude` 不受影响。
+
 ## 导出 / 导入 provider 名册
 
 把 provider 名册作为不含密钥的版本化 TOML 包在机器之间搬运 —— 可 review、可 diff、可入私有 dotfiles 仓库。包里**绝不含密钥**。

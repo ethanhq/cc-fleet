@@ -138,7 +138,7 @@ func launch(args []string) *LaunchError {
 	if effort != "" {
 		argv = append(argv, flagEffort, effort)
 	}
-	return execLead(id, bin, argv, childenv.CleanForTeammate(os.Environ()))
+	return execLead(id, bin, argv, childenv.WithWorkerEnv(childenv.CleanForTeammate(os.Environ())))
 }
 
 // scanLaunchArgv walks argv once. vals holds the last value of each launcher

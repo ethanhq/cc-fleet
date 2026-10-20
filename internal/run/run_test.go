@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ethanhq/cc-fleet/internal/childenv"
 	"github.com/ethanhq/cc-fleet/internal/claudebin"
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/diag"
@@ -95,6 +96,28 @@ func TestRun_ExecsWithProfileAndModel(t *testing.T) {
 	for _, leak := range []string{"ANTHROPIC_API_KEY=", "sk-must-not-leak", "CLAUDECODE="} {
 		if strings.Contains(joined, leak) {
 			t.Fatalf("exec env leaked %q", leak)
+		}
+	}
+}
+
+// The session runs with childenv.WorkerEnv, replacing a value the shell exported.
+func TestRun_WorkerEnv(t *testing.T) {
+	seedProvider(t, "deepseek", true, "deepseek-chat")
+	t.Setenv("CLAUDE_CODE_DISABLE_WORKFLOWS", "0")
+	got := stubSeams(t, "/fake/claude", nil)
+	if err := Run(Request{Provider: "deepseek"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, kv := range childenv.WorkerEnv {
+		name := kv[:strings.IndexByte(kv, '=')+1]
+		var seen []string
+		for _, e := range got.env {
+			if strings.HasPrefix(e, name) {
+				seen = append(seen, e)
+			}
+		}
+		if len(seen) != 1 || seen[0] != kv {
+			t.Errorf("exec env has %q for %s, want just %q", seen, name, kv)
 		}
 	}
 }

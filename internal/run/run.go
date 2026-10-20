@@ -129,7 +129,7 @@ func Run(req Request) error {
 		permMode = v.DefaultPermission
 	}
 	argv := buildArgv(bin, profilePath, model, v.ResolveEffort(req.Model), permmode.ExplicitFlags(permMode), req.ExtraArgs)
-	return execClaude(v, bin, argv, childenv.Clean(os.Environ()))
+	return execClaude(v, bin, argv, childenv.WithWorkerEnv(childenv.Clean(os.Environ())))
 }
 
 // buildArgv builds the claude argv: bin, cc-fleet's managed flags
