@@ -326,8 +326,17 @@ func providerDetailLines(v userops.ProviderView, rightW int, configuredDefault s
 		}
 	}
 	lines = append(lines, "", faintStyle.Render("Config"))
-	detailField(&lines, "base url", v.BaseURL, rightW)
-	detailField(&lines, "models", v.ModelsEndpoint, rightW)
+	// The endpoint rows mirror the edit form: an openai-* provider shows its real
+	// upstream and extra_body (its base_url is the internal loopback daemon).
+	switch v.Protocol {
+	case config.ProtocolOpenAIChat, config.ProtocolOpenAIResponses:
+		detailField(&lines, "upstream", v.UpstreamURL, rightW)
+		detailField(&lines, "models", v.ModelsEndpoint, rightW)
+		detailField(&lines, "extra", v.ExtraBody, rightW)
+	default:
+		detailField(&lines, "base url", v.BaseURL, rightW)
+		detailField(&lines, "models", v.ModelsEndpoint, rightW)
+	}
 	// Surface the full capability roster + effort + run permission so the preview
 	// mirrors the edit form: each slot's model, then its slot line (1M context and
 	// effort). A slot shows the concrete model and level that will run (a blank

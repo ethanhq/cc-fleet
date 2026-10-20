@@ -3346,3 +3346,19 @@ func TestSlotLine_NarrowPaneSlidesLeft(t *testing.T) {
 		t.Fatal("no slot line shows the follows-default label")
 	}
 }
+
+// TestProviderDetail_OpenAIEndpoints: an openai-* provider's card shows its real
+// upstream and extra_body, like its edit form, instead of the loopback base_url.
+func TestProviderDetail_OpenAIEndpoints(t *testing.T) {
+	v := userops.ProviderView{Name: "or", Protocol: config.ProtocolOpenAIChat, BaseURL: "http://127.0.0.1:17293/",
+		UpstreamURL: "https://openrouter.ai/api/v1", ExtraBody: `{"provider":{"only":["deepseek"]}}`, DefaultModel: "d", SecretBackend: "file"}
+	out := ansi.Strip(strings.Join(providerDetailLines(v, 80, ""), "\n"))
+	for _, want := range []string{" upstream  https://openrouter.ai/api/v1\n", ` extra     {"provider":{"only":["deepseek"]}}` + "\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("card missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "127.0.0.1:17293") {
+		t.Errorf("card shows the loopback base_url:\n%s", out)
+	}
+}
