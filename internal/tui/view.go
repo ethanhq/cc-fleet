@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
+	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/onboarding"
 	"github.com/ethanhq/cc-fleet/internal/permmode"
 	"github.com/ethanhq/cc-fleet/internal/pinned"
@@ -328,15 +329,22 @@ func providerDetailLines(v userops.ProviderView, rightW int, configuredDefault s
 	detailField(&lines, "base url", v.BaseURL, rightW)
 	detailField(&lines, "models", v.ModelsEndpoint, rightW)
 	// Surface the full capability roster + effort + run permission so the preview
-	// mirrors the edit form. Each slot shows the concrete model that will run (a
-	// blank strong/fast resolves to the default), each slot effort the level that
-	// will run (blank follows effort); effort/permission show off when unset.
-	detailField(&lines, "default", v.DefaultModel, rightW)
-	detailField(&lines, "strong", resolvedSlot(v.StrongModel, v.DefaultModel), rightW)
-	detailField(&lines, "fast", resolvedSlot(v.FastModel, v.DefaultModel), rightW)
-	detailField(&lines, "effort", orOff(v.Effort), rightW)
-	detailField(&lines, "  strong", orOff(resolvedSlot(v.StrongEffort, v.Effort)), rightW)
-	detailField(&lines, "  fast", orOff(resolvedSlot(v.FastEffort, v.Effort)), rightW)
+	// mirrors the edit form: each slot's model, then its slot line (1M context and
+	// effort). A slot shows the concrete model and level that will run (a blank
+	// strong/fast resolves to the default's); an unset effort shows auto, an unset
+	// permission off.
+	for _, s := range []struct{ key, model, effort string }{
+		{"default", v.DefaultModel, v.Effort},
+		{"strong", resolvedSlot(v.StrongModel, v.DefaultModel), resolvedSlot(v.StrongEffort, v.Effort)},
+		{"fast", resolvedSlot(v.FastModel, v.DefaultModel), resolvedSlot(v.FastEffort, v.Effort)},
+	} {
+		ctx := "[ ]"
+		if config.Has1M(s.model) {
+			ctx = "[x]"
+		}
+		detailField(&lines, s.key, config.Strip1M(s.model), rightW)
+		detailField(&lines, "", "1M ctx "+ctx+"   effort "+orLabel(s.effort, effortAuto), rightW)
+	}
 	detailFieldStyled(&lines, "run perm", orOff(v.DefaultPerm), rightW, permModeStyle(v.DefaultPerm))
 	detailField(&lines, "cache", providerCacheFig(v), rightW)
 	key := v.SecretBackend

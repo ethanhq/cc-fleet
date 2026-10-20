@@ -13,13 +13,21 @@ import (
 	"github.com/ethanhq/cc-fleet/internal/userops"
 )
 
+// The unset labels of the effort dropdowns: an unset effort leaves the level to
+// claude (its settings effortLevel, else its own default); an unset strong/fast
+// effort runs at the default slot's.
+const (
+	effortAuto   = "auto"
+	effortFollow = "follows default"
+)
+
 // effortChoices / slotEffortChoices / permChoices are the static edit-form
-// dropdown vocabularies; the leading "off" (or a slot effort's "default", which
-// follows effort) maps to an unset field on submit. Built from the config /
-// permmode sources so the dropdowns can't drift from the validators.
+// dropdown vocabularies; the leading choice maps to an unset field on submit.
+// Built from the config / permmode sources so the dropdowns can't drift from the
+// validators.
 var (
-	effortChoices     = append([]string{"off"}, config.EffortLevels()...)
-	slotEffortChoices = append([]string{"default"}, config.EffortLevels()...)
+	effortChoices     = append([]string{effortAuto}, config.EffortLevels()...)
+	slotEffortChoices = append([]string{effortFollow}, config.EffortLevels()...)
 	permChoices       = append([]string{"off"}, permmode.Modes...)
 )
 
@@ -38,10 +46,10 @@ func orOff(s string) string {
 	return s
 }
 
-// orDefault maps an unset slot effort to the "default" label (the slot follows effort).
-func orDefault(s string) string {
+// orLabel maps an unset effort to its dropdown label (effortAuto / effortFollow).
+func orLabel(s, label string) string {
 	if s == "" {
-		return "default"
+		return label
 	}
 	return s
 }
@@ -130,7 +138,7 @@ func newAddForm(t Template) form {
 	fields = append(fields, modelConfigFields(t.DefaultModel, "", "", t.Effort, "", "", "")...)
 	f := form{
 		title:  "Add provider",
-		intro:  "↑/↓ move rows · → 1M toggle · enter on [Add] submits · esc cancels",
+		intro:  "↑/↓ move rows · tab next field · enter on [Add] submits · esc cancels",
 		submit: "Add",
 		fields: fields,
 	}
@@ -155,7 +163,7 @@ func newOpenAIAddForm(t OAITemplate) form {
 	fields = append(fields, modelConfigFields(t.DefaultModel, "", "", "", "", "", "")...)
 	f := form{
 		title:  "Add OpenAI provider",
-		intro:  "↑/↓ move rows · → 1M toggle · enter on [Add] submits · esc cancels",
+		intro:  "↑/↓ move rows · tab next field · enter on [Add] submits · esc cancels",
 		submit: "Add",
 		fields: fields,
 	}
@@ -173,7 +181,7 @@ func newCodexAddForm(name, defaultModel, statusNote string) form {
 	fields = append(fields, modelConfigFields(defaultModel, "", "", "", "", "", "")...)
 	f := form{
 		title:      "Add codex provider",
-		intro:      "↑/↓ move rows · → 1M toggle · enter on [Add] submits · esc cancels",
+		intro:      "↑/↓ move rows · tab next field · enter on [Add] submits · esc cancels",
 		submit:     "Add",
 		statusNote: statusNote,
 		fields:     fields,
@@ -183,20 +191,21 @@ func newCodexAddForm(name, defaultModel, statusNote string) form {
 }
 
 // modelConfigFields builds the shared model-roster rows used by the edit form and
-// the three add forms: default/strong/fast model slots (each a bare-id text field
-// with an inline [1m] toggle, recombined on submit) plus the effort + run-permission
-// choice dropdowns. One source so the add/edit dropdown vocab + nav can't drift.
+// the three add forms: default/strong/fast model slots, each a bare-id text field
+// followed by its slot line (a [1m] toggle, recombined on submit, and the slot's
+// effort), plus the run-permission dropdown. One source so the add/edit dropdown
+// vocab + nav can't drift.
 func modelConfigFields(defModel, strong, fast, effort, strongEffort, fastEffort, perm string) []formField {
 	return []formField{
 		{key: "default_model", label: "Default model", kind: fieldText, input: newTextInput(config.Strip1M(defModel), "model id", false)},
 		{key: "default_1m", label: "1M context", kind: fieldToggle, on: config.Has1M(defModel)},
+		newChoiceField("effort", "Effort", effortChoices, orLabel(effort, effortAuto)),
 		{key: "strong_model", label: "Strong model", kind: fieldText, input: newTextInput(config.Strip1M(strong), "blank → follows default", false)},
 		{key: "strong_1m", label: "1M context", kind: fieldToggle, on: config.Has1M(strong)},
+		newChoiceField("strong_effort", "Strong effort", slotEffortChoices, orLabel(strongEffort, effortFollow)),
 		{key: "fast_model", label: "Fast model", kind: fieldText, input: newTextInput(config.Strip1M(fast), "blank → follows default", false)},
 		{key: "fast_1m", label: "1M context", kind: fieldToggle, on: config.Has1M(fast)},
-		newChoiceField("effort", "Effort", effortChoices, orOff(effort)),
-		newChoiceField("strong_effort", "Strong effort", slotEffortChoices, orDefault(strongEffort)),
-		newChoiceField("fast_effort", "Fast effort", slotEffortChoices, orDefault(fastEffort)),
+		newChoiceField("fast_effort", "Fast effort", slotEffortChoices, orLabel(fastEffort, effortFollow)),
 		newChoiceField("permission", "Run perm", permChoices, orOff(perm)),
 	}
 }
@@ -231,7 +240,7 @@ func newEditForm(v userops.ProviderView) form {
 	}
 	f := form{
 		title:     "Edit provider: " + v.Name,
-		intro:     "↑/↓ move rows · → 1M toggle · space toggles · enter on [Save] submits · esc cancels",
+		intro:     "↑/↓ move rows · tab next field · space toggles · enter on [Save] submits · esc cancels",
 		submit:    "Save",
 		isDefault: v.Default,
 		fields:    fields,
@@ -267,11 +276,17 @@ func (f *form) setFocus(i int) {
 // activated the submit button. The caller owns esc/cancel handling.
 func (f form) Update(msg tea.KeyMsg) (form, tea.Cmd, bool) {
 	switch msg.String() {
-	case "up", "shift+tab":
+	case "up":
 		f.setFocus(f.stepFocus(f.focus, -1))
 		return f, nil, false
-	case "down", "tab":
+	case "down":
 		f.setFocus(f.stepFocus(f.focus, +1))
+		return f, nil, false
+	case "shift+tab":
+		f.setFocus(f.focus - 1) // setFocus clamps to the first field
+		return f, nil, false
+	case "tab":
+		f.setFocus(f.focus + 1) // … and to the submit button
 		return f, nil, false
 	case "enter":
 		if f.focus == len(f.fields) {
@@ -284,21 +299,11 @@ func (f form) Update(msg tea.KeyMsg) (form, tea.Cmd, bool) {
 		f.setFocus(f.stepFocus(f.focus, +1))
 		return f, nil, false
 	case "right":
-		// → on a model slot reaches its inline 1M toggle when that slot has one;
-		// otherwise it falls through to the text cursor (a choice cycles below).
-		if mk := oneMKeyFor(f.focusedKey()); mk != "" {
-			if idx, ok := f.indexOfKey(mk); ok {
-				f.setFocus(idx)
-				return f, nil, false
-			}
-		}
-	case "left":
-		// ← on a 1M toggle returns to its model slot (a choice cycles instead).
-		if mk := modelKeyFor1m(f.focusedKey()); mk != "" {
-			if idx, ok := f.indexOfKey(mk); ok {
-				f.setFocus(idx)
-				return f, nil, false
-			}
+		// → on a 1M toggle moves along its slot line to the slot's effort; elsewhere
+		// it falls through to the text cursor (a choice cycles below).
+		if f.sharesLine(f.focus + 1) {
+			f.setFocus(f.focus + 1)
+			return f, nil, false
 		}
 	}
 
@@ -355,9 +360,9 @@ func (f form) focusedChoice() bool {
 	return f.focus < len(f.fields) && f.fields[f.focus].kind == fieldChoice
 }
 
-// oneMKeyFor maps a model-slot text field to its inline 1M-context toggle key, or
-// "" for a non-slot field. The toggle renders as a trailing column on the model
-// row (see viewLines) instead of its own line, and is reached laterally with →.
+// oneMKeyFor maps a model-slot text field to its 1M-context toggle key, or "" for
+// a non-slot field. The toggle opens the slot line under its model row (see
+// viewLines).
 func oneMKeyFor(modelKey string) string {
 	switch modelKey {
 	case "default_model":
@@ -386,8 +391,28 @@ func modelKeyFor1m(oneMKey string) string {
 
 func isOneMKey(key string) bool { return modelKeyFor1m(key) != "" }
 
-// focusedOneM reports whether focus sits on an inline 1M toggle (reached via →,
-// returned from via ←) — so the parent's ← "back to list" doesn't fire there.
+// effortKeyFor1m maps a 1M toggle to the effort that shares its slot line, or "".
+func effortKeyFor1m(oneMKey string) string {
+	switch oneMKey {
+	case "default_1m":
+		return "effort"
+	case "strong_1m":
+		return "strong_effort"
+	case "fast_1m":
+		return "fast_effort"
+	}
+	return ""
+}
+
+// sharesLine reports whether field i is a slot's effort right after its 1M toggle,
+// i.e. the second control of that slot line.
+func (f form) sharesLine(i int) bool {
+	k := f.keyAt(i)
+	return k != "" && effortKeyFor1m(f.keyAt(i-1)) == k
+}
+
+// focusedOneM reports whether focus sits on a 1M toggle (the start of its slot
+// line) — so the parent's ← "back to list" doesn't fire there.
 func (f form) focusedOneM() bool { return isOneMKey(f.focusedKey()) }
 
 // keyAt returns the field key at idx (or "" for the submit row / out of range).
@@ -410,46 +435,40 @@ func (f form) indexOfKey(key string) (int, bool) {
 	return 0, false
 }
 
-// stepFocus returns the next focus index moving by dir (±1). The form is a small
-// grid: a model column (with the single-control rows) and a parallel 1M-context
-// column for the model rows. ↑/↓ stay in their column — from a 1M toggle they land
-// on the next row's 1M toggle (or fall back to the model column when the next row
-// has none); → / ← switch columns. The 1M toggles are skipped when walking the
-// model column.
+// stepFocus returns the focus index one row away in dir (±1), clamped to the first
+// field and the submit button. A slot line holds two fields (the 1M toggle, then
+// the slot's effort): ↑/↓ land on its toggle and step over its effort, which → or
+// tab reaches.
 func (f form) stepFocus(from, dir int) int {
-	inCtx := isOneMKey(f.keyAt(from))
-	cur := from
-	if mk := modelKeyFor1m(f.keyAt(from)); mk != "" {
-		if idx, ok := f.indexOfKey(mk); ok {
-			cur = idx // navigate from the toggle's model row
-		}
+	next := from + dir
+	if dir < 0 && f.sharesLine(from) {
+		next-- // leaving an effort: its toggle is on the same line
 	}
-	next := -1
-	for i := cur + dir; i >= 0 && i < len(f.fields); i += dir {
-		if !isOneMKey(f.fields[i].key) {
-			next = i
-			break
-		}
+	if f.sharesLine(next) {
+		next += dir // onto a slot line from above: past the effort; from below: back to the toggle
 	}
-	if next < 0 {
-		if cur+dir >= len(f.fields) {
-			return len(f.fields) // the submit button
-		}
-		return 0
-	}
-	// Vertical nav keeps the 1M-context column when the next row also has one.
-	if inCtx {
-		if mk := oneMKeyFor(f.keyAt(next)); mk != "" {
-			if idx, ok := f.indexOfKey(mk); ok {
-				return idx
-			}
-		}
-	}
-	return next
+	return max(0, min(next, len(f.fields)))
 }
 
-// render1MTag draws a model slot's 1M-context toggle as a trailing tag, lit when
-// its toggle field holds focus.
+// slotLine draws a model slot's second line, aligned to the value column: the 1M
+// toggle at field index toggle and the effort at index effort, each lit when focused.
+// On a narrow pane every slot line slides left of the value column alike, as far as
+// the widest one (a follows-default effort) needs, rather than lose its end.
+func (f form) slotLine(toggle, effort, width int) string {
+	key := faintStyle.Render("effort")
+	if effort == f.focus {
+		key = selectedStyle.Render("effort")
+	}
+	val := ""
+	if fld := f.fields[effort]; fld.choiceIdx >= 0 && fld.choiceIdx < len(fld.choices) {
+		val = fld.choices[fld.choiceIdx]
+	}
+	widest := ansi.StringWidth("1M ctx [ ]   effort ‹ " + effortFollow + " ›")
+	return strings.Repeat(" ", max(1, min(11, width-widest))) + f.render1MTag(f.fields[toggle].key) + "   " + key + " " + contentStyle.Render("‹ "+val+" ›")
+}
+
+// render1MTag draws a model slot's 1M-context toggle as a tag, lit when its
+// toggle field holds focus.
 func (f form) render1MTag(key string) string {
 	on, focused := false, false
 	for i, fld := range f.fields {
@@ -482,11 +501,11 @@ func fieldNote(key string) string {
 	case "default_1m", "strong_1m", "fast_1m":
 		return "1M context — mark this model's window as 1M; the marker is stripped before the request reaches the provider."
 	case "effort":
-		return "reasoning effort — needs provider support, else requests may error. space / ←/→ cycles."
+		return "default slot's reasoning effort; auto leaves it to claude (settings effortLevel, else its default). needs provider support, else requests may error. space / ←/→ cycles."
 	case "strong_effort":
-		return "strong slot's reasoning effort; default follows effort above. space / ←/→ cycles."
+		return "strong slot's reasoning effort; follows default runs at the default slot's. space / ←/→ cycles."
 	case "fast_effort":
-		return "fast slot's reasoning effort; default follows effort above. space / ←/→ cycles."
+		return "fast slot's reasoning effort; follows default runs at the default slot's. space / ←/→ cycles."
 	case "permission":
 		return "default permission mode for `cc-fleet run`. space / ←/→ cycles."
 	case "enabled":
@@ -601,10 +620,6 @@ func cardKey(key string) string {
 		return "fast"
 	case "effort":
 		return "effort"
-	case "strong_effort":
-		return "  strong"
-	case "fast_effort":
-		return "  fast"
 	case "permission":
 		return "run perm"
 	case "api_key":
@@ -673,17 +688,21 @@ func (f form) viewLines(width int) (lines []string, focus int) {
 	}
 	lines = append(lines, "", faintStyle.Render("Config"))
 	for i, fld := range f.fields {
-		// A model slot's 1M toggle renders as a trailing column on the model row
-		// (below), not its own line — skip it in the per-field loop.
-		if fld.key == "default_1m" || fld.key == "strong_1m" || fld.key == "fast_1m" {
-			if i == f.focus {
-				focus = len(lines) - 1 // its model row, the field just before it
+		focused := i == f.focus
+		// A model slot's 1M toggle and effort share the slot line under its model
+		// row, drawn when the loop reaches the effort; the toggle draws nothing itself.
+		if f.sharesLine(i + 1) {
+			if focused {
+				focus = len(lines) // the slot line comes next
 			}
 			continue
 		}
-		focused := i == f.focus
 		if focused {
 			focus = len(lines)
+		}
+		if f.sharesLine(i) {
+			lines = append(lines, f.slotLine(i-1, i, width))
+			continue
 		}
 		key := fmt.Sprintf("%-8s", cardKey(fld.key))
 		keyCell := faintStyle.Render(key)
@@ -692,40 +711,12 @@ func (f form) viewLines(width int) (lines []string, focus int) {
 		}
 		switch fld.kind {
 		case fieldText:
-			prefix := " " + keyCell + "  "
-			// A model slot trails its 1M-context toggle on the same row, when that
-			// slot has one. On a narrow pane the input cell shrinks so the tag slides
-			// left to the pane edge instead of being clipped; on a wide pane it keeps
-			// the static 48-col cell (the fixed tag column). The cell never shrinks
-			// past the visible value (+1 cursor cell), so typed text is never hidden —
-			// growing content pushes the tag right and may overflow (boxCell clips it).
-			if mk := oneMKeyFor(fld.key); mk != "" {
-				if _, ok := f.indexOfKey(mk); ok {
-					tag := f.render1MTag(mk)
-					lead := ansi.StringWidth(prefix)
-					tagW := ansi.StringWidth(tag)
-					contentW := ansi.StringWidth(fld.input.Value())
-					if contentW == 0 {
-						contentW = ansi.StringWidth(fld.input.Placeholder)
-					}
-					// input.View() renders Width plus a trailing cursor cell, so the row
-					// is lead + (Width+1) + 3 (gap) + tagW; the -4 reserves that cursor
-					// cell and the gap. min keeps the static 48 on wide panes; max stops
-					// the slide at one pad column past the value (the cursor cell), so the
-					// tag sits 4 columns past the value end and never hides typed text.
-					w := width - lead - 4 - tagW
-					if w > 48 {
-						w = 48
-					}
-					if w < contentW {
-						w = contentW
-					}
-					fld.input.Width = w
-					lines = append(lines, prefix+fld.input.View()+"   "+tag)
-					break
-				}
+			// A model id can outgrow the static 48-col cell: widen it to the value so
+			// the id is never cut (boxCell clips what overflows the pane).
+			if isModelSlotKey(fld.key) {
+				fld.input.Width = max(48, ansi.StringWidth(fld.input.Value()))
 			}
-			lines = append(lines, prefix+fld.input.View())
+			lines = append(lines, " "+keyCell+"  "+fld.input.View())
 		case fieldToggle:
 			state := "[ ] off"
 			if fld.on {

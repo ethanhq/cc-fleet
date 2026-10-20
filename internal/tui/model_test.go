@@ -265,8 +265,7 @@ func TestAddFormTypingAndSubmitDispatches(t *testing.T) {
 		t.Fatalf("typed api_key = %q, want sk-test-123", got)
 	}
 
-	m, _ = press(t, m, "down") // -> default_model
-	m, _ = press(t, m, "down") // -> submit
+	m.form.setFocus(len(m.form.fields)) // -> submit
 	m, cmd := press(t, m, "enter")
 	if cmd == nil {
 		t.Fatal("complete submit should dispatch userops.Add command")
@@ -334,9 +333,9 @@ func TestEditEnabledToggle(t *testing.T) {
 	}
 }
 
-// TestEditForm_1mLateralNav: ↑/↓ walk rows and skip the inline 1M toggles, while
-// → reaches a model slot's 1M toggle and ← returns to the slot.
-func TestEditForm_1mLateralNav(t *testing.T) {
+// TestEditForm_SlotLineNav: ↑/↓ move a row at a time and enter a slot line on its
+// 1M toggle, stepping over the effort; → and tab reach the effort along the line.
+func TestEditForm_SlotLineNav(t *testing.T) {
 	f := newEditForm(userops.ProviderView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
 	for i := 0; i < len(f.fields) && f.focusedKey() != "default_model"; i++ {
 		f, _, _ = f.Update(keyMsg("down"))
@@ -344,22 +343,29 @@ func TestEditForm_1mLateralNav(t *testing.T) {
 	if f.focusedKey() != "default_model" {
 		t.Fatalf("could not focus default_model, got %q", f.focusedKey())
 	}
-	// ↓ skips the inline 1M toggle and lands on the next row (strong_model).
-	if after, _, _ := f.Update(keyMsg("down")); after.focusedKey() != "strong_model" {
-		t.Fatalf("down from default_model should skip default_1m → strong_model, got %q", after.focusedKey())
+	steps := []struct{ key, want string }{
+		{"down", "default_1m"},   // the slot line under the model row
+		{"down", "strong_model"}, // over the effort on the same line
+		{"up", "default_1m"},     // back onto the line at its toggle
+		{"right", "effort"},      // along the line
+		{"down", "strong_model"}, // from the effort, the next row
+		{"down", "strong_1m"},
+		{"tab", "strong_effort"}, // tab walks every field
+		{"shift+tab", "strong_1m"},
+		{"left", "strong_1m"}, // the toggle starts the line: ← stays put
+		{"right", "strong_effort"},
+		{"up", "strong_model"}, // from the effort, the row above
 	}
-	// → reaches the slot's 1M toggle; space flips it; ← returns to the slot.
-	f, _, _ = f.Update(keyMsg("right"))
-	if f.focusedKey() != "default_1m" {
-		t.Fatalf("right should focus default_1m, got %q", f.focusedKey())
+	for _, s := range steps {
+		f, _, _ = f.Update(keyMsg(s.key))
+		if f.focusedKey() != s.want {
+			t.Fatalf("%s: focus = %q, want %q", s.key, f.focusedKey(), s.want)
+		}
 	}
+	f, _, _ = f.Update(keyMsg("down")) // strong_1m
 	f, _, _ = f.Update(keyMsg("space"))
-	if !f.boolValue("default_1m") {
-		t.Fatal("space should toggle default_1m on")
-	}
-	f, _, _ = f.Update(keyMsg("left"))
-	if f.focusedKey() != "default_model" {
-		t.Fatalf("left from default_1m should return to default_model, got %q", f.focusedKey())
+	if !f.boolValue("strong_1m") {
+		t.Fatal("space should toggle strong_1m on")
 	}
 }
 
@@ -404,61 +410,42 @@ func TestNoteBlockConstantHeight(t *testing.T) {
 	}
 }
 
-// model1MRow strips ANSI from the form's first model row carrying the 1M tag,
-// rendered at the given width.
-func model1MRow(t *testing.T, f form, width int) string {
-	t.Helper()
-	lines, _ := f.viewLines(width)
+// TestSlotLine_UnderModelRow: each model row carries only the id (a long one in
+// full), and the line under it holds the slot's 1M toggle and effort, aligned to
+// the value column.
+func TestSlotLine_UnderModelRow(t *testing.T) {
+	const long = "deepseek/deepseek-v4.1-flash@preset/deepseek-official"
+	f := newEditForm(userops.ProviderView{Name: "x", DefaultModel: long + "[1m]", StrongEffort: "max", SecretBackend: "file"})
+	lines, _ := f.viewLines(80)
+	var rows []string
 	for _, l := range lines {
-		if strings.Contains(l, "1M ctx") {
-			return ansi.Strip(l)
+		rows = append(rows, ansi.Strip(l))
+	}
+	want := map[string]string{"default": "1M ctx [x]   effort ‹ auto ›", "strong": "1M ctx [ ]   effort ‹ max ›", "fast": "1M ctx [ ]   effort ‹ follows default ›"}
+	for i, r := range rows {
+		slot := strings.Fields(r + " .")[0]
+		line, ok := want[slot]
+		if !ok || i+1 >= len(rows) {
+			continue
 		}
+		if strings.Contains(r, "1M ctx") {
+			t.Errorf("model row %q still carries the 1M tag", r)
+		}
+		if slot == "default" && !strings.Contains(r, long) {
+			t.Errorf("long model id cut: %q", r)
+		}
+		if got := rows[i+1]; got != strings.Repeat(" ", 11)+line {
+			t.Errorf("%s slot line = %q, want %q", slot, got, strings.Repeat(" ", 11)+line)
+		}
+		delete(want, slot)
 	}
-	t.Fatalf("no model row with a 1M tag rendered at width %d", width)
-	return ""
-}
-
-// TestModel1MTag_SlidesLeftOnNarrowPane: on a narrow pane the model row's input cell
-// shrinks so the row fits the width and the 1M tag survives instead of being clipped.
-func TestModel1MTag_SlidesLeftOnNarrowPane(t *testing.T) {
-	f := newEditForm(userops.ProviderView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
-	row := model1MRow(t, f, 50)
-	if w := ansi.StringWidth(row); w > 50 {
-		t.Fatalf("model row overflows the pane: %d > 50: %q", w, row)
-	}
-	if !strings.Contains(row, "1M ctx [") {
-		t.Fatalf("the 1M tag must survive on a narrow pane: %q", row)
+	if len(want) != 0 {
+		t.Fatalf("slots not rendered: %v\n%s", want, strings.Join(rows, "\n"))
 	}
 }
 
-// TestModel1MTag_StaticOnWidePane: on a wide pane the cell stays the static 48 cols, so
-// the tag column matches its fixed position (no regression from the slide-left).
-func TestModel1MTag_StaticOnWidePane(t *testing.T) {
-	f := newEditForm(userops.ProviderView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
-	row := model1MRow(t, f, 80)
-	// prefix " default   " (11) + input.View() (Width 48 + cursor cell = 49) + "   " (3).
-	if got := strings.Index(row, "1M ctx"); got != 11+49+3 {
-		t.Fatalf("wide-pane tag column moved: %d, want %d: %q", got, 11+49+3, row)
-	}
-}
-
-// TestModel1MTag_MinGapOnLongValue: a value longer than the right-aligned budget keeps
-// the full value visible and stops the slide with the tag 4 columns past the value's end.
-func TestModel1MTag_MinGapOnLongValue(t *testing.T) {
-	const val = "this-is-a-very-long-model-identifier-xx"
-	f := newEditForm(userops.ProviderView{Name: "x", DefaultModel: val, SecretBackend: "file"})
-	row := model1MRow(t, f, 50)
-	if !strings.Contains(row, val) {
-		t.Fatalf("long value must stay fully visible: %q", row)
-	}
-	valEnd := strings.Index(row, val) + len(val)
-	if got := strings.Index(row, "1M ctx"); got != valEnd+4 {
-		t.Fatalf("tag must start 4 cols past the value end: tagStart=%d valEnd=%d: %q", got, valEnd, row)
-	}
-}
-
-// TestAddForm_HasModelConfigNav: the add form now carries the shared model-config
-// rows, so → on its default_model reaches the inline 1M toggle (like the edit form).
+// TestAddForm_HasModelConfigNav: the add form carries the shared model-config rows,
+// so its default_model is followed by the slot line (like the edit form).
 func TestAddForm_HasModelConfigNav(t *testing.T) {
 	f := newAddForm(Template{})
 	for i := 0; i < len(f.fields) && f.focusedKey() != "default_model"; i++ {
@@ -467,41 +454,10 @@ func TestAddForm_HasModelConfigNav(t *testing.T) {
 	if f.focusedKey() != "default_model" {
 		t.Fatalf("could not focus default_model, got %q", f.focusedKey())
 	}
+	f, _, _ = f.Update(keyMsg("down"))
 	f, _, _ = f.Update(keyMsg("right"))
-	if f.focusedKey() != "default_1m" {
-		t.Fatalf("right on the add-form default_model should reach default_1m, got %q", f.focusedKey())
-	}
-}
-
-// TestEditForm_1mColumnVerticalNav: ↓/↑ on a 1M toggle stay in the context column
-// (default_1m ↓ → strong_1m), and fall back to the model column when the next row
-// has no toggle (fast_1m ↓ → effort).
-func TestEditForm_1mColumnVerticalNav(t *testing.T) {
-	f := newEditForm(userops.ProviderView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
-	focus := func(key string) {
-		for i := 0; i < len(f.fields)*2 && f.focusedKey() != key; i++ {
-			f, _, _ = f.Update(keyMsg("down"))
-		}
-		if f.focusedKey() != key {
-			t.Fatalf("could not focus %q, got %q", key, f.focusedKey())
-		}
-	}
-	focus("default_model")
-	f, _, _ = f.Update(keyMsg("right")) // → default_1m
-	if f.focusedKey() != "default_1m" {
-		t.Fatalf("right → default_1m, got %q", f.focusedKey())
-	}
-	if after, _, _ := f.Update(keyMsg("down")); after.focusedKey() != "strong_1m" {
-		t.Fatalf("down in the ctx column: default_1m → strong_1m, got %q", after.focusedKey())
-	}
-	// Walk to fast_1m and down → effort (no ctx on the next row → fall back).
-	f, _, _ = f.Update(keyMsg("down")) // strong_1m
-	f, _, _ = f.Update(keyMsg("down")) // fast_1m
-	if f.focusedKey() != "fast_1m" {
-		t.Fatalf("expected fast_1m, got %q", f.focusedKey())
-	}
-	if after, _, _ := f.Update(keyMsg("down")); after.focusedKey() != "effort" {
-		t.Fatalf("down from fast_1m should fall back to effort, got %q", after.focusedKey())
+	if f.focusedKey() != "effort" {
+		t.Fatalf("down, right from the add-form default_model should reach effort, got %q", f.focusedKey())
 	}
 }
 
@@ -536,8 +492,8 @@ func TestEditForm_ModelSlotsPrefill(t *testing.T) {
 	if got := f.choiceValue("strong_effort"); got != "max" {
 		t.Errorf("strong_effort choice = %q, want max", got)
 	}
-	if got := f.choiceValue("fast_effort"); got != "default" {
-		t.Errorf("unset fast_effort choice = %q, want default", got)
+	if got := f.choiceValue("fast_effort"); got != effortFollow {
+		t.Errorf("unset fast_effort choice = %q, want %q", got, effortFollow)
 	}
 	if got := f.choiceValue("permission"); got != "acceptEdits" {
 		t.Errorf("permission choice = %q, want acceptEdits", got)
@@ -545,7 +501,7 @@ func TestEditForm_ModelSlotsPrefill(t *testing.T) {
 }
 
 // TestModelConfigFromForm_SlotEfforts: a slot effort reads back as its level, and
-// "default" as unset so the slot follows effort.
+// "follows default" / "auto" as unset.
 func TestModelConfigFromForm_SlotEfforts(t *testing.T) {
 	m := NewModel()
 	m.form = newEditForm(userops.ProviderView{Name: "x", DefaultModel: "d", Effort: "high", StrongEffort: "max", SecretBackend: "file"})
@@ -553,14 +509,18 @@ func TestModelConfigFromForm_SlotEfforts(t *testing.T) {
 	if effort != "high" || strong != "max" || fast != "" {
 		t.Errorf("effort/strong/fast = %q/%q/%q, want high/max/\"\"", effort, strong, fast)
 	}
+	m.form = newEditForm(userops.ProviderView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
+	if _, _, _, effort, _, _, _ := m.modelConfigFromForm(); effort != "" {
+		t.Errorf("auto effort reads back as %q, want \"\"", effort)
+	}
 }
 
 // TestEditForm_UnsetChoicesShowOff: a provider with no effort / default_permission
-// prefills both dropdowns to "off".
+// prefills the dropdowns to "auto" / "off".
 func TestEditForm_UnsetChoicesShowOff(t *testing.T) {
 	f := newEditForm(userops.ProviderView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
-	if got := f.choiceValue("effort"); got != "off" {
-		t.Errorf("unset effort = %q, want off", got)
+	if got := f.choiceValue("effort"); got != effortAuto {
+		t.Errorf("unset effort = %q, want %q", got, effortAuto)
 	}
 	if got := f.choiceValue("permission"); got != "off" {
 		t.Errorf("unset permission = %q, want off", got)
@@ -857,8 +817,8 @@ func TestAddForm_TemplateEffortPrefill(t *testing.T) {
 	if got := newAddForm(kimiCode).choiceValue("effort"); got != "medium" {
 		t.Fatalf("kimi-code effort prefill = %q, want medium", got)
 	}
-	if got := newAddForm(byName["deepseek"]).choiceValue("effort"); got != "off" {
-		t.Fatalf("deepseek effort prefill = %q, want off", got)
+	if got := newAddForm(byName["deepseek"]).choiceValue("effort"); got != effortAuto {
+		t.Fatalf("deepseek effort prefill = %q, want %q", got, effortAuto)
 	}
 }
 
@@ -996,10 +956,9 @@ func TestModelPickerSkippedWhenNoEndpoint(t *testing.T) {
 	if m.screen != screenForm {
 		t.Fatalf("enter with no endpoint opened a picker: screen = %d, want screenForm", m.screen)
 	}
-	// No picker — enter just advances a row (skipping the inline 1M toggle) to the
-	// next model slot.
-	if m.form.focusedKey() != "strong_model" {
-		t.Fatalf("enter with no endpoint should advance to strong_model, focusedKey = %q", m.form.focusedKey())
+	// No picker — enter just advances a row, to the slot line under the model.
+	if m.form.focusedKey() != "default_1m" {
+		t.Fatalf("enter with no endpoint should advance to default_1m, focusedKey = %q", m.form.focusedKey())
 	}
 }
 
@@ -3344,5 +3303,46 @@ func TestRunCleanupOutcomeNamesKeptWorktrees(t *testing.T) {
 	}
 	if got := keptNotices("run-1", errors.New("boom")); got != nil {
 		t.Fatalf("keptNotices after a failed op = %q, want nil", got)
+	}
+}
+
+// TestProviderDetail_SlotLines: the read-only card mirrors the edit form — each
+// slot's model, then a line with its 1M context and the effort it will run at.
+func TestProviderDetail_SlotLines(t *testing.T) {
+	v := userops.ProviderView{Name: "x", DefaultModel: "d[1m]", FastModel: "f", Effort: "low", StrongEffort: "max", SecretBackend: "file"}
+	out := ansi.Strip(strings.Join(providerDetailLines(v, 80, ""), "\n"))
+	for _, want := range []string{
+		" default   d\n           1M ctx [x]   effort low\n",
+		" strong    d\n           1M ctx [x]   effort max\n",
+		" fast      f\n           1M ctx [ ]   effort low\n",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("card missing %q:\n%s", want, out)
+		}
+	}
+	v = userops.ProviderView{Name: "x", DefaultModel: "d", SecretBackend: "file"}
+	if out := ansi.Strip(strings.Join(providerDetailLines(v, 80, ""), "\n")); !strings.Contains(out, "effort auto") {
+		t.Errorf("an unset effort should read auto:\n%s", out)
+	}
+}
+
+// TestSlotLine_NarrowPaneSlidesLeft: on a pane too narrow for the value column the
+// slot line slides left, so the longest effort label stays whole within the width.
+func TestSlotLine_NarrowPaneSlidesLeft(t *testing.T) {
+	f := newEditForm(userops.ProviderView{Name: "x", DefaultModel: "d", SecretBackend: "file"})
+	lines, _ := f.viewLines(44)
+	found := false
+	for _, l := range lines {
+		l = ansi.Strip(l)
+		if !strings.Contains(l, "‹ "+effortFollow+" ›") {
+			continue
+		}
+		found = true
+		if w := ansi.StringWidth(l); w > 44 {
+			t.Errorf("slot line overflows the pane: %d > 44: %q", w, l)
+		}
+	}
+	if !found {
+		t.Fatal("no slot line shows the follows-default label")
 	}
 }

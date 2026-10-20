@@ -1032,19 +1032,21 @@ func TestFormScrollsToFocus(t *testing.T) {
 		t.Fatalf("focus on [Save] should scroll it and its error into view:\n%s", out)
 	}
 
-	// An inline 1M toggle has no row of its own: its model row stays in view.
+	// A 1M toggle or a slot effort keeps its slot line in view (the strong one is
+	// the only line lit [x] here).
 	m.form.err = ""
 	m.height = 15 // boardBodyHeight floors to 5
-	idx, ok := m.form.indexOfKey("strong_1m")
-	if !ok {
-		t.Fatal("the add form has no strong_1m toggle")
-	}
-	m.form.setFocus(idx)
-	visible := false
-	for _, l := range strings.Split(ansi.Strip(m.View()), "\n") {
-		visible = visible || (strings.Contains(l, "strong") && strings.Contains(l, "1M ctx"))
-	}
-	if !visible {
-		t.Fatalf("focus on the strong 1M toggle should keep the strong model row in view:\n%s", m.View())
+	m.form.setToggle("default_1m", false)
+	m.form.setToggle("strong_1m", true)
+	m.form.setToggle("fast_1m", false)
+	for _, key := range []string{"strong_1m", "strong_effort"} {
+		idx, ok := m.form.indexOfKey(key)
+		if !ok {
+			t.Fatalf("the add form has no %s field", key)
+		}
+		m.form.setFocus(idx)
+		if !strings.Contains(ansi.Strip(m.View()), "1M ctx [x]") {
+			t.Fatalf("focus on %s should keep the strong slot line in view:\n%s", key, m.View())
+		}
 	}
 }

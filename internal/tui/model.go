@@ -3972,7 +3972,7 @@ func (m Model) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	// ← returns to the provider list from a row that doesn't consume it — a text
 	// field keeps the arrow for its input cursor, a choice field cycles options,
-	// and a 1M toggle uses ← to return to its model slot.
+	// and a 1M toggle starts its slot line, so ← there stays put.
 	if msg.String() == "left" && !m.form.focusedText() && !m.form.focusedChoice() && !m.form.focusedOneM() {
 		return m.toList()
 	}
@@ -4349,18 +4349,18 @@ func (m Model) submitAdd() (tea.Model, tea.Cmd) {
 }
 
 // modelConfigFromForm reads the shared model-roster rows back: each model slot's
-// bare id recombined with its 1M toggle, effort/permission mapped off→"" and the
-// slot efforts default→"". Used by every add submitter and submitEdit so the
-// read-back can't drift.
+// bare id recombined with its 1M toggle, effort auto→"", the slot efforts
+// follows default→"" and permission off→"". Used by every add submitter and
+// submitEdit so the read-back can't drift.
 func (m Model) modelConfigFromForm() (defModel, strong, fast, effort, strongEffort, fastEffort, perm string) {
 	def, strg, fst := m.form.value("default_model"), m.form.value("strong_model"), m.form.value("fast_model")
 	// A typed id that itself ends in [1m] keeps the marker even with the toggle off.
 	return combine1M(def, m.form.boolValue("default_1m") || config.Has1M(def)),
 		combine1M(strg, m.form.boolValue("strong_1m") || config.Has1M(strg)),
 		combine1M(fst, m.form.boolValue("fast_1m") || config.Has1M(fst)),
-		offToEmpty(m.form.choiceValue("effort")),
-		defaultToEmpty(m.form.choiceValue("strong_effort")),
-		defaultToEmpty(m.form.choiceValue("fast_effort")),
+		emptyIf(m.form.choiceValue("effort"), effortAuto),
+		emptyIf(m.form.choiceValue("strong_effort"), effortFollow),
+		emptyIf(m.form.choiceValue("fast_effort"), effortFollow),
 		offToEmpty(m.form.choiceValue("permission"))
 }
 
@@ -4544,7 +4544,7 @@ func (m Model) submitAddAnthropic() (tea.Model, tea.Cmd) {
 // submitEdit validates the edit form and dispatches userops.Edit.
 func (m Model) submitEdit() (tea.Model, tea.Cmd) {
 	// Recombine each model slot's bare id with its 1M toggle; the choice fields
-	// map "off" → unset. The TUI is the full editor, so every field is sent
+	// map their unset label (off / auto / follows default) → unset. The TUI is the full editor, so every field is sent
 	// (including a clear) — editLocked diffs against the stored value.
 	defaultModel, strongModel, fastModel, effort, strongEffort, fastEffort, defaultPerm := m.modelConfigFromForm()
 	enabled := m.form.boolValue("enabled")
@@ -4621,9 +4621,9 @@ func offToEmpty(s string) string {
 	return s
 }
 
-// defaultToEmpty maps a slot effort's "default" choice to unset (the slot follows effort).
-func defaultToEmpty(s string) string {
-	if s == "default" {
+// emptyIf maps an effort dropdown's unset label back to an unset ("") value.
+func emptyIf(s, label string) string {
+	if s == label {
 		return ""
 	}
 	return s
