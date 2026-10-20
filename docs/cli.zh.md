@@ -88,7 +88,7 @@ extra_body = '{"provider":{"only":["deepseek"],"allow_fallbacks":false}}'
 `cc-fleet default <provider>` 设全局默认;此后所有不带 provider 的 `teammate check` / `subagent` / `run` / workflow leaf 都解析到它(单独 `default` 查看,`--unset` 清除)。id `claude` 为原生 leaf 保留,不能设为默认 — `cc-fleet default claude` 会以 `PROVIDER_NAME_INVALID` 拒绝。模型档位让 Claude 拿到稳定的"把手"而不用硬编码模型 ID:
 
 - `--model strong` / `--model fast` / `--model default` 按档位表解析。
-- 每个槽位可标 1M 上下文(`[1m]`),也可设自己的 effort(default 用 `effort`,另有 `strong_effort` / `fast_effort`,留空跟随 `effort`)— TUI 表单或 `add`/`edit` flag 均可配置。每次启动都把该槽位的档以 `claude --effort` 传入;`cc-fleet run … --effort` 透传的值优先。
+- 每个槽位可标 1M 上下文(`[1m]`),也可设自己的 effort(default 用 `effort`,另有 `strong_effort` / `fast_effort`,留空跟随 `effort`)— TUI 表单或 `add`/`edit` flag 均可配置。每次启动都把该槽位的档以 `claude --effort` 传入;`cc-fleet run … -- --effort` 透传的值优先。
 
 ## 导出 / 导入 provider 名册
 

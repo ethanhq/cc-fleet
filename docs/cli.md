@@ -88,7 +88,7 @@ The value is one JSON object held in a TOML **string** — a TOML table is refus
 `cc-fleet default <provider>` sets the fleet-wide default; every provider-less `teammate check` / `subagent` / `run` / workflow leaf resolves to it (`default` alone shows it, `--unset` clears it). The id `claude` is reserved for the native leaf and can never be the default — `cc-fleet default claude` refuses with `PROVIDER_NAME_INVALID`. A provider's roster gives Claude stable handles instead of hardcoded IDs:
 
 - `--model strong` / `--model fast` / `--model default` resolve through the roster.
-- Each slot can carry a 1M-context marker (`[1m]`) and its own effort level (`effort` for default, `strong_effort` / `fast_effort`, blank follows `effort`) — set in the TUI form or via `add`/`edit` flags. Every launch passes its slot's level as `claude --effort`; a passthrough `cc-fleet run … --effort` wins.
+- Each slot can carry a 1M-context marker (`[1m]`) and its own effort level (`effort` for default, `strong_effort` / `fast_effort`, blank follows `effort`) — set in the TUI form or via `add`/`edit` flags. Every launch passes its slot's level as `claude --effort`; a passthrough `cc-fleet run … -- --effort` wins.
 
 ## Export / import the provider roster
 
