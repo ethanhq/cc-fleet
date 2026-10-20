@@ -220,7 +220,7 @@ func newEditForm(v userops.ProviderView) form {
 	var fields []formField
 	switch v.Protocol {
 	case config.ProtocolOpenAIChat, config.ProtocolOpenAIResponses:
-		extra := newTextInput(v.ExtraBody, `{"provider":{"only":["deepseek"]}}`, false)
+		extra := newTextInput(v.ExtraBody, `none · e.g. {"provider":{"only":["deepseek"]}}`, false)
 		extra.CharLimit = config.MaxExtraBodyBytes // runes vs bytes: approximate; submit validates
 		fields = append(fields,
 			formField{key: "upstream_url", label: "Upstream URL", kind: fieldText, input: newTextInput(v.UpstreamURL, "https://api.openai.com/v1", false)},
