@@ -68,7 +68,7 @@ func TestDaemonArgs(t *testing.T) {
 	for i, c := range cases {
 		port := 17240 + i
 		want := append([]string{"codex-proxy", "serve", "--port", strconv.Itoa(port)}, c.tail...)
-		if got := daemonArgs(port, c.protocol, c.upstream, c.ref, c.extra); !slices.Equal(got, want) {
+		if got := daemonArgs(port, c.protocol, c.upstream, c.ref, c.extra, false); !slices.Equal(got, want) {
 			t.Errorf("%s: daemonArgs =\n%q\nwant\n%q", c.name, got, want)
 		}
 	}
@@ -129,7 +129,7 @@ func TestUpstreamsExtraBody(t *testing.T) {
 			"{}": string(plain),
 			raw:  string(plain[:len(plain)-1]) + "," + members + "}",
 		} {
-			up, err := buildUpstream(protocol, srv.URL+"/v1", "", extra)
+			up, err := buildUpstream(protocol, srv.URL+"/v1", "", extra, false)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -151,7 +151,7 @@ func TestBuildUpstreamExtraBody(t *testing.T) {
 		{config.ProtocolOpenAIResponses, `{"input":[]}`, `must not set "input"`},
 		{config.ProtocolCodexOAuth, `{"a":1}`, "only valid for an openai-*"},
 	} {
-		if _, err := buildUpstream(c.protocol, "https://x/v1", "", c.raw); err == nil || !strings.Contains(err.Error(), c.wantErr) {
+		if _, err := buildUpstream(c.protocol, "https://x/v1", "", c.raw, false); err == nil || !strings.Contains(err.Error(), c.wantErr) {
 			t.Errorf("%s with extra_body %s: want error containing %q, got %v", c.protocol, c.raw, c.wantErr, err)
 		}
 	}
@@ -186,7 +186,7 @@ func TestHealthyComparesExtraBody(t *testing.T) {
 		if err := writeState(st); err != nil {
 			t.Fatal(err)
 		}
-		if got := healthy(port, config.ProtocolOpenAIChat, up, "", c.asked); got != c.want {
+		if got := healthy(port, config.ProtocolOpenAIChat, up, "", c.asked, false); got != c.want {
 			t.Errorf("%s: healthy = %v, want %v", c.name, got, c.want)
 		}
 	}

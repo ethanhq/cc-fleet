@@ -56,18 +56,20 @@ func joinConfig(name string) (string, error) {
 
 // proxyState is the persisted daemon descriptor: pid + procStart guard against PID
 // reuse; the bound port; and the identity (protocol + upstream URL + codex credential
-// ref + extra_body) a reuse check matches against so a daemon left from a different
-// provider — or a different codex account on a recycled port — is never reused.
-// Credential is omitempty so a state file written before multi-credential reads back
-// as the default credential; ExtraBody likewise reads back as none.
+// ref + extra_body + effort forwarding) a reuse check matches against so a daemon left
+// from a different provider — or a different codex account on a recycled port — is
+// never reused. Credential is omitempty so a state file written before
+// multi-credential reads back as the default credential; ExtraBody and
+// ForwardEffort likewise read back as none and off.
 type proxyState struct {
-	Port        int    `json:"port"`
-	PID         int    `json:"pid"`
-	ProcStart   string `json:"proc_start"`
-	Protocol    string `json:"protocol"`
-	UpstreamURL string `json:"upstream_url,omitempty"`
-	Credential  string `json:"credential,omitempty"`
-	ExtraBody   string `json:"extra_body,omitempty"`
+	Port          int    `json:"port"`
+	PID           int    `json:"pid"`
+	ProcStart     string `json:"proc_start"`
+	Protocol      string `json:"protocol"`
+	UpstreamURL   string `json:"upstream_url,omitempty"`
+	Credential    string `json:"credential,omitempty"`
+	ExtraBody     string `json:"extra_body,omitempty"`
+	ForwardEffort bool   `json:"forward_effort,omitempty"`
 }
 
 // withProxyLock serializes a single port's daemon start / exit decisions. It is a
@@ -183,7 +185,10 @@ func EnsureForProvider(v *config.Provider, dg *diag.Logger) error {
 			}
 		}
 	}
-	return EnsureDaemon(port, v.EffectiveProtocol(), v.UpstreamURL, ref, v.ExtraBody, dg)
+	// An openai-chat request carries a reasoning field only for a provider with an
+	// effort configured: some endpoints reject it, and claude always sends an effort.
+	forwardEffort := v.EffectiveProtocol() == config.ProtocolOpenAIChat && v.HasEffort()
+	return EnsureDaemon(port, v.EffectiveProtocol(), v.UpstreamURL, ref, v.ExtraBody, forwardEffort, dg)
 }
 
 // EnsureDaemon makes the proxy daemon for (port, protocol, upstreamURL) reachable,
@@ -192,17 +197,17 @@ func EnsureForProvider(v *config.Provider, dg *diag.Logger) error {
 // visible. A live daemon is reused only if its persisted identity matches; a
 // mismatch is torn down and restarted. Slot it after the binary gate and
 // before the profile-write side effect.
-func EnsureDaemon(port int, protocol, upstreamURL, ref, extraBody string, dg *diag.Logger) error {
+func EnsureDaemon(port int, protocol, upstreamURL, ref, extraBody string, forwardEffort bool, dg *diag.Logger) error {
 	if protocol == config.ProtocolCodexOAuth {
 		if err := withSecretLock(func() error { _, e := loadOrCreateSecret(); return e }); err != nil {
 			return err
 		}
 	}
 	return withProxyLock(port, func() error {
-		if !healthy(port, protocol, upstreamURL, ref, extraBody) {
+		if !healthy(port, protocol, upstreamURL, ref, extraBody, forwardEffort) {
 			dg.Logf("daemon: port %d not serving this identity — (re)starting", port)
 			stopStaleDaemon(port)
-			if err := startDetached(port, protocol, upstreamURL, ref, extraBody); err != nil {
+			if err := startDetached(port, protocol, upstreamURL, ref, extraBody, forwardEffort); err != nil {
 				return err
 			}
 			dg.Logf("daemon: started detached on port %d", port)
@@ -218,16 +223,16 @@ func EnsureDaemon(port int, protocol, upstreamURL, ref, extraBody string, dg *di
 }
 
 // healthy reports whether a live daemon on port already serves this exact identity.
-// A dead pid, a different protocol/upstream/extra_body (port reuse or an edited
-// provider), or an unresponsive port all return false. Readiness is the
+// A dead pid, a different protocol/upstream/extra_body/effort forwarding (port reuse
+// or an edited provider), or an unresponsive port all return false. Readiness is the
 // upstream-independent /healthz: an openai daemon's /v1/models returns an empty list
 // (its models come from the real upstream), so it is no readiness signal.
-func healthy(port int, protocol, upstreamURL, ref, extraBody string) bool {
+func healthy(port int, protocol, upstreamURL, ref, extraBody string, forwardEffort bool) bool {
 	st, err := readState(port)
 	if err != nil || st.Port != port || st.PID <= 0 || !pidAlive(st.PID, st.ProcStart) {
 		return false
 	}
-	if st.Protocol != protocol || st.UpstreamURL != upstreamURL || st.ExtraBody != extraBody {
+	if st.Protocol != protocol || st.UpstreamURL != upstreamURL || st.ExtraBody != extraBody || st.ForwardEffort != forwardEffort {
 		return false
 	}
 	// A recycled port (remove+add landing on the same port) must never reuse a codex
@@ -266,7 +271,7 @@ func portResponds(port int) bool {
 	return resp.StatusCode == http.StatusOK
 }
 
-func startDetached(port int, protocol, upstreamURL, ref, extraBody string) error {
+func startDetached(port int, protocol, upstreamURL, ref, extraBody string, forwardEffort bool) error {
 	if held := whoHoldsPort(port); held {
 		return fmt.Errorf("port %d is held by another process; free it or set a different base_url port", port)
 	}
@@ -274,7 +279,7 @@ func startDetached(port int, protocol, upstreamURL, ref, extraBody string) error
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(bin, daemonArgs(port, protocol, upstreamURL, ref, extraBody)...)
+	cmd := exec.Command(bin, daemonArgs(port, protocol, upstreamURL, ref, extraBody, forwardEffort)...)
 	cmd.Stdout, cmd.Stderr = nil, nil
 	// Scrub the launcher's creds + nested-CC/teams markers from the long-lived
 	// daemon (codex authenticates via its own OAuth chain; an openai daemon takes
@@ -290,7 +295,7 @@ func startDetached(port int, protocol, upstreamURL, ref, extraBody string) error
 }
 
 // daemonArgs is the argv startDetached launches the daemon with.
-func daemonArgs(port int, protocol, upstreamURL, ref, extraBody string) []string {
+func daemonArgs(port int, protocol, upstreamURL, ref, extraBody string, forwardEffort bool) []string {
 	args := []string{"codex-proxy", "serve", "--port", strconv.Itoa(port), "--protocol", protocol}
 	if upstreamURL != "" {
 		args = append(args, "--upstream-url", upstreamURL)
@@ -302,6 +307,9 @@ func daemonArgs(port int, protocol, upstreamURL, ref, extraBody string) []string
 	}
 	if extraBody != "" {
 		args = append(args, "--extra-body", extraBody)
+	}
+	if forwardEffort {
+		args = append(args, "--forward-effort")
 	}
 	return args
 }

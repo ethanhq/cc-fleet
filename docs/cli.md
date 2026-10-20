@@ -81,14 +81,14 @@ Once provider teammates are set up, `add` / `edit` / `remove` also resync the `c
 extra_body = '{"provider":{"only":["deepseek"],"allow_fallbacks":false}}'
 ```
 
-The value is one JSON object held in a TOML **string** — a TOML table is refused — of at most 4096 bytes. When cc-fleet next saves `providers.toml` it rewrites the value as an escaped double-quoted string, which means the same. A field the proxy sets itself (`model`, `messages`, `tools`, `stream`, …) is refused, so `extra_body` adds fields and never overrides one. It is stored in plain text and passed to the proxy on its command line: not a place for secrets. A change takes effect at that provider's next worker start, which restarts its proxy — the old one gets up to 5 seconds to finish requests in flight, and a response still streaming after that is cut off.
+The value is one JSON object held in a TOML **string** — a TOML table is refused — of at most 4096 bytes. When cc-fleet next saves `providers.toml` it rewrites the value as an escaped double-quoted string, which means the same. A field the proxy sets itself (`model`, `messages`, `tools`, `stream`, …) is refused, so `extra_body` adds fields and never overrides one. The exception is the effort an `openai-chat` provider sends: an `extra_body` that sets `reasoning` or `reasoning_effort` replaces it. It is stored in plain text and passed to the proxy on its command line: not a place for secrets. A change takes effect at that provider's next worker start, which restarts its proxy — the old one gets up to 5 seconds to finish requests in flight, and a response still streaming after that is cut off.
 
 ## Default provider & model tiers
 
 `cc-fleet default <provider>` sets the fleet-wide default; every provider-less `teammate check` / `subagent` / `run` / workflow leaf resolves to it (`default` alone shows it, `--unset` clears it). The id `claude` is reserved for the native leaf and can never be the default — `cc-fleet default claude` refuses with `PROVIDER_NAME_INVALID`. A provider's roster gives Claude stable handles instead of hardcoded IDs:
 
 - `--model strong` / `--model fast` / `--model default` resolve through the roster.
-- Each slot can carry a 1M-context marker (`[1m]`) and its own effort level (`effort` for default, `strong_effort` / `fast_effort`, blank follows `effort`) — set in the TUI form or via `add`/`edit` flags. Every launch passes its slot's level as `claude --effort`; a passthrough `cc-fleet run … -- --effort` wins.
+- Each slot can carry a 1M-context marker (`[1m]`) and its own effort level (`effort` for default, `strong_effort` / `fast_effort`, blank follows `effort`) — set in the TUI form or via `add`/`edit` flags. Every launch passes its slot's level as `claude --effort`; a passthrough `cc-fleet run … -- --effort` wins. An `openai-chat` provider sends the effort upstream only when one of its slots has an effort set: as `reasoning: {"effort": …}` to OpenRouter, as `reasoning_effort` elsewhere (`max` becomes `xhigh`). Setting the first effort, or clearing the last, restarts its proxy at the next worker start.
 
 ## Export / import the provider roster
 

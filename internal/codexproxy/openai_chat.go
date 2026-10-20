@@ -25,6 +25,7 @@ type openaiChatUpstream struct {
 	baseURL      string
 	isOpenCodeGo bool   // baseURL's host is opencode.ai or a subdomain — see isOpenCodeGoHost
 	extra        []byte // extra_body's members, appended to every request body; see extraMembers
+	effortField  string // the field chatEffortMember sends the effort in, "" = none; see chatEffortField
 }
 
 func newOpenAIChatUpstream(baseURL string) *openaiChatUpstream {
@@ -54,6 +55,7 @@ func (u *openaiChatUpstream) call(ctx context.Context, areq *anthropicRequest, c
 	}
 	body, _ := json.Marshal(creq)
 	body = withExtra(body, u.extra)
+	body = withExtra(body, chatEffortMember(areq, u.effortField))
 	endpoint, err := url.JoinPath(u.baseURL, "chat", "completions")
 	if err != nil {
 		return nil, &upstreamError{upBadRequest, http.StatusBadRequest, "invalid upstream url"}
@@ -82,7 +84,10 @@ func (u *openaiChatUpstream) call(ctx context.Context, areq *anthropicRequest, c
 // that gateway — every other openai-* upstream (a direct provider API, a
 // different aggregator) has no such header and must not get one injected, so
 // the session header is scoped to this host rather than sent unconditionally.
-func isOpenCodeGoHost(baseURL string) bool {
+func isOpenCodeGoHost(baseURL string) bool { return hostWithin(baseURL, "opencode.ai") }
+
+// hostWithin reports whether baseURL's host is domain or one of its subdomains.
+func hostWithin(baseURL, domain string) bool {
 	u, err := url.Parse(baseURL)
 	if err != nil {
 		return false
@@ -92,7 +97,49 @@ func isOpenCodeGoHost(baseURL string) bool {
 	if strings.Contains(host, ":") {
 		return false
 	}
-	return host == "opencode.ai" || strings.HasSuffix(host, ".opencode.ai")
+	return host == domain || strings.HasSuffix(host, "."+domain)
+}
+
+// chatEffortField picks the request field that carries the reasoning effort:
+// OpenRouter's reasoning object, else the OpenAI reasoning_effort, and none when
+// extra_body already sets either one, so the user's value is the only one sent.
+func chatEffortField(upstreamURL, extraBody string) string {
+	var obj map[string]json.RawMessage
+	_ = json.Unmarshal([]byte(extraBody), &obj)
+	for k := range obj {
+		if strings.EqualFold(k, "reasoning") || strings.EqualFold(k, "reasoning_effort") {
+			return ""
+		}
+	}
+	if hostWithin(upstreamURL, "openrouter.ai") {
+		return "reasoning"
+	}
+	return "reasoning_effort"
+}
+
+// chatEffortMember is the body member carrying the effort claude asked for, in
+// field, or nil when the request has none. It is spliced in like extra_body, which
+// may set the same field instead. OpenRouter takes every Claude level; a plain
+// reasoning_effort gets the Responses vocabulary (effortFor: max → xhigh). The
+// thinking switch is not consulted: this lane drops it, and a slim subagent turns
+// thinking off while a reasoning model still reasons at its default level.
+func chatEffortMember(a *anthropicRequest, field string) []byte {
+	if field == "" {
+		return nil
+	}
+	e := effortFor(a)
+	if field == "reasoning" && a.OutputConfig.Effort == "max" {
+		e = "max"
+	}
+	if e == "" {
+		return nil
+	}
+	var v any = e
+	if field == "reasoning" {
+		v = map[string]string{"effort": e}
+	}
+	b, _ := json.Marshal(map[string]any{field: v})
+	return b[1 : len(b)-1]
 }
 
 // opencodeSessionID returns the value to send in x-opencode-session: a stable
@@ -167,8 +214,9 @@ type chatFunction struct {
 
 // translateChatRequest maps an Anthropic Messages request to a Chat Completions
 // request. The thinking config is dropped (most compatible endpoints don't accept
-// it), but an assistant turn's thinking text goes back as reasoning_content; the
-// usage chunk is requested via stream_options.include_usage.
+// it; the upstream adds a configured effort, see chatEffortMember), but an assistant
+// turn's thinking text goes back as reasoning_content; the usage chunk is
+// requested via stream_options.include_usage.
 func translateChatRequest(a *anthropicRequest, cc *convCtx) (*chatRequest, error) {
 	r := &chatRequest{
 		Model:         a.Model,

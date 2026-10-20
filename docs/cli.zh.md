@@ -81,14 +81,14 @@ printf '%s' "$DEEPSEEK_API_KEY" | cc-fleet add deepseek \
 extra_body = '{"provider":{"only":["deepseek"],"allow_fallbacks":false}}'
 ```
 
-值是放在 TOML **字符串**里的一个 JSON 对象(写成 TOML 表会被拒绝),最长 4096 字节。cc-fleet 下次保存 `providers.toml` 时会把它改写成带转义的双引号字符串,含义不变。代理自己设置的字段(`model`、`messages`、`tools`、`stream` 等)不能出现在里面,所以 `extra_body` 只能加字段,不能覆盖已有字段。它以明文保存,并通过命令行参数传给代理,不要在里面放密钥。修改后在该 provider 下一次启动 worker 时生效,那时它的代理会重启:旧代理最多等 5 秒让在途请求结束,到时还在流式输出的响应会被切断。
+值是放在 TOML **字符串**里的一个 JSON 对象(写成 TOML 表会被拒绝),最长 4096 字节。cc-fleet 下次保存 `providers.toml` 时会把它改写成带转义的双引号字符串,含义不变。代理自己设置的字段(`model`、`messages`、`tools`、`stream` 等)不能出现在里面,所以 `extra_body` 只能加字段,不能覆盖已有字段。例外是 `openai-chat` provider 发出的 effort:`extra_body` 里设了 `reasoning` 或 `reasoning_effort` 时,以它为准。它以明文保存,并通过命令行参数传给代理,不要在里面放密钥。修改后在该 provider 下一次启动 worker 时生效,那时它的代理会重启:旧代理最多等 5 秒让在途请求结束,到时还在流式输出的响应会被切断。
 
 ## 默认 provider 与模型档位
 
 `cc-fleet default <provider>` 设全局默认;此后所有不带 provider 的 `teammate check` / `subagent` / `run` / workflow leaf 都解析到它(单独 `default` 查看,`--unset` 清除)。id `claude` 为原生 leaf 保留,不能设为默认 — `cc-fleet default claude` 会以 `PROVIDER_NAME_INVALID` 拒绝。模型档位让 Claude 拿到稳定的"把手"而不用硬编码模型 ID:
 
 - `--model strong` / `--model fast` / `--model default` 按档位表解析。
-- 每个槽位可标 1M 上下文(`[1m]`),也可设自己的 effort(default 用 `effort`,另有 `strong_effort` / `fast_effort`,留空跟随 `effort`)— TUI 表单或 `add`/`edit` flag 均可配置。每次启动都把该槽位的档以 `claude --effort` 传入;`cc-fleet run … -- --effort` 透传的值优先。
+- 每个槽位可标 1M 上下文(`[1m]`),也可设自己的 effort(default 用 `effort`,另有 `strong_effort` / `fast_effort`,留空跟随 `effort`)— TUI 表单或 `add`/`edit` flag 均可配置。每次启动都把该槽位的档以 `claude --effort` 传入;`cc-fleet run … -- --effort` 透传的值优先。`openai-chat` provider 只有在某个槽位设了 effort 时才把它发给上游:发往 OpenRouter 时是 `reasoning: {"effort": …}`,其他接口是 `reasoning_effort`(`max` 变为 `xhigh`)。设了第一个 effort 或清掉最后一个时,它的代理会在下一次启动 worker 时重启。
 
 ## 导出 / 导入 provider 名册
 

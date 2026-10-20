@@ -28,7 +28,8 @@ type upstream interface {
 // openai-* carries the real key per request (apiKey passed to call), so it only
 // needs the upstream base URL and ignores ref. extraBody is validated here, where
 // the request splice depends on it holding no field the proxy sets itself.
-func buildUpstream(protocol, upstreamURL, ref, extraBody string) (upstream, error) {
+// forwardEffort turns on openai-chat's reasoning field (chatEffortField).
+func buildUpstream(protocol, upstreamURL, ref, extraBody string, forwardEffort bool) (upstream, error) {
 	if err := config.ValidateExtraBody(protocol, extraBody); err != nil {
 		return nil, err
 	}
@@ -42,6 +43,9 @@ func buildUpstream(protocol, upstreamURL, ref, extraBody string) (upstream, erro
 	case config.ProtocolOpenAIChat:
 		up := newOpenAIChatUpstream(upstreamURL)
 		up.extra = extraMembers(extraBody)
+		if forwardEffort {
+			up.effortField = chatEffortField(upstreamURL, extraBody)
+		}
 		return up, nil
 	case config.ProtocolOpenAIResponses:
 		up := newOpenAIResponsesUpstream(upstreamURL)

@@ -20,11 +20,11 @@ import (
 // builds the protocol's upstream, records its state, serves the conversion
 // handler, and self-exits once no matching worker and no launch lease remain
 // (re-checked under the port's proxy lock; a scan error keeps it alive).
-func Serve(port int, protocol, upstreamURL, ref, extraBody string) error {
+func Serve(port int, protocol, upstreamURL, ref, extraBody string, forwardEffort bool) error {
 	if protocol == "" {
 		protocol = config.ProtocolCodexOAuth
 	}
-	up, err := buildUpstream(protocol, upstreamURL, ref, extraBody)
+	up, err := buildUpstream(protocol, upstreamURL, ref, extraBody, forwardEffort)
 	if err != nil {
 		return err
 	}
@@ -49,7 +49,7 @@ func Serve(port int, protocol, upstreamURL, ref, extraBody string) error {
 		return fmt.Errorf("bind 127.0.0.1:%d: %w", port, err)
 	}
 	start, _ := procintrospect.ProcStart(os.Getpid())
-	if err := writeState(proxyState{Port: port, PID: os.Getpid(), ProcStart: start, Protocol: protocol, UpstreamURL: upstreamURL, Credential: ref, ExtraBody: extraBody}); err != nil {
+	if err := writeState(proxyState{Port: port, PID: os.Getpid(), ProcStart: start, Protocol: protocol, UpstreamURL: upstreamURL, Credential: ref, ExtraBody: extraBody, ForwardEffort: forwardEffort}); err != nil {
 		ln.Close()
 		return err
 	}

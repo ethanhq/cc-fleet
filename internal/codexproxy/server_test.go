@@ -142,17 +142,17 @@ func TestHealthyReusesOnlyOnIdentityMatch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !healthy(port, config.ProtocolCodexOAuth, "", "", "") {
+	if !healthy(port, config.ProtocolCodexOAuth, "", "", "", false) {
 		t.Fatal("matching identity must be reused")
 	}
-	if healthy(port, config.ProtocolOpenAIChat, "", "", "") {
+	if healthy(port, config.ProtocolOpenAIChat, "", "", "", false) {
 		t.Fatal("a different protocol must not be reused")
 	}
-	if healthy(port, config.ProtocolCodexOAuth, "https://api.openai.com/v1", "", "") {
+	if healthy(port, config.ProtocolCodexOAuth, "https://api.openai.com/v1", "", "", false) {
 		t.Fatal("a different upstream_url must not be reused")
 	}
 	// A default-credential daemon must not be reused by a named credential.
-	if healthy(port, config.ProtocolCodexOAuth, "", "codex-work", "") {
+	if healthy(port, config.ProtocolCodexOAuth, "", "codex-work", "", false) {
 		t.Fatal("a different codex credential must not be reused")
 	}
 }
