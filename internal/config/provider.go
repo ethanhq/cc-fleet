@@ -109,9 +109,9 @@ type Provider struct {
 	StrongModel string `toml:"strong_model,omitempty"`
 	FastModel   string `toml:"fast_model,omitempty"`
 	// Effort is the default slot's optional reasoning-effort level (one of
-	// validEfforts; "" = unset). Every launch passes its slot's level as --effort
-	// (ResolveEffort); the profile also carries a non-max Effort as the settings
-	// effortLevel, for a process that inherits the profile without a cc-fleet launch.
+	// validEfforts; "" = unset). Every launch passes its slot's level to claude
+	// (ResolveEffort, EffortArgs); the profile also carries the default slot's level
+	// in settings, for a process that inherits the profile without a cc-fleet launch.
 	Effort string `toml:"effort,omitempty"`
 	// StrongEffort / FastEffort are the "strong" and "fast" slots' levels; blank →
 	// the slot follows Effort. omitempty keeps existing files byte-stable.
@@ -137,9 +137,12 @@ const (
 // sees it. Carried inside the stored model id — see With1M / Strip1M.
 const contextMarker1M = "[1m]"
 
+// EffortOff is the effort level that turns the slot's thinking off.
+const EffortOff = "off"
+
 // validEfforts is the closed set of reasoning-effort levels ("" = unset
 // included), rejected at Load like every other enum.
-var validEfforts = []string{"", "low", "medium", "high", "xhigh", "max"}
+var validEfforts = []string{"", EffortOff, "low", "medium", "high", "xhigh", "max"}
 
 func isValidEffort(e string) bool {
 	for _, ok := range validEfforts {
@@ -214,6 +217,19 @@ func (v *Provider) ResolveEffort(requested string) string {
 		return v.FastEffort
 	}
 	return v.Effort
+}
+
+// EffortArgs is the claude flags that apply a slot's effort: --effort <level>, or
+// --thinking disabled for off, which outranks claude's MAX_THINKING_TOKENS and
+// alwaysThinkingEnabled. None when unset.
+func EffortArgs(effort string) []string {
+	switch effort {
+	case "":
+		return nil
+	case EffortOff:
+		return []string{"--thinking", "disabled"}
+	}
+	return []string{"--effort", effort}
 }
 
 // Provider-resolution sentinels. A provider-less lane invocation maps an empty

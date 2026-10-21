@@ -102,14 +102,16 @@ func GenerateForProvider(v *config.Provider, helperBinary string) ([]byte, error
 		APIKeyHelper: quoteArg(helperBinary) + " keyget " + quoteArg(v.Name),
 		Env:          env,
 	}
-	// Reasoning effort: each launch passes its slot's level as --effort. The env
-	// CLAUDE_CODE_EFFORT_LEVEL outranks --effort, so a provider with an effort blanks
-	// any value the lead's settings layers carry, and the profile only carries the
-	// default slot's non-max level, as the lower-precedence settings effortLevel.
+	// Reasoning effort: each launch passes its slot's level as --effort (or
+	// --thinking disabled for off). The env CLAUDE_CODE_EFFORT_LEVEL outranks
+	// --effort, so a provider with an effort blanks any value the lead's settings
+	// layers carry, and the profile only carries the default slot's non-max level,
+	// as the lower-precedence settings effortLevel. Off stays out: every slot
+	// shares the profile, and only forcing thinking on could undo it per slot.
 	if v.HasEffort() {
 		env["CLAUDE_CODE_EFFORT_LEVEL"] = ""
 	}
-	if v.Effort != "max" {
+	if v.Effort != "max" && v.Effort != config.EffortOff {
 		pf.EffortLevel = v.Effort
 	}
 

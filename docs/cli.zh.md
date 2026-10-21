@@ -68,7 +68,7 @@ printf '%s' "$DEEPSEEK_API_KEY" | cc-fleet add deepseek \
   --secret-backend file --secret-ref deepseek.key --api-key-stdin
 ```
 
-`add` 会同步探测 models 端点(最多 10 秒),通过才落盘。模型档位相关的可选 flag: `--strong-model` / `--fast-model`(档位槽)、`--effort low|medium|high|xhigh|max`(推理强度)、`--strong-effort` / `--fast-effort`(槽位自己的 effort,留空跟随 `--effort`)、`--default-permission`(`cc-fleet run` 会话的默认权限档)。之后用 `edit` 可以改这些,外加 `--key-rotation` 与 `--enable`/`--disable`。
+`add` 会同步探测 models 端点(最多 10 秒),通过才落盘。模型档位相关的可选 flag: `--strong-model` / `--fast-model`(档位槽)、`--effort off|low|medium|high|xhigh|max`(推理强度;`off` 关闭思考)、`--strong-effort` / `--fast-effort`(槽位自己的 effort,留空跟随 `--effort`)、`--default-permission`(`cc-fleet run` 会话的默认权限档)。之后用 `edit` 可以改这些,外加 `--key-rotation` 与 `--enable`/`--disable`。
 
 开启 provider teammate 之后,`add` / `edit` / `remove` 还会同步 `ccf-*` agent 定义。同步失败,或者已有一个不带 cc-fleet 标记的同名 `ccf-*.md`(不会被覆盖)时,命令本身的结果不受影响,`--json` 里会多一个 `teammate_sync_error` 字符串;`cc-fleet repair` 会重试同步,遇到这类文件会打印告警(`--json` 里列在 `agent_defs.conflicts`)。
 
@@ -88,7 +88,7 @@ extra_body = '{"provider":{"only":["deepseek"],"allow_fallbacks":false}}'
 `cc-fleet default <provider>` 设全局默认;此后所有不带 provider 的 `teammate check` / `subagent` / `run` / workflow leaf 都解析到它(单独 `default` 查看,`--unset` 清除)。id `claude` 为原生 leaf 保留,不能设为默认 — `cc-fleet default claude` 会以 `PROVIDER_NAME_INVALID` 拒绝。模型档位让 Claude 拿到稳定的"把手"而不用硬编码模型 ID:
 
 - `--model strong` / `--model fast` / `--model default` 按档位表解析。
-- 每个槽位可标 1M 上下文(`[1m]`),也可设自己的 effort(default 用 `effort`,另有 `strong_effort` / `fast_effort`,留空跟随 `effort`)— TUI 表单或 `add`/`edit` flag 均可配置。每次启动都把该槽位的档以 `claude --effort` 传入;`cc-fleet run … -- --effort` 透传的值优先。`openai-chat` provider 只有在某个槽位设了 effort 时才把它发给上游:发往 OpenRouter 时是 `reasoning: {"effort": …}`,其他接口是 `reasoning_effort`(`max` 变为 `xhigh`)。设了第一个 effort 或清掉最后一个时,它的代理会在下一次启动 worker 时重启。
+- 每个槽位可标 1M 上下文(`[1m]`),也可设自己的 effort(default 用 `effort`,另有 `strong_effort` / `fast_effort`,留空跟随 `effort`)— TUI 表单或 `add`/`edit` flag 均可配置。每次启动都把该槽位的档以 `claude --effort` 传入;`cc-fleet run … -- --effort` 透传的值优先。`off` 关闭该槽位的思考:启动时改传 `claude --thinking disabled`,它压过 claude 设置里的 `MAX_THINKING_TOKENS` 和 `alwaysThinkingEnabled`;`cc-fleet run … -- --thinking adaptive` 可在单次会话里重新打开。上游模型还推不推理取决于协议:`openai-chat` 代理会请求 effort `none`(推理为强制的模型,OpenRouter 会拒绝);Anthropic 协议的 provider 收不到思考请求,按它自己的默认处理;`codex` 和 `openai-responses` provider 按后端默认档推理。`openai-chat` provider 只有在某个槽位设了 effort 时才把它发给上游:发往 OpenRouter 时是 `reasoning: {"effort": …}`,其他接口是 `reasoning_effort`(`max` 变为 `xhigh`)。设了第一个 effort 或清掉最后一个时,它的代理会在下一次启动 worker 时重启。
 
 cc-fleet 启动的每个 `claude`(subagent、workflow leaf、teammate、`run` 会话)都带 `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1`(不向 Anthropic 发启动、功能开关和事件上报请求)、`CLAUDE_CODE_GB_DISK_CACHE_WHEN_TELEMETRY_OFF=1`(功能开关改读本地缓存,对话的 prompt 缓存照常生效)和 `CLAUDE_CODE_DISABLE_WORKFLOWS=1`(不用 dynamic workflow)。你自己启动的 `claude` 不受影响。
 
@@ -128,7 +128,7 @@ cc-fleet subagent deepseek --prompt "总结这段日志" --json
 - `--background` — detached 运行并打印 job id;`cc-fleet subagent-status <job> --wait --timeout 10m` 阻塞到任务落定。退出码:落定 `0`/`1`(按任务 envelope),`3` = leaf 被**held**(操作员挂起 — 去恢复它,不必干等),`124` = 到时仍未结束(心跳,不是失败), `130` = 被中断。
 - `--resume <session_id>` — 续接上一次 subagent,多轮工作。
 - `--timeout`(默认 300s)/ `--max-turns` / `--max-budget-usd` — 限制时长与费用。
-- `--profile` — `slim`(默认)镜像原生 subagent 上下文,首请求远小于完整会话 prompt (工具:Bash、Edit、Glob、Grep、Read、Skill、Write);`slim-ro` 是只读镜像(Bash、Glob、Grep、Read、Skill);`full` 恢复完整会话 prompt — 仅用于对照行为或排查疑似 slim 回归。profile 只改 prompt 和工具,不改思考:任何 profile 下思考都跟随模型配置(默认开启;claude 设置里 `MAX_THINKING_TOKENS=0` 或 `"alwaysThinkingEnabled": false` 关闭;想多少由该槽位的 effort 决定)。
+- `--profile` — `slim`(默认)镜像原生 subagent 上下文,首请求远小于完整会话 prompt (工具:Bash、Edit、Glob、Grep、Read、Skill、Write);`slim-ro` 是只读镜像(Bash、Glob、Grep、Read、Skill);`full` 恢复完整会话 prompt — 仅用于对照行为或排查疑似 slim 回归。profile 只改 prompt 和工具,不改思考:任何 profile 下思考都跟随模型配置 — 默认开启,深浅由该槽位的 effort 决定,effort 为 `off` 时关闭。
 - `--tools` / `--skills` / `--mcp` — 细化 slim 运行(与 `--profile full` 同用被拒)。`--tools` 是整组替换而非追加:`--tools WebSearch` 会让 subagent 只剩 WebSearch。`--skills` 是布尔值(默认 true;`--skills=false` 摘掉 Skill 工具)。MCP 默认按 profile 区分 — `slim` 继承宿主 MCP 配置,`slim-ro` 走 `--strict-mcp-config`;显式 `--mcp` 一律覆盖。
 - `--disallowed-tools` — 逗号或空格分隔的待禁用工具或权限规则,原样传给 `claude --disallowedTools`,任何 profile 均可用。与 `--tools` 不同,它也作用于 MCP 工具:继承宿主 MCP 配置会暴露所有服务器的工具,`--disallowed-tools mcp__broker__place_order`(或整个服务器 `mcp__broker`)可在本次运行中移除它们。默认的 `--dangerously-skip-permissions` 下 deny 规则依然生效。
 - `subagent-gc` 清理已结束任务(默认 `--older-than 24h`;`--session <id>` 清一个会话的已结束任务,pin 过的除外)。

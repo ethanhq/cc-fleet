@@ -205,7 +205,7 @@ when stdin is a tty; otherwise the command exits 1 with a usage error.`,
 	cmd.Flags().StringVar(&fastModel, "fast-model", "",
 		"Optional model id for the 'fast'/background slot (blank → follows --default-model)")
 	cmd.Flags().StringVar(&effort, "effort", "",
-		"Optional reasoning-effort level (low|medium|high|xhigh|max); needs provider support")
+		"Optional reasoning-effort level (off|low|medium|high|xhigh|max; off turns thinking off); needs provider support")
 	cmd.Flags().StringVar(&strongEffort, "strong-effort", "",
 		"Optional reasoning-effort level for the 'strong' slot (blank → follows --effort)")
 	cmd.Flags().StringVar(&fastEffort, "fast-effort", "",

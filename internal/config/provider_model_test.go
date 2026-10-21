@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestResolveModel(t *testing.T) {
 	v := &Provider{DefaultModel: "d", StrongModel: "s", FastModel: "f"}
@@ -90,13 +93,27 @@ func TestContextMarker1M(t *testing.T) {
 
 func TestEffortLevels(t *testing.T) {
 	got := EffortLevels()
-	want := []string{"low", "medium", "high", "xhigh", "max"}
+	want := []string{"off", "low", "medium", "high", "xhigh", "max"}
 	if len(got) != len(want) {
 		t.Fatalf("EffortLevels() = %v, want %v", got, want)
 	}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Fatalf("EffortLevels()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// An unset effort passes nothing, off turns thinking off instead of naming a level.
+func TestEffortArgs(t *testing.T) {
+	for in, want := range map[string][]string{
+		"":     nil,
+		"off":  {"--thinking", "disabled"},
+		"high": {"--effort", "high"},
+		"max":  {"--effort", "max"},
+	} {
+		if got := EffortArgs(in); !slices.Equal(got, want) {
+			t.Errorf("EffortArgs(%q) = %q, want %q", in, got, want)
 		}
 	}
 }
@@ -117,6 +134,7 @@ func TestValidate_EffortAndPermission(t *testing.T) {
 	}{
 		{"effort empty ok", func(v *Provider) { v.Effort = "" }, false},
 		{"effort max ok", func(v *Provider) { v.Effort = "max" }, false},
+		{"effort off ok", func(v *Provider) { v.Effort = "off" }, false},
 		{"effort bad", func(v *Provider) { v.Effort = "ultra" }, true},
 		{"slot efforts ok", func(v *Provider) { v.StrongEffort, v.FastEffort = "max", "low" }, false},
 		{"strong effort bad", func(v *Provider) { v.StrongEffort = "ultra" }, true},

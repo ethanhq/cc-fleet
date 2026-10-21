@@ -143,14 +143,14 @@ func TestRun_SlotEffortReachesArgv(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := cfg.Providers["deepseek"]
-	v.StrongModel, v.Effort, v.StrongEffort = "deepseek-reasoner", "high", "max"
+	v.StrongModel, v.Effort, v.StrongEffort, v.FastEffort = "deepseek-reasoner", "high", "max", "off"
 	if err := config.Save(cfg); err != nil {
 		t.Fatal(err)
 	}
 	for model, want := range map[string]string{
 		"":       "--model deepseek-chat --effort high",
 		"strong": "--model deepseek-reasoner --effort max",
-		"fast":   "--model deepseek-chat --effort high",
+		"fast":   "--model deepseek-chat --thinking disabled",
 	} {
 		got := stubSeams(t, "/fake/claude", nil)
 		if err := Run(Request{Provider: "deepseek", Model: model}); err != nil {

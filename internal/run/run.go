@@ -133,15 +133,14 @@ func Run(req Request) error {
 }
 
 // buildArgv builds the claude argv: bin, cc-fleet's managed flags
-// (--settings/--model, the slot's --effort + permission flags), then the
+// (--settings/--model, the slot's effort flags + permission flags), then the
 // passthrough. Managed flags go first so claude always parses them — a
 // passthrough "--" or value flag can't push them past option parsing and drop the
-// provider profile — and a passthrough --effort, parsed later, wins. argv[0] == bin.
+// provider profile — and a passthrough --effort or --thinking, parsed later, wins.
+// argv[0] == bin.
 func buildArgv(bin, profilePath, model, effort string, permFlags, extra []string) []string {
 	argv := []string{bin, "--settings", profilePath, "--model", model}
-	if effort != "" {
-		argv = append(argv, "--effort", effort)
-	}
+	argv = append(argv, config.EffortArgs(effort)...)
 	argv = append(argv, permFlags...)
 	return append(argv, extra...)
 }

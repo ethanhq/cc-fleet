@@ -247,7 +247,7 @@ changing a URL or key to revalidate.`,
 	cmd.Flags().StringVar(&fastModel, "fast-model", "",
 		"New 'fast'/background slot model id (empty arg = no change; clear it in the TUI)")
 	cmd.Flags().StringVar(&effort, "effort", "",
-		"New reasoning-effort level (low|medium|high|xhigh|max; empty arg = no change)")
+		"New reasoning-effort level (off|low|medium|high|xhigh|max; empty arg = no change)")
 	cmd.Flags().StringVar(&strongEffort, "strong-effort", "",
 		"New 'strong' slot reasoning-effort level (empty arg = no change; clear it in the TUI)")
 	cmd.Flags().StringVar(&fastEffort, "fast-effort", "",

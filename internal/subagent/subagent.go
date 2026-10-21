@@ -463,9 +463,7 @@ func buildArgv(binaryPath, profilePath, model, effort string, req Request, slim 
 	if model != "" {
 		argv = append(argv, "--model", model)
 	}
-	if effort != "" {
-		argv = append(argv, "--effort", effort)
-	}
+	argv = append(argv, config.EffortArgs(effort)...)
 	argv = append(argv, "-p")
 	if req.PromptReader == nil {
 		argv = append(argv, req.Prompt)

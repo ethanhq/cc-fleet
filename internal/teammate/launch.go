@@ -135,9 +135,7 @@ func launch(args []string) *LaunchError {
 	}
 	_, argv := scanLaunchArgv(args, drop)
 	argv = append(argv, flagSettings, prof, flagModel, model)
-	if effort != "" {
-		argv = append(argv, flagEffort, effort)
-	}
+	argv = append(argv, config.EffortArgs(effort)...)
 	return execLead(id, bin, argv, childenv.WithWorkerEnv(childenv.CleanForTeammate(os.Environ())))
 }
 

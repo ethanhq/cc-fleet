@@ -40,8 +40,10 @@ func TestChatEffortMember(t *testing.T) {
 		{"openrouter low", `{"model":"m",` + adaptive + `,"output_config":{"effort":"low"}}`, "reasoning", `"reasoning":{"effort":"low"}`},
 		{"reasoning_effort clamps max", `{"model":"m",` + adaptive + `,"output_config":{"effort":"max"}}`, "reasoning_effort", `"reasoning_effort":"xhigh"`},
 		{"legacy budget", `{"model":"m","thinking":{"type":"enabled","budget_tokens":4000}}`, "reasoning_effort", `"reasoning_effort":"medium"`},
-		{"no thinking (slim subagent)", `{"model":"m","output_config":{"effort":"high"}}`, "reasoning", `"reasoning":{"effort":"high"}`},
-		{"thinking disabled", `{"model":"m","thinking":{"type":"disabled"},"output_config":{"effort":"low"}}`, "reasoning_effort", `"reasoning_effort":"low"`},
+		{"thinking off asks for none", `{"model":"m","output_config":{"effort":"high"}}`, "reasoning", `"reasoning":{"effort":"none"}`},
+		{"thinking off, max", `{"model":"m","output_config":{"effort":"max"}}`, "reasoning", `"reasoning":{"effort":"none"}`},
+		{"thinking disabled", `{"model":"m","thinking":{"type":"disabled"},"output_config":{"effort":"low"}}`, "reasoning_effort", `"reasoning_effort":"none"`},
+		{"thinking off, no effort (side request)", `{"model":"m"}`, "reasoning", ``},
 		{"no effort", `{"model":"m",` + adaptive + `}`, "reasoning", ``},
 		{"forwarding off", `{"model":"m",` + adaptive + `,"output_config":{"effort":"high"}}`, "", ``},
 	} {

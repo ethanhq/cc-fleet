@@ -12,7 +12,8 @@ import (
 
 // A provider run passes its slot's effort as --effort: a slot keyword picks that
 // slot's level (blank → effort), a literal model id runs at the default slot's, and
-// a provider with no effort passes none.
+// a provider with no effort passes none. An off slot passes --thinking disabled
+// instead.
 func TestRun_SlotEffortReachesArgv(t *testing.T) {
 	const slotted = `
 [glm]
@@ -27,14 +28,18 @@ secret_ref      = "glm.key"
 enabled         = true
 added_at        = 2026-05-24T05:00:00Z
 `
+	offDefault := strings.Replace(slotted, `effort          = "high"`, `effort          = "off"`, 1)
 	cases := []struct {
-		name, toml, model, wantModel, wantEffort string
+		name, toml, model, wantModel, wantEffort, wantThinking string
 	}{
-		{"default slot", slotted, "", "glm-4.6", "high"},
-		{"fast slot", slotted, "fast", "glm-4.6", "low"},
-		{"blank strong effort follows effort", slotted, "strong", "glm-5", "high"},
-		{"literal id runs at the default effort", slotted, "glm-x", "glm-x", "high"},
-		{"no effort configured", "", "fast", "glm-4.6", ""},
+		{"default slot", slotted, "", "glm-4.6", "high", ""},
+		{"fast slot", slotted, "fast", "glm-4.6", "low", ""},
+		{"blank strong effort follows effort", slotted, "strong", "glm-5", "high", ""},
+		{"literal id runs at the default effort", slotted, "glm-x", "glm-x", "high", ""},
+		{"no effort configured", "", "fast", "glm-4.6", "", ""},
+		{"off default slot", offDefault, "", "glm-4.6", "", "disabled"},
+		{"blank strong effort follows off", offDefault, "strong", "glm-5", "", "disabled"},
+		{"fast slot keeps its level under an off default", offDefault, "fast", "glm-4.6", "low", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -64,6 +69,9 @@ added_at        = 2026-05-24T05:00:00Z
 			}
 			if got := flagValue(argv, "--effort"); got != tc.wantEffort {
 				t.Errorf("--effort = %q, want %q (argv %q)", got, tc.wantEffort, argv)
+			}
+			if got := flagValue(argv, "--thinking"); got != tc.wantThinking {
+				t.Errorf("--thinking = %q, want %q (argv %q)", got, tc.wantThinking, argv)
 			}
 		})
 	}

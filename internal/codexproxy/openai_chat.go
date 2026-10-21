@@ -120,9 +120,10 @@ func chatEffortField(upstreamURL, extraBody string) string {
 // chatEffortMember is the body member carrying the effort claude asked for, in
 // field, or nil when the request has none. It is spliced in like extra_body, which
 // may set the same field instead. OpenRouter takes every Claude level; a plain
-// reasoning_effort gets the Responses vocabulary (effortFor: max → xhigh). The
-// thinking switch is not consulted: this lane drops it, and a reasoning model
-// reasons whether or not claude's thinking is on.
+// reasoning_effort gets the Responses vocabulary (effortFor: max → xhigh). This
+// lane drops claude's thinking config, so a request with an effort but thinking
+// off (an effort-off slot, or claude's own settings) asks for none: a reasoning
+// model reasons unless told not to.
 func chatEffortMember(a *anthropicRequest, field string) []byte {
 	if field == "" {
 		return nil
@@ -133,6 +134,9 @@ func chatEffortMember(a *anthropicRequest, field string) []byte {
 	}
 	if e == "" {
 		return nil
+	}
+	if a.Thinking == nil || a.Thinking.Type == "disabled" {
+		e = "none"
 	}
 	var v any = e
 	if field == "reasoning" {

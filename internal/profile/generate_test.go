@@ -166,6 +166,31 @@ func TestGenerateForProvider_MaxEffortLeftToLaunch(t *testing.T) {
 	}
 }
 
+// Off never reaches the profile every slot shares: no effortLevel, and no
+// alwaysThinkingEnabled that would turn the other slots' thinking off too.
+func TestGenerateForProvider_OffEffort(t *testing.T) {
+	for _, c := range []struct{ name, effort, fastEffort string }{
+		{"default slot off", "off", "high"}, {"fast slot off", "", "off"},
+	} {
+		v := sampleProvider()
+		v.Effort, v.FastEffort = c.effort, c.fastEffort
+		got, err := GenerateForProvider(v, testHelperBin())
+		if err != nil {
+			t.Fatalf("GenerateForProvider: %v", err)
+		}
+		var back map[string]json.RawMessage
+		if err := json.Unmarshal(got, &back); err != nil {
+			t.Fatalf("Unmarshal: %v", err)
+		}
+		if _, ok := back["effortLevel"]; ok {
+			t.Errorf("%s: effortLevel present: %s", c.name, got)
+		}
+		if raw, ok := back["alwaysThinkingEnabled"]; ok {
+			t.Errorf("%s: alwaysThinkingEnabled = %s, want absent", c.name, raw)
+		}
+	}
+}
+
 // The env is blanked for a provider with any slot's effort set, and left alone for
 // one with none, so the lead's settings value still applies there.
 func TestGenerateForProvider_EffortEnvBlank(t *testing.T) {

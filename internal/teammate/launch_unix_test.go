@@ -238,9 +238,11 @@ func TestRouteRewritesArgv(t *testing.T) {
 	claude := writeFakeClaude(t, h.Bin, "exit 0\n")
 	eff := launchProvider("eff")
 	eff.Effort, eff.FastEffort = "high", "low"
+	off := launchProvider("off")
+	off.Effort = "off"
 	daemon := launchProvider("oai")
 	daemon.Protocol, daemon.BaseURL, daemon.UpstreamURL = config.ProtocolOpenAIChat, "http://127.0.0.1:18431", "https://api.example.invalid/v1"
-	launchSaveConfig(t, launchProvider("p"), eff, daemon)
+	launchSaveConfig(t, launchProvider("p"), eff, off, daemon)
 
 	// Identity and everything unknown to the launcher stays in place.
 	common := []string{"--agent-name", "w", "--team-name", "session-1", "--agent-color", "blue",
@@ -254,6 +256,7 @@ func TestRouteRewritesArgv(t *testing.T) {
 		psid    string
 		model   string
 		effort  string // expected appended --effort, "" = none
+		off     bool   // expected appended --thinking disabled
 		profile string
 		daemons int
 	}{
@@ -299,6 +302,12 @@ func TestRouteRewritesArgv(t *testing.T) {
 			model: "eff-fast", effort: "low", profile: "/prof/eff.json",
 		},
 		{
+			name:  "off slot drops --effort and turns thinking off",
+			args:  []string{"--agent-id", "w@session-1", "--effort", "max", "--agent-type", "ccf-off"},
+			keep:  []string{"--agent-id", "w@session-1"},
+			model: "off-def", off: true, profile: "/prof/off.json",
+		},
+		{
 			name:  "daemon-backed provider ensures its proxy",
 			args:  []string{"--agent-id", "w@session-1", "--agent-type", "ccf-oai", "--model", "ccf-oai"},
 			keep:  []string{"--agent-id", "w@session-1"},
@@ -315,6 +324,9 @@ func TestRouteRewritesArgv(t *testing.T) {
 			want := append(append([]string{claude}, tc.keep...), "--settings", tc.profile, "--model", tc.model)
 			if tc.effort != "" {
 				want = append(want, "--effort", tc.effort)
+			}
+			if tc.off {
+				want = append(want, "--thinking", "disabled")
 			}
 			if rec.execs != 1 || rec.argv0 != claude || !reflect.DeepEqual(rec.argv, want) {
 				t.Errorf("exec'd %q\n got argv %q\nwant argv %q", rec.argv0, rec.argv, want)

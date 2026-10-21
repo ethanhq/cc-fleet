@@ -501,11 +501,11 @@ func fieldNote(key string) string {
 	case "default_1m", "strong_1m", "fast_1m":
 		return "1M context — mark this model's window as 1M; the marker is stripped before the request reaches the provider."
 	case "effort":
-		return "default slot's reasoning effort; auto leaves it to claude (settings effortLevel, else its default). needs provider support, else requests may error. space / ←/→ cycles."
+		return "default slot's reasoning effort; auto leaves it to claude (settings effortLevel, else its default); off turns thinking off. needs provider support, else requests may error. space / ←/→ cycles."
 	case "strong_effort":
-		return "strong slot's reasoning effort; follows default runs at the default slot's. space / ←/→ cycles."
+		return "strong slot's reasoning effort; follows default runs at the default slot's; off turns thinking off. space / ←/→ cycles."
 	case "fast_effort":
-		return "fast slot's reasoning effort; follows default runs at the default slot's. space / ←/→ cycles."
+		return "fast slot's reasoning effort; follows default runs at the default slot's; off turns thinking off. space / ←/→ cycles."
 	case "permission":
 		return "default permission mode for `cc-fleet run`. space / ←/→ cycles."
 	case "enabled":
