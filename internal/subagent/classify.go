@@ -286,7 +286,7 @@ func suggestionFor(code string) string {
 	case ErrCodeFailed:
 		return "Inspect the error; retry or switch provider"
 	case ErrCodeOutputTooLarge:
-		return "Narrow the task or cap it with --max-turns / --output-format json"
+		return "Have it write large output to a file and return a short answer"
 	default:
 		return ""
 	}

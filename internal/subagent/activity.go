@@ -100,14 +100,14 @@ func (w *activityWriter) emit(rec activityRecord) {
 	_, _ = f.Write(append(data, '\n'))
 }
 
-// activitySink wraps the stdout cappedWriter on the SYNC leaf path: every write goes to the cap
-// FIRST (so the byte-cap / overflow→kill timing is byte-identical to a bare cappedWriter), then a
+// activitySink wraps the stdout capture on the SYNC leaf path: every write goes to the cap
+// FIRST (so the byte-cap / overflow→kill timing is byte-identical to the bare capture), then a
 // COPY is handed to a parser goroutine over a bounded channel — dropped on pressure so activity
 // capture can NEVER block the os/exec copy goroutine or delay the process-group kill. The parser
 // extracts tool_use names + first-arg previews and per-message usage snapshots and writes them to
 // the activity sidecar live, so the board sees a sync leaf's tool calls + tokens WHILE it runs.
 type activitySink struct {
-	cap   *cappedWriter
+	cap   io.Writer
 	lines chan []byte
 	done  chan struct{}
 }
@@ -117,7 +117,7 @@ type activitySink struct {
 const activityChanCap = 256
 
 // newActivitySink starts the parser goroutine writing to w and returns the sink wrapping cap.
-func newActivitySink(cap *cappedWriter, w *activityWriter) *activitySink {
+func newActivitySink(cap io.Writer, w *activityWriter) *activitySink {
 	s := &activitySink{cap: cap, lines: make(chan []byte, activityChanCap), done: make(chan struct{})}
 	go s.consume(w)
 	return s
@@ -160,6 +160,11 @@ func (s *activitySink) consume(w *activityWriter) {
 			}
 			parseStreamLine(buf[:i], w, a)
 			buf = buf[i+1:]
+		}
+		// A dropped chunk can take a newline with it and merge lines; never hold more than one
+		// line's cap (the stdout capture no longer bounds the whole stream).
+		if len(buf) > maxChildOutput {
+			buf = nil
 		}
 	}
 }
@@ -505,6 +510,13 @@ func extractResultLineFile(path string) []byte {
 	return extractResultLineReader(f)
 }
 
+func isResultLine(line []byte) bool {
+	var head struct {
+		Type string `json:"type"`
+	}
+	return json.Unmarshal(line, &head) == nil && head.Type == "result"
+}
+
 // extractResultLineReader scans NDJSON stream-json for the single `type:"result"` envelope line and
 // returns it for classify. The result line is NOT guaranteed to be last (a trailing SessionStart
 // hook_response can follow it), so we scan rather than take the tail; the LAST result line wins if
@@ -520,13 +532,7 @@ func extractResultLineReader(r io.Reader) []byte {
 	var line []byte // accumulates one logical line across ReadSlice refills
 	oversized := false
 	keep := func() {
-		if oversized {
-			return
-		}
-		var head struct {
-			Type string `json:"type"`
-		}
-		if json.Unmarshal(line, &head) == nil && head.Type == "result" {
+		if !oversized && isResultLine(line) {
 			out = append(out[:0], line...) // keep the latest result line
 		}
 	}

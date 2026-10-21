@@ -19,7 +19,7 @@ func TestRunClaude_SuccessEnvelope(t *testing.T) {
 	bin := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smokeSuccessJSON+"'\nexit 0\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	stdout, stderr, code, err := runClaude(ctx, bin, []string{bin, "-p", "x"}, os.Environ(), nil, "", nil, nil)
+	stdout, stderr, code, err := runClaude(ctx, bin, []string{bin, "-p", "x"}, os.Environ(), nil, "", false, nil, nil)
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
 	}
@@ -45,7 +45,7 @@ func TestRunClaude_OnStartReceivesLiveChildPID(t *testing.T) {
 	defer cancel()
 	var gotPID int
 	var aliveAtStart bool
-	_, _, _, _ = runClaude(ctx, bin, []string{bin}, os.Environ(), nil, "", nil, func(pid int) {
+	_, _, _, _ = runClaude(ctx, bin, []string{bin}, os.Environ(), nil, "", false, nil, func(pid int) {
 		gotPID = pid
 		aliveAtStart = pidAlive(pid)
 	})
@@ -61,7 +61,7 @@ func TestRunClaude_ErrorEnvelopeExit1(t *testing.T) {
 	bin := writeFakeBin(t, "#!/bin/sh\nprintf '%s' '"+smoke429BalanceJSON+"'\nexit 1\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	stdout, _, code, err := runClaude(ctx, bin, []string{bin, "-p", "x"}, os.Environ(), nil, "", nil, nil)
+	stdout, _, code, err := runClaude(ctx, bin, []string{bin, "-p", "x"}, os.Environ(), nil, "", false, nil, nil)
 	if code != 1 {
 		t.Fatalf("exit code = %d, want 1", code)
 	}
@@ -81,7 +81,7 @@ func TestRunClaude_StdinPrompt(t *testing.T) {
 	bin := writeFakeBin(t, "#!/bin/sh\ncat\n")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	stdout, _, code, _ := runClaude(ctx, bin, []string{bin, "-p"}, os.Environ(), strings.NewReader("piped-prompt"), "", nil, nil)
+	stdout, _, code, _ := runClaude(ctx, bin, []string{bin, "-p"}, os.Environ(), strings.NewReader("piped-prompt"), "", false, nil, nil)
 	if code != 0 || string(stdout) != "piped-prompt" {
 		t.Fatalf("stdin not piped: code=%d stdout=%q", code, stdout)
 	}
@@ -108,7 +108,7 @@ func TestRunClaude_TimeoutKillsProcessGroup(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	start := time.Now()
-	_, _, _, _ = runClaude(ctx, bin, []string{bin}, os.Environ(), nil, "", nil, nil)
+	_, _, _, _ = runClaude(ctx, bin, []string{bin}, os.Environ(), nil, "", false, nil, nil)
 	elapsed := time.Since(start)
 
 	// Should return within deadline + grace + slack, not hang on the pipe-holding

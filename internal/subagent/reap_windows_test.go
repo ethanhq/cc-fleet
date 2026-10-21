@@ -80,7 +80,7 @@ func TestRunClaude_TimeoutKillsProcessTree(t *testing.T) {
 		cancel()
 		readyc <- r
 	}()
-	_, _, _, _ = runClaude(ctx, bin, []string{bin}, os.Environ(), nil, "", nil, nil)
+	_, _, _, _ = runClaude(ctx, bin, []string{bin}, os.Environ(), nil, "", false, nil, nil)
 	r := <-readyc
 	if r.pid <= 0 {
 		t.Fatalf("grandchild never recorded its pid (%q)", gpidFile)

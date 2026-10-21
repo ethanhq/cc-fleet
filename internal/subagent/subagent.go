@@ -34,7 +34,8 @@ var waitGrace = 5 * time.Second
 // maxChildOutput bounds each captured child stream (stdout, stderr) on the SYNC
 // path. A `claude -p --output-format json` result is KB; the cap only stops a
 // runaway child from OOMing the in-memory capture (the --background path streams
-// to disk instead). Package var so tests can shrink it.
+// to disk instead). A stream-json stdout keeps only its result line, so there the
+// cap bounds one line, never the transcript. Package var so tests can shrink it.
 var maxChildOutput = 32 << 20 // 32 MiB per stream
 
 // errOutputTooLarge is runClaude's sentinel when a captured stream overflowed
@@ -71,6 +72,49 @@ func (w *cappedWriter) Write(p []byte) (int, error) {
 		w.onOverflow()
 	}
 	return len(p), nil // consume the tail into the void
+}
+
+// resultLineWriter is the stdout capture of a stream-json run: it keeps only the
+// last type:"result" line and drops every other line once complete (each partial
+// delta, message and tool result), so a long leaf's transcript is never held. A
+// single line over limit trips overflow and onOverflow, as for cappedWriter.
+type resultLineWriter struct {
+	limit      int
+	line       []byte // the line being assembled
+	result     []byte
+	overflow   bool
+	onOverflow func()
+}
+
+func (w *resultLineWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	for len(p) > 0 && !w.overflow {
+		chunk := p
+		i := bytes.IndexByte(p, '\n')
+		if i >= 0 {
+			chunk = p[:i+1]
+		}
+		if len(w.line)+len(chunk) > w.limit {
+			w.overflow, w.line = true, nil
+			if w.onOverflow != nil {
+				w.onOverflow()
+			}
+			break
+		}
+		w.line = append(w.line, chunk...)
+		p = p[len(chunk):]
+		if i >= 0 {
+			w.flush()
+		}
+	}
+	return n, nil
+}
+
+func (w *resultLineWriter) flush() {
+	if isResultLine(w.line) {
+		w.result = append(w.result[:0], w.line...)
+	}
+	w.line = w.line[:0]
 }
 
 // detectLeadSession is a seam so tests can inject a parent Claude session
@@ -379,7 +423,7 @@ func Run(parent context.Context, req Request) Result {
 		attempt := req.Attempt
 		onStart = func(childPID int) { recordChildIdentity(jobID, childPID, attempt) }
 	}
-	stdout, stderr, exitCode, runErr := runClaude(ctx, binPath, argv, env, req.PromptReader, req.WorkingDir, act, onStart)
+	stdout, stderr, exitCode, runErr := runClaude(ctx, binPath, argv, env, req.PromptReader, req.WorkingDir, req.StreamActivity, act, onStart)
 	timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 	dg.Logf("subagent: claude exited code %d (timeout=%v)", exitCode, timedOut)
 
@@ -527,7 +571,8 @@ type slimArgv struct {
 // standalone func so tests can drive it with a fake binary. It never streams to
 // the parent's stdio: stdout/stderr are captured to byte-capped buffers, and a
 // stream that overflows maxChildOutput kills the group and returns errOutputTooLarge.
-func runClaude(ctx context.Context, binaryPath string, argv, env []string, stdin io.Reader, workingDir string, act *activityWriter, onStart func(childPID int)) (stdout, stderr []byte, exitCode int, err error) {
+// With streamJSON the returned stdout is only the result line (resultLineWriter).
+func runClaude(ctx context.Context, binaryPath string, argv, env []string, stdin io.Reader, workingDir string, streamJSON bool, act *activityWriter, onStart func(childPID int)) (stdout, stderr []byte, exitCode int, err error) {
 	cmd := exec.CommandContext(ctx, binaryPath)
 	cmd.Args = argv // argv[0] == binaryPath by construction
 	cmd.Env = env
@@ -562,15 +607,20 @@ func runClaude(ctx context.Context, binaryPath string, argv, env []string, stdin
 	}
 	outW := &cappedWriter{limit: maxChildOutput, onOverflow: killGroup}
 	errW := &cappedWriter{limit: maxChildOutput, onOverflow: killGroup}
+	resW := &resultLineWriter{limit: maxChildOutput, onOverflow: killGroup}
+	var capture io.Writer = outW
+	if streamJSON {
+		capture = resW
+	}
 	// Activity capture (opt-in) wraps stdout CAP-FIRST + non-blocking: every write hits the
 	// byte-cap first (overflow→kill timing unchanged), then a copy is handed to a parser over a
 	// bounded channel that drops on pressure — it can never block the copy goroutine or delay kill.
 	var sink *activitySink
 	if act != nil {
-		sink = newActivitySink(outW, act)
+		sink = newActivitySink(capture, act)
 		cmd.Stdout = sink
 	} else {
-		cmd.Stdout = outW
+		cmd.Stdout = capture
 	}
 	cmd.Stderr = errW
 
@@ -626,10 +676,15 @@ func runClaude(ctx context.Context, binaryPath string, argv, env []string, stdin
 			exitCode = -1
 		}
 	}
-	if outW.overflow || errW.overflow {
-		return outW.buf.Bytes(), errW.buf.Bytes(), exitCode, errOutputTooLarge
+	stdout = outW.buf.Bytes()
+	if streamJSON {
+		resW.flush() // a final line without a trailing newline is still complete
+		stdout = resW.result
 	}
-	return outW.buf.Bytes(), errW.buf.Bytes(), exitCode, err
+	if outW.overflow || errW.overflow || resW.overflow {
+		return stdout, errW.buf.Bytes(), exitCode, errOutputTooLarge
+	}
+	return stdout, errW.buf.Bytes(), exitCode, err
 }
 
 // SetDetachGroup puts cmd in its own process group (Setpgid on unix,
