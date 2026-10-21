@@ -502,13 +502,13 @@ func buildArgv(binaryPath, profilePath, model, effort string, req Request, slim 
 	}
 
 	// Slim profiles: replace the main prompt with the rendered native-mirror
-	// sidecar, restrict the tool pool, disable thinking (native subagent
-	// behavior), and isolate MCP unless the caller asked to inherit the host
-	// config. Appended after the full argv so a full run stays byte-identical.
+	// sidecar, restrict the tool pool, and isolate MCP unless the caller asked to
+	// inherit the host config. Thinking is left to the model's config (claude's
+	// settings and the slot's effort), as for a native subagent. Appended after
+	// the full argv so a full run stays byte-identical.
 	if slim.promptFile != "" {
 		argv = append(argv, "--system-prompt-file", slim.promptFile,
-			"--tools", strings.Join(slim.tools, ","),
-			"--thinking", "disabled")
+			"--tools", strings.Join(slim.tools, ","))
 		if !req.MCP {
 			argv = append(argv, "--strict-mcp-config")
 		}

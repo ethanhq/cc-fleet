@@ -192,8 +192,8 @@ func newCaptureRepo(t *testing.T) string {
 const claudeMdSentinel = "SLIMCAPTURE_SENTINEL_CLAUDE_MD"
 
 // slimCaptureArgv builds the real argv for a profile via buildSlimArgv +
-// buildArgv. settingsPath is an inert `{}` settings file so the exact buildArgv
-// shape is preserved without a real provider profile. mods adjust the Request
+// buildArgv. settingsPath is a settings file that only turns thinking on, so the
+// exact buildArgv shape is preserved without a real provider profile. mods adjust the Request
 // before the build (e.g. MCP inherit, a JSON schema).
 func slimCaptureArgv(t *testing.T, bin, settingsPath, model, dir, profile string, mods ...func(*Request)) ([]string, string) {
 	t.Helper()
@@ -238,8 +238,10 @@ func TestSlimCaptureFirstRequest(t *testing.T) {
 	if err := os.MkdirAll(jd, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	// Thinking on whatever the host settings say (the flag settings' env outranks
+	// them), so slim must carry it unless a profile turns it off.
 	settings := filepath.Join(t.TempDir(), "settings.json")
-	if err := os.WriteFile(settings, []byte("{}\n"), 0o600); err != nil {
+	if err := os.WriteFile(settings, []byte(`{"env":{"MAX_THINKING_TOKENS":"10000"}}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -262,8 +264,8 @@ func TestSlimCaptureFirstRequest(t *testing.T) {
 		if got, want := filteredWireTools(req), expectedSlimWire(t, ProfileSlim); !reflect.DeepEqual(got, want) {
 			t.Errorf("slim tool set canary (filtered): got %v, want %v", got, want)
 		}
-		if req.Thinking.Type != "disabled" {
-			t.Errorf("slim thinking.type = %q, want \"disabled\"", req.Thinking.Type)
+		if typ := req.Thinking.Type; typ != "adaptive" && typ != "enabled" {
+			t.Errorf("slim thinking = %q, want it on as the settings say", typ)
 		}
 		if !strings.Contains(string(req.Messages), claudeMdSentinel) {
 			t.Error("slim first user message missing the CLAUDE.md sentinel (CLAUDE.md must be present)")
@@ -346,8 +348,21 @@ func TestSlimCaptureFirstRequest(t *testing.T) {
 				t.Errorf("slim-ro (strict mcp) must not carry MCP tool %q on the wire", x.Name)
 			}
 		}
-		if req.Thinking.Type != "disabled" {
-			t.Errorf("slim-ro thinking.type = %q, want \"disabled\"", req.Thinking.Type)
+		if typ := req.Thinking.Type; typ != "adaptive" && typ != "enabled" {
+			t.Errorf("slim-ro thinking = %q, want it on as the settings say", typ)
+		}
+	})
+
+	t.Run("slim, thinking off", func(t *testing.T) {
+		off := filepath.Join(t.TempDir(), "settings.json")
+		if err := os.WriteFile(off, []byte(`{"env":{"MAX_THINKING_TOKENS":"0"}}`+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		dir := newCaptureRepo(t)
+		argv, _ := slimCaptureArgv(t, bin, off, "", dir, ProfileSlim)
+		req := parseRequest(t, captureFirstRequest(t, bin, argv, nil, dir))
+		if typ := req.Thinking.Type; typ != "" && typ != "disabled" {
+			t.Errorf("slim thinking = %q with MAX_THINKING_TOKENS=0, want it off as the settings say", typ)
 		}
 	})
 

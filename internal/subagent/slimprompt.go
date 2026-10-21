@@ -22,8 +22,8 @@ import (
 )
 
 // SlimVersionFloor is the lowest claude version whose source carries every flag
-// the slim profiles emit (--system-prompt-file / --tools / --thinking disabled /
-// --strict-mcp-config). Below it the version gate runs `full` instead.
+// the slim profiles emit (--system-prompt-file / --tools / --strict-mcp-config).
+// Below it the version gate runs `full` instead.
 const SlimVersionFloor = "2.1.88"
 
 // Prompt profiles. "" and ProfileFull mean today's full `claude -p` session

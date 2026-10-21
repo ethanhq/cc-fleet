@@ -37,8 +37,8 @@ func TestBuildArgv_Slim(t *testing.T) {
 		argv := buildArgv(bin, prof, model, "", Request{Prompt: "x", PromptProfile: ProfileSlim}, slim)
 		assertPairAfter(t, argv, "--system-prompt-file", "/abs/job.slimprompt")
 		assertPairAfter(t, argv, "--tools", "Bash,Edit,Read")
-		assertPairAfter(t, argv, "--thinking", "disabled")
-		assertAbsent(t, argv, "default") // the join must be comma-separated, no literal "default"
+		assertAbsent(t, argv, "--thinking") // thinking follows the model's config, not the profile
+		assertAbsent(t, argv, "default")    // the join must be comma-separated, no literal "default"
 		if idxOf(argv, "--strict-mcp-config") < 0 {
 			t.Fatalf("zero-value MCP must carry --strict-mcp-config: %v", argv)
 		}
@@ -50,7 +50,7 @@ func TestBuildArgv_Slim(t *testing.T) {
 		argv := buildArgv(bin, prof, model, "", Request{Prompt: "x", PromptProfile: ProfileSlim, MCP: true}, slim)
 		assertAbsent(t, argv, "--strict-mcp-config")
 		// the other slim flags remain
-		assertPairAfter(t, argv, "--thinking", "disabled")
+		assertPairAfter(t, argv, "--tools", "Bash,Edit,Read")
 	})
 }
 

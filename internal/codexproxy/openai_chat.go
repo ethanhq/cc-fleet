@@ -121,8 +121,8 @@ func chatEffortField(upstreamURL, extraBody string) string {
 // field, or nil when the request has none. It is spliced in like extra_body, which
 // may set the same field instead. OpenRouter takes every Claude level; a plain
 // reasoning_effort gets the Responses vocabulary (effortFor: max → xhigh). The
-// thinking switch is not consulted: this lane drops it, and a slim subagent turns
-// thinking off while a reasoning model still reasons at its default level.
+// thinking switch is not consulted: this lane drops it, and a reasoning model
+// reasons whether or not claude's thinking is on.
 func chatEffortMember(a *anthropicRequest, field string) []byte {
 	if field == "" {
 		return nil
