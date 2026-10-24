@@ -1,0 +1,17 @@
+== result
+{
+  "error_code": "SUBAGENT_FAILED",
+  "error_msg": "write profile for glm: profile: mkdir <HOME>/.claude/profiles: mkdir <HOME>/.claude/profiles: not a directory",
+  "ok": false,
+  "provider": "glm"
+}
+== raw
+== exit_code
+0
+== structured_output
+== proxy_ensure
+glm
+== profiles
+== child
+not launched
+== jobs

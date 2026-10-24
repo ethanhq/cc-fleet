@@ -1,0 +1,17 @@
+== result
+{
+  "error_code": "FINGERPRINT_STALE",
+  "error_msg": "claude binary not found — install Claude Code (https://claude.com/claude-code) or put claude on PATH",
+  "ok": false,
+  "provider": "cdx",
+  "suggestion": "Install Claude Code or put claude on PATH (cc-fleet doctor shows what it found), then retry"
+}
+== raw
+== exit_code
+0
+== structured_output
+== proxy_ensure
+== profiles
+== child
+not launched
+== jobs
