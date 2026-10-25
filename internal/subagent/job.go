@@ -17,7 +17,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/ethanhq/cc-fleet/internal/childenv"
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/fileutil"
 	"github.com/ethanhq/cc-fleet/internal/ids"
@@ -157,7 +156,7 @@ var materializePromptFn = materializePromptReader
 // Any failure between cmd.Start and the final Release triggers a process-group
 // SIGTERM (200ms grace) → SIGKILL → Wait → file cleanup so we never leak a
 // detached provider child + orphan .out/.err files.
-func launchBackground(req Request, binaryPath, profilePath, model, effort, effective, downgrade string, proxyPort int) Result {
+func launchBackground(eng Engine, req Request, v *config.Provider, binaryPath, profilePath, model, effort, effective, downgrade string) Result {
 	dir, err := jobsDir()
 	if err != nil {
 		return fail(ErrCodeFailed, fmt.Sprintf("resolve jobs dir: %v", err), req.Provider, "")
@@ -177,7 +176,6 @@ func launchBackground(req Request, binaryPath, profilePath, model, effort, effec
 	jobID := uuid.NewString()
 	outPath := filepath.Join(dir, jobID+".out")
 	errPath := filepath.Join(dir, jobID+".err")
-	slimPath := filepath.Join(dir, jobID+".slimprompt")
 
 	outF, err := os.OpenFile(outPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
 	if err != nil {
@@ -191,12 +189,15 @@ func launchBackground(req Request, binaryPath, profilePath, model, effort, effec
 	}
 	defer errF.Close()
 
-	// Render the slim prompt sidecar after the jobID mint, before cmd.Start.
-	slim, slimErr := buildSlimArgv(effective, jobID, req, model)
-	if slimErr != nil {
+	// Build the argv (rendering the slim prompt sidecar) after the jobID mint,
+	// before cmd.Start; every failure path below removes the engine's sidecar.
+	spec := launchSpec{req: innerReq, provider: v, bin: binaryPath, settings: profilePath,
+		model: model, effort: effort, profile: effective, jobID: jobID}
+	argv, sidecar, aerr := eng.Argv(spec)
+	if aerr != nil {
 		_ = os.Remove(outPath)
 		_ = os.Remove(errPath)
-		return fail(ErrCodeFailed, slimErr.Error(), req.Provider, "")
+		return fail(ErrCodeFailed, aerr.Error(), req.Provider, "")
 	}
 
 	// Board drill-in: persist the prompt side file before the start (every failure
@@ -205,14 +206,10 @@ func launchBackground(req Request, binaryPath, profilePath, model, effort, effec
 		_ = os.WriteFile(filepath.Join(dir, jobID+".prompt"), []byte(req.IOPrompt), 0o600)
 	}
 
-	argv := buildArgv(binaryPath, profilePath, model, effort, innerReq, slim)
 	// Fresh exec.Command (no context) → no deadline; child outlives parent.
 	cmd := exec.Command(binaryPath)
 	cmd.Args = argv
-	cmd.Env = childenv.WithWorkerEnv(childenv.Clean(os.Environ()))
-	if effective == ProfileSlimRO {
-		cmd.Env = append(cmd.Env, "CLAUDE_CODE_DISABLE_CLAUDE_MDS=1")
-	}
+	cmd.Env = eng.Env(os.Environ(), spec)
 	cmd.Stdout = outF
 	cmd.Stderr = errF
 	setGroupAttr(cmd)
@@ -239,7 +236,7 @@ func launchBackground(req Request, binaryPath, profilePath, model, effort, effec
 				_ = os.Remove(outPath)
 				_ = os.Remove(errPath)
 				_ = os.Remove(pf)
-				_ = os.Remove(slimPath)
+				_ = os.Remove(sidecar)
 				return fail(ErrCodeFailed,
 					fmt.Sprintf("materialize prompt: %v", merr), req.Provider, "")
 			}
@@ -252,7 +249,7 @@ func launchBackground(req Request, binaryPath, profilePath, model, effort, effec
 		_ = os.Remove(outPath)
 		_ = os.Remove(errPath)
 		_ = os.Remove(filepath.Join(dir, jobID+".prompt"))
-		_ = os.Remove(slimPath)
+		_ = os.Remove(sidecar)
 		return fail(ErrCodeFailed, fmt.Sprintf("start background subagent: %v", err), req.Provider, "")
 	}
 	pid := cmd.Process.Pid
@@ -266,7 +263,7 @@ func launchBackground(req Request, binaryPath, profilePath, model, effort, effec
 		PID:       pid,
 		PGID:      pid, // Setpgid → the group id equals the leader pid
 		ProcStart: bgProcStart,
-		ProxyPort: proxyPort,
+		ProxyPort: proxyPortOf(v),
 		Provider:  req.Provider,
 		Model:     model,
 		StartedAt: time.Now().UTC().Format(time.RFC3339),
@@ -302,7 +299,7 @@ func launchBackground(req Request, binaryPath, profilePath, model, effort, effec
 		_ = os.Remove(outPath)
 		_ = os.Remove(errPath)
 		_ = os.Remove(filepath.Join(dir, jobID+".prompt"))
-		_ = os.Remove(slimPath)
+		_ = os.Remove(sidecar)
 		return fail(ErrCodeFailed, fmt.Sprintf("write job meta: %v", err), req.Provider, "")
 	}
 

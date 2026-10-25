@@ -1,0 +1,111 @@
+== result
+{
+  "duration_api_ms": 3385,
+  "duration_ms": 3654,
+  "lead_session_id": "lead-golden",
+  "model": "mimo-v2-flash",
+  "num_turns": 1,
+  "ok": true,
+  "prompt_profile": "slim",
+  "provider": "glm",
+  "result": "SUBAGENT_SMOKE_OK=42",
+  "session_id": "84c5b474-aaaa",
+  "stop_reason": "end_turn",
+  "total_cost_usd": 0.258409,
+  "usage": {
+    "cache_read_input_tokens": 18,
+    "input_tokens": 50750,
+    "output_tokens": 186
+  }
+}
+== raw
+{"type":"result","subtype":"success","is_error":false,"api_error_status":null,"duration_ms":3654,"duration_api_ms":3385,"ttft_ms":3397,"num_turns":1,"stop_reason":"end_turn","session_id":"84c5b474-aaaa","total_cost_usd":0.258409,"usage":{"input_tokens":50750,"cache_read_input_tokens":18,"output_tokens":186,"service_tier":"standard"},"modelUsage":{"mimo-v2-flash":{"inputTokens":50750,"outputTokens":186,"costUSD":0.258409}},"result":"SUBAGENT_SMOKE_OK=42","permission_denials":[],"terminal_reason":"completed"}
+== exit_code
+0
+== structured_output
+== proxy_ensure
+glm
+== profiles
+glm.json
+== argv
+"--dangerously-skip-permissions"
+"--settings"
+"<HOME>/.claude/profiles/glm.json"
+"--model"
+"glm-4.6"
+"-p"
+"golden prompt"
+"--output-format"
+"json"
+"--system-prompt-file"
+"<XDG>/cc-fleet/subagent-jobs/<UUID1>.slimprompt"
+"--tools"
+"Grep,Read"
+== argv0
+<BIN>/claude
+== cwd
+<WD>
+== env
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+CLAUDE_CODE_DISABLE_WORKFLOWS=1
+CLAUDE_CODE_GB_DISK_CACHE_WHEN_TELEMETRY_OFF=1
+== stdin
+== jobs
+== jobs/<UUID1>.json
+{
+  "child_pid": "<masked>",
+  "child_proc_start": "<masked>",
+  "job_id": "<UUID1>",
+  "json": true,
+  "lead_session_id": "lead-golden",
+  "model": "glm-4.6",
+  "pgid": "<masked>",
+  "pid": "<masked>",
+  "proc_start": "<masked>",
+  "prompt_profile": "slim",
+  "provider": "glm",
+  "started_at": "<masked>",
+  "status": "running"
+}
+== jobs/<UUID1>.result.json
+{
+  "duration_ms": 3654,
+  "job_id": "<UUID1>",
+  "lead_session_id": "lead-golden",
+  "model": "glm-4.6",
+  "num_turns": 1,
+  "ok": true,
+  "prompt_profile": "slim",
+  "provider": "glm",
+  "started_at": "<masked>",
+  "status": "done",
+  "stop_reason": "end_turn",
+  "total_cost_usd": 0.258409,
+  "usage": {
+    "cache_read_input_tokens": 18,
+    "input_tokens": 50750,
+    "output_tokens": 186
+  }
+}
+== jobs/<UUID1>.slimprompt
+You are Claude Code, Anthropic's official CLI for Claude.
+
+You are an agent for Claude Code, Anthropic's official CLI for Claude. Given the user's message, you should use the tools available to complete the task. Complete the task fully—don't gold-plate, but don't leave it half-done. When you complete the task, respond with a concise report covering what was done and any key findings — the caller will relay this to the user, so it only needs the essentials.
+
+Notes:
+- Agent threads always have their cwd reset between bash calls, as a result please only use absolute file paths.
+- In your final response, share file paths (always absolute, never relative) that are relevant to the task. Include code snippets only when the exact text is load-bearing (e.g., a bug you found, a function signature the caller asked for) — do not recap code you merely read.
+- For clear communication with the user the assistant MUST avoid using emojis.
+- Do not use a colon before tool calls. Text like "Let me read the file:" followed by a read tool call should just be "Let me read the file." with a period.
+- Do NOT Write report/summary/findings/analysis .md files. Return findings directly as your final assistant message — the caller reads your text output, not files you create.
+
+Here is useful information about the environment you are running in:
+<env>
+Working directory: <WD>
+Is directory a git repo: No
+Platform: <X>
+Shell: sh
+OS Version: <X>
+Today's date: <X>
+</env>
+You are powered by the model named glm-4.6.

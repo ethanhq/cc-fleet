@@ -1,0 +1,84 @@
+== result
+{
+  "job_id": "<UUID1>",
+  "lead_session_id": "lead-golden",
+  "model": "gpt-5.5",
+  "ok": true,
+  "output_file": "<XDG>/cc-fleet/subagent-jobs/<UUID1>.out",
+  "pid": "<masked>",
+  "provider": "cdx",
+  "started_at": "<masked>",
+  "status": "running"
+}
+== raw
+== exit_code
+0
+== structured_output
+== proxy_ensure
+cdx
+== profiles
+cdx.json
+== argv
+"--dangerously-skip-permissions"
+"--settings"
+"<HOME>/.claude/profiles/cdx.json"
+"--model"
+"gpt-5.5"
+"-p"
+"golden prompt"
+"--output-format"
+"stream-json"
+"--verbose"
+"--include-partial-messages"
+== argv0
+<BIN>/claude
+== cwd
+<PKG>
+== env
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+CLAUDE_CODE_DISABLE_WORKFLOWS=1
+CLAUDE_CODE_GB_DISK_CACHE_WHEN_TELEMETRY_OFF=1
+== stdin
+== jobs
+== jobs/<UUID1>.err
+(0 bytes)
+== jobs/<UUID1>.json
+{
+  "job_id": "<UUID1>",
+  "json": true,
+  "lead_session_id": "lead-golden",
+  "model": "gpt-5.5",
+  "pgid": "<masked>",
+  "pid": "<masked>",
+  "proc_start": "<masked>",
+  "provider": "cdx",
+  "proxy_port": 17299,
+  "settings_path": "<HOME>/.claude/profiles/cdx.json",
+  "started_at": "<masked>",
+  "status": "running",
+  "stream": true
+}
+== jobs/<UUID1>.out
+(772 bytes)
+== status
+{
+  "duration_api_ms": 3385,
+  "duration_ms": 3654,
+  "job_id": "<UUID1>",
+  "lead_session_id": "lead-golden",
+  "model": "mimo-v2-flash",
+  "num_turns": 1,
+  "ok": true,
+  "provider": "cdx",
+  "result": "SUBAGENT_SMOKE_OK=42",
+  "session_id": "84c5b474-aaaa",
+  "started_at": "<masked>",
+  "status": "done",
+  "stop_reason": "end_turn",
+  "total_cost_usd": 0.258409,
+  "usage": {
+    "cache_read_input_tokens": 18,
+    "input_tokens": 50750,
+    "output_tokens": 186
+  }
+}

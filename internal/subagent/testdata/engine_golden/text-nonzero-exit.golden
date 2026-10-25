@@ -1,0 +1,63 @@
+== result
+{
+  "error_code": "SUBAGENT_FAILED",
+  "error_msg": "claude exited 3 without a result envelope: boom: worker crashed",
+  "lead_session_id": "lead-golden",
+  "ok": false,
+  "provider": "glm",
+  "suggestion": "Inspect the error; retry or switch provider"
+}
+== raw
+== exit_code
+3
+== structured_output
+== proxy_ensure
+glm
+== profiles
+glm.json
+== argv
+"--dangerously-skip-permissions"
+"--settings"
+"<HOME>/.claude/profiles/glm.json"
+"--model"
+"glm-4.6"
+"-p"
+"golden prompt"
+== argv0
+<BIN>/claude
+== cwd
+<WD>
+== env
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+CLAUDE_CODE_DISABLE_WORKFLOWS=1
+CLAUDE_CODE_GB_DISK_CACHE_WHEN_TELEMETRY_OFF=1
+== stdin
+== jobs
+== jobs/<UUID1>.json
+{
+  "child_pid": "<masked>",
+  "child_proc_start": "<masked>",
+  "job_id": "<UUID1>",
+  "json": false,
+  "lead_session_id": "lead-golden",
+  "model": "glm-4.6",
+  "pgid": "<masked>",
+  "pid": "<masked>",
+  "proc_start": "<masked>",
+  "provider": "glm",
+  "started_at": "<masked>",
+  "status": "running"
+}
+== jobs/<UUID1>.result.json
+{
+  "error_code": "SUBAGENT_FAILED",
+  "error_msg": "claude exited 3 without a result envelope: boom: worker crashed",
+  "job_id": "<UUID1>",
+  "lead_session_id": "lead-golden",
+  "model": "glm-4.6",
+  "ok": false,
+  "provider": "glm",
+  "started_at": "<masked>",
+  "status": "failed",
+  "suggestion": "Inspect the error; retry or switch provider"
+}
