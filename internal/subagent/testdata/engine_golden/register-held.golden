@@ -1,0 +1,35 @@
+== result
+{
+  "error_code": "SUBAGENT_STOPPED",
+  "error_msg": "leaf held while the attempt was starting",
+  "lead_session_id": "lead-golden",
+  "ok": false,
+  "prompt_profile": "slim",
+  "provider": "glm",
+  "run_id": "run-g"
+}
+== raw
+== exit_code
+0
+== structured_output
+== proxy_ensure
+glm
+== profiles
+glm.json
+== child
+not launched
+== jobs
+== jobs/<UUID1>.json
+{
+  "job_id": "<UUID1>",
+  "json": true,
+  "lead_session_id": "lead-golden",
+  "model": "glm-4.6",
+  "pgid": "<masked>",
+  "pid": "<masked>",
+  "prompt_profile": "slim",
+  "provider": "glm",
+  "run_id": "run-g",
+  "started_at": "<masked>",
+  "status": "held"
+}

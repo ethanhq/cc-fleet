@@ -1,0 +1,18 @@
+== result
+{
+  "error_code": "CODEX_PROXY_UNAVAILABLE",
+  "error_msg": "daemon refused to start",
+  "ok": false,
+  "provider": "cdx",
+  "suggestion": "Conversion daemon failed to start — for codex run cc-fleet codex login (add --credential <name> for an extra one); otherwise free the base_url port, then retry"
+}
+== raw
+== exit_code
+0
+== structured_output
+== proxy_ensure
+cdx
+== profiles
+== child
+not launched
+== jobs

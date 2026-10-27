@@ -238,6 +238,10 @@ func versionFromExec(binaryPath string) string {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binaryPath, "--version")
 	cmd.Env = childenv.Clean(os.Environ())
+	// A launcher shim (npm's codex.js) runs the real binary as a child sharing
+	// stdout; on timeout only the shim is killed, so without WaitDelay Output
+	// blocks until that child exits.
+	cmd.WaitDelay = time.Second
 	out, err := cmd.Output()
 	if err != nil {
 		return ""

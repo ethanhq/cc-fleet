@@ -14,12 +14,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ethanhq/cc-fleet/internal/childenv"
 	"github.com/ethanhq/cc-fleet/internal/codexproxy"
 	"github.com/ethanhq/cc-fleet/internal/config"
 	"github.com/ethanhq/cc-fleet/internal/ids"
 	"github.com/ethanhq/cc-fleet/internal/leadsession"
-	"github.com/ethanhq/cc-fleet/internal/profile"
 	"github.com/ethanhq/cc-fleet/internal/providerclass"
 )
 
@@ -199,11 +197,12 @@ func Run(parent context.Context, req Request) Result {
 		return *errRes
 	}
 	dg := req.Diag
+	eng := defaultEngine
 
 	// Native leaf: the reserved `claude` provider runs the official claude CLI
 	// on the user's own login. It has no providers.toml row (and must work even
 	// when providers.toml is malformed or absent), no profile, no base URL, no
-	// key — steps 1, 2, 3b, 4 and 5 below are provider machinery it skips; the
+	// key — steps 1, 2, 4 and 5 below are provider machinery it skips; the
 	// child authenticates itself from claude's own credential chain.
 	native := req.Provider == config.ReservedNativeProvider
 	var v *config.Provider
@@ -265,7 +264,7 @@ func Run(parent context.Context, req Request) Result {
 	//    per-version layout; fingerprint.json is never read, so a CC upgrade can't
 	//    leave a stale recorded binary in use). The code stays FINGERPRINT_STALE:
 	//    skills and classify dispatch on it; it now means "no claude binary".
-	binPath, binVersion, err := resolveBinaryPathVersion()
+	binPath, binVersion, err := eng.Resolve()
 	if err != nil {
 		dg.Logf("subagent: binary gate: %v", err)
 		return fail(ErrCodeFingerprintStale, errMsgNoClaude,
@@ -275,25 +274,12 @@ func Run(parent context.Context, req Request) Result {
 
 	var profilePath string
 	if !native {
-		// 3b. For a codex provider, ensure the conversion daemon is up — after the
-		//     binary gate, before the profile write, so a daemon failure is
-		//     fail-before-mutation and leaves no profile behind.
-		if err := ensureProviderProxy(v, dg); err != nil {
-			return fail(ErrCodeProxyUnavailable, err.Error(), req.Provider, suggestionFor(ErrCodeProxyUnavailable))
+		// 4. Engine-side provider state (claude: the conversion daemon, then the
+		//    profile) — after the binary gate, so a gate failure leaves none behind.
+		var failed *Result
+		if profilePath, failed = eng.Prepare(v, dg); failed != nil {
+			return *failed
 		}
-
-		// 4. Ensure the per-provider profile exists. Atomic temp+rename + idempotent,
-		//    so it's safe with no lock even under N concurrent subagents for one
-		//    provider (the package's lock-free invariant).
-		//
-		//    MUST run AFTER the binary gate above, not before. A missing claude must
-		//    never leave a profile file behind (fail-before-side-effects).
-		profilePath, err = profile.WriteForProvider(v, "")
-		if err != nil {
-			return fail(ErrCodeFailed, fmt.Sprintf("write profile for %s: %v", req.Provider, err),
-				req.Provider, "")
-		}
-		dg.Logf("subagent: profile written %s", profilePath)
 
 		// 5. Optional reachability probe (default OFF). Shares teammate check's classifier;
 		//    on Block we abort, on Warn we note and proceed.
@@ -318,11 +304,11 @@ func Run(parent context.Context, req Request) Result {
 	// 6. Resolve the EFFECTIVE profile (version gate, fail-open to full with a
 	//    reason). It uses the version the binary gate resolved for binPath, so the
 	//    gate and the exec can't see different executables.
-	effective, downgrade := gateProfile(req.PromptProfile, binVersion, nil)
+	effective, downgrade := eng.GateProfile(req.PromptProfile, binVersion)
 
 	// 7. Background mode: launch detached, return a job handle.
 	if req.Background {
-		return launchBackground(req, binPath, profilePath, model, effort, effective, downgrade, proxyPortOf(v))
+		return launchBackground(eng, req, v, binPath, profilePath, model, effort, effective, downgrade)
 	}
 
 	// 8. Synchronous exec with a hard deadline.
@@ -331,7 +317,7 @@ func Run(parent context.Context, req Request) Result {
 		timeout = defaultTimeout
 	}
 
-	// Mint the job id BEFORE buildArgv so a slim run can write its
+	// Mint the job id BEFORE eng.Argv so a slim run can write its
 	// <jobID>.slimprompt sidecar and reference it via --system-prompt-file. A workflow leaf
 	// passes the id of its queued placeholder so the SAME job flips queued→running→terminal
 	// (one file); the bare-CLI path leaves it empty and mints fresh, byte-identical to before.
@@ -342,24 +328,22 @@ func Run(parent context.Context, req Request) Result {
 		jobID = mintSyncJobID()
 	}
 
-	slim, slimErr := buildSlimArgv(effective, jobID, req, model)
-	if slimErr != nil {
-		res := fail(ErrCodeFailed, slimErr.Error(), req.Provider, "")
+	spec := launchSpec{req: req, provider: v, bin: binPath, settings: profilePath,
+		model: model, effort: effort, profile: effective, jobID: jobID}
+	argv, sidecar, aerr := eng.Argv(spec)
+	if aerr != nil {
+		res := fail(ErrCodeFailed, aerr.Error(), req.Provider, "")
 		res.PromptProfile, res.SlimDowngrade = effective, downgrade
 		res.LeadSessionID = req.LeadSessionID
 		res.RunID, res.Phase, res.Label = req.RunID, req.Phase, req.Label
 		return res
 	}
-	argv := buildArgv(binPath, profilePath, model, effort, req, slim)
 	hostEnv := os.Environ()
-	env := childenv.WithWorkerEnv(childenv.Clean(hostEnv))
+	env := eng.Env(hostEnv, spec)
 	// Counts only — argv carries the prompt/schema and env carries arbitrary
 	// user values, so neither is ever logged.
 	dg.Logf("subagent: job %s argv %d args; env %d→%d after cred/marker scrub",
 		jobID, len(argv), len(hostEnv), len(env))
-	if effective == ProfileSlimRO {
-		env = append(env, "CLAUDE_CODE_DISABLE_CLAUDE_MDS=1")
-	}
 
 	// Register this run on the Agents Board so a sync subagent is visible
 	// WHILE it runs, then flip it to done/failed on return via a deferred
@@ -379,8 +363,8 @@ func Run(parent context.Context, req Request) Result {
 	// cancel asked for.
 	reg := registerSyncJob(jobID, req, model, effective, downgrade, proxyPortOf(v))
 	if reg == registerHeld {
-		if slim.promptFile != "" {
-			_ = os.Remove(slim.promptFile)
+		if sidecar != "" {
+			_ = os.Remove(sidecar)
 		}
 		res := fail(ErrCodeStopped, "leaf held while the attempt was starting", req.Provider, "")
 		res.LeadSessionID = req.LeadSessionID
@@ -394,8 +378,8 @@ func Run(parent context.Context, req Request) Result {
 		// The REAPED finalize: this deferred call runs only after runClaude returns, so the child is
 		// provably reaped (or cmd.Start never launched one) — the evidence that clears a false-pending stamp.
 		defer func() { finalizeSyncJobReaped(jobID, res) }()
-	} else if slim.promptFile != "" {
-		defer func() { _ = os.Remove(slim.promptFile) }()
+	} else if sidecar != "" {
+		defer func() { _ = os.Remove(sidecar) }()
 	}
 
 	// Capture per-leaf tool/usage activity to <jobID>.activity (stream-json) when the workflow
@@ -453,15 +437,8 @@ func Run(parent context.Context, req Request) Result {
 		return res
 	}
 
-	// 8. Classify into the outer envelope, plus stash the raw passthrough. A stream-json run is
-	//    inner-JSON: classify the single terminal type:"result" line (byte-identical to the
-	//    --output-format json envelope), not the whole multi-line transcript.
-	innerJSON := req.JSON || req.OutputFormat == "json" || req.StreamActivity
-	classifyOut := stdout
-	if req.StreamActivity {
-		classifyOut = extractResultLine(stdout)
-	}
-	res = classify(req, model, classifyOut, stderr, exitCode, timedOut, innerJSON)
+	// 8. Classify into the outer envelope, plus stash the raw passthrough.
+	res = eng.Classify(spec, stdout, stderr, exitCode, timedOut)
 	res.LeadSessionID = req.LeadSessionID
 	res.RunID, res.Phase, res.Label = req.RunID, req.Phase, req.Label
 	res.PromptProfile, res.SlimDowngrade = effective, downgrade

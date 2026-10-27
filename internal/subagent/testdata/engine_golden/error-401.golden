@@ -1,0 +1,72 @@
+== result
+{
+  "api_error_status": 401,
+  "duration_ms": 50,
+  "error_code": "KEY_INVALID",
+  "error_msg": "provider rejected the API key (HTTP 401/403)",
+  "lead_session_id": "lead-golden",
+  "model": "glm-4.6",
+  "ok": false,
+  "provider": "glm",
+  "session_id": "84c5b474-cccc",
+  "suggestion": "Rotate the provider API key; do not retry until fixed"
+}
+== raw
+{"type":"result","subtype":"success","is_error":true,"api_error_status":401,"duration_ms":50,"duration_api_ms":0,"num_turns":1,"stop_reason":"stop_sequence","session_id":"84c5b474-cccc","total_cost_usd":0,"usage":{"input_tokens":0,"output_tokens":0},"modelUsage":{},"result":"Failed to authenticate. API Error: 401 {\"error\":{\"message\":\"invalid api key\"}}","permission_denials":[],"terminal_reason":"completed"}
+== exit_code
+1
+== structured_output
+== proxy_ensure
+glm
+== profiles
+glm.json
+== argv
+"--dangerously-skip-permissions"
+"--settings"
+"<HOME>/.claude/profiles/glm.json"
+"--model"
+"glm-4.6"
+"-p"
+"golden prompt"
+"--output-format"
+"json"
+== argv0
+<BIN>/claude
+== cwd
+<WD>
+== env
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+CLAUDE_CODE_DISABLE_WORKFLOWS=1
+CLAUDE_CODE_GB_DISK_CACHE_WHEN_TELEMETRY_OFF=1
+== stdin
+== jobs
+== jobs/<UUID1>.json
+{
+  "child_pid": "<masked>",
+  "child_proc_start": "<masked>",
+  "job_id": "<UUID1>",
+  "json": true,
+  "lead_session_id": "lead-golden",
+  "model": "glm-4.6",
+  "pgid": "<masked>",
+  "pid": "<masked>",
+  "proc_start": "<masked>",
+  "provider": "glm",
+  "started_at": "<masked>",
+  "status": "running"
+}
+== jobs/<UUID1>.result.json
+{
+  "api_error_status": 401,
+  "duration_ms": 50,
+  "error_code": "KEY_INVALID",
+  "error_msg": "provider rejected the API key (HTTP 401/403)",
+  "job_id": "<UUID1>",
+  "lead_session_id": "lead-golden",
+  "model": "glm-4.6",
+  "ok": false,
+  "provider": "glm",
+  "started_at": "<masked>",
+  "status": "failed",
+  "suggestion": "Rotate the provider API key; do not retry until fixed"
+}

@@ -8,8 +8,9 @@
 // user's ~/.claude/settings.json via Claude Code's normal settings merge.
 //
 // Profiles intentionally do NOT follow XDG: Claude Code reads ~/.claude/
-// unconditionally, so this package roots everything under the user's home
-// directory.
+// unconditionally, so this package roots profiles under the user's home
+// directory. A codex worker's CODEX_HOME is read by codex, not Claude Code, so
+// it lives in cc-fleet's own config dir instead (codexhome.go).
 package profile
 
 import (

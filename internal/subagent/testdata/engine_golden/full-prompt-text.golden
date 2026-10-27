@@ -1,0 +1,63 @@
+== result
+{
+  "lead_session_id": "lead-golden",
+  "model": "glm-4.6",
+  "ok": true,
+  "prompt_profile": "full",
+  "provider": "glm",
+  "result": "plain answer\n"
+}
+== raw
+plain answer
+== exit_code
+0
+== structured_output
+== proxy_ensure
+glm
+== profiles
+glm.json
+== argv
+"--dangerously-skip-permissions"
+"--settings"
+"<HOME>/.claude/profiles/glm.json"
+"--model"
+"glm-4.6"
+"-p"
+"golden prompt"
+== argv0
+<BIN>/claude
+== cwd
+<WD>
+== env
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1
+CLAUDE_CODE_DISABLE_WORKFLOWS=1
+CLAUDE_CODE_GB_DISK_CACHE_WHEN_TELEMETRY_OFF=1
+== stdin
+== jobs
+== jobs/<UUID1>.json
+{
+  "child_pid": "<masked>",
+  "child_proc_start": "<masked>",
+  "job_id": "<UUID1>",
+  "json": false,
+  "lead_session_id": "lead-golden",
+  "model": "glm-4.6",
+  "pgid": "<masked>",
+  "pid": "<masked>",
+  "proc_start": "<masked>",
+  "prompt_profile": "full",
+  "provider": "glm",
+  "started_at": "<masked>",
+  "status": "running"
+}
+== jobs/<UUID1>.result.json
+{
+  "job_id": "<UUID1>",
+  "lead_session_id": "lead-golden",
+  "model": "glm-4.6",
+  "ok": true,
+  "prompt_profile": "full",
+  "provider": "glm",
+  "started_at": "<masked>",
+  "status": "done"
+}
